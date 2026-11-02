@@ -218,6 +218,7 @@ class ButlerDaemon:
         *,
         butler_name: str | None = None,
         db: Database | None = None,
+        control_profile: str | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
@@ -230,6 +231,7 @@ class ButlerDaemon:
         else:
             self.config_dir = config_dir  # type: ignore
 
+        self._control_profile = control_profile
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -244,6 +246,7 @@ class ButlerDaemon:
         self._tool_module_map: dict[str, str] = {}
         self._resolved_tool_metadata: dict[str, ToolMeta] = {}
         self._tool_catalog: ToolCatalog | None = None
+        self._finance_warning_control_owner = None
         self._declared_tool_names: set[str] = set()
         self._effective_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
@@ -264,9 +267,7 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
-        self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
-        # Switchboard-schema pool (butler_registry) used by the scheduler loop to
-        # gate scheduled dispatch on eligibility_state. Set during startup.
+        # Pool for daemon audit writes to public.audit_log. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
@@ -298,15 +299,6 @@ class ButlerDaemon:
             if m.name not in self._module_statuses
             or self._module_statuses[m.name].status == "active"
         ]
-
-    def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
-        """Admit explicit declarations and reject unknown names before DB work."""
-        if self.config is None:
-            return modules
-        unknown = sorted(set(self.config.modules) - {mod.name for mod in modules})
-        if unknown:
-            raise ValueError(f"Unknown modules configured: {', '.join(unknown)}")
-        return [mod for mod in modules if mod.name in self.config.modules]
 
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
@@ -555,6 +547,15 @@ class ButlerDaemon:
         while not self._shutting_down and self._boot_epoch is None:
             await asyncio.sleep(delay_s)
             if await self._register_boot_epoch() and not self._shutting_down:
+                from butlers.core.catalog_publication import start_catalog_publication
+
+                try:
+                    await start_catalog_publication(self, self.db.pool)
+                except Exception:
+                    # No acceptance from a partial/uncertain publication. Its
+                    # retained operation is available to bounded shutdown.
+                    self._catalog_publication_failed = True
+                    return
                 self._accepting_connections = True
                 logger.info("Boot epoch committed for butler=%s", self.config.name)
                 return
@@ -573,6 +574,31 @@ class ButlerDaemon:
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        if self.config.name in {"finance", "switchboard"}:
+            from butlers.config import list_butlers
+            from butlers.core.control_plane_identity import IDENTITY_PATH, expected_from_roster
+            from butlers.core.finance_warning_control import VERIFY_PATH, FinanceWarningControlOwner
+
+            expected = next(
+                (
+                    target
+                    for target in expected_from_roster(list_butlers(self.config_dir.parent))
+                    if target.name == "switchboard"
+                ),
+                None,
+            )
+            verifier_url = (
+                expected.url.removesuffix(IDENTITY_PATH) + VERIFY_PATH if expected else None
+            )
+            route_call = None
+            if self.config.name == "switchboard":
+                from butlers.tools.switchboard.routing.route import route
+
+                route_call = route
+            self._finance_warning_control_owner = FinanceWarningControlOwner(
+                self, route_call=route_call, verifier_url=verifier_url
+            )
+
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -582,12 +608,14 @@ class ButlerDaemon:
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
+            finance_warning_control_owner=self._finance_warning_control_owner,
         )
         config = uvicorn.Config(
             app,
             host="0.0.0.0",
             port=self.config.port,
             log_level="warning",
+            log_config=None,
             timeout_graceful_shutdown=self.config.shutdown_timeout_s,
         )
         # Pre-create the socket with SO_REUSEADDR so that a previously bound socket
@@ -688,8 +716,13 @@ class ButlerDaemon:
 
         # The credential store is passed as the Codex authority explicitly, the
         # same way the dashboard's verification path passes it: a probe must
-        # never infer authority from the pool it happens to hold.
-        return RuntimeProbeCoordinator(pool, codex_auth_authority=self._credential_store)
+        # never infer authority from the pool it happens to hold. Other runtimes
+        # get the same store for their keys, as the spawner's adapters do.
+        return RuntimeProbeCoordinator(
+            pool,
+            codex_auth_authority=self._credential_store,
+            credential_store=self._credential_store,
+        )
 
     def _build_route_preflight(self) -> Any | None:
         """Mount the effect-free route canary only on Switchboard's backend port."""
@@ -713,6 +746,7 @@ class ButlerDaemon:
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
+        finance_warning_control_owner: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -804,6 +838,11 @@ class ButlerDaemon:
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
 
+        if butler_name == "switchboard" and finance_warning_control_owner is not None:
+            control_route = finance_warning_control_owner.route()
+            if not cls._attach_route_via_public_api(streamable_app, control_route):
+                streamable_app.routes.append(control_route)
+
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
             butler_name=butler_name,
@@ -812,44 +851,13 @@ class ButlerDaemon:
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
-        """Create or reuse a connection pool for daemon-side audit logging.
+        """Return the pool for daemon-side audit logging.
 
-        The switchboard butler reuses its own pool. Other butlers open a small
-        dedicated pool to the switchboard schema in the shared ``butlers`` DB.
-
-        Returns ``None`` (with a warning) if the pool cannot be created.
+        Audit entries land in ``public.audit_log``, which every butler runtime
+        role may INSERT, so each butler writes them through its own pool and
+        verified role. A separate role-less pool is refused since #5016.
         """
-        # Intentional name check: the switchboard IS the audit schema owner. Reusing its own
-        # pool avoids a redundant connection. This is switchboard-specific, not staffer-generic.
-        if self.config.name == "switchboard":
-            return own_pool
-
-        try:
-            audit_db_name = self.config.db_name or "butlers"
-            audit_db_schema = "switchboard"
-            audit_db = Database.from_env(audit_db_name)
-            if audit_db is self.db:
-                # Same DB object — reuse the existing pool directly (avoids double-close
-                # on shutdown when the audit DB and main DB share the same connection).
-                return own_pool
-            audit_db.set_schema(audit_db_schema)
-            audit_db.min_pool_size = 1
-            audit_db.max_pool_size = 2
-            await audit_db.connect()
-            self._audit_db = audit_db
-            logger.info(
-                "Audit pool connected (db=%s, schema=%s)",
-                audit_db_name,
-                audit_db_schema or "<default>",
-            )
-            return audit_db.pool
-        except Exception:
-            logger.warning(
-                "Failed to create audit pool for %s; daemon audit logging disabled",
-                self.config.name,
-                exc_info=True,
-            )
-            return None
+        return own_pool
 
     async def _connect_switchboard(self) -> None:
         """Open an MCP client connection to the Switchboard butler.
@@ -1101,6 +1109,8 @@ class ButlerDaemon:
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
             approval_push_runtime=self._approval_push_runtime,
+            credential_store=self._credential_store,
+            chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
     async def _build_scheduler_runtime_context(self) -> _SchedulerRuntimeContext:
@@ -1160,6 +1170,14 @@ class ButlerDaemon:
 
                     store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
 
+            from butlers.chronicler.day_close_continuation import DayCloseContinuation
+            from butlers.chronicler.day_close_refresh import held_refresh_service
+
+            if vars(self).get("_chronicler_continuation") is None:
+                self._chronicler_continuation = DayCloseContinuation(
+                    held_refresh_service(self, self.db.pool), default_timezone
+                )
+
             prompt_hooks = build_day_close_prompt_hooks(timezone=default_timezone)
             completion_hooks = build_day_close_completion_hooks(
                 self.db.pool,
@@ -1192,6 +1210,13 @@ class ButlerDaemon:
         runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
+        # Under the receiver cutover every butler reads its own administrative
+        # policy through sw_053's role-derived function on its own pool. The
+        # legacy resolver reads switchboard tables, which only the switchboard's
+        # runtime role may SELECT, so other butlers skip the gate there.
+        from butlers.tools.switchboard.registry.registry import receiver_route_cutover_enabled
+
+        gate_on_own_pool = self.config.name == "switchboard" or receiver_route_cutover_enabled()
         await _background.scheduler_loop(
             pool=self.db.pool,
             dispatch_fn=self._dispatch_scheduled_task,
@@ -1202,8 +1227,9 @@ class ButlerDaemon:
             get_db=lambda: daemon.db,
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
-            get_eligibility_pool=lambda: daemon._audit_pool,
+            get_eligibility_pool=lambda: daemon.db.pool if gate_on_own_pool else None,
             default_timezone=runtime_context.default_timezone,
+            chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
     def _resolve_memory_module(self) -> Any | None:
@@ -1297,7 +1323,7 @@ class ButlerDaemon:
             # 3. Fallback to module class property
             mod = loaded_modules.get(mod_name)
             if mod is not None:
-                env_list = getattr(mod, "credentials_env", [])
+                env_list = mod.credentials_env
                 if env_list:
                     creds[mod_name] = list(env_list)
         return creds
@@ -1348,6 +1374,7 @@ class ButlerDaemon:
         and _core_tool factory, then delegates to register_all_core_tools.
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
+        from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
 
         # Registration owns this snapshot state. Some focused integration
         # seams construct a daemon without calling __init__, so initialise it
@@ -1420,6 +1447,9 @@ class ButlerDaemon:
             route_metrics=_route_metrics,
         )
         register_all_core_tools(ctx, mcp, _core_tool)
+        # Dark build (RFC 0038): _finalize_tool_catalog catalogs these, then
+        # hides them from today's classify-and-route sessions.
+        self._goal_runtime_dark_tools = GOAL_RUNTIME_DARK_TOOLS & mcp._registered_tool_names
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
@@ -1427,11 +1457,32 @@ class ButlerDaemon:
         for tool_name in mcp._registered_tool_names:
             self._tool_module_map[tool_name] = "core"
 
+    def _qa_switchboard_client(self) -> Any:
+        """Resolve the current transport; own Switchboard uses its local MCP server."""
+        if self.switchboard_client is not None:
+            return self.switchboard_client
+        if self.config.name != "switchboard":
+            return None
+        local = getattr(self, "_qa_local_switchboard_client", None)
+        if local is None or getattr(self, "_qa_local_mcp", None) is not self.mcp:
+            local = LocalSwitchboardClient(self.mcp)
+            self._qa_local_switchboard_client = local
+            self._qa_local_mcp = self.mcp
+        return local
+
     def _collect_tool_metadata(self) -> dict[str, ToolMeta]:
         """Merge module sensitivities with the central presentation inventory."""
         from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
 
-        sensitivities: dict[str, ToolMeta] = {}
+        sensitivities: dict[str, ToolMeta] = {
+            "report_error": ToolMeta(
+                arg_sensitivities={
+                    "error_message": True,
+                    "traceback": True,
+                    "context": True,
+                }
+            ),
+        }
         for mod in self._active_modules:
             try:
                 declared = mod.tool_metadata()
@@ -1526,16 +1577,39 @@ class ButlerDaemon:
         return resolved
 
     async def _finalize_tool_catalog(self) -> ToolCatalog:
-        """Publish an all-or-nothing snapshot of final post-approval definitions."""
-        candidate = await build_tool_catalog(
-            self.mcp,
-            tool_owners=self._tool_module_map,
-            tool_metadata=self._resolved_tool_metadata or self._collect_tool_metadata(),
-        )
+        """Publish an all-or-nothing snapshot of final post-approval definitions.
+
+        Goal-runtime dark tools (RFC 0038 dark build) are in the snapshot with
+        their declared metadata, then disabled on FastMCP: today's
+        classify-and-route sessions can neither list nor call them.
+        """
+        dark: set[str] = set(getattr(self, "_goal_runtime_dark_tools", ()))
+        server = self.mcp
+        if dark and server is not None:
+            server.enable(names=dark, components={"tool"})
+        try:
+            candidate = await build_tool_catalog(
+                server,
+                tool_owners=self._tool_module_map,
+                tool_metadata=self._resolved_tool_metadata or self._collect_tool_metadata(),
+            )
+        finally:
+            if dark and server is not None:
+                server.disable(names=dark, components={"tool"})
         current = getattr(self, "_tool_catalog", None)
         if current is not None and current.generation_digest == candidate.generation_digest:
             return current
         self._tool_catalog = candidate
+        # Republish a real definition replacement, never renew an old digest
+        # against a changed registry. The role-bound owner is created only by
+        # the explicitly enabled final-startup publication hook.
+        publication = getattr(self, "_catalog_publication", None)
+        if publication is not None:
+            try:
+                await publication.publish(candidate)
+            except BaseException:
+                await publication.retire()
+                raise
         return candidate
 
     @property
@@ -1657,12 +1731,10 @@ class ButlerDaemon:
         # Allow modules to cross-wire after all tools are registered.
         module_map = {mod.name: mod for mod in self._modules}
         for mod in self._modules:
-            on_ready = getattr(mod, "on_all_modules_ready", None)
-            if on_ready is not None:
-                try:
-                    on_ready(module_map)
-                except Exception as exc:
-                    logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
+            try:
+                mod.on_all_modules_ready(module_map)
+            except Exception as exc:
+                logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
 
     async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.
@@ -2068,8 +2140,8 @@ class ButlerDaemon:
             logger.debug("_wire_module_runtime: spawner not yet set — skipping")
             return
 
-        # Register the daemon's spawner in the core hook so modules (QaModule,
-        # SelfHealingModule) can retrieve it at dispatch time without holding a
+        # Register the daemon's spawner in the core hook so QaModule can
+        # retrieve it at dispatch time without holding a
         # direct reference on their __init__ (Vision Rule 2).
         from butlers.core.spawn_hooks import register_spawner
 
@@ -2089,13 +2161,6 @@ class ButlerDaemon:
                 continue
             try:
                 client = self.switchboard_client
-                if (
-                    mod.name == "self_healing"
-                    and self.config is not None
-                    and self.config.name == "switchboard"
-                    and client is None
-                ):
-                    client = LocalSwitchboardClient(self.mcp)
                 wire_kwargs: dict[str, Any] = {"switchboard_client": client}
                 if "switchboard_client_getter" in inspect.signature(wire_fn).parameters:
                     # Late-bound: the heartbeat loop replaces the attribute on reconnect.
@@ -2161,15 +2226,22 @@ class ButlerDaemon:
         shared_pool: asyncpg.Pool | None = None
 
         if schema_topology:
-            shared_db = Database.from_env(shared_db_name)
-            shared_db.set_schema(shared_db_schema)
+            # Runtime pools must hold a verified role, so a same-database shared
+            # pool reads ``public`` credentials under this butler's own role.
+            owner_delegates = isinstance(self.db, Database) and self.db.db_name == shared_db_name
+            if owner_delegates:
+                shared_db = self.db.for_owned_schema(shared_db_schema)
+            else:
+                shared_db = Database.from_env(shared_db_name)
+                shared_db.set_schema(shared_db_schema)
             if shared_db is self.db:
                 # Test harnesses may patch Database.from_env to always return the
                 # main DB object. Treat that as local-only mode.
                 shared_pool = local_pool
             else:
                 try:
-                    await shared_db.provision()
+                    if not owner_delegates:
+                        await shared_db.provision()
                     shared_pool = await shared_db.connect()
                     await ensure_secrets_schema(shared_pool)
                     self._shared_credentials_db = shared_db

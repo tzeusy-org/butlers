@@ -19,9 +19,11 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.core.expected_signals import ExpectedSignalState, evaluate_expected_signal
 from butlers.core.liveness import is_liveness_stale
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.contract
 
@@ -356,18 +358,6 @@ def test_mapping_has_only_supported_rfc_0029_producers() -> None:
             assert endpoint is None
 
 
-class _FakeMCP:
-    def __init__(self) -> None:
-        self.tools: dict[str, Any] = {}
-
-    def tool(self):
-        def _decorator(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-
-        return _decorator
-
-
 class _FakeModule:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -385,16 +375,17 @@ async def test_registered_subscription_fact_writer_is_inventoried_outside_curren
 
     fact_writer = AsyncMock(return_value={"id": "fact-1"})
     monkeypatch.setattr(facts, "track_subscription_fact", fact_writer)
-    mcp = _FakeMCP()
+    mcp = FastMCP("finance-facts-contract-test")
     pool = AsyncMock()
     register_tools(mcp, _FakeModule(pool), SimpleNamespace(groups=["facts"]))
+    tools = await registered_tools(mcp)
 
-    assert "track_subscription_fact" in mcp.tools
+    assert "track_subscription_fact" in tools
     row = next(row for row in _source_rows() if row["source_id"] == "subscription_fact_writer")
     assert row["mapping"] == "outside_current_inputs"
     assert row["producer"] is None
 
-    await mcp.tools["track_subscription_fact"](
+    await tools["track_subscription_fact"](
         service="Example",
         amount=10.0,
         currency="USD",

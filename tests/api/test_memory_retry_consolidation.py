@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -46,19 +46,6 @@ def _make_episode_row(
         "expires_at": None,
         "metadata": None,
     }
-
-
-def _make_record(row: dict) -> MagicMock:
-    """Return a MagicMock that behaves like an asyncpg Record.
-
-    Supports both item access (``r["id"]``, used by ``_row_to_episode``) and
-    ``dict(record)`` (used by ``storage.retry_dead_letter_episode`` to return
-    a plain dict) via the mapping protocol's ``keys()`` + ``__getitem__``.
-    """
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    m.keys = MagicMock(side_effect=lambda: row.keys())
-    return m
 
 
 class _NullTransaction:
@@ -104,12 +91,12 @@ class _RetryPool:
         if self.episode is None or args[0] != self.episode["id"]:
             return None
         if "SELECT consolidation_status FROM" in query:
-            return _make_record({"consolidation_status": self.episode["consolidation_status"]})
+            return Record({"consolidation_status": self.episode["consolidation_status"]})
         if "UPDATE episodes" in query:
             if self.episode["consolidation_status"] != "dead_letter":
                 return None
             self.episode["consolidation_status"] = "pending"
-            return _make_record(self.episode)
+            return Record(self.episode)
         raise AssertionError(f"Unexpected query: {query}")
 
     async def execute(self, query: str, *args: object) -> str:
@@ -141,7 +128,7 @@ async def test_retry_consolidation_resets_dead_letter_episode(app) -> None:
     episode_id = uuid.uuid4()
     pool = _RetryPool(episode=_make_episode_row(episode_id=episode_id))
     db = _RetryDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -162,7 +149,7 @@ async def test_retry_consolidation_resets_dead_letter_episode(app) -> None:
 async def test_retry_consolidation_404_unknown_butler(app) -> None:
     """POST returns 404 when the named butler is not registered."""
     db = _RetryDB({"atlas": _RetryPool(episode=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -175,7 +162,7 @@ async def test_retry_consolidation_404_unknown_butler(app) -> None:
 async def test_retry_consolidation_400_malformed_episode_id(app) -> None:
     """POST returns 400 when the path id is not a valid UUID."""
     db = _RetryDB({"atlas": _RetryPool(episode=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -188,7 +175,7 @@ async def test_retry_consolidation_400_malformed_episode_id(app) -> None:
 async def test_retry_consolidation_404_unknown_episode(app) -> None:
     """POST returns 404 when the butler exists but has no episode with this id."""
     db = _RetryDB({"atlas": _RetryPool(episode=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -205,7 +192,7 @@ async def test_retry_consolidation_409_when_not_dead_letter(app) -> None:
         episode=_make_episode_row(episode_id=episode_id, consolidation_status="pending")
     )
     db = _RetryDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

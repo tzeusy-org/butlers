@@ -26,9 +26,16 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 import pytest
 
-from butlers.tools.switchboard.ingestion.ingest import IngestAcceptedResponse, ingest_v1
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.tools.switchboard.ingestion.ingest import (
+    IngestAcceptedResponse,
+    IngestPersistenceError,
+    IngestStoreRefusedError,
+    ingest_v1,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -48,11 +55,15 @@ class _FakeConn:
         self.execute_calls: list[tuple[str, tuple]] = []
         # The UUID7 that will be "inserted" (set on first INSERT call).
         self._inserted_id: UUID | None = None
+        # If set, execute() raises this exception (simulates a failed INSERT).
+        self.execute_raises: Exception | None = None
 
     def transaction(self) -> Any:
-        return _FakeTransaction()
+        return AsyncCtx(None)
 
     async def execute(self, sql: str, *args: Any) -> str:
+        if self.execute_raises is not None and "INSERT" in sql:
+            raise self.execute_raises
         self.execute_calls.append((sql, args))
         return "OK"
 
@@ -78,25 +89,6 @@ class _FakeConn:
         return any("public.ingestion_events" in sql for sql, _ in self.execute_calls)
 
 
-class _FakeTransaction:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
-
-
-class _FakeAcquire:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
-
-
 class _FakePool:
     """Fake asyncpg pool with one shared connection."""
 
@@ -117,8 +109,8 @@ class _FakePool:
         """Make pool.execute() raise exc (simulates ensure_partition failure)."""
         self._pool_execute_raises = exc
 
-    def acquire(self) -> _FakeAcquire:
-        return _FakeAcquire(self.conn)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self.conn)
 
     async def execute(self, sql: str, *args: Any) -> str:
         """Pool-level execute — used for ensure_partition (outside transaction)."""
@@ -616,16 +608,102 @@ class TestEnsurePartitionOutsideTransaction:
             "(no insert needed, no partition required)"
         )
 
-    async def test_ensure_partition_failure_raises_runtime_error(self) -> None:
-        """A failure during ensure_partition is caught and re-raised as RuntimeError."""
+    async def test_ensure_partition_failure_raises_persistence_error(self) -> None:
+        """A transport failure during ensure_partition is re-raised as the transient error."""
         pool = _FakePool()
-        pool.set_pool_execute_to_raise(ValueError("DB connection failed"))
+        pool.set_pool_execute_to_raise(ConnectionResetError("DB connection failed"))
         envelope = _telegram_envelope(update_id="90003")
 
         with pytest.raises(
-            RuntimeError, match="Failed to ensure message_inbox partition: DB connection failed"
+            IngestPersistenceError,
+            match="Failed to ensure message_inbox partition: DB connection failed",
         ):
             await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+
+# ---------------------------------------------------------------------------
+# Tests: persistence failures split into transient vs deterministic (bu-u5euwb.33)
+# ---------------------------------------------------------------------------
+
+# Transport-class failures: the same envelope may persist on a later attempt.
+_TRANSIENT_FAILURES = [
+    ConnectionResetError("reset"),
+    TimeoutError("timed out"),
+    asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed"),
+    asyncpg.exceptions.ConnectionFailureError("08006"),
+    asyncpg.exceptions.SerializationError("40001"),
+    asyncpg.exceptions.DeadlockDetectedError("40P01"),
+    asyncpg.exceptions.TooManyConnectionsError("53300"),
+    asyncpg.exceptions.AdminShutdownError("57P01"),
+    asyncpg.exceptions.CannotConnectNowError("57P03"),
+    asyncpg.exceptions.QueryCanceledError("57014"),
+]
+
+# Deterministic failures: this envelope fails the same way on every attempt, so a
+# connector that held its checkpoint on it would wedge forever.
+_DETERMINISTIC_FAILURES = [
+    asyncpg.exceptions.DataError("22000"),
+    asyncpg.exceptions.StringDataRightTruncationError("22001"),
+    asyncpg.exceptions.UntranslatableCharacterError("22P05"),
+    asyncpg.exceptions.UniqueViolationError("23505"),
+    asyncpg.exceptions.NotNullViolationError("23502"),
+    asyncpg.exceptions.CheckViolationError("23514"),
+    asyncpg.exceptions.UndefinedColumnError("42703"),
+    ValueError("unexpected"),
+]
+
+
+def _ids(exc: Exception) -> str:
+    return type(exc).__name__
+
+
+class TestPersistenceFailureClassification:
+    @pytest.mark.parametrize("failure", _TRANSIENT_FAILURES, ids=_ids)
+    async def test_transient_insert_failure_is_retryable(self, failure: Exception) -> None:
+        pool = _FakePool()
+        pool.conn.execute_raises = failure
+
+        with pytest.raises(IngestPersistenceError) as raised:
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
+
+        assert raised.value.__cause__ is failure
+
+    @pytest.mark.parametrize("failure", _DETERMINISTIC_FAILURES, ids=_ids)
+    async def test_deterministic_insert_failure_is_not_retryable(self, failure: Exception) -> None:
+        pool = _FakePool()
+        pool.conn.execute_raises = failure
+
+        with pytest.raises(IngestStoreRefusedError) as raised:
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
+
+        assert not isinstance(raised.value, IngestPersistenceError)
+        assert raised.value.__cause__ is failure
+
+    @pytest.mark.parametrize("failure", _TRANSIENT_FAILURES, ids=_ids)
+    async def test_transient_partition_failure_is_retryable(self, failure: Exception) -> None:
+        pool = _FakePool()
+        pool.set_pool_execute_to_raise(failure)
+
+        with pytest.raises(IngestPersistenceError):
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
+
+    @pytest.mark.parametrize("failure", _DETERMINISTIC_FAILURES, ids=_ids)
+    async def test_deterministic_partition_failure_is_not_retryable(
+        self, failure: Exception
+    ) -> None:
+        pool = _FakePool()
+        pool.set_pool_execute_to_raise(failure)
+
+        with pytest.raises(IngestStoreRefusedError):
+            await ingest_v1(
+                pool, _telegram_envelope(), policy_evaluator=None, enable_thread_affinity=False
+            )
 
 
 # ---------------------------------------------------------------------------

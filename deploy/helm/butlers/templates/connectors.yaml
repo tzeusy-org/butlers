@@ -1,5 +1,7 @@
+{{- $metrics := .Values.connectorMetrics }}
 {{- range $name, $c := .Values.connectors }}
 {{- if ne (toString $c.enabled) "false" }}
+{{- $scraped := and $metrics.enabled $c.healthPort }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -18,12 +20,32 @@ spec:
     metadata:
       labels:
         {{- include "butlers.selector" (dict "root" $ "component" (printf "connector-%s" $name)) | nindent 8 }}
+        {{- if $scraped }}
+        butlers.io/connector-metrics: "true"
+        {{- end }}
+      {{- if and $scraped $metrics.annotations }}
+      annotations:
+        k8s.grafana.com/scrape: "true"
+        k8s.grafana.com/job: connector-{{ $name }}
+        k8s.grafana.com/metrics.portName: metrics
+        k8s.grafana.com/metrics.path: /metrics
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $metrics.port | quote }}
+        prometheus.io/path: /metrics
+      {{- end }}
     spec:
       initContainers:
         {{- if $c.oauth }}
         {{- include "butlers.oauthGate" $ | nindent 8 }}
         {{- end }}
-        {{- include "butlers.waitFor" (dict "root" $ "name" "butlers-up" "url" "http://butlers-up:41100/health") | nindent 8 }}
+        {{- include "butlers.waitFor" (dict "root" $ "name" "butlers-up" "url" (printf "http://%s:41100/health" (include "butlers.switchboardHost" $))) | nindent 8 }}
+        {{- if $c.waitForHealthRoutes }}
+        - name: wait-for-health-routes
+          image: {{ include "butlers.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/wait_for_butler_routes.py"]
+          args: ["--url", "http://butlers-up:41103/internal/control-plane/identity", "--butler", "health"]
+        {{- end }}
       containers:
         - name: connector
           image: {{ include "butlers.image" $ }}
@@ -40,7 +62,7 @@ spec:
             - butlers.connectors.{{ $c.module }}
           env:
             {{- include "butlers.postgresEnv" $ | nindent 12 }}
-            - {name: SWITCHBOARD_MCP_URL, value: "http://butlers-up:41100/sse"}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" $ }}:41100/sse"}
             - {name: CONNECTOR_PROVIDER, value: {{ $c.provider | quote }}}
             - {name: CONNECTOR_CHANNEL, value: {{ $c.channel | quote }}}
             {{- if $c.healthPort }}
@@ -72,6 +94,21 @@ spec:
             {{- if $c.waBridge }}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             {{- end }}
+        {{- if $scraped }}
+        # Republishes only GET /metrics from the loopback health server.
+        - name: metrics-proxy
+          image: {{ include "butlers.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            - python3
+            - /app/scripts/connector_metrics_proxy.py
+            - --upstream-port={{ $c.healthPort }}
+            - --listen-port={{ $metrics.port }}
+          ports:
+            - {name: metrics, containerPort: {{ $metrics.port }}}
+          resources:
+            {{- toYaml $metrics.resources | nindent 12 }}
+        {{- end }}
       volumes:
         {{- include "butlers.logsVolume" $ | nindent 8 }}
         {{- if $c.waBridge }}

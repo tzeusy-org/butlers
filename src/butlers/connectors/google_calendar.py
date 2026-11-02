@@ -20,8 +20,6 @@ Key behaviors:
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=google_calendar (required)
-- CONNECTOR_CHANNEL=google_calendar (required)
 - CONNECTOR_MAX_INFLIGHT (optional, default 8)
 - CONNECTOR_HEALTH_PORT (optional, default 40085)
 - CONNECTOR_BUTLER_DB_NAME (optional; local butler DB for per-butler overrides)
@@ -53,13 +51,13 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -68,10 +66,13 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, should_retry_with_ssl_disable
 from butlers.google_credentials import InvalidGoogleCredentialsError, load_google_credentials
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_MESSAGE
 from butlers.oauth_token_payload import (
     OAuthTokenValidationError,
     validate_oauth_token_payload,
 )
+
+_DESCRIPTOR = connector_descriptor("google_calendar")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -82,9 +83,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "google_calendar"
-_CONNECTOR_CHANNEL = "google_calendar"
-_CONNECTOR_PROVIDER = "google_calendar"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Calendar scope required for event access
 _GCAL_SCOPE = "https://www.googleapis.com/auth/calendar"
@@ -468,8 +467,8 @@ class GoogleCalendarConnectorConfig:
         gcal_client_id: str,
         gcal_client_secret: str,
         gcal_refresh_token: str,
-        connector_provider: str = "google_calendar",
-        connector_channel: str = "google_calendar",
+        connector_provider: str = _DESCRIPTOR.provider,
+        connector_channel: str = _DESCRIPTOR.channel,
         connector_max_inflight: int = _DEFAULT_MAX_INFLIGHT,
         gcal_starting_soon_lead_minutes: int = _DEFAULT_STARTING_SOON_LEAD_MINUTES,
         gcal_poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S,
@@ -514,8 +513,8 @@ def build_event_envelope(
     *,
     event_type: str,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for a Google Calendar event change.
@@ -575,8 +574,8 @@ def build_starting_soon_envelope(
     *,
     lead_minutes: int,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
     observed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for an 'event starting soon' notification.
@@ -646,8 +645,8 @@ def scan_starting_soon(
     lead_minutes: int,
     now: datetime | None = None,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
 ) -> list[dict[str, Any]]:
     """Scan upcoming events and return starting-soon ingest envelopes.
 
@@ -740,8 +739,8 @@ def scan_starting_soon_on_restart(
     lead_minutes: int,
     now: datetime | None = None,
     endpoint_identity: str,
-    connector_channel: str = "google_calendar",
-    connector_provider: str = "google_calendar",
+    connector_channel: str = _DESCRIPTOR.channel,
+    connector_provider: str = _DESCRIPTOR.provider,
 ) -> list[dict[str, Any]]:
     """Emit starting-soon notifications on connector restart for events not yet started.
 
@@ -1015,6 +1014,7 @@ class CalendarConnectorRuntime:
 
             # Start heartbeat
             self._heartbeat = ConnectorHeartbeat(
+                channel_kind=CHANNEL_KIND_MESSAGE,
                 config=HeartbeatConfig.from_env(
                     connector_type=_CONNECTOR_TYPE,
                     endpoint_identity=self._config.endpoint_identity,
@@ -1471,7 +1471,7 @@ class CalendarConnectorRuntime:
         # Build ingestion policy envelope for pre-ingest evaluation
         policy_envelope = IngestionEnvelope(
             sender_address=organizer_email,
-            source_channel=_CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             raw_key=event_id,
         )
 
@@ -1485,7 +1485,7 @@ class CalendarConnectorRuntime:
         if decision is not None and not decision.allowed:
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=organizer_email,
                 subject_or_preview=summary[:200],
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1494,8 +1494,8 @@ class CalendarConnectorRuntime:
                     decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=self._config.endpoint_identity,
                     external_event_id=event_id,
                     external_thread_id=None,
@@ -1522,7 +1522,7 @@ class CalendarConnectorRuntime:
         if global_decision is not None and global_decision.action == "skip":
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=organizer_email,
                 subject_or_preview=summary[:200],
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1531,8 +1531,8 @@ class CalendarConnectorRuntime:
                     global_decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=self._config.endpoint_identity,
                     external_event_id=event_id,
                     external_thread_id=None,
@@ -1602,15 +1602,15 @@ class CalendarConnectorRuntime:
             # Record in filtered buffer for replay
             self._filtered_event_buffer.record(
                 external_message_id=event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=sender_identity,
                 subject_or_preview=preview,
                 filter_reason=FilteredEventBuffer.reason_submission_error(),
                 status="error",
                 error_detail=str(exc),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=self._config.endpoint_identity,
                     external_event_id=event_id,
                     external_thread_id=None,
@@ -2110,8 +2110,8 @@ class CalendarConnectorManager:
             return self._get_multi_account_health()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest(REGISTRY)
+        async def metrics():
+            return prometheus_metrics_response()
 
         @app.post("/reload")
         async def reload_accounts() -> dict[str, Any]:
@@ -2127,6 +2127,7 @@ class CalendarConnectorManager:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
         )
         self._health_server = uvicorn.Server(config)
 
@@ -2378,8 +2379,8 @@ def _build_ingest_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {

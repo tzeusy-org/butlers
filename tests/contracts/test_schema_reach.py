@@ -307,6 +307,30 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/core/confirm_admission.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038: Switchboard-owned confirm admission verifies the exact dispatched effect digest and immutable recipient/deadline; no originating-butler schema access (bu-ow5a4)",
+    (
+        "roster/finance/tests/test_jobs.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned:Finance-warning-currentness: privileged independent test observer reads the committed boot successor; production Finance receives no table read grant",
+    (
+        "roster/switchboard/migrations/052_finance_warning_boot_read.py",
+        "<dynamic:{quoted}.butler_registry_control_plane>",
+    ): "sanctioned:Finance-warning-currentness: trusted migration-selected schema is quoted and baked into the fixed pure Finance boot reader; no caller relation selector",
+    (
+        "roster/switchboard/migrations/052_finance_warning_boot_read.py",
+        "<dynamic:{quoted}.butler_boot_registrations>",
+    ): "sanctioned:Finance-warning-currentness: the same selected-schema pure reader verifies existing committed boot history without creating facts or granting table access",
+    (
+        "src/butlers/core/finance_warning_control.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned:Finance-warning-currentness: fixed Switchboard issuer reads its existing authorized boot facts beside the current catalog snapshot; no Finance table access or new grant",
+    (
+        "src/butlers/core/queue_claim.py",
+        "<dynamic:{queue.table}>",
+    ): "dynamic-local: bu-m0vjeb.6 reviewed module-scope ClaimQueue constants for local episodes and public.runtime_attention_outbox; validated identifiers, bound request/row values, existing caller transaction/role and per-adapter authority retained; no new foreign-schema access",
+    (
         "roster/chronicler/tests/_inline_ddl.py",
         '<dynamic:"{schema_name}".sessions>',
     ): "sanctioned:RFC-0014: schema-isolation/session projection fixtures with explicit quoted synthetic schemas",
@@ -455,6 +479,18 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{quoted_schema}.butler_registry_control_plane>",
     ): "sanctioned:QA-projection: migration-owned receiver/control-plane read surface; schema quoted at runtime",
     (
+        "roster/switchboard/migrations/053_butler_local_schedule_policy.py",
+        "<dynamic:{quoted_schema}.butler_registry_control_plane>",
+    ): "sanctioned:butler-local-policy: migration-owned role-derived read of the caller's own control-plane row (generalises sw_038); schema quoted at runtime",
+    (
+        "roster/switchboard/migrations/047_goal_ledger.py",
+        "<dynamic:switchboard.{table}>",
+    ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "roster/switchboard/migrations/047_goal_ledger.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
         "roster/switchboard/tests/test_correct_route.py",
         "<dynamic:{table}>",
     ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -491,11 +527,11 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
-        "src/butlers/api/read_models/activity_v1.py",
+        "src/butlers/api/read_models/activity.py",
         "<dynamic:{episodes_relation}>",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
-        "src/butlers/api/read_models/search_v1.py",
+        "src/butlers/api/read_models/search.py",
         "relationship.entity_facts",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
     (
@@ -631,9 +667,21 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.media_refs",
     ): "burn-down: existing switchboard.media_refs coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/control.py",
+        "switchboard.butler_secrets",
+    ): "sanctioned:RFC-0038: KEY_ABSENT_STAGE startup refuses when Switchboard's own secret store holds GOAL private-key metadata (secret_key names only, never values); public.butler_secrets is checked beside it",
+    (
         "src/butlers/core/condition_ledger.py",
         "<dynamic:{table}>",
     ): "dynamic-local: validated public condition-ledger relation selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/jobs/external_deadman.py",
+        "switchboard.butler_registry",
+    ): "sanctioned:REQ-infrastructure-reliability-002: Dashboard-owned deterministic deadman reads its existing Switchboard pool's registry names/TTLs to require complete fleet coverage; no other domain or write authority",
+    (
+        "src/butlers/jobs/external_deadman.py",
+        "switchboard.butler_registry_control_plane",
+    ): "sanctioned:REQ-infrastructure-reliability-002: same Dashboard controller reads receiver boot/policy/readiness facts through its existing Switchboard pool; missing facts refuse, no new role/grant or domain reach",
     (
         "src/butlers/core/control_plane_identity.py",
         "switchboard.butler_registry",
@@ -663,14 +711,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "dynamic-local: schema-qualified session/state/memory correction selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
-        "src/butlers/core/decision_desk.py",
-        "switchboard.decision_intents",
-    ): "burn-down: existing switchboard.decision_intents coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/core/decision_desk.py",
-        "switchboard.decision_prompts",
-    ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
-    (
         "src/butlers/core/deployments.py",
         '<dynamic:"{schema}".alembic_version>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
@@ -687,6 +727,34 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.butler_registry_control_plane",
     ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.admission_attempt_bindings",
+    ): "sanctioned:RFC-0038: D1/D17 Switchboard-owned immutable admission retry identity; same ledger transaction and runtime role as canonical decisions (bu-lb99gq)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.admission_decisions",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.budgets",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.effects",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.goal_inbox",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.goals",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
+        "src/butlers/core/goal_ledger.py",
+        "switchboard.invocations",
+    ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    (
         "src/butlers/core/ingestion_events.py",
         "<dynamic:{table}>",
     ): "dynamic-local: partition/ingestion table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -699,9 +767,9 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{self._schema}.runtime_config>",
     ): "dynamic-local: configured runtime schema; source ownership is dynamic; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
-        "src/butlers/core/scheduler.py",
-        "switchboard.butler_registry_control_plane",
-    ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
+        "src/butlers/core/runtime_config.py",
+        "switchboard.runtime_config",
+    ): "sanctioned:RFC-0038: goal admission reads only Switchboard's explicit goal_admission_config snapshot (D10, bu-fkoexp)",
     (
         "src/butlers/daemon.py",
         "relationship.entity_facts",
@@ -774,14 +842,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/jobs/context_producers.py",
         "travel.trips",
     ): "burn-down: existing travel.trips coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/jobs/decision_routing.py",
-        "switchboard.decision_intents",
-    ): "burn-down: existing switchboard.decision_intents coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/jobs/decision_routing.py",
-        "switchboard.decision_prompts",
-    ): "burn-down: existing switchboard.decision_prompts coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/jobs/deploy_drift.py",
         '<dynamic:"{schema}".alembic_version>',
@@ -906,14 +966,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/owner_bootstrap.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
-        "relationship.entity_predicate_registry",
-    ): "burn-down: existing relationship.entity_predicate_registry coupling; route through owning service or make local schema authority explicit",
-    (
-        "src/butlers/scripts/backfill_edge_facts_to_entity_facts.py",
-        "relationship.facts",
-    ): "burn-down: existing relationship.facts coupling; route through owning service or make local schema authority explicit",
     (
         "src/butlers/testing/migration.py",
         "<dynamic:{_quote_ident(schema)}.alembic_version>",

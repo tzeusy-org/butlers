@@ -33,22 +33,11 @@ class DashboardReadModule(Module):
         self._db: Any = None
         self._pricing: PricingConfig | None = None
 
-    @property
-    def name(self) -> str:
-        return "dashboard_read"
+    name = "dashboard_read"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return DashboardReadModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # The two fleet views + grants live in roster/concierge/migrations,
-        # which is the butler-owned "concierge" chain, not a module chain.
-        return None
 
     def _get_pool(self) -> Any:
         if self._db is None:

@@ -4,7 +4,11 @@
 
 ### Requirement: [TARGET-STATE] Confirm Delivery Intent
 
-A sixth delivery intent, `confirm`, SHALL be supported by `notify()` alongside `send`,
+ID: REQ-core-notify-040
+Source: RFC 0038 D7/D13/D18; specify-telegram-confirm-interaction-contract/design.md
+Scope: v1-mandatory
+
+A delivery intent, `confirm`, SHALL be supported by `notify()` alongside `send`,
 `reply`, `react`, and `insight`. Instead of a one-way message, `intent="confirm"` presents a
 bounded, caller-defined set of options to the resolved recipient and, on an interactive
 channel, resolves to a chosen `value` delivered back to the calling butler as described by
@@ -22,7 +26,7 @@ unchanged.
 
 - **WHEN** `notify(channel="telegram", intent="confirm", options=[{value:"yes",
   label:"Yes"},{value:"no",label:"No"}], message="Proceed with the refund?")` is called
-- **THEN** the envelope, callback token, identity, replay, expiry, and reply-to-origin
+- **THEN** the envelope, callback token, identity, replay, expiry, and verified admission or registered sink
   behavior follow the `notify-confirm-interaction` capability's requirements in full
 - **AND** the tool's immediate response reports `status="ok"` with the created `confirm_id`
 

@@ -106,7 +106,7 @@ class HAStatisticsClient:
         end: str,
         period: str = "hour",
         types: Sequence[str] = ("change",),
-        timeout: float = 30.0,
+        timeout: float = 30.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Return statistics keyed by statistic ID."""
         if period not in VALID_STATISTICS_PERIODS:
@@ -149,7 +149,7 @@ class HAStatisticsClient:
         self,
         command: dict[str, Any],
         *,
-        timeout: float,
+        timeout: float,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         assert self._ha_url is not None
         assert self._ha_token is not None

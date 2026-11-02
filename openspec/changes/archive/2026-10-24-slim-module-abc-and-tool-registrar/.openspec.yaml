@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-10-22
+goal: "Keep three abstract members on the Module ABC and give modules one tool registrar and one guarded-tool decorator."

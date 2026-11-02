@@ -70,17 +70,23 @@ taken from tool arguments or from text inside content, so a forged
 `[Source: Owner ...]` line in a stranger's email grants nothing. Sessions with
 no routing context stamp `system`, not `owner`.
 
-Consolidation gives each derived fact and rule the weakest authority among its
-evidence episodes (differing or unknown authority yields `mixed`). Steering
-memory is gated on that stamp:
+Consolidation splits each claimed `(tenant_id, butler)` group into an owner-class
+partition (`owner`, `owner_device`), a `system` partition and a non-owner
+partition (`third_party`, `mixed` and unstamped NULL), each with its own runtime
+session, request ID and episode set; see [Consolidation](#consolidation). It gives each derived
+fact and rule the weakest authority among its evidence episodes (differing or
+unknown authority yields `mixed`). Steering memory is gated on that stamp:
 
 - **Rules** from non-owner authority are *held*: stored, but absent from recall,
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
-- **Profile Facts** admit only owner-class facts. An owner-anchored fact written
-  from someone else's session surfaces only as a Task-Relevant Fact labelled
-  `reported by <sender>`.
+- **Profile Facts** admit only owner-class facts. Every other rendered fact,
+  whoever it is about (the owner or Bob), is a Task-Relevant Fact qualified as
+  `reported by <sender>` (`third_party`), `partly reported by <sender>` (`mixed`)
+  or `source unverified` (NULL). An unresolvable sender name renders as
+  `a third party`; the qualification never depends on the lookup. `system` facts
+  carry no label, and `source_butler` names the curating butler, never the reporter.
 - A non-owner write cannot supersede an owner-authored fact.
 - **Legacy rows** (written before `mem_013`) have no stamp and fail closed: legacy
   rules are held and legacy owner facts are not Profile Facts. They are never
@@ -129,7 +135,7 @@ Delivery remains dashboard-only and at least once: a crash after the independent
 message post but before the delivery marker commits can repeat the notice. Normal committed
 delivery and fact replay do not post it again.
 
-`memory_open_gaps` and `GET /api/memory/gaps` (keyset pagination, `meta.sources_degraded`) list
+`memory_open_gaps` and `GET /api/memory/gaps` (a keyset `Page` with top-level `sources_degraded`) list
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
 `unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
 `POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel
@@ -217,7 +223,58 @@ retired design from maintained requirements and outstanding delivery work.
 
 ## Consolidation
 
-A background worker consumes unconsolidated episodes in deterministic batches and emits new facts, rules, supersessions, confirmations, and provenance links. Every episode reaches exactly one terminal state: `consolidated`, `failed`, or `dead_letter`. Consolidation output is schema-validated before persistence.
+A background worker consumes eligible episodes in deterministic batches and emits
+new facts, rules, supersessions, confirmations, and provenance links. Successful
+episodes become `consolidated`; failures are retried after bounded backoff or
+become `dead_letter` when the retry budget is exhausted. Consolidation output is
+schema-validated before persistence.
+
+**Authority partitions (bu-dhloi1.1, bu-dhloi1.26).** After the fenced claim,
+each `(tenant_id, butler)` group is split by the episodes' persisted
+`content_authority` into an owner-class partition, a `system` partition and a
+non-owner partition (`third_party`, `mixed` and NULL). `system` is kept apart
+from third-party content because a `system` fact renders without attribution: a
+shared session could restate a stranger's words citing only a system episode and
+the fact would lose its label. Each nonempty partition gets its own runtime
+session, request ID and allowed episode set, and its dedup context lists only
+facts and rules of the same partition (filtered in SQL before the `LIMIT`). That
+dedup context is the only stored memory the session sees: the spawner skips
+recall-based memory-context injection for `schedule:consolidation` sessions, and
+the MCP wrappers suppress every tool call such a session makes
+(`consolidation_session_tool_policy`), reads and writes alike, since consolidation
+is output-only. The owner and system sessions therefore have no path to
+third-party content they could restate under their own authority. The suppression keys on the session's
+`trigger_source` parameter the spawner writes into the session's MCP server URL.
+Inside the persistence fence the executor revalidates every source episode's stamp
+against its partition and admits `updated_facts` targets and confirmations only
+within the same tenant, source butler and partition. Evidence citing an episode
+outside the partition fails that partition through the ordinary failed/dead-letter
+path before any fact, rule, link or completion write; the sibling partitions still
+commit independently, and valid third-party evidence stays `third_party`. Each
+successful partition writes its own `public.consolidation_runs` row, and the run's
+`groups_consolidated` counts partitions.
+
+The partitions stop new laundering; they do not reclassify facts consolidated
+before this change. A historical demotion mechanism (operator-only, default
+dry-run, evidence-manifest gated) is separate, not yet built work, and no live
+dry-run, demotion or restore has been run or authorized.
+
+The dashboard owner can recover an eligible dead-letter episode with
+`POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF
+checks run before target resolution. Recovery is confined to the owning source's
+memory schema; Chronicler's private `chronicler_mem` schema is excluded. One
+conditional transaction changes `dead_letter` to `pending`, resets
+`consolidation_attempts` to `0`, clears error, retry, terminal-reason and lease
+fields, and records one sanitized lifecycle event. A competing request or a
+non-dead-letter episode receives a conflict without a second recovery event.
+The response means queued for a later ordinary schedule: it does not execute
+consolidation, run a schedule immediately, or expose bulk replay or an MCP
+recovery tool.
+
+The active [memory honesty change](../../openspec/changes/memory-honesty-last-mile/tasks.md)
+also requires a future partitioned obligation-goal implementation. That conversion
+and its switch remain open; the recovery and dashboard changes do not establish
+goal-runtime delivery.
 
 ## Decay and Hygiene
 
@@ -311,6 +368,8 @@ resolves the catalog row's owning butler, and asks that butler's existing
 `memory_get` tool through the Switchboard route. It never grants cross-schema
 database access. Inactive or missing pointers return `{"status":"not_found"}`.
 Both tools are read-only and idempotent.
+
+**Content authority.** Each catalog row carries the `content_authority` class of its source fact or rule (`owner`, `owner_device`, `third_party`, `system`, `mixed`, or NULL for unstamped legacy rows; core_299, REQ-module-memory-013). Only the class is public — the sender entity stays in the owning schema. Every catalog write (`store_fact`/`store_rule` write-behind, rule endorsement, the backfill) copies it in the same statement as the rest of the row, and `run_memory_catalog_backfill` re-copies it onto rows whose value drifted (for example rows cataloged before the column existed); a NULL source stays NULL. `search_catalog` and `GET /api/memory/catalog/search` return it per row; `memory_catalog_search` adds an `attribution` (`from a third party`, `partly from a third party`, or `source unverified`; none for owner/system content), and Fleet Knowledge lines show the same label.
 
 **Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
 

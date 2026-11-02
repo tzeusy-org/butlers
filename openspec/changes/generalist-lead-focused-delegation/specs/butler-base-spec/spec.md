@@ -256,6 +256,8 @@ Goal invocations SHALL be launched only by the goal runner, on the session host,
 Source: RFC 0038 D2, D3, D7, D10, D16 and D18
 Scope: v1-mandatory
 
+ID: REQ-butler-base-spec-005
+
 #### Scenario: Ephemeral MCP config generation
 - **WHEN** the goal runner launches a lead or child invocation
 - **THEN** the invocation's MCP config names exactly one server, the broker's goal endpoint on the session listener, authenticated by the invocation's bearer token
@@ -264,7 +266,7 @@ Scope: v1-mandatory
 
 #### Scenario: Environment sandboxing
 - **WHEN** the goal runner builds an invocation's process environment on the session host
-- **THEN** it contains only `PATH`, the invocation's staged model credential and its MCP config
+- **THEN** it contains only `PATH`, the invocation's staged model credential, its MCP config and adapter-owned non-secret pointers to files staged inside its sandbox
 - **AND** it contains no `[butler.env]` vars, module or connector credentials, database credentials or credential-store access
 - **AND** runtime authentication uses the CLI-level OAuth or provider credentials held on the session host
 - **AND** no undeclared environment variables leak from the host to the runtime subprocess
@@ -431,6 +433,8 @@ Butler credentials SHALL follow a layered resolution strategy: database-first fr
 Source: RFC 0038 D3 and D18
 Scope: v1-mandatory
 
+ID: REQ-butler-base-spec-006
+
 #### Scenario: Credential resolution order
 - **WHEN** a butler or module needs a credential (API key, OAuth token, etc.)
 - **THEN** the CredentialStore first checks the `shared.secrets` table in PostgreSQL
@@ -439,7 +443,7 @@ Scope: v1-mandatory
 
 #### Scenario: Credential isolation in runtime sessions
 - **WHEN** the goal runner builds a goal invocation's environment
-- **THEN** it holds only `PATH`, its staged model credential and its MCP config — no module, connector or database credential and no credential-store access
+- **THEN** it holds only `PATH`, its staged model credential, its MCP config and adapter-owned non-secret pointers to files staged inside its sandbox — no module, connector or database credential and no credential-store access
 - **AND** an engineering executor launched by the Spawner receives only the credentials its contract declares (for example `GH_TOKEN`)
 - **AND** no host environment variables leak, so no session can use a credential to act outside the broker
 

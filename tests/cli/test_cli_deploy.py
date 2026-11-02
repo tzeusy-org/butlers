@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,10 +13,25 @@ from butlers.core.deploy import DeployError, DeployResult
 
 pytestmark = pytest.mark.unit
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+def _stub_target(_roster_dir, ready_url, timeout_s):
+    return {"ready_url": ready_url, "timeout_s": timeout_s}
+
+
+@pytest.fixture(autouse=True)
+def _stub_roster_readiness(request, monkeypatch):
+    """Orchestration tests use an empty --dir; the real roster derivation is
+    exercised by the readiness-timeout test below."""
+    if request.node.name in _REAL_ROSTER_TESTS:
+        return
+    monkeypatch.setattr("butlers.cli._sustained_readiness_target", _stub_target)
 
 
 class TestDeployCommand:
@@ -33,6 +49,8 @@ class TestDeployCommand:
         assert "--health-url" in result2.output
         assert "--profile" in result2.output
         assert "--allow-dirty-root" in result2.output
+        assert "--ready-url" in result2.output
+        assert "--readiness-timeout" in result2.output
 
     def test_success_prints_summary_and_exits_zero(self, runner, tmp_path):
         with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
@@ -86,6 +104,7 @@ class TestDeployCommand:
         assert config.env_file == ".env.prod"
         assert config.health_url == "http://localhost:41200/health"
         assert config.profiles == ()
+        assert config.readiness == {"ready_url": None, "timeout_s": None}
 
     def test_dev_stack_options_are_threaded_into_deploy_config(self, runner, tmp_path):
         """bu-hmdqz.1: redeploying the live 'butlers-dev' stack needs the
@@ -121,6 +140,8 @@ class TestDeployCommand:
         assert config.env_file == ".env.dev"
         assert config.health_url == "http://localhost:42200/health"
         assert config.profiles == ("dev",)
+        # /ready follows the selected stack's API, not prod's default port.
+        assert config.readiness["ready_url"] == "http://localhost:42200/ready"
 
     def test_allow_dirty_root_defaults_false(self, runner, tmp_path):
         """The preflight override must be opt-in — omitting the flag keeps the
@@ -173,3 +194,65 @@ class TestDeployCommand:
 
         assert result.exit_code == 1
         assert "hotreload" in result.output
+
+
+_REAL_ROSTER_TESTS = {
+    "test_semantic_readiness_is_derived_from_the_roster_and_short_overrides_refused",
+    "test_await_ready_check_only_validates_the_timeout_floor_without_waiting",
+}
+
+
+def test_semantic_readiness_is_derived_from_the_roster_and_short_overrides_refused(runner):
+    """REQ-dashboard-api-064: the deadline floor comes from the real roster's QA
+    cadence and longest TTL; a shorter override, or no roster, refuses before
+    any build/deploy step runs."""
+    with patch("butlers.core.deploy.run_deploy", new=AsyncMock()) as mock_run:
+        short = runner.invoke(
+            cli, ["deploy", "--dir", str(_REPO_ROOT), "--readiness-timeout", "600"]
+        )
+        missing = runner.invoke(cli, ["deploy", "--dir", str(_REPO_ROOT / "docs")])
+
+    assert short.exit_code == 1
+    assert "below the derived minimum" in short.output
+    assert missing.exit_code == 1
+    assert "roster" in missing.output
+    mock_run.assert_not_awaited()
+
+    captured = {}
+
+    async def fake_run_deploy(config, **kwargs):
+        captured["config"] = config
+        return DeployResult(
+            git_sha="abc1234", migration_head=None, result="success",
+            readiness_receipt='{"result":"success"}',
+        )  # fmt: skip
+
+    with patch("butlers.core.deploy.run_deploy", new=fake_run_deploy):
+        result = runner.invoke(cli, ["deploy", "--dir", str(_REPO_ROOT)])
+
+    assert result.exit_code == 0, result.output
+    readiness = captured["config"].readiness
+    assert readiness.ready_url == "http://localhost:41200/ready"
+    assert readiness.policy.effective_timeout_s >= 35 * 60
+    assert "Semantic readiness receipt" in result.output
+
+
+def test_await_ready_check_only_validates_the_timeout_floor_without_waiting(runner):
+    """record-deploy.sh calls this before helm upgrade so a bad override never
+    changes the cluster; it reads no database or /ready."""
+    roster = str(_REPO_ROOT / "roster")
+    with patch("butlers.cli._await_ready", new=AsyncMock()) as mock_wait:
+        short = runner.invoke(
+            cli, ["deployments", "await-ready", "--check-only", "--roster-dir", roster,
+                  "--timeout", "600"],
+        )  # fmt: skip
+        ok = runner.invoke(
+            cli, ["deployments", "await-ready", "--check-only", "--roster-dir", roster,
+                  "--timeout", "7200"],
+        )  # fmt: skip
+
+    assert short.exit_code == 2
+    assert "below the derived minimum" in short.output
+    assert ok.exit_code == 0, ok.output
+    assert "timeout_s=7200" in ok.output
+    mock_wait.assert_not_awaited()

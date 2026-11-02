@@ -14,6 +14,7 @@ from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import close_owner_auth_service, create_owner_auth_service
 from butlers.api.routers import events
+from tests.polling import poll_until
 
 
 def create_test_app() -> FastAPI:
@@ -53,8 +54,11 @@ def create_test_app() -> FastAPI:
     async def pending_query(request: Request):
         evidence["pending_queries"] += 1
         try:
-            while not await request.is_disconnected():
-                await asyncio.sleep(0.05)
+
+            async def _condition_met() -> bool:
+                return await request.is_disconnected()
+
+            await poll_until(_condition_met, interval_s=0.05)
         finally:
             evidence["pending_queries"] -= 1
             evidence["cancelled_queries"] += 1

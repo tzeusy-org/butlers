@@ -43,20 +43,15 @@ export {
   getCalendarWorkspaceAudit,
   getCalendarWorkspaceEntry,
   getCalendarWorkspaceMeta,
-  getCalendarWorkspaceDuplicates,
   getCalendarWorkspaceConflicts,
   getCalendarInvitations,
   respondToCalendarInvitation,
   getCalendarResponseReceipt,
-  patchCalendarDedupRules,
-  setCalendarKeepSeparate,
   searchCalendarWorkspace,
   toggleCalendarSource,
-  findCalendarWorkspaceTime,
   mutateCalendarWorkspaceButlerEvent,
   previewCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,
-  undoCalendarWorkspaceMutation,
   parseCalendarQuickAdd,
   getCostSummary,
   getDailyCosts,
@@ -93,6 +88,7 @@ export {
   createEntityGift,
   getEntityTimeline,
   getEntityActivity,
+  getEntityCommitments,
   getEntityCadence,
   getEntityMessageThreads,
   getEntityActivityBins,
@@ -139,6 +135,7 @@ export {
   getMeasurementsLatest,
   getMeasurementSources,
   getExpectedSignals,
+  getHealthBaselines,
   getMeasurementsTrend,
   getHealthBriefing,
   getInsightCandidates,
@@ -266,14 +263,6 @@ export type {
   ButlerSummary,
   ProcessFacts,
   CalendarConflictEntry,
-  CalendarDedupMatchStrategy,
-  CalendarDedupRulesModel,
-  CalendarDedupRulesUpdateRequest,
-  CalendarDuplicateCluster,
-  CalendarDuplicatesParams,
-  CalendarDuplicatesResponse,
-  CalendarKeepSeparateRequest,
-  CalendarKeepSeparateResponse,
   CalendarPrepAttendee,
   CalendarPrepCommitment,
   CalendarPrepCommitmentDirection,
@@ -288,10 +277,6 @@ export type {
   CalendarWorkspaceLaneDefinition,
   CalendarWorkspaceMetaResponse,
   CalendarWorkspaceMutationResponse,
-  CalendarFindTimeConstraints,
-  CalendarFindTimePartOfDay,
-  CalendarWorkspaceFindTimeRequest,
-  CalendarWorkspaceFindTimeResponse,
   CalendarWorkspaceParams,
   CalendarWorkspaceReadResponse,
   CalendarWorkspaceSearchParams,
@@ -348,7 +333,6 @@ export type {
   EntityFact,
   EntityFactStore,
   EntityFactStalenessBand,
-  EntityFactsResponse,
   EntityFactsValidity,
   EntityFactsParams,
   ActivityBin,
@@ -431,6 +415,8 @@ export type {
   MeasurementSourcesResponse,
   ExpectedSignal,
   ExpectedSignalsResponse,
+  HealthBaseline,
+  HealthBaselinesResponse,
   MeasurementTrendParams,
   MeasurementTrendBucket,
   MeasurementTrendResponse,
@@ -452,8 +438,7 @@ export type {
   AttentionLedgerSummaryParams,
   AttentionLedgerSummaryResponse,
   AttentionSourceSummary,
-  CursorPaginatedResponse,
-  CursorPaginationMeta,
+  CursorPage,
   PaginatedResponse,
   PaginationMeta,
   ResearchParams,
@@ -867,6 +852,7 @@ export {
   createConversation,
   sendMessage,
   cancelConversationMessageTurn,
+  updateConversation,
 } from "./client.ts";
 
 export type {
@@ -904,6 +890,7 @@ export type {
   MessageSearchResult,
   MessageSearchParams,
   CreateConversationRequest,
+  ConversationUpdateRequest,
   SendMessageRequest,
   ConversationSseEventType,
   ConversationSseEvent,
@@ -1008,8 +995,6 @@ export {
   getQaPatrols,
   getQaSummary,
   removeQaDismissal,
-  retryHealingAttempt,
-  type RetryHealingAttemptResponse,
   getQaCircuitBreaker,
   resetQaCircuitBreaker,
   getQaRepoConfig,
@@ -1281,21 +1266,4 @@ export type {
   TimelineSavedViewUpdateRequest,
 } from "./types.ts";
 
-// ---------------------------------------------------------------------------
-// Owner Decision Desk -- Decisions lane (bu-ckkpz.2)
-// ---------------------------------------------------------------------------
-
-export { getDecisions } from "./client.ts";
-
-export { getBeadDetail } from "./client.ts";
-
-export type {
-  BeadDependencySummary,
-  BeadDetail,
-  BeadDetailMeta,
-  BeadDetailResponse,
-  DecisionBeadSummary,
-  DecisionIntentSummary,
-  DecisionsListMeta,
-  DecisionsListResponse,
-} from "./types.ts";
+export { getBackgroundJobFacts } from "./client";

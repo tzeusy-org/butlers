@@ -13,14 +13,18 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = pytest.mark.unit
 
@@ -28,23 +32,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass mimicking asyncpg Record (attribute + item access)."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(*, fetch_rows=None, fetchrow_result=None, fetchval_result=0):
@@ -57,22 +44,18 @@ def _mock_pool(*, fetch_rows=None, fetchrow_result=None, fetchval_result=0):
 
 def _build_app(pool):
     """Create a FastAPI test app with the health router wired to *pool*."""
-    import importlib.util
+    import importlib
     import sys
-    from pathlib import Path
 
     # Load the health router module (may already be in sys.modules)
-    router_path = Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
+    _THIS_FILE.parents[2] / "roster" / "health" / "api" / "router.py"
     module_name = "health_api_router"
     if module_name not in sys.modules:
-        spec = importlib.util.spec_from_file_location(module_name, router_path)
-        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        importlib.import_module("butlers.api._roster.health.router")
     else:
-        module = sys.modules[module_name]
+        sys.modules[module_name]
 
-    _get_db_manager = module._get_db_manager
+    _get_db_manager = get_db
 
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
@@ -98,7 +81,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_weight",
                     "valid_at": now,
@@ -171,7 +154,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_blood_pressure",
                     "valid_at": now,
@@ -198,7 +181,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_heart_rate",
                     "valid_at": now,
@@ -226,7 +209,7 @@ class TestMeasurementsLatest:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row(
+            Record(
                 {
                     "predicate": "measurement_weight",
                     "valid_at": now,
@@ -256,23 +239,17 @@ class TestMeasurementsLatest:
         db = MagicMock(spec=DatabaseManager)
         db.pool.side_effect = KeyError("health")
 
-        import importlib.util
+        import importlib
         import sys
-        from pathlib import Path
 
-        router_path = (
-            Path(__file__).resolve().parents[2] / "roster" / "health" / "api" / "router.py"
-        )
+        _THIS_FILE.parents[2] / "roster" / "health" / "api" / "router.py"
         module_name = "health_api_router"
         if module_name not in sys.modules:
-            spec = importlib.util.spec_from_file_location(module_name, router_path)
-            module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)  # type: ignore[union-attr]
-        module = sys.modules[module_name]
+            importlib.import_module("butlers.api._roster.health.router")
+        sys.modules[module_name]
 
         app = create_app(api_key="")
-        app.dependency_overrides[module._get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = lambda: db
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -298,7 +275,7 @@ class TestSleepLatest:
             "end_time": "2026-05-11T06:00:00+00:00",
             "stages": {"deep": 90, "light": 210, "rem": 120, "awake": 60},
         }
-        row = _row(
+        row = Record(
             {
                 "id": uuid.uuid4(),
                 "valid_at": start,
@@ -339,7 +316,7 @@ class TestSleepLatest:
 
         start = datetime(2026, 5, 10, 22, 0, 0, tzinfo=UTC)
         meta = {"duration_ms": 25_200_000, "end_time": "2026-05-11T05:00:00+00:00"}
-        row = _row({"id": uuid.uuid4(), "valid_at": start, "metadata": meta})
+        row = Record({"id": uuid.uuid4(), "valid_at": start, "metadata": meta})
         pool = _mock_pool(fetchrow_result=row)
         app = _build_app(pool)
 
@@ -359,7 +336,7 @@ class TestSleepLatest:
 
         start = datetime(2026, 5, 10, 22, 0, 0, tzinfo=UTC)
         meta_str = json.dumps({"duration_ms": 21_600_000})
-        row = _row({"id": uuid.uuid4(), "valid_at": start, "metadata": meta_str})
+        row = Record({"id": uuid.uuid4(), "valid_at": start, "metadata": meta_str})
         pool = _mock_pool(fetchrow_result=row)
         app = _build_app(pool)
 
@@ -384,8 +361,8 @@ class TestMeasurementSources:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row({"name": "google_health", "last_sample_at": now, "sample_count": 42}),
-            _row({"name": "manual", "last_sample_at": now, "sample_count": 7}),
+            Record({"name": "google_health", "last_sample_at": now, "sample_count": 42}),
+            Record({"name": "manual", "last_sample_at": now, "sample_count": 7}),
         ]
         pool = _mock_pool(fetch_rows=rows)
         app = _build_app(pool)
@@ -421,7 +398,7 @@ class TestMeasurementSources:
 
         now = datetime.now(tz=UTC)
         rows = [
-            _row({"name": "fitbit", "last_sample_at": now, "sample_count": 10}),
+            Record({"name": "fitbit", "last_sample_at": now, "sample_count": 10}),
         ]
         pool = _mock_pool(fetch_rows=rows)
         app = _build_app(pool)
@@ -465,7 +442,7 @@ class TestExpectedSignals:
         now = datetime.now(tz=UTC)
         pool = _mock_pool(
             fetch_rows=[
-                _row(
+                Record(
                     {
                         "signal_key": "health:measurement-gap:weight",
                         "producer": "connector:google_health",

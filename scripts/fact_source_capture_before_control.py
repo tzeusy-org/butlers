@@ -57,9 +57,7 @@ NODE = (
     "tests/integration/test_fact_source_capture_pool_liveness.py::"
     "test_capacity_one_registered_owner_capture_and_concurrent_sources"
 )
-SUPERVISOR = Path(__file__).resolve().parents[1] / (
-    ".github/actions/ci-shard-watchdog-capture/src/supervisor.py"
-)
+SUPERVISOR = Path(__file__).resolve().with_name("fact_source_capture_before_supervisor.py")
 PHASE_KEYS = {
     "schema",
     "binding",
@@ -459,6 +457,28 @@ def process_start(pid):
     return int(raw[raw.rfind(")") + 2 :].split()[19])
 
 
+def first_scan_refusal_observation(diagnostic):
+    """Project the applied shared closed tuple; absence or malformed data stays unknown."""
+    counts = diagnostic.get("counts")
+    if type(counts) is not dict:
+        return None
+    count = counts.get("scan_refused")
+    first = diagnostic.get("first_scan_refusal")
+    if type(count) is not int or not 1 <= count <= 65535:
+        return None
+    if type(first) is not dict or set(first) != {"s", "k", "o", "b"}:
+        return None
+    if not all(type(first[key]) is int for key in ("s", "k", "o", "b")):
+        return None
+    if not (1 <= first["s"] <= 3 and 1 <= first["k"] <= 6 and 1 <= first["o"] <= 4):
+        return None
+    if first["b"] not in {0, 1, 2, 3, 7, 10, 11, 15, 17, 19, 23, 27, 31}:
+        return None
+    if first["k"] == 1 and (first["b"] & 15) == 15:
+        return None
+    return {key: first[key] for key in ("s", "k", "o", "b")}
+
+
 def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protocol_refused):
     """Project protocol observations, never child output or a new cleanup verdict."""
     outcomes = [value for value in events if value.get("event") == "outcome"]
@@ -518,6 +538,7 @@ def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protoco
         "counts": {key: number(counts.get(key)) for key in REFUSAL_COUNTS},
         "counts_saturated": boolean(diagnostic.get("counts_saturated")),
         "kernel_children_closed": boolean(diagnostic.get("kernel_children_closed")),
+        "first_scan_refusal": first_scan_refusal_observation(diagnostic),
     }
 
 

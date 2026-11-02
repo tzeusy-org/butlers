@@ -90,6 +90,8 @@ def test_editing_a_frozen_block_makes_it_fail_until_it_carries_the_lines(tmp_pat
     path = _delta(tmp_path, "old", "widgets", legacy)
     assert _run(tmp_path, "--write-baseline").returncode == 0
     assert _run(tmp_path).returncode == 0  # frozen debt passes
+    baseline = tmp_path / "baseline.json"
+    frozen = baseline.read_bytes()
 
     path.write_text(legacy.replace("SHALL do the thing", "SHALL do another thing"), "utf-8")
     edited = _run(tmp_path)
@@ -97,6 +99,26 @@ def test_editing_a_frozen_block_makes_it_fail_until_it_carries_the_lines(tmp_pat
     assert "missing ID" in edited.stdout
 
     path.write_text(_doc("MODIFIED", _block("Legacy", req_id=_rid("widgets", 2))), "utf-8")
+    identified = _run(tmp_path)
+    assert identified.returncode == 1
+    assert "stale baseline" in identified.stdout
+    assert "old/widgets/Legacy" in identified.stdout
+    assert _run(tmp_path, "--strict").returncode == 0  # strict ignores the stale exemption
+    baseline.write_text("{}\n", encoding="utf-8")
+    assert _run(tmp_path).returncode == 0
+
+    # An archived/removed block is stale too; retain an identified active spec
+    # so this tests stale refusal rather than the separate empty-scan boundary.
+    baseline.write_bytes(frozen)
+    path.unlink()
+    _delta(
+        tmp_path, "current", "widgets", _doc("ADDED", _block("Current", req_id=_rid("widgets", 3)))
+    )
+    gone = _run(tmp_path)
+    assert gone.returncode == 1
+    assert "stale baseline" in gone.stdout
+    assert "old/widgets/Legacy" in gone.stdout
+    baseline.write_text("{}\n", encoding="utf-8")
     assert _run(tmp_path).returncode == 0
 
 

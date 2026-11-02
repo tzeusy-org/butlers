@@ -38,6 +38,18 @@ class _EmbeddingEngine:
         return [0.1] * 384
 
 
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
+
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
+    """
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
+
+
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
     """Provision the exact core, memory, and approvals schemas once."""

@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -21,6 +20,7 @@ import asyncpg
 import pytest
 
 from butlers.modules.memory import knowledge_gaps, storage
+from butlers.testing.fake_pool import AsyncCtx
 from tests.modules.memory.test_content_authority import (  # noqa: F401
     _engine,
     _routed,
@@ -42,6 +42,7 @@ from tests.modules.memory.test_knowledge_gaps import (  # noqa: F401
 from tests.modules.memory.test_memory_migration_integration import (  # noqa: F401
     memory_migrated_db,
 )
+from tests.polling import poll_until
 
 pytestmark = [
     pytest.mark.integration,
@@ -190,9 +191,8 @@ class _BorrowedPool:
     def __init__(self, pool, conn):
         self.pool, self.conn = pool, conn
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.conn
+    def acquire(self):
+        return AsyncCtx(self.conn)
 
     def __getattr__(self, name):
         return getattr(self.pool, name)
@@ -215,12 +215,15 @@ async def _internal_edge(pool, left, right, predicate, *, sender=None, **kwargs)
 async def _wait_for_advisory_wait(pool, pid):
     """Wait on PostgreSQL's actual lock waiter, never a scheduling sleep assumption."""
     async with asyncio.timeout(10):
-        while not await pool.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1"
-            " AND locktype = 'advisory' AND NOT granted)",
-            pid,
-        ):
-            await asyncio.sleep(0.01)
+
+        async def _condition_met() -> bool:
+            return await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1"
+                " AND locktype = 'advisory' AND NOT granted)",
+                pid,
+            )
+
+        await poll_until(_condition_met, interval_s=0.01)
 
 
 @pytest.mark.parametrize("first", ["capture", "writer"])

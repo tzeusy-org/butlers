@@ -65,44 +65,35 @@ def prefer_ipv4_loopback_url(url: str) -> str:
 
 
 def resolve_cross_container_mcp_url(url: str) -> str:
-    """Rewrite a self-registered ``localhost`` MCP URL for cross-container callers.
+    """Resolve registered loopback endpoints from the caller's container.
 
-    Every butler daemon self-registers its MCP endpoint as
-    ``http://localhost:<port>/mcp`` (see :func:`runtime_mcp_url`) from its own
-    point of view -- correct only when the caller lives in the same container
-    (``butlers-up``, where every butler daemon runs). ``switchboard.route()``
-    is also invoked from processes that live in a SEPARATE container -- e.g.
-    ``butlers.jobs.secrets_lifecycle`` runs as an ``asyncio.Task`` inside the
-    ``dashboard-api`` FastAPI process (bu-hmdqz.3). There, "localhost"
-    resolves to dashboard-api itself, not butlers-up, so every cross-container
-    delivery attempt silently fails to connect and never reaches its target
-    (164 delivery attempts / 0 delivered was the live symptom).
-
-    Mirrors the existing ``BUTLERS_HOST`` convention already used by the
-    dashboard API's own butler-MCP client
-    (``ButlerConnectionInfo.sse_url`` / ``_build_process_facts`` in
-    ``butlers.api.routers.butlers``, and ``MCPClientManager`` in
-    ``butlers.api.deps``): Docker Compose sets ``BUTLERS_HOST=butlers-up`` on
-    the ``dashboard-api`` / ``dashboard-api-hotreload`` containers so they can
-    reach butler MCP servers across the Docker network. When ``BUTLERS_HOST``
-    is unset (e.g. inside butlers-up itself, where every daemon already sees
-    its siblings via bare ``localhost``) this is a no-op, and it never
-    touches a URL whose host isn't the exact literal ``localhost``.
+    Domains use BUTLERS_HOST. Canonical Switchboard port 41100 instead uses
+    SWITCHBOARD_MCP_URL when configured, including from domain processes.
+    Preserve path, query and raw userinfo; explicit remote hosts stay intact.
+    Without cross-container configuration, resolution is a no-op.
     """
-    host = os.environ.get("BUTLERS_HOST")
-    if not host or host == "localhost":
-        return url
     parsed = urlparse(url)
     if (parsed.hostname or "").lower() != "localhost":
         return url
+    host = os.environ.get("BUTLERS_HOST")
+    target = None
+    if parsed.port == 41100:
+        switchboard = os.environ.get("SWITCHBOARD_MCP_URL")
+        if switchboard:
+            target = urlparse(switchboard)
+            if not target.hostname or target.scheme not in ("http", "https"):
+                raise ValueError("SWITCHBOARD_MCP_URL must be an absolute HTTP MCP URL")
+    if target is None and (not host or host == "localhost"):
+        return url
 
-    # Split netloc into [userinfo@]host[:port] while preserving raw encoding,
-    # mirroring prefer_ipv4_loopback_url's approach above.
+    # Preserve registered userinfo, path and query; only replace its network
+    # destination. Switchboard lives in control; all domains remain in up.
     userinfo, sep, host_port = parsed.netloc.rpartition("@")
     _, port_sep, port = host_port.partition(":")
-    netloc = f"{userinfo}{sep}{host}{port_sep}{port}"
-
-    return urlunparse(parsed._replace(netloc=netloc))
+    destination = (
+        target.netloc.rsplit("@", 1)[-1] if target is not None else f"{host}{port_sep}{port}"
+    )
+    return urlunparse(parsed._replace(netloc=f"{userinfo}{sep}{destination}"))
 
 
 def runtime_mcp_transport_from_url(url: str) -> RuntimeMcpTransport:

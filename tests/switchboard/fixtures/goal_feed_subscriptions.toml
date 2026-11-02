@@ -1,0 +1,15 @@
+# Git-owned closed-harness declarations; no live subscription is activated.
+version = 1
+
+[[subscription]]
+connector_type = "home_assistant"
+endpoint = "home_assistant:closed-test"
+owner_domain = "home"
+event_type = "matched"
+capabilities = ["home__lookup"]
+
+[[subscription]]
+connector_type = "home_assistant"
+endpoint = "home_assistant:closed-test"
+owner_domain = "home"
+event_type = "default"

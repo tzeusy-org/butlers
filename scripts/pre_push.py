@@ -368,9 +368,7 @@ def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str,
         plan.append(("frontend-guards", [python, "scripts/frontend_guards.py", "--assume-changed"]))
     plan.append(("openspec-strict", ["openspec", "validate", "--all", "--strict"]))
     if collection_required(paths):
-        plan.append(
-            ("fresh-inventory-partition-budget", [python, "scripts/check_ci_test_shards.py"])
-        )
+        plan.append(("test-budget", [python, "scripts/check_test_budget.py"]))
     return plan
 
 

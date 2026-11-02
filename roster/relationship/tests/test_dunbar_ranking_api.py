@@ -14,6 +14,9 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
+from butlers.testing.records import row as _row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -24,19 +27,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda key: kwargs[key])
-    row.get = MagicMock(side_effect=lambda key, default=None: kwargs.get(key, default))
-    return row
-
-
 def _build_app(
     monkeypatch: pytest.MonkeyPatch,
     ranked: list[dict],
-    entity_rows: list[MagicMock],
-    owner_row: MagicMock | None,
+    entity_rows: list[Record],
+    owner_row: Record | None,
 ) -> FastAPI:
     """Wire up a test app whose pool returns controlled data for the ranking endpoint."""
     mock_pool = AsyncMock()
@@ -68,9 +63,9 @@ def _build_app(
 
     app = create_app()
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     # Patch the engine to skip real dunbar scoring logic.  monkeypatch (not a

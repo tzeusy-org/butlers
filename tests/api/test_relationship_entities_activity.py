@@ -32,7 +32,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
+from butlers.api.deps import get_db, get_mcp_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -233,9 +233,9 @@ def _app_with_mocks(
         mock_mcp_manager.get_client = AsyncMock(return_value=mock_client)
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     # Override the MCP manager dependency.  The activity endpoint uses
@@ -502,6 +502,8 @@ class TestMergedStreamSort:
                 }
             )
         ]
+        # A Chronicler row without a selected timestamp is malformed, so it is
+        # excluded (and degrades the read) rather than joining the null tail.
         episodes = [{"id": str(chronicler_id), "canonical_title": "Null episode"}]
         app, _, _ = _app_with_mocks(
             narrative_rows=narrative_rows,
@@ -509,14 +511,15 @@ class TestMergedStreamSort:
             chronicler_episodes=episodes,
         )
 
-        items = (await _get(app)).json()["items"]
+        body = (await _get(app)).json()
+        items = body["items"]
 
         assert items[0]["id"] == str(timestamped_id)
         assert [(item["src"], item["store"], item["id"]) for item in items[1:]] == [
-            ("chronicler", None, str(chronicler_id)),
             ("relationship", "identity", str(identity_id)),
             ("relationship", "narrative", str(narrative_id)),
         ]
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +561,9 @@ class TestChroniclerDegrades:
         mock_db.pool.return_value = mock_pool
 
         app = create_app()
-        for butler_name, router_module in app.state.butler_routers:
-            if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-                app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+        for butler_name, _router_module in app.state.butler_routers:
+            if butler_name == "relationship":
+                app.dependency_overrides[get_db] = lambda: mock_db
                 break
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp_manager
 

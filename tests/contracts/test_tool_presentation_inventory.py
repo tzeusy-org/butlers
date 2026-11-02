@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,6 +13,7 @@ from fastmcp import FastMCP
 from butlers.config import ButlerType, load_config
 from butlers.core.tool_catalog import validate_presentation_inventory
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
 from butlers.daemon import ButlerDaemon
 from butlers.module_state import ModuleStartupStatus
 from butlers.modules.registry import default_registry
@@ -125,6 +125,7 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
             "schedule_create",
             "memory_access",
             "get_attachment",
+            "attachment_read",
             "deadline_create",
             "delegate_ask",
             "publish_event",
@@ -136,12 +137,18 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
 
 
 async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
+    return (await _core_catalog_and_listing(butler_name, groups))[0]
+
+
+async def _core_catalog_and_listing(butler_name: str, groups: tuple[str, ...]):
     daemon = ButlerDaemon(
         _REPO_ROOT / "roster" / butler_name,
         db=SimpleNamespace(pool=AsyncMock()),
     )
     daemon.config = load_config(_REPO_ROOT / "roster" / butler_name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=groups)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(
+        update={"core_groups": groups}
+    )
     daemon.mcp = FastMCP(f"catalog-{butler_name}-{'-'.join(groups)}")
     daemon.spawner = MagicMock()
     before_tasks = asyncio.all_tasks()
@@ -152,7 +159,9 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
     if registration_tasks:
         await asyncio.gather(*registration_tasks, return_exceptions=True)
     daemon._collect_tool_metadata()
-    return await daemon._finalize_tool_catalog()
+    catalog = await daemon._finalize_tool_catalog()
+    listed = {tool.name for tool in await daemon.mcp.list_tools()}
+    return catalog, listed
 
 
 @pytest.mark.parametrize(
@@ -164,6 +173,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {
                 "route.execute",
                 "cancel_session",
+                "report_error",
+                "get_healing_status",
                 "state_get",
                 "state_set",
                 "state_delete",
@@ -174,7 +185,7 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         (
             "general",
             ("switchboard_routing",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "report_error", "get_healing_status"},
             {"ingest", "connector.heartbeat", "route_to_butler"},
         ),
         (
@@ -183,6 +194,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {
                 "route.execute",
                 "cancel_session",
+                "report_error",
+                "get_healing_status",
                 "answer_question",
                 "cannot_answer",
                 "connector.heartbeat",
@@ -193,9 +206,23 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {"notify", "delegate_ask", "backfill.poll"},
         ),
         (
+            "general",
+            ("media",),
+            {
+                "route.execute",
+                "cancel_session",
+                "report_error",
+                "get_healing_status",
+                "get_attachment",
+                "attachment_view",
+                "attachment_read",
+            },
+            {"notify", "state_get"},
+        ),
+        (
             "switchboard",
             ("delegation",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "report_error", "get_healing_status"},
             {"delegate_ask", "delegate_receive", "delegate_answer", "delegate_wake"},
         ),
     ),
@@ -206,11 +233,14 @@ async def test_actual_core_catalog_respects_group_name_and_type_gates(
     expected: set[str],
     excluded: set[str],
 ) -> None:
-    catalog = await _core_catalog(butler_name, groups)
+    catalog, listed = await _core_catalog_and_listing(butler_name, groups)
 
     assert set(catalog) == expected
     assert excluded.isdisjoint(catalog)
     assert catalog.classification_complete is True
+    # Dark-build capabilities are cataloged but never listed to today's
+    # frozen classify-and-route sessions before the RFC 0038 cutover.
+    assert listed == set(catalog) - GOAL_RUNTIME_DARK_TOOLS
 
 
 @pytest.mark.parametrize(
@@ -256,6 +286,7 @@ async def test_actual_core_catalog_respects_group_name_and_type_gates(
             {
                 "ha_get_entity_state",
                 "ha_get_history",
+                "ha_get_recorded_history",
                 "ha_get_statistics",
                 "ha_list_areas",
                 "ha_list_entities",

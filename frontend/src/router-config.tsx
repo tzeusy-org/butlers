@@ -62,8 +62,6 @@ const SymptomsPage = shellPage('/health/symptoms')
 const MealsPage = shellPage('/health/meals')
 const ResearchPage = shellPage('/health/research')
 const ApprovalsPage = shellPage('/approvals')
-const DecisionsPage = shellPage('/decisions')
-const BeadDetailPage = shellPage('/beads/:beadId')
 const SecretsPage = shellPage('/secrets')
 const EducationPage = shellPage('/education')
 const EntitiesIndexPage = shellPage('/entities/index')
@@ -105,8 +103,6 @@ export const routes: RouteObject[] = [
         { path: '/audit-log', element: routeElement(<AuditLogPage />) },
         { path: '/approvals', element: routeElement(<ApprovalsPage />) },
         { path: '/approvals/:id', element: routeElement(<ApprovalsPage />) },
-        { path: '/decisions', element: routeElement(<DecisionsPage />) },
-        { path: '/beads/:beadId', element: routeElement(<BeadDetailPage />) },
         {
           path: '/calendar',
           element: routeElement(<CalendarWorkspacePage />),

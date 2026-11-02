@@ -18,7 +18,7 @@ from butlers.api.oauth_scope_registry import (
     get_scope_manifest,
 )
 from butlers.api.routers.ingestion_connectors import list_available_connectors
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 pytestmark = pytest.mark.unit
 

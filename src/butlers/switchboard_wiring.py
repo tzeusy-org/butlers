@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -24,6 +25,7 @@ from opentelemetry.context import Context as OtelContext
 
 from butlers.conversation_identity import event_conversation_identity
 from butlers.core.dashboard_turns import reconcile_route_recovery
+from butlers.core.model_routing import coerce_complexity_tier
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
     route_inbox_mark_errored,
@@ -140,6 +142,23 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         tool_args["attachments"] = ref.attachments
 
     return request_context, tool_args
+
+
+def build_switchboard_buffer(
+    daemon: Any, pool: Any, process_fn: Callable[[Any], Awaitable[None]]
+) -> None:
+    """Create the Switchboard DurableBuffer around an injected message processor.
+
+    The buffer depends only on the pool, the butler's BufferConfig and the
+    processor it is given; it never reads ``daemon.spawner``.
+    """
+    from butlers.core.buffer import DurableBuffer
+
+    daemon._buffer = DurableBuffer(
+        config=daemon.config.buffer,
+        pool=pool,
+        process_fn=process_fn,
+    )
 
 
 def wire_pipelines(daemon: Any, pool: Any) -> None:
@@ -343,14 +362,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                         observability_request_id,
                     )
 
-    # Create the durable buffer
-    from butlers.core.buffer import DurableBuffer
-
-    daemon._buffer = DurableBuffer(
-        config=daemon.config.buffer,
-        pool=pool,
-        process_fn=_buffer_process,
-    )
+    build_switchboard_buffer(daemon, pool, _buffer_process)
 
     wired_modules: list[str] = []
     for mod in daemon._active_modules:
@@ -455,10 +467,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         recovered_routing_context["request_context"] = {
             "source_channel": parsed.request_context.source_channel
         }
-        if parsed.request_context.source_sender_entity_id:
-            recovered_routing_context["source_entity_id"] = (
-                parsed.request_context.source_sender_entity_id
-            )
+        sender_entity_id = parsed.request_context.source_sender_entity_id
+        if isinstance(sender_entity_id, str) and sender_entity_id.strip():
+            recovered_routing_context["source_entity_id"] = sender_entity_id.strip()
         if isinstance(parsed.input.context, dict):
             conceptual_message = parsed.input.context.get("conceptual_message")
             if isinstance(conceptual_message, dict):
@@ -492,7 +503,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 request_id=parsed.request_context.request_id,
                                 route_inbox_id=row_id,
                             )
-                        except Exception:
+                        except Exception as exc:
                             logger.exception(
                                 "route_inbox recovery: could not reconcile dashboard "
                                 "predecessor id=%s",
@@ -502,7 +513,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 raise RouteInboxLeaseLost(
                                     "route inbox processing lease was lost during "
                                     "dashboard recovery reconciliation"
-                                )
+                                ) from exc
                             await route_inbox_mark_errored(
                                 pool,
                                 row_id,
@@ -542,6 +553,46 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                         )
                         return
 
+                    # Match the live route's anchor semantics under the existing
+                    # heartbeat, after any dashboard predecessor reconciliation.
+                    conversation_id: uuid.UUID | None = None
+                    source_channel = parsed.request_context.source_channel
+                    source_thread_identity = parsed.request_context.source_thread_identity
+                    external_conversation_id = parsed.request_context.external_conversation_id
+                    if source_thread_identity or external_conversation_id:
+                        try:
+                            if source_channel == "dashboard":
+                                from butlers.api.conversations import (
+                                    conversation_get_by_id_any_butler,
+                                )
+
+                                existing_conversation = await conversation_get_by_id_any_butler(
+                                    pool, uuid.UUID(source_thread_identity)
+                                )
+                                if existing_conversation is not None:
+                                    conversation_id = existing_conversation["id"]
+                            elif external_conversation_id:
+                                from butlers.api.conversations import (
+                                    conversation_get_or_create_by_thread,
+                                )
+
+                                conversation, _ = await conversation_get_or_create_by_thread(
+                                    pool,
+                                    butler_name=daemon.config.name,
+                                    source_channel=source_channel,
+                                    external_conversation_id=external_conversation_id,
+                                    first_message=parsed.input.prompt,
+                                )
+                                conversation_id = conversation["id"]
+                        except Exception as exc:
+                            logger.debug(
+                                "conversation anchor lookup/create failed for "
+                                "butler=%s source_channel=%s failure_class=%s",
+                                daemon.config.name,
+                                source_channel,
+                                type(exc).__name__,
+                            )
+
                     result = await route_inbox_wait_while_claimed(
                         pool,
                         row_id,
@@ -552,6 +603,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                             context=context_text,
                             trigger_source="route",
                             request_id=route_request_id,
+                            complexity=coerce_complexity_tier(
+                                parsed.input.complexity, strict=False
+                            ),
                             # Recovery dispatches replay the original ingest;
                             # request_id is the same UUID7 the switchboard wrote
                             # as public.ingestion_events.id, so persist it as the
@@ -559,6 +613,8 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                             # chronicler contact-resolution join (mirrors the
                             # primary route handler in core_tools/_routing.py).
                             ingestion_event_id=route_request_id,
+                            conversation_id=conversation_id,
+                            attachments=parsed.input.attachments,
                             # Recovered dashboard work must rejoin the same durable
                             # turn, otherwise a Stop during a process restart could
                             # not prevent the replayed target runtime from starting.

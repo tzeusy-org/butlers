@@ -17,6 +17,8 @@ The provider registry at `src/butlers/cli_auth/registry.py` defines:
 | `opencode-openai` | OpenCode (OpenAI) | device_code | opencode | `opencode` |
 | `codex` | Codex (OpenAI) | device_code | codex | `codex` |
 | `opencode-go` | OpenCode Go | api_key | opencode | `opencode` |
+| `claude` | Claude (Anthropic) | api_key | claude | `claude` |
+| `openai` | OpenAI API key (Codex) | api_key | codex | `codex` |
 
 ### Provider Definition
 
@@ -63,6 +65,39 @@ The `opencode-go` provider uses `api_key` auth mode instead of device-code:
 - The API key is entered through the dashboard and stored in the credential store.
 - The key is injected as an environment variable (`OPENCODE_GO_API_KEY`) at runtime.
 - Validation runs a test command against the provider to verify the key works.
+
+The `claude` provider is **store-only**: it has no `token_path`, so the key lives only in
+`butler_secrets` under `cli-auth/claude`, and `ClaudeCodeAdapter` injects it as
+`ANTHROPIC_API_KEY` at spawn time.
+
+- `PUT /api/cli-auth/claude/api-key` writes that row directly. It returns 503 when no credential
+  store is reachable rather than reporting an unsaved key as stored.
+- `/secrets` always lists a `cli-auth/claude` CLI row. It shows `never_set` until a key is saved,
+  so the first key has somewhere to be pasted.
+- `POST /api/cli-auth/claude/test` runs the health probe. That probe checks key presence and
+  format only; it does not call the Anthropic API.
+- The adapter always runs Claude with `--permission-mode bypassPermissions`, which Claude Code
+  refuses under root. The butlers image runs as root in its own container, so when the daemon's
+  effective uid is 0 the adapter sets `IS_SANDBOX=1` for the child; a non-root host keeps the
+  CLI's guard.
+
+The `openai` provider is store-only in the same way (`cli-auth/openai`), and the same save,
+placeholder and test behavior applies. It is an alternative credential for the Codex runtime, and
+`CodexAdapter` resolves it per invocation:
+
+1. **Key stored** -- Codex runs with `CODEX_API_KEY` set and no ChatGPT `auth.json` in its isolated
+   HOME. Every device-code step is skipped: authority reconciliation, pre-warm, refresh lock and
+   finalization. Other inherited auth env vars (`OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`) are
+   removed, because Codex refuses to choose between several.
+2. **Key rejected** -- When that run fails before any tool call with an auth marker (the failover
+   classifier's vocabulary) or OpenAI quota exhaustion (`insufficient_quota`), the session is re-run
+   on the `cli-auth/codex` device-code authority, unchanged. The fallback is logged value-free,
+   recorded as a failed test of `cli-auth/openai`, and tagged in session process info as
+   `auth_fallback=openai_api_key_rejected`. Saving a new key clears that failed test.
+3. **No key, or the lookup fails** -- the device-code authority is used exactly as before.
+
+Timeouts, cancellations, MCP discovery failures and other errors never trigger the fallback. The
+API-key path never reads, writes or rotates the Codex device-code authority.
 
 ## Health Probes
 
@@ -136,7 +171,7 @@ for name, p in PROVIDERS.items():
     print(name, p.auth_mode, p.binary)
 "
 # Expected: codex (device_code, codex), opencode-openai (device_code, opencode),
-# opencode-go (api_key, opencode)
+# opencode-go (api_key, opencode), claude (api_key, claude), openai (api_key, codex)
 
 # 2. Confirm tokens are stored in butler_secrets under the cli-auth/ namespace
 psql -h localhost -U butlers -d butlers -c \

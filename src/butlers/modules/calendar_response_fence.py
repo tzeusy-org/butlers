@@ -141,7 +141,6 @@ class CalendarResponseFence:
                     ssl=source.ssl,
                     min_pool_size=0,
                     max_pool_size=2,
-                    strict_role_enforcement=True,
                 )
                 self._pool = await self._database.connect()
             return self._pool

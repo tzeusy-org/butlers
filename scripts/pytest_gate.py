@@ -109,7 +109,7 @@ def _reports_failures(body: str) -> bool:
     """Whether a pytest counts line reports anything that went wrong.
 
     ``error`` matters as much as ``failed``: Docker contention yields
-    ``N errors`` with no ``N failed`` at all (AGENTS.md).
+    ``N errors`` with no ``N failed`` at all (docs/testing/ci.md).
     """
     return "failed" in body or "error" in body
 
@@ -197,7 +197,7 @@ def classify(log_text: str) -> Verdict:
     if _KILLED_CONTROLLER_MARKER in log_text:
         reason += (
             f"\n  an xdist worker reports `{_KILLED_CONTROLLER_MARKER}`, the signature of the"
-            "\n  controller being signal-killed mid-run (AGENTS.md) -- not a red suite"
+            "\n  controller being signal-killed mid-run (docs/testing/ci.md) -- not a red suite"
         )
     else:
         reason += "\n  it is either still in flight or it was killed; those look identical here"

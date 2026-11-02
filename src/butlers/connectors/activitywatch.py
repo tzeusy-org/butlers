@@ -103,12 +103,13 @@ from urllib.parse import urlsplit
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import Counter, generate_latest
+from prometheus_client import Counter
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
@@ -122,6 +123,9 @@ from butlers.db import (
 )
 from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
+
+_DESCRIPTOR = connector_descriptor("activitywatch")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -132,9 +136,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "activitywatch"
-_CONNECTOR_CHANNEL = "activitywatch"
-_CONNECTOR_PROVIDER = "activitywatch"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 _EVIDENCE_TABLE = "connectors.activitywatch_events"
 
@@ -285,8 +287,8 @@ class ActivityWatchConnectorConfig:
 
     switchboard_mcp_url: str
     machine_id: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
 
     base_url: str = _DEFAULT_BASE_URL
     poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
@@ -354,8 +356,8 @@ class ActivityWatchConnectorConfig:
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             machine_id=machine_id,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
+            provider=_DESCRIPTOR.provider,
+            channel=_DESCRIPTOR.channel,
             base_url=os.environ.get("ACTIVITYWATCH_BASE_URL", _DEFAULT_BASE_URL).rstrip("/"),
             poll_interval_s=_int("ACTIVITYWATCH_POLL_INTERVAL_S", _DEFAULT_POLL_INTERVAL_S),
             max_backfill_days=_int("ACTIVITYWATCH_MAX_BACKFILL_DAYS", _DEFAULT_MAX_BACKFILL_DAYS),
@@ -894,8 +896,8 @@ def build_activity_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -1172,6 +1174,7 @@ class ActivityWatchConnector:
             metrics=self._metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint_info,
+            channel_kind=CHANNEL_KIND_FEED,
         )
 
     # ------------------------------------------------------------------
@@ -1358,7 +1361,7 @@ class ActivityWatchConnector:
 
         if self._ingestion_policy is not None:
             envelope_for_policy = IngestionEnvelope(
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 raw_key=self._endpoint_identity,
             )
             decision = self._ingestion_policy.evaluate(envelope_for_policy)
@@ -1366,7 +1369,7 @@ class ActivityWatchConnector:
                 external_event_id = f"{bucket_id}:{ts.isoformat()}"
                 self._filtered_event_buffer.record(
                     external_message_id=external_event_id,
-                    source_channel=_CONNECTOR_CHANNEL,
+                    source_channel=_DESCRIPTOR.channel,
                     sender_identity=self._endpoint_identity,
                     subject_or_preview=f"ActivityWatch {app_class} activity",
                     filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1375,8 +1378,8 @@ class ActivityWatchConnector:
                         rule_type=decision.matched_rule_type or "unknown",
                     ),
                     full_payload=FilteredEventBuffer.full_payload(
-                        channel=_CONNECTOR_CHANNEL,
-                        provider=_CONNECTOR_PROVIDER,
+                        channel=_DESCRIPTOR.channel,
+                        provider=_DESCRIPTOR.provider,
                         endpoint_identity=self._endpoint_identity,
                         external_event_id=external_event_id,
                         external_thread_id=self._endpoint_identity,
@@ -1537,8 +1540,8 @@ class ActivityWatchConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics():
+            return prometheus_metrics_response()
 
         return app
 
@@ -1558,6 +1561,7 @@ class ActivityWatchConnector:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
             access_log=False,
         )
         server = uvicorn.Server(uvicorn_config)

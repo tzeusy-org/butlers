@@ -474,6 +474,41 @@ class ExpectedSignalsResponse(BaseModel):
     degraded_reason: str | None = None
 
 
+class BaselineBand(BaseModel):
+    """The owner's usual range for a metric: the values not called a deviation."""
+
+    low: float
+    high: float
+
+
+class BaselineResponse(BaseModel):
+    """One metric's stored personal baseline, or the named reason there is no band.
+
+    ``band`` is set only when ``state`` is ``ready``; ``insufficient_history``,
+    ``unmeasurable``, ``stale`` and ``no_baseline`` are words, never a range.
+    """
+
+    metric_key: str
+    state: Literal["ready", "insufficient_history", "unmeasurable", "stale", "no_baseline"]
+    band: BaselineBand | None
+    center: float | None
+    unit: str | None
+    n_observed: int
+    n_expected: int
+    coverage: float
+    computed_at: str | None
+    stale: bool
+    method_version: str | None
+
+
+class BaselinesResponse(BaseModel):
+    """Honest baseline surface; an unreadable table is not an absent baseline."""
+
+    baselines: list[BaselineResponse] | None
+    available: bool
+    degraded_reason: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Measurements — trend aggregation
 # ---------------------------------------------------------------------------

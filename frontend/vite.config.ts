@@ -131,7 +131,6 @@ export default defineConfig({
       "**/tests/e2e/**",
       "**/tests/owner-auth/**",
       "**/node_modules/**",
-      "route-a-api-receipt.test.mjs",
     ],
   },
   plugins: [tailwindcss(), react(), baseNoSlashRedirect()],

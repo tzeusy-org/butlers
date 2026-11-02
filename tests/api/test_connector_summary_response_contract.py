@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers import ingestion_connectors as connectors
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -96,7 +97,7 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
     db.pool.return_value = pool
     app = FastAPI()
     app.include_router(connectors.router)
-    app.dependency_overrides[connectors._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

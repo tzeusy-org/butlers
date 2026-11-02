@@ -63,7 +63,8 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.ingestion_spans import collapse_spans
+from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
 )
@@ -200,6 +201,54 @@ def _get_policy_telemetry() -> _IngestionPolicyTelemetry:
     if _POLICY_TELEMETRY is None:
         _POLICY_TELEMETRY = _IngestionPolicyTelemetry()
     return _POLICY_TELEMETRY
+
+
+class IngestPersistenceError(RuntimeError):
+    """The envelope was valid but a transport-class failure stopped persistence.
+
+    The submission may be retried. Distinct from the ``ValueError`` validation refusal
+    so the ``ingest`` tool can report a typed transient status instead of a string-only
+    tool error (bu-u5euwb.33).
+    """
+
+
+class IngestStoreRefusedError(RuntimeError):
+    """The store deterministically refused this envelope; resubmitting it cannot succeed.
+
+    Raised for data, integrity, and other non-transport database errors. Kept apart from
+    ``IngestPersistenceError`` because connectors hold their checkpoint on a transient
+    reply: reporting a poison envelope as transient would wedge them (bu-u5euwb.33).
+    """
+
+
+# SQLSTATE classes that describe the connection or server, not the envelope: connection
+# exception (08), transaction rollback such as serialization failure and deadlock (40),
+# insufficient resources (53), and operator intervention such as admin shutdown (57P).
+_TRANSIENT_SQLSTATE_PREFIXES = ("08", "40", "53", "57P")
+_TRANSIENT_SQLSTATES = frozenset({"57014"})  # query_canceled: statement timeout
+
+
+def _is_transient_persistence_failure(exc: BaseException) -> bool:
+    """Return True when a persistence failure may succeed on a later attempt.
+
+    Only transport-class failures qualify. Anything else, including deterministic
+    SQLSTATE 22 (data), 23 (integrity), and 42 (syntax/access) errors and errors the
+    driver did not raise, is treated as non-transient so a poison envelope is refused
+    rather than retried forever.
+    """
+    if isinstance(exc, OSError | TimeoutError | asyncpg.InterfaceError):
+        return True
+    sqlstate = getattr(exc, "sqlstate", None)
+    if not isinstance(sqlstate, str):
+        return False
+    return sqlstate.startswith(_TRANSIENT_SQLSTATE_PREFIXES) or sqlstate in _TRANSIENT_SQLSTATES
+
+
+def _persistence_failure(context: str, exc: BaseException) -> RuntimeError:
+    """Wrap a persistence failure in the error class that matches its retryability."""
+    if _is_transient_persistence_failure(exc):
+        return IngestPersistenceError(f"{context}: {exc}")
+    return IngestStoreRefusedError(f"{context}: {exc}")
 
 
 class IngestAcceptedResponse(BaseModel):
@@ -403,6 +452,25 @@ def _scrub_bearer_material(
             {**artifact.as_dict(), "observed_at": observed_at.isoformat()} for artifact in artifacts
         ]
     return raw_payload, normalized_text, fresh
+
+
+def _persist_exposure_markers(
+    envelope: IngestEnvelopeV1, raw_payload: dict[str, Any], stored_text: str
+) -> None:
+    """Copy the reply reference and untrusted spans into ``raw_payload``.
+
+    Each key is written only when the connector supplied it, so envelopes without markers
+    persist exactly as before. Spans index the connector's text; when the stored text differs
+    (bearer scrub, null-byte strip, scrub failure) their offsets are stale, so each kind
+    collapses to one whole-text span rather than fencing the wrong characters.
+    """
+    if envelope.event.in_reply_to_ref is not None:
+        raw_payload["event"]["in_reply_to_ref"] = envelope.event.in_reply_to_ref
+    if envelope.payload.untrusted_spans:
+        spans = [span.model_dump(exclude_none=True) for span in envelope.payload.untrusted_spans]
+        if stored_text != envelope.payload.normalized_text:
+            spans = collapse_spans(stored_text, spans)
+        raw_payload["payload"]["untrusted_spans"] = spans
 
 
 def _record_bearer_scrub(source_channel: str, artifacts: list[BearerArtifact]) -> None:
@@ -746,8 +814,11 @@ async def ingest_v1(
     ------
     ValueError
         If the payload fails `ingest.v1` validation.
-    RuntimeError
-        If database persistence fails unexpectedly.
+    IngestPersistenceError
+        If a transport-class failure stops persistence (the submission may be retried).
+    IngestStoreRefusedError
+        If the database deterministically refuses the envelope (resubmitting cannot
+        succeed).
     """
     # Best-effort source extraction for metrics before full validation
     _source_for_metrics = "unknown"
@@ -774,11 +845,9 @@ async def ingest_v1(
     # pin must still be rejected instead of accepted as a harmless duplicate.
     pinned_target = envelope.control.pinned_target
     if pinned_target is not None:
-        from butlers.tools.switchboard.routing.classify import (
-            _load_available_butlers,
-        )
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
 
-        available_butlers = await _load_available_butlers(pool)
+        available_butlers = await load_available_butlers(pool)
         if not any(butler["name"] == pinned_target for butler in available_butlers):
             _ingest_metrics.record_ingest_result(
                 source=envelope.source.channel, outcome="validation_error"
@@ -1011,6 +1080,15 @@ async def ingest_v1(
     if attachments_value is not None:
         attachments_value = _strip_null_bytes(attachments_value)
 
+    # 6c. Persist the connector's exposure markers for goal admission (bu-xmueeq). Additive
+    # representation: nothing on the routing path reads them.
+    _persist_exposure_markers(envelope, raw_payload, normalized_text)
+    # 6d. Keep the connector's speech-to-text outcome (connector-base-spec) so the responding
+    # session can tell the owner a voice note was not transcribed. Metadata, never authority.
+    if envelope.payload.transcription is not None:
+        raw_payload["payload"]["transcription"] = envelope.payload.transcription.model_dump()
+    raw_payload = _strip_null_bytes(raw_payload)
+
     # 7. Ensure partition exists for received_at — committed immediately,
     # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot
     # be rolled back by a subsequent failure inside the dedup transaction.
@@ -1040,7 +1118,7 @@ async def ingest_v1(
             exc_info=True,
         )
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
-        raise RuntimeError(f"Failed to ensure message_inbox partition: {exc}") from exc
+        raise _persistence_failure("Failed to ensure message_inbox partition", exc) from exc
 
     # 8. Dedup-safe insert: acquire a dedicated connection and serialise on
     # the dedupe_key via pg_advisory_xact_lock so that concurrent submissions
@@ -1201,7 +1279,7 @@ async def ingest_v1(
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
-        raise RuntimeError(f"Failed to persist ingest envelope: {exc}") from exc
+        raise _persistence_failure("Failed to persist ingest envelope", exc) from exc
 
     logger.info(
         "Accepted ingest submission: request_id=%s, dedupe_key=%s, source=%s/%s, "

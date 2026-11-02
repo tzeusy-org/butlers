@@ -7,13 +7,15 @@ read asks the edges table for live receipts, per-source live counts and the with
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
 
-from butlers.api.routers.entities import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -23,12 +25,8 @@ _FRIEND = uuid.uuid4()
 _BOSS = uuid.uuid4()
 
 
-class _Row(dict):
-    """Stands in for an asyncpg Record (``row["x"]`` and ``.get``)."""
-
-
-def _edge(*, subject, obj, predicate, schema="relationship", table="entity_facts") -> _Row:
-    return _Row(
+def _edge(*, subject, obj, predicate, schema="relationship", table="entity_facts") -> Record:
+    return row(
         id=uuid.uuid4(),
         source_schema=schema,
         source_table=table,
@@ -46,7 +44,7 @@ class _Pool:
         self,
         *,
         entity_exists: bool = True,
-        edges: list[_Row] | None = None,
+        edges: list[Record] | None = None,
         withheld: int = 0,
         fail: Exception | None = None,
     ) -> None:
@@ -56,6 +54,14 @@ class _Pool:
         self.fail = fail
         self.queries: list[str] = []
 
+    @asynccontextmanager
+    async def acquire(self):
+        yield self
+
+    @asynccontextmanager
+    async def transaction(self, *, isolation: str, readonly: bool):
+        yield
+
     def _check(self, query: str) -> None:
         self.queries.append(query)
         if self.fail is not None:
@@ -63,7 +69,7 @@ class _Pool:
 
     async def fetchrow(self, query: str, *args: Any):
         self._check(query)
-        return _Row(id=_ENTITY) if self.entity_exists else None
+        return row(id=_ENTITY) if self.entity_exists else None
 
     async def fetchval(self, query: str, *args: Any):
         self._check(query)
@@ -76,11 +82,11 @@ class _Pool:
             for edge in self.edges:
                 key = (edge["source_schema"], edge["source_table"])
                 groups[key] = groups.get(key, 0) + 1
-            return [_Row(source_schema=k[0], source_table=k[1], live=v) for k, v in groups.items()]
+            return [row(source_schema=k[0], source_table=k[1], live=v) for k, v in groups.items()]
         if "public.entities" in query:
             return [
-                _Row(id=_FRIEND, canonical_name="Alex Friend"),
-                _Row(id=_BOSS, canonical_name="Sam Boss"),
+                row(id=_FRIEND, canonical_name="Alex Friend"),
+                row(id=_BOSS, canonical_name="Sam Boss"),
             ]
         return self.edges[: args[1]] if "LIMIT $2" in query else self.edges
 
@@ -100,7 +106,7 @@ class _DB:
 
 async def _get(app, pool: _Pool, entity: uuid.UUID = _ENTITY, **kwargs: Any) -> httpx.Response:
     db = _DB(pool, **kwargs)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -189,7 +195,7 @@ async def test_the_receipt_limit_is_reported_and_counts_stay_true(app):
     edges = [_edge(subject=_ENTITY, obj=_FRIEND, predicate=f"p{i}") for i in range(3)]
     pool = _Pool(edges=edges)
     db = _DB(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

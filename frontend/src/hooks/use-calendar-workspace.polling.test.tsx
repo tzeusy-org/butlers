@@ -39,7 +39,6 @@ import { POLL_BUS_DOWN_FALLBACK_MS, POLL_BUS_RECONCILE_MS } from "@/lib/poll-pol
 import {
   useCalendarConflicts,
   useCalendarDayBriefing,
-  useCalendarDuplicates,
   useCalendarOverlays,
   useCalendarProposals,
   useCalendarWorkspaceAudit,
@@ -112,15 +111,6 @@ describe("calendar workspace bus-aware polling", () => {
     },
     { name: "workspace metadata", useHook: () => useCalendarWorkspaceMeta() },
     { name: "entry", useHook: () => useCalendarWorkspaceEntry("entry-1") },
-    {
-      name: "duplicates",
-      useHook: () =>
-        useCalendarDuplicates({
-          view: "user",
-          start: "2026-07-01T00:00:00Z",
-          end: "2026-07-02T00:00:00Z",
-        }),
-    },
     {
       name: "conflicts",
       useHook: () =>

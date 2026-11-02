@@ -32,6 +32,7 @@ the run-outcome contract is verifiable without either.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -111,9 +112,32 @@ for arg in "$@"; do
 done
 
 if [ -n "${command}" ]; then
+  # Protocol observation only: these are synthetic psql replies, not SQL/RLS
+  # evaluation. Refuse if an absent-health projection is nevertheless invoked.
   case "${command}" in
+    *"public.dashboard_job_health"*)
+      case "${command}" in
+        *"SET TRANSACTION SNAPSHOT"*) printf '%s\\n' 'health-export' >> "${log}.health" ;;
+        *) printf '%s\\n' 'health-restore-authorization' >> "${log}.health" ;;
+      esac
+      if [ "${FAKE_HEALTH_CENSUS:-2}" = "0" ]; then exit 9; fi
+      ;;
+  esac
+  case "${command}" in
+    *"public.fleet_cases"*)
+      case "${command}" in
+        *"SET TRANSACTION SNAPSHOT"*) printf '%s\\n' 'fleet-export' >> "${log}.fleet" ;;
+        *) printf '%s\\n' 'fleet-restore-authorization' >> "${log}.fleet"; printf '%s\\n' '-- synthetic restore authorization' ;;
+      esac
+      exit 0
+      ;;
     *"SET TRANSACTION SNAPSHOT"*)
       printf '%s\\n' 'scoped-export' >> "${log}"
+      case "${command}" in
+        *"FROM public.captures AS t"*)
+          printf '%s\\n' 'general-capture-export' >> "${log}"
+          ;;
+      esac
       ;;
     *"pg_policy AS p"*)
       printf '%s\\n' 'standalone-policy-precheck' >> "${log}"
@@ -128,7 +152,43 @@ if [ -n "${command}" ]; then
 fi
 
 output_file=""
+health_absent=0
+health_conditional=0
+health_execute=1
+health_hint_seen=0
 while IFS= read -r line; do
+  # Model just the two psql conditional blocks that the real holder sends.
+  # SQL results are injected explicitly; no database semantics are claimed.
+  case "${line}" in
+    *"AS butlers_job_health_absent"*) health_hint_seen=1 ;;
+    "\\gset")
+      if [ "${health_hint_seen}" = "1" ]; then
+        printf '%s\\n' 'health-catalogue-hint' >> "${log}.health"
+        if [ "${FAKE_HEALTH_QUERY_FAILURE:-}" = "catalogue" ]; then exit 9; fi
+        if [ "${FAKE_HEALTH_CENSUS:-2}" = "0" ]; then health_absent=1; fi
+      fi
+      ;;
+    "\\if :butlers_job_health_absent")
+      health_conditional=1
+      health_execute=${health_absent}
+      continue ;;
+    "\\else")
+      if [ "${health_conditional}" = "1" ]; then
+        health_execute=$((1 - health_execute)); continue
+      fi ;;
+    "\\endif")
+      if [ "${health_conditional}" = "1" ]; then
+        health_conditional=0; health_execute=1; continue
+      fi ;;
+  esac
+  if [ "${health_execute}" != "1" ]; then continue; fi
+  case "${line}" in
+    "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;")
+      printf '%s\\n' 'snapshot-begin' >> "${log}.health" ;;
+    "LOCK TABLE public.dashboard_job_health, public.dashboard_job_transitions IN ACCESS SHARE MODE;")
+      printf '%s\\n' 'health-lock' >> "${log}.health"
+      if [ "${FAKE_HEALTH_CENSUS:-2}" != "2" ] || [ "${FAKE_HEALTH_QUERY_FAILURE:-}" = "lock" ]; then exit 9; fi ;;
+  esac
   case "${line}" in
     "\\\\o "*)
       output_file=${line#"\\\\o "}
@@ -136,12 +196,28 @@ while IFS= read -r line; do
     "\\\\o")
       case "${output_file}" in
         */id)
+          printf '%s\\n' 'snapshot-exported' >> "${log}.health"
           printf 'ABCDEF-012345\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-exported' >> "${log}"
           ;;
+        */capture-count) printf '%s\\n' "${FAKE_CAPTURE_COUNT:-0}" > "${output_file}" ;;
         */policy-count)
-          printf '3\\n' > "${output_file}"
+          printf '5\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-policy-verified' >> "${log}"
+          ;;
+        */fleet-evidence-proof)
+          printf '1\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-fleet-evidence-verified' >> "${log}.fleet"
+          ;;
+        */confirm-policy-count)
+          printf '1\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-confirm-policy-verified' >> "${log}"
+          ;;
+        */job-health-policy-count)
+          printf '%s\\n' 'health-snapshot-proof' >> "${log}.health"
+          if [ "${FAKE_HEALTH_QUERY_FAILURE:-}" = "proof" ]; then exit 9; fi
+          printf '%s\\n' "${FAKE_HEALTH_PROOF:-2}" > "${output_file}"
+          printf '%s\\n' 'snapshot-job-health-policy-verified' >> "${log}"
           ;;
       esac
       output_file=""
@@ -213,7 +289,7 @@ def backup_dir(tmp_path: Path) -> Path:
 
 
 def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path, bin_dir: Path):
-    proc = _run(backup_dir, bin_dir)
+    proc = _run(backup_dir, bin_dir, FAKE_CAPTURE_COUNT="3")
 
     assert proc.returncode == 0, proc.stderr
     published = _dumps(backup_dir)
@@ -223,6 +299,69 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["reason"] == "ok"
     assert receipt["exit_code"] == 0
     assert receipt["artifact"] == published[0].name
+    # This is a producer/framing oracle, not a substitute for migrated PG data
+    # validation. The real script must emit its fixed General replay boundary.
+    artifact = gzip.decompress(published[0].read_bytes()).decode()
+    assert "-- Butlers scoped General capture data\n" in artifact
+    assert (
+        "COPY butlers_capture_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n"
+        in artifact
+    )
+    assert "\\.\n\\set ON_ERROR_STOP on\n" in artifact
+    assert "BEGIN;\nSET LOCAL row_security=on;\nSET LOCAL ROLE butler_general_rw;\n" in artifact
+    assert "SELECT public.capture_restore_row(relation_name," in artifact
+    assert "COMMIT;\nDROP TABLE butlers_capture_restore_rows;\n" in artifact
+    assert "general-capture-export" in (backup_dir / ".fake-psql-events").read_text().splitlines()
+    with gzip.open(published[0], "rt", encoding="utf-8") as stream:
+        dump = stream.read()
+    fleet_lines = (
+        dump.split("\n-- Butlers Fleet case history\n", 1)[1]
+        .split("\n-- Butlers owner-only supervised-job health data\n", 1)[0]
+        .splitlines()
+    )
+    assert "BEGIN;" in fleet_lines
+    assert "\\set ON_ERROR_STOP on" in fleet_lines
+    assert (
+        "SELECT public.fleet_case_restore_row(relation_name, convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb) FROM butlers_fleet_restore_rows WHERE ordinal=1 ORDER BY payload_hex;"
+        in fleet_lines
+    )
+    assert (backup_dir / ".fake-psql-events.fleet").read_text().splitlines() == [
+        "snapshot-fleet-evidence-verified",
+        "fleet-export",
+        "fleet-restore-authorization",
+    ]
+    assert fleet_lines[-3:] == ["RESET ROLE;", "COMMIT;", "DROP TABLE butlers_fleet_restore_rows;"]
+
+    # Inspect the real script's published gzip stream. Only this fixed health
+    # replay section is checked: arbitrary data bytes are not a framing oracle.
+    with gzip.open(published[0], "rt", encoding="utf-8") as stream:
+        dump = stream.read()
+    health_lines = dump.split("\n-- Butlers owner-only supervised-job health data\n", 1)[
+        1
+    ].splitlines()
+    assert (
+        "SELECT EXISTS(SELECT 1 FROM butlers_job_health_restore_rows) "
+        "AS butlers_job_health_restore_needed \\gset"
+    ) in health_lines
+    assert "\\if :butlers_job_health_restore_needed" in health_lines
+    assert health_lines[-8:] == [
+        "COMMIT;",
+        "RESET ROLE;",
+        "\\else",
+        "\\set ON_ERROR_STOP on",
+        "DO $$ BEGIN RAISE EXCEPTION "
+        "'job health restore requires source table-owner membership'; END $$;",
+        "\\endif",
+        "\\endif",
+        "DROP TABLE butlers_job_health_restore_rows;",
+    ]
+
+    # A partial capture installation must refuse before replacing the good dump.
+    before = published[0].read_bytes()
+    refused = _run(backup_dir, bin_dir, FAKE_CAPTURE_COUNT="2")
+    assert refused.returncode != 0
+    assert published[0].read_bytes() == before
+    assert _receipt(backup_dir)["result"] == "failed"
 
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):
@@ -233,6 +372,12 @@ def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Pat
     assert (backup_dir / ".fake-psql-events").read_text(encoding="utf-8").splitlines() == [
         "snapshot-exported",
         "snapshot-policy-verified",
+        "snapshot-confirm-policy-verified",
+        "snapshot-job-health-policy-verified",
+        "scoped-export",
+        "restore-authorization",
+        "scoped-export",
+        "restore-authorization",
         "scoped-export",
         "restore-authorization",
     ]
@@ -323,3 +468,89 @@ def test_the_script_parses_under_busybox_ash():
         timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_health_snapshot_absence_is_explicit_and_uncertain_proofs_refuse(
+    tmp_path: Path, bin_dir: Path
+):
+    """Execute real shell admission/framing with closed synthetic psql replies.
+
+    The native owner proves SQL/RLS and genuine core282/core287 catalogues;
+    these controls prove only the shell's lock/proof/export/replay protocol.
+    """
+    for label, overrides, present, capture in (
+        (
+            "absent-without-capture",
+            {"FAKE_HEALTH_CENSUS": "0", "FAKE_HEALTH_PROOF": "0"},
+            False,
+            False,
+        ),
+        (
+            "absent-with-capture",
+            {
+                "FAKE_HEALTH_CENSUS": "0",
+                "FAKE_HEALTH_PROOF": "0",
+                "FAKE_CAPTURE_COUNT": "3",
+            },
+            False,
+            True,
+        ),
+        ("installed", {"FAKE_CAPTURE_COUNT": "3"}, True, True),
+    ):
+        folder = tmp_path / label
+        folder.mkdir()
+        result = _run(folder, bin_dir, **overrides)
+        assert result.returncode == 0, result.stderr
+        artifacts = _dumps(folder)
+        assert len(artifacts) == 1
+        assert _receipt(folder)["result"] == "success"
+        with gzip.open(artifacts[0], "rt", encoding="utf-8") as stream:
+            dump = stream.read()
+        for retained in (
+            "-- Butlers scoped cost-claim ledger data",
+            "-- Butlers confidential confirm data",
+            "-- Butlers Fleet case history",
+        ):
+            assert retained in dump
+        assert ("-- Butlers scoped General capture data" in dump) is capture
+        events = (folder / ".fake-psql-events.health").read_text().splitlines()
+        assert events[:2] == ["health-catalogue-hint", "snapshot-begin"]
+        assert events.index("snapshot-exported") < events.index("health-snapshot-proof")
+        assert ("health-lock" in events) is present
+        assert ("health-export" in events) is present
+        assert ("health-restore-authorization" in events) is present
+        assert ("-- Butlers owner-only supervised-job health data" in dump) is present
+        assert ("butlers_job_health_restore_rows" in dump) is present
+        if present:
+            assert events.index("health-lock") < events.index("snapshot-exported")
+            assert events.index("health-snapshot-proof") < events.index("health-export")
+            assert dump.index("INSERT INTO public.dashboard_job_health") < dump.index(
+                "INSERT INTO public.dashboard_job_transitions"
+            )
+
+    for label, overrides in (
+        ("partial", {"FAKE_HEALTH_CENSUS": "1"}),
+        ("policy-drift", {"FAKE_HEALTH_PROOF": "-1"}),
+        ("incomplete-proof", {"FAKE_HEALTH_PROOF": "1"}),
+        ("appeared-before-snapshot", {"FAKE_HEALTH_CENSUS": "0", "FAKE_HEALTH_PROOF": "-1"}),
+        ("catalogue-error", {"FAKE_HEALTH_QUERY_FAILURE": "catalogue"}),
+        ("lock-race", {"FAKE_HEALTH_QUERY_FAILURE": "lock"}),
+        ("proof-error", {"FAKE_HEALTH_QUERY_FAILURE": "proof"}),
+        ("unreadable-proof", {"FAKE_HEALTH_PROOF": "unknown"}),
+    ):
+        folder = tmp_path / label
+        folder.mkdir()
+        good = _run(folder, bin_dir)
+        assert good.returncode == 0, good.stderr
+        artifacts = _dumps(folder)
+        assert len(artifacts) == 1
+        before = artifacts[0].read_bytes()
+        (folder / ".fake-psql-events.health").unlink()
+        refused = _run(folder, bin_dir, **overrides)
+        assert refused.returncode != 0
+        assert _dumps(folder) == artifacts
+        assert artifacts[0].read_bytes() == before
+        assert _receipt(folder)["result"] == "failed"
+        events = (folder / ".fake-psql-events.health").read_text().splitlines()
+        assert "health-export" not in events
+        assert "health-restore-authorization" not in events

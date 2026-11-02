@@ -18,7 +18,7 @@ const OWNERS = {
   'src/components/chronicles/EpisodeDrawer.tsx': ['chronicles.correction'],
   'src/components/butler-detail/ButlerStateTab.tsx': ['butler-state.set'],
   'src/components/state/StateBrowser.tsx': ['butler-state.edit'],
-  'src/pages/CalendarWorkspacePage.tsx': ['calendar.user-event', 'calendar.butler-event'],
+  'src/pages/calendar/use-butler-event-editor.ts': ['calendar.butler-event'],
   'src/components/chat/ChatPanel.tsx': ['chat.message'],
   'src/components/chat/ChatDock.tsx': ['chat.message'],
   'src/pages/ChatPage.tsx': ['chat.message'],
@@ -41,7 +41,6 @@ const FIELDS = {
   'chronicles.correction': 'title privacy note',
   'butler-state.set': 'key value',
   'butler-state.edit': 'key value',
-  'calendar.user-event': 'sourceKey title startAtLocal endAtLocal timezone description location entityIds',
   'calendar.butler-event': 'butlerName eventKind title startAtLocal endAtLocal timezone recurrenceFrequency cron hasUntilAt untilAtLocal',
 }
 const sorted = (values) => [...values].sort().join('\0')

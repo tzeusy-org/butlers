@@ -13,8 +13,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from butlers.api.deps import ButlerConnectionInfo, get_pricing
-from butlers.api.routers.butlers import _cadence_label, _get_db_manager
+from butlers.api.deps import ButlerConnectionInfo, get_db, get_pricing
+from butlers.api.routers.butlers import _cadence_label
 from butlers.core.pricing import ModelPricing, PricingConfig
 
 from .conftest import make_mock_mcp_manager, make_test_app
@@ -190,7 +190,7 @@ def _build_app(configs, db, *, online: bool = True):
         configs=configs,
         mcp_manager=make_mock_mcp_manager(online=online),
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_pricing] = lambda: PricingConfig(
         models={"claude-x": ModelPricing(input_price_per_token=0.001, output_price_per_token=0.002)}
     )

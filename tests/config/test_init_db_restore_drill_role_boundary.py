@@ -379,7 +379,7 @@ _RESTORE_SCRIPT_INVOCATIONS = (
 #
 # Out of scope, deliberately:
 #   * the rest of ``docs/`` -- architecture, concepts, and the dated
-#     ``docs/superpowers/plans/`` and ``docs/redesigns/`` records.  Those describe
+#     ``docs/plans/`` and ``docs/redesigns/`` records.  Those describe
 #     and remember rather than instruct, and a live ban over a dated record forces
 #     edits to history.
 #   * ``docs/getting_started/`` -- first-run setup against a disposable local

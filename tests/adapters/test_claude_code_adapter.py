@@ -11,6 +11,7 @@ Covers unique ClaudeCode behaviors:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -18,7 +19,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.runtimes import ClaudeCodeAdapter
-from butlers.core.runtimes.claude_code import _extract_claude_session_id, _find_claude_binary
+from butlers.core.runtimes.claude_code import (
+    _extract_claude_session_id,
+    _find_claude_binary,
+    _parse_claude_output,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -56,6 +61,8 @@ async def test_invoke_flags_and_output():
     assert cmd[0] == "/usr/bin/claude"
     for flag in [
         "--output-format",
+        # Claude Code rejects -p with stream-json unless --verbose is set.
+        "--verbose",
         "--bare",
         "--no-session-persistence",
         "--permission-mode",
@@ -107,6 +114,28 @@ async def test_invoke_flags_and_output():
             prompt="test", system_prompt="", mcp_servers={}, env={}
         )
     assert usage2 == {"input_tokens": 150, "output_tokens": 300}
+
+
+async def test_invoke_declares_sandbox_only_when_running_as_root():
+    """Claude Code refuses bypassPermissions as root unless the child declares IS_SANDBOX."""
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    spawned_env: dict[int, dict[str, str]] = {}
+    for euid in (0, 1000):
+        with (
+            patch("butlers.core.runtimes.claude_code.os.geteuid", return_value=euid),
+            patch(_EXEC, return_value=mock_proc) as mock_sub,
+        ):
+            await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+                prompt="hi", system_prompt="", mcp_servers={}, env={}
+            )
+        spawned_env[euid] = mock_sub.call_args.kwargs["env"]
+
+    assert spawned_env[0]["IS_SANDBOX"] == "1"
+    assert "IS_SANDBOX" not in spawned_env[1000]
 
 
 def test_supports_resume_flag():
@@ -182,6 +211,69 @@ async def test_invoke_captures_none_provider_session_id_when_absent():
     assert adapter.last_process_info["provider_session_id"] is None
 
 
+_STREAM_RECORDINGS = Path(__file__).parents[1] / "fixtures" / "claude_stream_json"
+
+
+async def test_recorded_native_stream_reports_tool_use_and_result_text():
+    """A real CLI stream nests content under ``message``; the adapter reports it itself.
+
+    The final answer appears both as an assistant text block and as the result
+    text; the result stays the single source so the answer is not doubled.
+    """
+    stdout = (_STREAM_RECORDINGS / "tool_use_success.jsonl").read_bytes()
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="hi", system_prompt="", mcp_servers={}, env={}
+        )
+
+    assert result_text == "done"
+    assert tool_calls == [
+        {
+            "id": "toolu_01RMdcsGjy5bCCSfrXAj1eJv",
+            "name": "Bash",
+            "input": {"command": "true", "description": "Run the no-op shell command true once"},
+            "builtin": True,
+        }
+    ]
+    assert usage is not None and usage["output_tokens"] == 252
+
+
+def test_recorded_subagent_stream_reports_tool_use_tagged_by_thread():
+    """Subagent tool_use is the session's work: reported, tagged with its parent call.
+
+    Every tool here is a CLI built-in (no ``mcp__`` prefix), so each record is
+    marked ``builtin`` and none counts as confirmed MCP work for the spawner.
+    """
+    stdout = (_STREAM_RECORDINGS / "subagent_tool_use.jsonl").read_text()
+    result_text, tool_calls, _usage = _parse_claude_output(stdout, "", 0)
+
+    assert result_text == "done"
+    agent_call_id = "toolu_01NZSoV9JHUed6pK2BdoFQpX"
+    assert [
+        (call["name"], call.get("parent_tool_use_id"), call["builtin"]) for call in tool_calls
+    ] == [("Agent", None, True), ("Bash", agent_call_id, True)]
+    assert tool_calls[0]["id"] == agent_call_id
+
+
+def test_native_assistant_text_is_the_answer_only_without_a_result_event():
+    """A stream cut before its result event still yields the assistant's text."""
+    lines = [
+        line
+        for line in (_STREAM_RECORDINGS / "tool_use_success.jsonl").read_text().splitlines()
+        if json.loads(line)["type"] != "result"
+    ]
+    result_text, tool_calls, usage = _parse_claude_output("\n".join(lines), "", 0)
+    assert result_text == "done"
+    assert [call["name"] for call in tool_calls] == ["Bash"]
+    assert usage is None
+
+
 def test_extract_claude_session_id_scans_any_event_type():
     output = "\n".join(
         [
@@ -228,7 +320,7 @@ async def test_invoke_hands_the_cli_an_mcp_config_with_the_invocation_header():
 
     async def fake_exec(*cmd, **kwargs):
         config_path = Path(cmd[cmd.index("--mcp-config") + 1])
-        seen["config"] = json.loads(config_path.read_text())
+        seen["config"] = json.loads(await asyncio.to_thread(config_path.read_text))
         proc = AsyncMock()
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.returncode = 0

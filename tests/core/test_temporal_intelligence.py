@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from butlers.db import register_jsonb_codec
+from butlers.config import ScheduleSpec
 
 pytestmark = [pytest.mark.unit]
 
@@ -489,7 +489,7 @@ def test_notification_due_expiry_and_delivery_result():
 
 @pytest.mark.asyncio
 async def test_event_chain_pass_skips_calendar_projection_when_event_chains_table_missing():
-    """Legacy calendar projection rows must not break tick() without event_chains."""
+    """A missing migrated event-chain table faults without querying legacy calendar data."""
     from butlers.core.scheduler import _tick_event_chain_pass
 
     class FakePool:
@@ -507,14 +507,11 @@ async def test_event_chain_pass_skips_calendar_projection_when_event_chains_tabl
             raise AssertionError(f"Unexpected fetchval: {sql!r} {args!r}")
 
         async def fetch(self, sql: str, *args):
+            import asyncpg
+
             self.fetch_calls.append(sql)
-            if "information_schema.columns" in sql and args[0] == "calendar_projection":
-                return [
-                    {"column_name": "event_id"},
-                    {"column_name": "butler_name"},
-                    {"column_name": "end_at"},
-                    {"column_name": "chain_triggered"},
-                ]
+            if "FROM event_chains" in sql:
+                raise asyncpg.UndefinedTableError("event_chains")
             raise AssertionError(f"Unexpected fetch: {sql!r} {args!r}")
 
         async def execute(self, sql: str, *args):
@@ -525,7 +522,10 @@ async def test_event_chain_pass_skips_calendar_projection_when_event_chains_tabl
     async def noop(**kwargs):
         pass
 
-    assert await _tick_event_chain_pass(pool, noop, datetime.now(UTC)) == 0
+    import asyncpg
+
+    with pytest.raises(asyncpg.UndefinedTableError):
+        await _tick_event_chain_pass(pool, noop, datetime.now(UTC))
     assert not any("FROM calendar_projection" in call for call in pool.fetch_calls)
 
 
@@ -596,6 +596,24 @@ async def test_event_chain_pass_skips_malformed_deadline_trigger_references(capl
 # ---------------------------------------------------------------------------
 
 
+async def _create_historical_calendar_projection(pool) -> None:
+    """Deliberate legacy pre-state: no current chain creates calendar_projection.
+
+    The tests that call this prove tick() leaves historical calendar rows inert.
+    """
+    await pool.execute("""
+        CREATE TABLE calendar_projection (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            butler_name TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            title TEXT,
+            start_at TIMESTAMPTZ,
+            end_at TIMESTAMPTZ,
+            chain_triggered BOOLEAN NOT NULL DEFAULT false
+        )
+    """)
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
@@ -618,132 +636,12 @@ class TestTickIntegration:
         ):
             yield
 
-    _SCHEDULED_TASKS_DDL = """
-        CREATE TABLE IF NOT EXISTS scheduled_tasks (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT UNIQUE NOT NULL,
-            cron TEXT NOT NULL DEFAULT '* * * * *',
-            prompt TEXT,
-            dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
-            job_name TEXT,
-            job_args JSONB,
-            complexity TEXT DEFAULT 'medium',
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            start_at TIMESTAMPTZ,
-            end_at TIMESTAMPTZ,
-            until_at TIMESTAMPTZ,
-            display_title TEXT,
-            calendar_event_id TEXT,
-            source TEXT NOT NULL DEFAULT 'db',
-            enabled BOOLEAN NOT NULL DEFAULT true,
-            next_run_at TIMESTAMPTZ,
-            last_run_at TIMESTAMPTZ,
-            last_result JSONB,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            task_type TEXT NOT NULL DEFAULT 'cron',
-            target_date DATE,
-            lead_time_days INTEGER,
-            alert_thresholds JSONB,
-            deadline_status TEXT,
-            fired_thresholds JSONB,
-            depends_on JSONB
-        )
-    """
-
-    _EVENT_CHAINS_DDL = """
-        CREATE TABLE IF NOT EXISTS event_chains (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            trigger_type TEXT NOT NULL,
-            trigger_reference TEXT NOT NULL,
-            actions JSONB NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            butler_name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """
-
-    _DEFERRED_NOTIFICATIONS_DDL = """
-        CREATE TABLE IF NOT EXISTS deferred_notifications (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            butler_name TEXT NOT NULL,
-            channel TEXT NOT NULL,
-            message TEXT NOT NULL,
-            priority TEXT NOT NULL DEFAULT 'medium',
-            envelope JSONB NOT NULL,
-            deferred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            deliver_at TIMESTAMPTZ NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            delivered_at TIMESTAMPTZ
-        )
-    """
-
-    _SEASONAL_PERIODS_DDL = """
-        CREATE TABLE IF NOT EXISTS seasonal_periods (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            period_type TEXT NOT NULL DEFAULT 'annual',
-            start_month INTEGER NOT NULL,
-            start_day INTEGER NOT NULL,
-            end_month INTEGER NOT NULL,
-            end_day INTEGER NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            metadata JSONB,
-            butler_name TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT true,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """
-
     @pytest.fixture
-    async def pool(self, postgres_container):
-        import asyncpg
+    async def tick_pool(self, db):
+        """The complete current core chain in a real butler schema, per case."""
+        return await db("core", schemas={"core": "general"}, schema="general")
 
-        db_name = f"test_{uuid.uuid4().hex[:12]}"
-        admin_conn = await asyncpg.connect(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database="postgres",
-        )
-        try:
-            await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
-        finally:
-            await admin_conn.close()
-
-        p = await asyncpg.create_pool(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database=db_name,
-            min_size=1,
-            max_size=3,
-            init=register_jsonb_codec,
-        )
-        await p.execute(self._SCHEDULED_TASKS_DDL)
-        await p.execute(self._EVENT_CHAINS_DDL)
-        await p.execute(self._DEFERRED_NOTIFICATIONS_DDL)
-        await p.execute(self._SEASONAL_PERIODS_DDL)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS calendar_projection (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                butler_name TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                title TEXT,
-                start_at TIMESTAMPTZ,
-                end_at TIMESTAMPTZ,
-                chain_triggered BOOLEAN NOT NULL DEFAULT false
-            )
-        """)
-        yield p
-        await p.close()
-
-    async def test_tick_deadline_fires_threshold_with_spans(self, pool):
+    async def test_tick_deadline_fires_threshold_with_spans(self, tick_pool):
         """tick() dispatches due deadline, sets span attributes; expired → disabled+expired."""
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
@@ -759,7 +657,7 @@ class TestTickIntegration:
 
         now = datetime.now(UTC)
         target = _future_date(30)
-        await pool.fetchval(
+        await tick_pool.fetchval(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -782,7 +680,7 @@ class TestTickIntegration:
         async def capture_dispatch(**kwargs):
             dispatched_calls.append(kwargs)
 
-        await tick(pool, capture_dispatch)
+        await tick(tick_pool, capture_dispatch)
         prompts = [c.get("prompt", "") for c in dispatched_calls]
         assert any("visa" in p.lower() or "Review" in p for p in prompts)
 
@@ -797,7 +695,7 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -810,13 +708,13 @@ class TestTickIntegration:
             _past_date(1),
             now,
         )
-        await tick(pool, noop)
-        row = await pool.fetchrow(
+        await tick(tick_pool, noop)
+        row = await tick_pool.fetchrow(
             "SELECT deadline_status, enabled FROM scheduled_tasks WHERE name = 'expired-dl'"
         )
         assert row["deadline_status"] == "expired" and row["enabled"] is False
 
-    async def test_tick_deferred_notification_delivery_and_expiry(self, pool):
+    async def test_tick_deferred_notification_delivery_and_expiry(self, tick_pool):
         """tick() delivers pending notifications via notify_fn; failure/missing → pending;
         expired (>24h) → expired; deferred_flushed span set."""
         from opentelemetry import trace
@@ -837,7 +735,7 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        notif_id = await pool.fetchval(
+        notif_id = await tick_pool.fetchval(
             """
             INSERT INTO deferred_notifications
                 (butler_name, channel, message, priority, envelope, deliver_at, status)
@@ -853,8 +751,8 @@ class TestTickIntegration:
         async def capture_notify(env: dict):
             notify_calls.append(env)
 
-        await tick(pool, noop, notify_fn=capture_notify)
-        row = await pool.fetchrow(
+        await tick(tick_pool, noop, notify_fn=capture_notify)
+        row = await tick_pool.fetchrow(
             "SELECT status, delivered_at FROM deferred_notifications WHERE id = $1", notif_id
         )
         assert row["status"] == "delivered" and row["delivered_at"] is not None
@@ -866,7 +764,7 @@ class TestTickIntegration:
         assert "deferred_flushed" in dict(tick_span.attributes or {})
 
         # Expired (>24h) → expired status
-        old_id = await pool.fetchval(
+        old_id = await tick_pool.fetchval(
             """
             INSERT INTO deferred_notifications
                 (butler_name, channel, message, priority, envelope, deliver_at, status)
@@ -876,13 +774,15 @@ class TestTickIntegration:
             """,
             now - timedelta(hours=25),
         )
-        await tick(pool, noop)
+        await tick(tick_pool, noop)
         assert (
-            await pool.fetchrow("SELECT status FROM deferred_notifications WHERE id = $1", old_id)
+            await tick_pool.fetchrow(
+                "SELECT status FROM deferred_notifications WHERE id = $1", old_id
+            )
         )["status"] == "expired"
 
         # notify_fn failure → pending
-        fail_id = await pool.fetchval(
+        fail_id = await tick_pool.fetchval(
             """
             INSERT INTO deferred_notifications
                 (butler_name, channel, message, priority, envelope, deliver_at, status)
@@ -896,9 +796,11 @@ class TestTickIntegration:
         async def failing_notify(env: dict):
             raise RuntimeError("DB down")
 
-        await tick(pool, noop, notify_fn=failing_notify)
+        await tick(tick_pool, noop, notify_fn=failing_notify)
         assert (
-            await pool.fetchrow("SELECT status FROM deferred_notifications WHERE id = $1", fail_id)
+            await tick_pool.fetchrow(
+                "SELECT status FROM deferred_notifications WHERE id = $1", fail_id
+            )
         )["status"] == "pending"
 
     # -----------------------------------------------------------------------
@@ -907,7 +809,7 @@ class TestTickIntegration:
 
     @staticmethod
     async def _insert_deferred(
-        pool,
+        tick_pool,
         *,
         butler_name: str,
         message: str,
@@ -923,7 +825,7 @@ class TestTickIntegration:
         }
         if recipient is not None:
             envelope["delivery"]["recipient"] = recipient
-        return await pool.fetchval(
+        return await tick_pool.fetchval(
             """
             INSERT INTO deferred_notifications
                 (butler_name, channel, message, priority, envelope, deliver_at, status)
@@ -938,7 +840,9 @@ class TestTickIntegration:
             deliver_at,
         )
 
-    async def test_tick_deferred_notifications_coalesce_same_target_into_one_digest(self, pool):
+    async def test_tick_deferred_notifications_coalesce_same_target_into_one_digest(
+        self, tick_pool
+    ):
         """N due notifications for the same (channel, recipient) compose into
         ONE notify_fn call instead of N separate sends, and all N rows are
         marked delivered together."""
@@ -948,7 +852,7 @@ class TestTickIntegration:
         due = now - timedelta(minutes=5)
         ids = [
             await self._insert_deferred(
-                pool,
+                tick_pool,
                 butler_name="finance",
                 message=f"Bill {i} is due",
                 deliver_at=due,
@@ -965,7 +869,7 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        await tick(pool, noop, notify_fn=capture_notify)
+        await tick(tick_pool, noop, notify_fn=capture_notify)
 
         assert len(notify_calls) == 1, "3 same-target due notifications must compose into 1 send"
         composed = notify_calls[0]
@@ -976,14 +880,16 @@ class TestTickIntegration:
         for i in range(3):
             assert f"Bill {i} is due" in composed["delivery"]["message"]
 
-        rows = await pool.fetch(
+        rows = await tick_pool.fetch(
             "SELECT status, delivered_at FROM deferred_notifications WHERE id = ANY($1::uuid[])",
             ids,
         )
         assert all(r["status"] == "delivered" for r in rows)
         assert all(r["delivered_at"] is not None for r in rows)
 
-    async def test_tick_deferred_notifications_do_not_coalesce_different_recipients(self, pool):
+    async def test_tick_deferred_notifications_do_not_coalesce_different_recipients(
+        self, tick_pool
+    ):
         """Two due notifications for DIFFERENT recipients must never be folded
         into one composed message — each is delivered on its own."""
         from butlers.core.scheduler import tick
@@ -991,10 +897,10 @@ class TestTickIntegration:
         now = datetime.now(UTC)
         due = now - timedelta(minutes=5)
         await self._insert_deferred(
-            pool, butler_name="finance", message="For Alice", deliver_at=due, recipient="alice"
+            tick_pool, butler_name="finance", message="For Alice", deliver_at=due, recipient="alice"
         )
         await self._insert_deferred(
-            pool, butler_name="finance", message="For Bob", deliver_at=due, recipient="bob"
+            tick_pool, butler_name="finance", message="For Bob", deliver_at=due, recipient="bob"
         )
 
         notify_calls: list[dict] = []
@@ -1005,7 +911,7 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        await tick(pool, noop, notify_fn=capture_notify)
+        await tick(tick_pool, noop, notify_fn=capture_notify)
 
         assert len(notify_calls) == 2, "different recipients must not be coalesced"
         recipients = {c["delivery"]["recipient"] for c in notify_calls}
@@ -1015,7 +921,7 @@ class TestTickIntegration:
             "solo-target sends must be delivered verbatim, not digest-formatted"
         )
 
-    async def test_tick_deferred_notification_coalesced_failure_keeps_all_pending(self, pool):
+    async def test_tick_deferred_notification_coalesced_failure_keeps_all_pending(self, tick_pool):
         """A failed composed-digest send must leave EVERY row in the group
         pending for retry — no partial delivery within a coalesced group."""
         from butlers.core.scheduler import tick
@@ -1024,7 +930,7 @@ class TestTickIntegration:
         due = now - timedelta(minutes=5)
         ids = [
             await self._insert_deferred(
-                pool,
+                tick_pool,
                 butler_name="finance",
                 message=f"Item {i}",
                 deliver_at=due,
@@ -1039,18 +945,18 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        await tick(pool, noop, notify_fn=failing_notify)
+        await tick(tick_pool, noop, notify_fn=failing_notify)
 
-        rows = await pool.fetch(
+        rows = await tick_pool.fetch(
             "SELECT status FROM deferred_notifications WHERE id = ANY($1::uuid[])", ids
         )
         assert all(r["status"] == "pending" for r in rows), (
             "a failed composed send must not partially mark the group delivered"
         )
 
-    async def test_tick_event_chains(self, pool):
-        """tick() fires: calendar_event_end, deadline_passed (expired+completed),
-        deadline_threshold; no-refire of fired chains; chains_fired span set."""
+    async def test_tick_event_chains(self, tick_pool):
+        """Historical calendar stays inert; migrated deadline/threshold positives,
+        no-refire of fired chains and chains_fired telemetry remain."""
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -1068,9 +974,10 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        # calendar_event_end chain fires
+        # A historical calendar-end chain stays readable, unmarked and inert.
+        await _create_historical_calendar_projection(tick_pool)
         event_id = "google-event-abc123"
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO calendar_projection
                 (butler_name, event_id, title, start_at, end_at, chain_triggered)
@@ -1080,7 +987,7 @@ class TestTickIntegration:
             now - timedelta(hours=1),
             now - timedelta(minutes=2),
         )
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO event_chains
                 (name, trigger_type, trigger_reference, actions, status, butler_name)
@@ -1090,16 +997,28 @@ class TestTickIntegration:
             """,
             event_id,
         )
-        await tick(pool, noop)
-        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-dentist'"))[
-            "status"
-        ] == "fired"
+        await tick(tick_pool, noop)
+        assert (
+            await tick_pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-dentist'")
+        )["status"] == "active"
+        assert (
+            await tick_pool.fetchval(
+                "SELECT chain_triggered FROM calendar_projection WHERE event_id=$1", event_id
+            )
+            is False
+        )
+        assert (
+            await tick_pool.fetchval(
+                "SELECT COUNT(*) FROM scheduled_tasks WHERE name='chain:post-dentist:0'"
+            )
+            == 0
+        )
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
         assert tick_span is not None and "chains_fired" in dict(tick_span.attributes or {})
 
         # deadline_passed: expired deadline → chain fired + task created
-        past_dl_id = await pool.fetchval(
+        past_dl_id = await tick_pool.fetchval(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -1113,7 +1032,7 @@ class TestTickIntegration:
             _past_date(1),
             now,
         )
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO event_chains
                 (name, trigger_type, trigger_reference, actions, status, butler_name)
@@ -1123,22 +1042,22 @@ class TestTickIntegration:
             """,
             str(past_dl_id),
         )
-        await tick(pool, noop)
+        await tick(tick_pool, noop)
         assert (
-            await pool.fetchrow(
+            await tick_pool.fetchrow(
                 "SELECT deadline_status FROM scheduled_tasks WHERE name = 'tax-filing'"
             )
         )["deadline_status"] == "expired"
-        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-tax'"))[
-            "status"
-        ] == "fired"
-        task_row = await pool.fetchrow(
+        assert (
+            await tick_pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-tax'")
+        )["status"] == "fired"
+        task_row = await tick_pool.fetchrow(
             "SELECT source FROM scheduled_tasks WHERE name = 'chain:post-tax:0'"
         )
         assert task_row is not None and task_row["source"] == "chain"
 
         # deadline_passed: completed deadline → chain fired
-        comp_dl_id = await pool.fetchval(
+        comp_dl_id = await tick_pool.fetchval(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -1152,7 +1071,7 @@ class TestTickIntegration:
             _future_date(10),
             now,
         )
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO event_chains
                 (name, trigger_type, trigger_reference, actions, status, butler_name)
@@ -1162,13 +1081,13 @@ class TestTickIntegration:
             """,
             str(comp_dl_id),
         )
-        await tick(pool, noop)
-        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-visa'"))[
-            "status"
-        ] == "fired"
+        await tick(tick_pool, noop)
+        assert (
+            await tick_pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-visa'")
+        )["status"] == "fired"
 
         # Already-fired chain NOT refired
-        already_id = await pool.fetchval(
+        already_id = await tick_pool.fetchval(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -1181,7 +1100,7 @@ class TestTickIntegration:
             _past_date(1),
             now,
         )
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO event_chains
                 (name, trigger_type, trigger_reference, actions, status, butler_name)
@@ -1191,19 +1110,19 @@ class TestTickIntegration:
             """,
             str(already_id),
         )
-        await tick(pool, noop)
+        await tick(tick_pool, noop)
         assert (
-            await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'already-fired'")
+            await tick_pool.fetchrow("SELECT status FROM event_chains WHERE name = 'already-fired'")
         )["status"] == "fired"
         assert (
-            await pool.fetchval(
+            await tick_pool.fetchval(
                 "SELECT COUNT(*) FROM scheduled_tasks WHERE name = 'chain:already-fired:0'"
             )
             == 0
         )
 
         # deadline_threshold chain fires for matching severity
-        threshold_dl_id = await pool.fetchval(
+        threshold_dl_id = await tick_pool.fetchval(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -1217,7 +1136,7 @@ class TestTickIntegration:
             _future_date(5),
             now,
         )
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO event_chains
                 (name, trigger_type, trigger_reference, actions, status, butler_name)
@@ -1227,13 +1146,15 @@ class TestTickIntegration:
             """,
             f"{threshold_dl_id}:critical",
         )
-        await tick(pool, noop)
-        assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'on-critical'"))[
-            "status"
-        ] == "fired"
+        await tick(tick_pool, noop)
+        assert (
+            await tick_pool.fetchrow("SELECT status FROM event_chains WHERE name = 'on-critical'")
+        )["status"] == "fired"
 
-    async def test_tick_skips_calendar_event_chain_pass_without_event_chains_table(self, pool):
-        """A partial temporal schema must not make the whole scheduler tick fail."""
+    async def test_tick_skips_calendar_event_chain_pass_without_event_chains_table(self, tick_pool):
+        """A missing migrated event-chain table is visible; historical rows stay untouched."""
+        import asyncpg
+
         from butlers.core.scheduler import tick
 
         now = datetime.now(UTC)
@@ -1241,8 +1162,9 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        await pool.execute("DROP TABLE event_chains")
-        await pool.execute(
+        await tick_pool.execute("DROP TABLE event_chains")
+        await _create_historical_calendar_projection(tick_pool)
+        await tick_pool.execute(
             """
             INSERT INTO calendar_projection
                 (butler_name, event_id, title, start_at, end_at, chain_triggered)
@@ -1252,18 +1174,19 @@ class TestTickIntegration:
             now - timedelta(minutes=2),
         )
 
-        assert await tick(pool, noop) == 0
-        row = await pool.fetchrow(
+        with pytest.raises(asyncpg.UndefinedTableError):
+            await tick(tick_pool, noop)
+        row = await tick_pool.fetchrow(
             "SELECT chain_triggered FROM calendar_projection WHERE event_id = $1",
             "event-without-chain-table",
         )
         assert row["chain_triggered"] is False
 
-    async def test_tick_cron_and_sync_schedules(self, pool):
-        """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; validates required fields."""
+    async def test_tick_cron_and_sync_schedules(self, tick_pool):
+        """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; the spec requires them."""
         from butlers.core.scheduler import sync_schedules, tick
 
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, next_run_at, enabled)
@@ -1276,36 +1199,29 @@ class TestTickIntegration:
         async def capture(**kwargs):
             dispatch_calls.append(kwargs)
 
-        result = await tick(pool, capture)
+        result = await tick(tick_pool, capture)
         assert result >= 1 and any("morning summary" in c.get("prompt", "") for c in dispatch_calls)
 
         target = _future_date(60)
         await sync_schedules(
-            pool,
+            tick_pool,
             [
-                {
-                    "name": "visa-renewal",
-                    "cron": "0 9 * * *",
-                    "task_type": "deadline",
-                    "prompt": "Check visa",
-                    "dispatch_mode": "prompt",
-                    "target_date": target.isoformat(),
-                    "lead_time_days": 60,
-                    "alert_thresholds": [
+                ScheduleSpec(
+                    name="visa-renewal",
+                    cron="0 9 * * *",
+                    task_type="deadline",
+                    prompt="Check visa",
+                    target_date=target,
+                    lead_time_days=60,
+                    alert_thresholds=[
                         {"days_before": 60, "severity": "info"},
                         {"days_before": 30, "severity": "warning"},
                     ],
-                },
-                {
-                    "name": "morning-summary",
-                    "cron": "0 8 * * *",
-                    "task_type": "cron",
-                    "prompt": "Morning briefing",
-                    "dispatch_mode": "prompt",
-                },
+                ),
+                ScheduleSpec(name="morning-summary", cron="0 8 * * *", prompt="Morning briefing"),
             ],
         )
-        dl_row = await pool.fetchrow(
+        dl_row = await tick_pool.fetchrow(
             "SELECT task_type, target_date, lead_time_days, alert_thresholds "
             "FROM scheduled_tasks WHERE name = 'visa-renewal'"
         )
@@ -1318,34 +1234,28 @@ class TestTickIntegration:
         assert len(thresholds) == 2
 
         assert (
-            await pool.fetchrow(
+            await tick_pool.fetchrow(
                 "SELECT task_type FROM scheduled_tasks WHERE name = 'morning-summary'"
             )
         )["task_type"] == "cron"
 
         with pytest.raises(ValueError, match="target_date"):
-            await sync_schedules(
-                pool,
-                [
-                    {
-                        "name": "bad-dl",
-                        "cron": "0 9 * * *",
-                        "task_type": "deadline",
-                        "prompt": "Missing target",
-                        "dispatch_mode": "prompt",
-                        "lead_time_days": 30,
-                        "alert_thresholds": [{"days_before": 30, "severity": "info"}],
-                    }
-                ],
+            ScheduleSpec(
+                name="bad-dl",
+                cron="0 9 * * *",
+                task_type="deadline",
+                prompt="Missing target",
+                lead_time_days=30,
+                alert_thresholds=[{"days_before": 30, "severity": "info"}],
             )
 
-    async def test_tick_deadline_seasonal_context_injection(self, pool):
+    async def test_tick_deadline_seasonal_context_injection(self, tick_pool):
         """tick() injects active_seasons into deadline prompt when butler_name provided;
         no seasons in prompt without butler_name."""
         from butlers.core.scheduler import tick
 
         butler = "seasonal-deadline-butler"
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO seasonal_periods
                 (name, period_type, start_month, start_day, end_month, end_day,
@@ -1356,7 +1266,7 @@ class TestTickIntegration:
         )
         now = datetime.now(UTC)
         target = _future_date(30)
-        await pool.execute(
+        await tick_pool.execute(
             """
             INSERT INTO scheduled_tasks
                 (name, cron, prompt, dispatch_mode, task_type, target_date,
@@ -1377,14 +1287,14 @@ class TestTickIntegration:
         async def capture_dispatch(**kwargs):
             dispatched_calls.append(kwargs)
 
-        await tick(pool, capture_dispatch, butler_name=butler)
+        await tick(tick_pool, capture_dispatch, butler_name=butler)
         dl_calls = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
         assert dl_calls, f"No deadline dispatch; all: {dispatched_calls}"
         prompt = dl_calls[0]["prompt"]
         assert "Seasonal context" in prompt and "peak-season" in prompt
 
         # Without butler_name → no seasonal prefix
-        await pool.execute(
+        await tick_pool.execute(
             "UPDATE scheduled_tasks "
             "SET fired_thresholds='[]', deadline_status='pending', next_run_at=$1 "
             "WHERE name=$2",
@@ -1392,7 +1302,7 @@ class TestTickIntegration:
             "seasonal-task",
         )
         dispatched_calls.clear()
-        await tick(pool, capture_dispatch)
+        await tick(tick_pool, capture_dispatch)
         dl_calls2 = [c for c in dispatched_calls if "deadline:" in c.get("trigger_source", "")]
         if dl_calls2:
             assert "Seasonal context" not in dl_calls2[0]["prompt"]

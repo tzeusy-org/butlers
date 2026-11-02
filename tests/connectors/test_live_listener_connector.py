@@ -72,7 +72,7 @@ def test_voice_envelope_event_id_includes_device(voice_envelope: dict[str, Any])
 def test_voice_envelope_passes_parse_ingest_envelope(voice_envelope: dict[str, Any]) -> None:
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     try:
         parse_ingest_envelope(voice_envelope)
@@ -184,3 +184,75 @@ async def test_wyoming_discard_log_has_length_not_transcript(caplog) -> None:
     assert result is None
     assert any("discarding result" in record.getMessage() for record in caplog.records)
     assert "482913" not in caplog.text and "login code" not in caplog.text
+
+
+async def test_voice_known_quote_markers_and_benign_unmarked_transcript():
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
+
+    for transcript, kind in [
+        ("Owner says\n> earlier instruction", "quoted"),
+        ("FYI\n---------- Forwarded message ---------\nthird party", "forwarded"),
+        ("ordinary pasted words without markers", None),
+    ]:
+        env = build_voice_envelope(
+            device_name=_DEVICE,
+            unix_ms=_UNIX_MS,
+            session_id="session-abc",
+            observed_at=_OBSERVED,
+            transcript=transcript,
+            confidence=0.95,
+            duration_s=2.1,
+            language="en",
+            discretion_reason="addressed",
+        )
+        if kind:
+            (span,) = env["payload"]["untrusted_spans"]
+            assert span["kind"] == kind and span["end"] == len(transcript)
+            assert "Owner says" not in transcript[span["start"] : span["end"]]
+        else:
+            assert "untrusted_spans" not in env["payload"]
+        assert env["sender"]["identity"] == "ambient"
+        parse_ingest_envelope(env)
+
+    from butlers.connectors.discretion import DiscretionResult
+    from butlers.connectors.filtered_event_buffer import _sanitize_replay_payload
+    from tests.connectors.live_listener.test_discretion_ignore_persistence import (
+        _bare_connector,
+        _mock_buffer,
+    )
+
+    buffer = _mock_buffer()
+    connector = _bare_connector(db_pool=object(), buffer=buffer)
+    await connector._record_discretion_ignore(
+        mic="kitchen",
+        unix_ms=_UNIX_MS,
+        observed_at=_OBSERVED,
+        text="Owner says\n> earlier instruction",
+        disc_result=DiscretionResult(verdict="IGNORE", reason="noise", is_fail_open=False),
+    )
+    stored = buffer.record.call_args.kwargs["full_payload"]
+    _sanitize_replay_payload(stored)
+    assert stored["payload"]["raw"] == {}
+    assert stored["payload"]["untrusted_spans"] == [
+        {"kind": "quoted", "start": 0, "end": len("[no text]")}
+    ]
+    buffer.flush.assert_awaited_once()
+
+
+def test_audio_config_keeps_device_and_transport_inputs_with_fixed_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from butlers.connectors.live_listener.config import LiveListenerConfig
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("LIVE_LISTENER_DEVICES", '[{"name":"desk-mic","device":1}]')
+    monkeypatch.setenv("LIVE_LISTENER_TRANSCRIPTION_URL", "tcp://transcription.test:10300")
+    monkeypatch.setenv("LIVE_LISTENER_VAD_MODEL_PATH", "/synthetic/vad.onnx")
+    monkeypatch.setenv("LIVE_LISTENER_SESSION_GAP_S", "17")
+    config = LiveListenerConfig.from_env()
+    assert (config.channel, config.provider) == ("voice", "live-listener")
+    assert [(d.name, d.device) for d in config.devices] == [("desk-mic", 1)]
+    assert config.transcription_url == "tcp://transcription.test:10300"
+    assert config.session_gap_s == 17

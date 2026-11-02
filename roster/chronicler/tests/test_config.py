@@ -44,10 +44,10 @@ def test_chronicler_configures_own_module_plus_memory(butler_toml: dict) -> None
     routed to the dedicated private schema ``chronicler_mem`` (bu-w6jca owner
     decision) so its ``episodes`` table never collides with the domain
     ``chronicler.episodes``. It is an own-schema store, not a cross-butler
-    dependency. The shared self_healing relay is also declared under RFC 0015;
-    it reports to QA without adding local investigation dispatch."""
+    dependency. Error reporting is an always-registered core relay to QA;
+    no local self-healing module or investigation dispatch is configured."""
     modules = butler_toml.get("modules", {})
-    assert set(modules) == {"chronicler", "memory", "self_healing"}
+    assert set(modules) == {"chronicler", "memory"}
     assert modules["chronicler"] == {}
     # Minimal group set for the write-back: `core` (store_fact) + `entity`,
     # routed to the chronicler's private memory schema.
@@ -145,3 +145,14 @@ def test_rfc_0014_exists() -> None:
 def test_v1_heart_and_soul_mentions_chronicler() -> None:
     v1 = (PROJECT_ROOT / "about" / "heart-and-soul" / "v1.md").read_text()
     assert "Chronicler" in v1
+
+
+def test_day_close_prompt_forbids_memory_writes(butler_toml: dict) -> None:
+    """Delivery receipts must not become memories: only the deterministic
+    write-back stores chronicler facts, so the narrating session may not."""
+    (day_close,) = [
+        s for s in butler_toml["butler"]["schedule"] if s["name"] == "chronicler_day_close"
+    ]
+    prompt = " ".join(day_close["prompt"].split())
+    assert "Do NOT write memory from this task: no memory_store_fact" in prompt
+    assert "never record the notify outcome" in prompt

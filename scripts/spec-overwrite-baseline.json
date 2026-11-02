@@ -13,82 +13,34 @@
       "scenario": "Table created by migration"
     }
   ],
+  "amend-dashboard-chat-composer-queue-and-suggestions/dashboard-chat-ui/Message Input Area": [
+    {
+      "digest": "cd554043e53b",
+      "excerpt": "- **THEN** the textarea and send button are disabled",
+      "kind": "clause",
+      "scenario": "Input disabled during streaming"
+    },
+    {
+      "digest": "fb9cce2fcee7",
+      "excerpt": "- **AND** a \"Stop\" button replaces the send button, which calls the server-side cancel endpoint (see Stream cancellat...",
+      "kind": "clause",
+      "scenario": "Input disabled during streaming"
+    }
+  ],
+  "amend-dashboard-chat-composer-queue-and-suggestions/dashboard-chat-ui/Typing Indicator": [
+    {
+      "digest": "27486908959c",
+      "excerpt": "- **AND** the indicator shows three animated dots with a bounce animation (staggered `animation-delay`)",
+      "kind": "clause",
+      "scenario": "Typing indicator during processing"
+    }
+  ],
   "amend-secrets-inventory-label-minimization/dashboard-api/Secrets Inventory and Per-Credential Read Endpoints": [
     {
       "digest": "176715cfc640",
-      "excerpt": "- **AND** operator-authored labels on system and CLI rows \u2014 `key`, `category`, `description` \u2014 are outside this contr...",
+      "excerpt": "- **AND** operator-authored labels on system and CLI rows — `key`, `category`, `description` — are outside this contr...",
       "kind": "clause",
       "scenario": "Inventory rows are content-blind"
-    }
-  ],
-  "beads-projection-exporter/dashboard-api/Decisions Digest Endpoint": [
-    {
-      "digest": "2a1dc7aa3ec9",
-      "excerpt": "The dashboard API SHALL expose `GET /api/decisions` as a read-only `ApiResponse<DecisionBeadSummary[]>` wrapper aroun...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "bb99230cc5c6",
-      "excerpt": "- `description`: the exported string description or `null` when it is absent or not a string",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "185c06fb7c6b",
-      "excerpt": "- `options`: the ordered exported `metadata.decision.options` strings or `null` when they cannot be trusted",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "63834707996b",
-      "excerpt": "- `default`: the exported `metadata.decision.default` string or `null` when it cannot be trusted",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "5edf0dbffd2b",
-      "excerpt": "- `due_at`: the exported native Beads `due_at` timestamp or `null` when it is absent or invalid",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "20ee9cb45d7c",
-      "excerpt": "- `structured_details_available`: whether the governed decision metadata and native deadline are valid; and",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "9aabbd0aaa20",
-      "excerpt": "- `structured_details_unavailable_reason`: `null` when details are available, otherwise a named missing or malformed ...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "0d938be63b0a",
-      "excerpt": "The projection SHALL preserve option order. It SHALL mark structured details available only when `metadata.decision.o...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "2621acd6074a",
-      "excerpt": "The response `meta` SHALL retain `decisions_available: boolean`. Missing, stale, or unreadable exports SHALL return `...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "35a8697968af",
-      "excerpt": "- **WHEN** a readable export contains an eligible decision with no `metadata.decision` mapping",
-      "kind": "clause",
-      "scenario": "Missing structured metadata is distinct from malformed metadata"
-    }
-  ],
-  "beads-projection-exporter/dashboard-decisions/Export As-Of Plaque": [
-    {
-      "digest": "69f6cfc81da6",
-      "excerpt": "The `/decisions` page SHALL render an export-as-of plaque whenever `meta.export_as_of` is known. A recently refreshed...",
-      "kind": "prose",
-      "scenario": null
     }
   ],
   "canonical-dnd-generation-guard/context-bus/Write Permissions": [
@@ -156,7 +108,7 @@
     },
     {
       "digest": "cc6438a57f0f",
-      "excerpt": "- **AND** the token SHALL NOT have merge or approve permissions \u2014 humans remain in the merge seat",
+      "excerpt": "- **AND** the token SHALL NOT have merge or approve permissions — humans remain in the merge seat",
       "kind": "clause",
       "scenario": "GitHub credentials from secrets store"
     }
@@ -202,7 +154,7 @@
     },
     {
       "digest": "83955b026bd8",
-      "excerpt": "- **AND** the token SHALL NOT have merge/approve permissions \u2014 humans remain in the merge seat",
+      "excerpt": "- **AND** the token SHALL NOT have merge/approve permissions — humans remain in the merge seat",
       "kind": "clause",
       "scenario": "Dedicated GitHub credentials via Tier 1 system secrets"
     },
@@ -211,6 +163,98 @@
       "excerpt": "- **THEN** its environment contains only: `BUTLERS_QA_GH_TOKEN` (injected from secrets store as `GH_TOKEN` for `gh` C...",
       "kind": "clause",
       "scenario": "Investigation agent sandbox"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-base-spec/Environment Variables (Base)": [
+    {
+      "digest": "93497d9e3ba6",
+      "excerpt": "All connectors SHALL share a common set of environment variables defining identity, transport, and operational parame...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "0d6bba02c810",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL` (Switchboard SSE endpoint), `CONNECTOR_PROVIDER` (e.g., `gmail`, `telegram`), and `C...",
+      "kind": "clause",
+      "scenario": "Required base environment variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-gmail/Environment Variables": [
+    {
+      "digest": "4d2937c3c0a6",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email` must be set",
+      "kind": "clause",
+      "scenario": "Required variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-gmail/Multiple Concurrent Connectors": [
+    {
+      "digest": "b16ebdc61dfb",
+      "excerpt": "- **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, endpoint_identity, external_event_id)`",
+      "kind": "clause",
+      "scenario": "Uniqueness boundary"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-google-calendar/Environment Variables": [
+    {
+      "digest": "8fce2f46ea22",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL` MUST be set. The channel and provider are fixed internally to `google_calendar` (the...",
+      "kind": "clause",
+      "scenario": "Required variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-google-drive/Environment Variables": [
+    {
+      "digest": "314af2f61d89",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=google_drive`, `CONNECTOR_CHANNEL=google_drive` must be set",
+      "kind": "clause",
+      "scenario": "Required variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-home-assistant/Environment Variables": [
+    {
+      "digest": "de6bad22d724",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=home_assistant`, and `CONNECTOR_CHANNEL=home_assistant` MUST be...",
+      "kind": "clause",
+      "scenario": "Required variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-live-listener/Environment Variables": [
+    {
+      "digest": "918dac7071ac",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=live-listener`, `CONNECTOR_CHANNEL=voice`, and `LIVE_LISTENER_D...",
+      "kind": "clause",
+      "scenario": "Required variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-spotify/Environment Variables": [
+    {
+      "digest": "2fdb450edbca",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL` and `CONNECTOR_PROVIDER=spotify` and `CONNECTOR_CHANNEL=spotify` SHALL be set",
+      "kind": "clause",
+      "scenario": "Required environment variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-telegram-bot/Environment Variables": [
+    {
+      "digest": "94212aff6596",
+      "excerpt": "The connector SHALL be configured via environment variables, with base connector variables plus Telegram-specific var...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "36aec07a045e",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_bot` must be set",
+      "kind": "clause",
+      "scenario": "Required variables"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-telegram-user-client/Environment Variables": [
+    {
+      "digest": "0f95c1c6fbd3",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_user_client` must be set",
+      "kind": "clause",
+      "scenario": "Required variables"
     }
   ],
   "decision-loop-one-tap-approvals/autonomy-tracker/Pattern Fingerprint Computation": [
@@ -260,7 +304,7 @@
     },
     {
       "digest": "f869a64a828c",
-      "excerpt": "- **THEN** it is silently skipped \u2014 no ingest submission \u2014 UNLESS it is a `callback_query` whose `callback_data` carr...",
+      "excerpt": "- **THEN** it is silently skipped — no ingest submission — UNLESS it is a `callback_query` whose `callback_data` carr...",
       "kind": "clause",
       "scenario": "Skipped update types"
     }
@@ -382,7 +426,7 @@
     },
     {
       "digest": "1686a3f84377",
-      "excerpt": "- **AND** the protocol requires no LLM invocation \u2014 all sources use tool-based filtering (regex, SQL queries, file pa...",
+      "excerpt": "- **AND** the protocol requires no LLM invocation — all sources use tool-based filtering (regex, SQL queries, file pa...",
       "kind": "clause",
       "scenario": "DiscoverySource protocol definition"
     },
@@ -430,12 +474,12 @@
   "education-mind-map-lifecycle-integrity/module-education-curriculum/Syllabus lifecycle governs mind map state transitions": [
     {
       "digest": "e49e7b8edf9a",
-      "excerpt": "A mind map SHALL progress through a defined lifecycle: `creation` (graph is being generated) \u2192 `active` (learning is ...",
+      "excerpt": "A mind map SHALL progress through a defined lifecycle: `creation` (graph is being generated) → `active` (learning is ...",
       "kind": "prose",
       "scenario": null
     }
   ],
-  "education-mind-map-lifecycle-integrity/module-education-mind-map/Mind map lifecycle \u2014 staleness abandonment": [
+  "education-mind-map-lifecycle-integrity/module-education-mind-map/Mind map lifecycle — staleness abandonment": [
     {
       "digest": "bb27c411b0dc",
       "excerpt": "The system SHALL transition a mind map from `active` to `abandoned` when more than 30 days have elapsed since any act...",
@@ -457,6 +501,74 @@
       "excerpt": "- **WHEN** both Relationship stores contain no matching active rows and a successful Chronicler read returns zero epi...",
       "kind": "clause",
       "scenario": "Successful empty sources remain healthy"
+    }
+  ],
+  "fail-closed-ci-assurance/testing/Smoke Tests Run In CI As A Fast Gate": [
+    {
+      "digest": "c1fd2f8a7755",
+      "excerpt": "Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated boun...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "52a44be0bd65",
+      "excerpt": "The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicabl...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "60065de1dbc9",
+      "excerpt": "ID: REQ-testing-034 Source: bu-ly3lv5.1 preserved smoke outcome; existing bu-r5mnn event policy and testing-and-verif...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "2b422e250e3a",
+      "excerpt": "- **WHEN** the CI `check-preflight` job runs",
+      "kind": "clause",
+      "scenario": "Dedicated smoke selection in CI"
+    },
+    {
+      "digest": "501d57d0aa59",
+      "excerpt": "- **AND** a smoke failure fails the CI run",
+      "kind": "clause",
+      "scenario": "Dedicated smoke selection in CI"
+    },
+    {
+      "digest": "b45476b58fdc",
+      "excerpt": "- **WHEN** a successful classifier identifies a docs/spec-only pull request, or the workflow is a push to main after ...",
+      "kind": "clause",
+      "scenario": "Existing post-queue and docs-only smoke skips are explicit"
+    },
+    {
+      "digest": "850fe47baf9a",
+      "excerpt": "- **THEN** check-preflight may skip under the existing event policy",
+      "kind": "clause",
+      "scenario": "Existing post-queue and docs-only smoke skips are explicit"
+    },
+    {
+      "digest": "95c51f557e2e",
+      "excerpt": "- **AND** this skip cannot authorize a missing classifier verdict, a failed/cancelled preflight, a backend-applicable...",
+      "kind": "clause",
+      "scenario": "Existing post-queue and docs-only smoke skips are explicit"
+    },
+    {
+      "digest": "8a798f3485e1",
+      "excerpt": "- **WHEN** full-lane receipts prove every item selected by the dedicated smoke command actually completed successfully",
+      "kind": "clause",
+      "scenario": "Exact full-lane smoke reuse preserves the same guarantee"
+    },
+    {
+      "digest": "80b3ef44eb95",
+      "excerpt": "- **THEN** preflight emits explicitly derived release evidence with actual commands and exact source/run/attempt iden...",
+      "kind": "clause",
+      "scenario": "Exact full-lane smoke reuse preserves the same guarantee"
+    },
+    {
+      "digest": "39bda7160c87",
+      "excerpt": "- **AND** any uncovered or unavailable selected item requires the original dedicated command or a non-successful pref...",
+      "kind": "clause",
+      "scenario": "Exact full-lane smoke reuse preserves the same guarantee"
     }
   ],
   "generalist-lead-focused-delegation/butler-base-spec/AGENTS.md Content Principles": [
@@ -524,7 +636,7 @@
     },
     {
       "digest": "17dee3f751ae",
-      "excerpt": "- **AND** the runtime session is short-lived \u2014 it runs, calls tools, and exits",
+      "excerpt": "- **AND** the runtime session is short-lived — it runs, calls tools, and exits",
       "kind": "clause",
       "scenario": "Ephemeral LLM CLI sessions"
     },
@@ -574,7 +686,7 @@
     },
     {
       "digest": "b03513f63765",
-      "excerpt": "- **THEN** it contains `@AGENTS.md` as its sole content \u2014 a runtime file reference that the LLM CLI resolves to the c...",
+      "excerpt": "- **THEN** it contains `@AGENTS.md` as its sole content — a runtime file reference that the LLM CLI resolves to the c...",
       "kind": "clause",
       "scenario": "CLAUDE.md delegates to AGENTS.md via file reference"
     },
@@ -600,7 +712,7 @@
     },
     {
       "digest": "54613aa6502e",
-      "excerpt": "- **THEN** only explicitly declared credentials are included \u2014 no host environment variables leak",
+      "excerpt": "- **THEN** only explicitly declared credentials are included — no host environment variables leak",
       "kind": "clause",
       "scenario": "Credential isolation in runtime sessions"
     },
@@ -620,7 +732,7 @@
     },
     {
       "digest": "c56573860ae2",
-      "excerpt": "- **THEN** it communicates via MCP calls through the Switchboard routing plane \u2014 never by direct schema access",
+      "excerpt": "- **THEN** it communicates via MCP calls through the Switchboard routing plane — never by direct schema access",
       "kind": "clause",
       "scenario": "Inter-butler data exchange"
     }
@@ -712,7 +824,7 @@
     },
     {
       "digest": "f6f0df9b4994",
-      "excerpt": "- **AND** no other MCP servers are included \u2014 the runtime is locked to its parent butler",
+      "excerpt": "- **AND** no other MCP servers are included — the runtime is locked to its parent butler",
       "kind": "clause",
       "scenario": "Ephemeral MCP config generation"
     },
@@ -788,31 +900,31 @@
       "digest": "1dda708923c7",
       "excerpt": "- **THEN** the Switchboard staffer (port 41100) must be present as the sole entry point for all inbound messages",
       "kind": "clause",
-      "scenario": "Staffer \u2014 Switchboard"
+      "scenario": "Staffer — Switchboard"
     },
     {
       "digest": "8991c6ec248b",
       "excerpt": "- **AND** it classifies incoming messages and routes them to the appropriate domain butler (never to other staffers f...",
       "kind": "clause",
-      "scenario": "Staffer \u2014 Switchboard"
+      "scenario": "Staffer — Switchboard"
     },
     {
       "digest": "8d7ddc6dfd68",
       "excerpt": "- **AND** it maintains the durable ingestion buffer with priority-tiered queuing and crash-recovery scanning",
       "kind": "clause",
-      "scenario": "Staffer \u2014 Switchboard"
+      "scenario": "Staffer — Switchboard"
     },
     {
       "digest": "34e207ff9e86",
       "excerpt": "- **AND** it manages the connector registry (which connectors are active, their health, eligibility)",
       "kind": "clause",
-      "scenario": "Staffer \u2014 Switchboard"
+      "scenario": "Staffer — Switchboard"
     },
     {
       "digest": "3230fe805d11",
-      "excerpt": "- **AND** no other agent receives external messages directly \u2014 all inbound traffic flows through Switchboard",
+      "excerpt": "- **AND** no other agent receives external messages directly — all inbound traffic flows through Switchboard",
       "kind": "clause",
-      "scenario": "Staffer \u2014 Switchboard"
+      "scenario": "Staffer — Switchboard"
     }
   ],
   "generalist-lead-focused-delegation/butler-base-spec/Tool Composition Model": [
@@ -1311,21 +1423,7 @@
       "scenario": "Exact current registered inventory"
     }
   ],
-  "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Schedules": [
-    {
-      "digest": "a48dc00791e9",
-      "excerpt": "- **THEN** it executes: `upcoming-dates-check` (0 8 * * *, prompt-based: check birthdays/anniversaries in the next 7 ...",
-      "kind": "clause",
-      "scenario": "Scheduled task inventory"
-    },
-    {
-      "digest": "ea8e4da5c28f",
-      "excerpt": "- **AND** the existing scheduled prompt SHALL instruct no reminder or all-clear on that failed read",
-      "kind": "clause",
-      "scenario": "Posture read failure cannot produce a reminder"
-    }
-  ],
-  "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Tool Surface \u2014 Dunbar Tier": [
+  "generalist-lead-focused-delegation/butler-relationship/Relationship Butler Tool Surface — Dunbar Tier": [
     {
       "digest": "ca83f991a426",
       "excerpt": "- **WHEN** a runtime instance is spawned for the relationship butler",
@@ -1576,13 +1674,13 @@
       "digest": "1f73932a3da7",
       "excerpt": "- **AND** on-demand fetch occurs when a butler actually needs the content, with idempotent re-fetch semantics",
       "kind": "clause",
-      "scenario": "Lazy fetch \u2014 metadata only at ingest time"
+      "scenario": "Lazy fetch — metadata only at ingest time"
     },
     {
       "digest": "6c924858bfd5",
       "excerpt": "- **AND** `.ics` attachments bypass LLM routing classification and route directly to the calendar module",
       "kind": "clause",
-      "scenario": "Eager fetch \u2014 calendar attachments stored in S3"
+      "scenario": "Eager fetch — calendar attachments stored in S3"
     }
   ],
   "generalist-lead-focused-delegation/connector-gmail/Bearer material never persists": [
@@ -1598,7 +1696,7 @@
       "digest": "a39ae52386fd",
       "excerpt": "- **THEN** the full `ingest.v1` envelope with complete `payload.raw` is submitted for LLM classification, routing, an...",
       "kind": "clause",
-      "scenario": "Tier 1 \u2014 full pipeline"
+      "scenario": "Tier 1 — full pipeline"
     }
   ],
   "generalist-lead-focused-delegation/connector-gmail/[TARGET-STATE] Selective Email Backfill Strategy": [
@@ -1624,7 +1722,7 @@
   "generalist-lead-focused-delegation/connector-steam/Source Channel and Provider Registration": [
     {
       "digest": "746029fc24d5",
-      "excerpt": "- **AND** online status-change envelopes SHALL set `control.ingestion_tier = \"metadata\"` (Tier 2 \u2014 persist the presen...",
+      "excerpt": "- **AND** online status-change envelopes SHALL set `control.ingestion_tier = \"metadata\"` (Tier 2 — persist the presen...",
       "kind": "clause",
       "scenario": "Ingestion tier assignment"
     }
@@ -1753,6 +1851,18 @@
       "excerpt": "- **WHEN** a runtime instance spawned by a butler lists available MCP tools",
       "kind": "clause",
       "scenario": "Tool available to runtime instance"
+    },
+    {
+      "digest": "76c69b556590",
+      "excerpt": "The `priority` parameter (enum: `high`, `medium`, `low`, default `medium`) is added to support time-aware delivery. P...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "93bb5edad151",
+      "excerpt": "`channel` is OPTIONAL. When the caller omits it, the notify tool resolves it before any channel-dependent validation ...",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/core-notify/Request Context Propagation": [
@@ -1940,7 +2050,7 @@
   "generalist-lead-focused-delegation/core-spawner/Blind-Spot Preamble Injection": [
     {
       "digest": "46b6ca28ca38",
-      "excerpt": "The spawner SHALL inject a composed-prompt layer summarizing the health of each module-declared \"expected signal\" \u2014 a...",
+      "excerpt": "The spawner SHALL inject a composed-prompt layer summarizing the health of each module-declared \"expected signal\" — a...",
       "kind": "prose",
       "scenario": null
     },
@@ -2238,7 +2348,7 @@
     },
     {
       "digest": "c16f24c40bcd",
-      "excerpt": "- **WHEN** a dispatch intent is derived for any trigger source that the spawner wires MCP servers for \u2014 every source ...",
+      "excerpt": "- **WHEN** a dispatch intent is derived for any trigger source that the spawner wires MCP servers for — every source ...",
       "kind": "clause",
       "scenario": "Tool-wired triggers require tool use"
     }
@@ -2348,7 +2458,7 @@
   "generalist-lead-focused-delegation/error-recovery-corrections/Correction Type Decision Tree": [
     {
       "digest": "e7b9fbec80a7",
-      "excerpt": "Did the message go to the WRONG BUTLER entirely? YES \u2192 correction_type = misroute NO \u2193",
+      "excerpt": "Did the message go to the WRONG BUTLER entirely? YES → correction_type = misroute NO ↓",
       "kind": "prose",
       "scenario": null
     }
@@ -2553,10 +2663,10 @@
   ],
   "generalist-lead-focused-delegation/module-approvals/Shared Executor Path": [
     {
-      "kind": "prose",
-      "scenario": null,
       "digest": "982c41ec33eb",
-      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory"
+      "excerpt": "ID: REQ-module-approvals-004 Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses Scope: v1-mandatory",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/module-education-curriculum/Topic decomposition into concept graph": [
@@ -2633,7 +2743,7 @@
       "scenario": "Prompt includes enough context for the ephemeral session"
     }
   ],
-  "generalist-lead-focused-delegation/module-education-teaching-flows/Flow Initialization \u2014 PENDING and DIAGNOSING": [
+  "generalist-lead-focused-delegation/module-education-teaching-flows/Flow Initialization — PENDING and DIAGNOSING": [
     {
       "digest": "dbb7d09cec9a",
       "excerpt": "- **WHEN** the spawner fires an ephemeral session for a flow in `diagnosing` status",
@@ -2647,7 +2757,7 @@
       "scenario": "User receives first diagnostic probe question"
     }
   ],
-  "generalist-lead-focused-delegation/module-education-teaching-flows/Reviewing Phase \u2014 Spaced Repetition Sessions": [
+  "generalist-lead-focused-delegation/module-education-teaching-flows/Reviewing Phase — Spaced Repetition Sessions": [
     {
       "digest": "7c46f2ab33ff",
       "excerpt": "A scheduled trigger SHALL fire when a review is due. The spawned session reads all nodes with `next_review_at <= now(...",
@@ -3465,6 +3575,66 @@
       "excerpt": "The Codex adapter SHALL perform live Codex device-auth reconciliation before evaluating token freshness, creating its...",
       "kind": "prose",
       "scenario": null
+    },
+    {
+      "digest": "eefe5944faa6",
+      "excerpt": "- **WHEN** a Codex adapter with a credential store invokes a new runtime session and a canonical home directory is av...",
+      "kind": "clause",
+      "scenario": "Reconciliation precedes a Codex subprocess"
+    },
+    {
+      "digest": "fb5dca133406",
+      "excerpt": "- **THEN** it SHALL await live device-auth reconciliation before starting the Codex CLI subprocess",
+      "kind": "clause",
+      "scenario": "Reconciliation precedes a Codex subprocess"
+    },
+    {
+      "digest": "b1e30c4d235f",
+      "excerpt": "- **AND** it SHALL continue the existing local-auth subprocess path without consuming the session runtime timeout for...",
+      "kind": "clause",
+      "scenario": "Unavailable auth synchronization does not consume session time"
+    },
+    {
+      "digest": "2302a9266626",
+      "excerpt": "- **THEN** the adapter SHALL retain its existing post-invocation rotation detection and persistence behavior",
+      "kind": "clause",
+      "scenario": "Existing local CLI rotation persistence remains intact"
+    },
+    {
+      "digest": "0f358f1b4f53",
+      "excerpt": "- **WHEN** a Codex invocation retries internally and successive attempts rotate the canonical auth file",
+      "kind": "clause",
+      "scenario": "Internal retries persist the final local rotation"
+    },
+    {
+      "digest": "843c4deb144e",
+      "excerpt": "- **AND** the invocation finalizer SHALL conditionally persist the final file state against the last attempt's captur...",
+      "kind": "clause",
+      "scenario": "Internal retries persist the final local rotation"
+    },
+    {
+      "digest": "571fbd2c5e7f",
+      "excerpt": "- **THEN** the adapter SHALL reconcile canonical auth before `codex login status` can run",
+      "kind": "clause",
+      "scenario": "Speculative prewarm receives reconciled auth"
+    },
+    {
+      "digest": "3cb20ed3ddfb",
+      "excerpt": "- **AND** it SHALL finalize afterward using the prewarm's captured authority snapshot so a prewarm-caused rotation is...",
+      "kind": "clause",
+      "scenario": "Speculative prewarm receives reconciled auth"
+    },
+    {
+      "digest": "24e7d4761f6f",
+      "excerpt": "- **WHEN** dashboard device authentication succeeds for Codex and its post-login prewarm modifies `auth.json`",
+      "kind": "clause",
+      "scenario": "Dashboard login captures its prewarm rotation"
+    },
+    {
+      "digest": "7b1fb0a8ba6e",
+      "excerpt": "- **THEN** the dashboard callback SHALL finalize the final file through the same authority-safe path using the snapsh...",
+      "kind": "clause",
+      "scenario": "Dashboard login captures its prewarm rotation"
     }
   ],
   "harden-runtime-auth-and-breaker-attention/core-credentials/Live Codex Device-Auth Reconciliation": [
@@ -3632,13 +3802,13 @@
   "harden-runtime-auth-and-breaker-attention/dashboard-spend-dashboard/Fleet-Halt Visibility": [
     {
       "digest": "36a7f8e4ea66",
-      "excerpt": "The dashboard SHALL surface the monthly spend ceiling's enforcement action \u2014 dispatches being denied fleet-wide \u2014 as ...",
+      "excerpt": "The dashboard SHALL surface the monthly spend ceiling's enforcement action — dispatches being denied fleet-wide — as ...",
       "kind": "prose",
       "scenario": null
     },
     {
       "digest": "cb7e07397822",
-      "excerpt": "- **THEN** the Spend page renders a red state reading \"Monthly ceiling reached \u2014 N dispatches denied since `<timestam...",
+      "excerpt": "- **THEN** the Spend page renders a red state reading \"Monthly ceiling reached — N dispatches denied since `<timestam...",
       "kind": "clause",
       "scenario": "A red fleet-halt banner renders while the ceiling is breached"
     },
@@ -3656,7 +3826,7 @@
     },
     {
       "digest": "1786095837c3",
-      "excerpt": "- **WHEN** the monthly ceiling transitions from not-breached to breached \u2014 the first `quota_skip` dispatch denial wit...",
+      "excerpt": "- **WHEN** the monthly ceiling transitions from not-breached to breached — the first `quota_skip` dispatch denial wit...",
       "kind": "clause",
       "scenario": "The owner is notified exactly once per breach window"
     },
@@ -3736,7 +3906,7 @@
     },
     {
       "digest": "ce9654c86490",
-      "excerpt": "- **THEN** the rule SHALL be HONORED \u2014 the rule-selected model is returned, NOT excluded \u2014 because an operator spend ...",
+      "excerpt": "- **THEN** the rule SHALL be HONORED — the rule-selected model is returned, NOT excluded — because an operator spend ...",
       "kind": "clause",
       "scenario": "Operator spend rule to a breaker-open model is honored, not excluded"
     }
@@ -3813,6 +3983,90 @@
       "excerpt": "- **THEN** episodes with `consolidation_status='pending'` MUST be fetched ordered by `(tenant_id, butler, created_at,...",
       "kind": "clause",
       "scenario": "Episode grouping by tenant and butler"
+    },
+    {
+      "digest": "4bb765e58d83",
+      "excerpt": "- **WHEN** `run_consolidation` is called",
+      "kind": "clause",
+      "scenario": "Episode grouping by tenant and butler"
+    },
+    {
+      "digest": "48a8c108327c",
+      "excerpt": "- **WHEN** a `cc_spawner` is provided to `run_consolidation`",
+      "kind": "clause",
+      "scenario": "Consolidation with LLM spawner"
+    },
+    {
+      "digest": "572b603fc5ad",
+      "excerpt": "- **THEN** for each `(tenant_id, butler)` group, a runtime session MUST be spawned with `trigger_source='schedule:con...",
+      "kind": "clause",
+      "scenario": "Consolidation with LLM spawner"
+    },
+    {
+      "digest": "c55e2214bff7",
+      "excerpt": "- **AND** the runtime output MUST be parsed for a JSON block containing `new_facts`, `updated_facts`, `new_rules`, an...",
+      "kind": "clause",
+      "scenario": "Consolidation with LLM spawner"
+    },
+    {
+      "digest": "3788ac2cbdb4",
+      "excerpt": "- **THEN** it MUST pass the daemon's live `Spawner` to `run_consolidation` rather than using the `cc_spawner=None` dr...",
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner"
+    },
+    {
+      "digest": "56a4e76c9ddc",
+      "excerpt": "- **AND** an empty pending-episode claim MUST spawn no runtime session",
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner"
+    },
+    {
+      "digest": "bb4028671b99",
+      "excerpt": "- **AND** each non-empty `(tenant_id, butler)` group MUST use `trigger_source='schedule:consolidation'` without overr...",
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner"
+    },
+    {
+      "digest": "7615af82a44d",
+      "excerpt": "- **AND** the handler's returned consolidation statistics or raised error MUST remain the scheduled task result recor...",
+      "kind": "clause",
+      "scenario": "Scheduled consolidation uses the catalog-backed daemon spawner"
+    },
+    {
+      "digest": "20681e103806",
+      "excerpt": "- **WHEN** `run_consolidation` is called with `cc_spawner=None`",
+      "kind": "clause",
+      "scenario": "Consolidation without spawner (dry run)"
+    },
+    {
+      "digest": "6236250ad5b3",
+      "excerpt": "- **WHEN** episode content is formatted for the consolidation prompt",
+      "kind": "clause",
+      "scenario": "Episode content wrapped in XML tags for prompt injection prevention"
+    },
+    {
+      "digest": "44d6f96cbaea",
+      "excerpt": "- **AND** the SKILL.md MUST contain a security notice instructing the LLM to treat episode content as data only",
+      "kind": "clause",
+      "scenario": "Episode content wrapped in XML tags for prompt injection prevention"
+    },
+    {
+      "digest": "4fe5f5e49a98",
+      "excerpt": "- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source group S...",
+      "kind": "clause",
+      "scenario": "Throughput decision retains existing batching"
+    },
+    {
+      "digest": "06a061acb0c0",
+      "excerpt": "- **AND** existing model-catalog and Spawner quota, failover and timeout authority SHALL remain unchanged",
+      "kind": "clause",
+      "scenario": "Throughput decision declines an additional per-run cap"
+    },
+    {
+      "digest": "8372740efbcc",
+      "excerpt": "- **AND** scheduled consolidation SHALL continue through the live catalog-backed Spawner without model, runtime or se...",
+      "kind": "clause",
+      "scenario": "Throughput decision preserves catalog-authoritative transport"
     }
   ],
   "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [
@@ -3858,17 +4112,9 @@
   "recover-ingestion-target-deliveries/dashboard-ingestion-dispatch-console/Timeline Ledger": [
     {
       "digest": "d99c462ae67d",
-      "excerpt": "- **AND** `failed` (a routing failure recorded after the event was already ingested \u2014 see `ingestion_event_mark_faile...",
+      "excerpt": "- **AND** `failed` (a routing failure recorded after the event was already ingested — see `ingestion_event_mark_faile...",
       "kind": "clause",
       "scenario": "Row status never renders as a filled pill"
-    }
-  ],
-  "recover-ingestion-target-deliveries/module-pipeline/Decomposition-to-Routing Fan-Out": [
-    {
-      "digest": "e7dd1119548f",
-      "excerpt": "- **THEN** `route()` is called sequentially for each conceptual message",
-      "kind": "clause",
-      "scenario": "Sequential fan-out routing"
     }
   ],
   "relationship-fact-effective-time/butler-relationship/Relationship Butler Registered Tool Surface": [
@@ -3905,6 +4151,54 @@
       "excerpt": "- **AND** cancels background tasks (scheduler, heartbeat, liveness) in reverse startup order",
       "kind": "clause",
       "scenario": "Graceful shutdown"
+    },
+    {
+      "digest": "df3eaf99c7de",
+      "excerpt": "A butler SHALL be a long-lived MCP server daemon backed by a dedicated PostgreSQL schema. When triggered, it SHALL sp...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "3cfc71aea9df",
+      "excerpt": "- **AND** each incoming MCP connection is wrapped with a session guard that binds a runtime session context",
+      "kind": "clause",
+      "scenario": "Butler as MCP server"
+    },
+    {
+      "digest": "0d335ed03c45",
+      "excerpt": "- **WHEN** a trigger arrives (scheduled task, routed message, manual trigger)",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "58ee59ab3cee",
+      "excerpt": "- **THEN** the spawner generates an ephemeral MCP config pointing exclusively to the butler's own MCP server",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "74ae978b6309",
+      "excerpt": "- **AND** it composes a system prompt from `roster/{butler-name}/CLAUDE.md`, optionally appending memory context",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "3d34603f196f",
+      "excerpt": "- **AND** it invokes an LLM CLI runtime (Claude Code, Codex, or Gemini) as a subprocess with the MCP config and syste...",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "17dee3f751ae",
+      "excerpt": "- **AND** the runtime session is short-lived — it runs, calls tools, and exits",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "db2b7c913262",
+      "excerpt": "- **AND** the session is logged with prompt, output, success/error, token counts, cost, tool calls, duration, and tra...",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
     }
   ],
   "restore-butler-control-plane-liveness/butler-base-spec/Instance Facts Internal Interface": [
@@ -3931,6 +4225,18 @@
       "excerpt": "- **AND** if the heartbeat task fails, the butler logs the failure but does not shut down -- liveness degradation is ...",
       "kind": "clause",
       "scenario": "Heartbeat registration is kept current"
+    },
+    {
+      "digest": "70b04fe9f3ec",
+      "excerpt": "- **AND** this row is the source of truth for `last_session_at` in the System page heartbeat endpoint",
+      "kind": "clause",
+      "scenario": "Session completion updates the per-butler session record"
+    },
+    {
+      "digest": "944ca823536f",
+      "excerpt": "- **WHEN** the System page queries active sessions for a butler",
+      "kind": "clause",
+      "scenario": "Active session count is derivable from the sessions table"
     }
   ],
   "restore-butler-control-plane-liveness/butler-base-spec/Staffers vs Domain Butlers": [
@@ -3939,6 +4245,18 @@
       "excerpt": "- **AND** it launches a heartbeat task and liveness reporter to maintain its registration",
       "kind": "clause",
       "scenario": "Domain butlers (extensible roster)"
+    },
+    {
+      "digest": "1dda708923c7",
+      "excerpt": "- **THEN** the Switchboard staffer (port 41100) must be present as the sole entry point for all inbound messages",
+      "kind": "clause",
+      "scenario": "Staffer — Switchboard"
+    },
+    {
+      "digest": "8991c6ec248b",
+      "excerpt": "- **AND** it classifies incoming messages and routes them to the appropriate domain butler (never to other staffers f...",
+      "kind": "clause",
+      "scenario": "Staffer — Switchboard"
     }
   ],
   "restore-butler-control-plane-liveness/dashboard-butler-management/Butler List Page": [
@@ -3984,13 +4302,13 @@
     },
     {
       "digest": "9de1bee77041",
-      "excerpt": "Naming note: the summary's \"per source\" grouping is `origin_butler` (which butler/job attempted the egress \u2014 e.g. `se...",
+      "excerpt": "Naming note: the summary's \"per source\" grouping is `origin_butler` (which butler/job attempted the egress — e.g. `se...",
       "kind": "prose",
       "scenario": null
     },
     {
       "digest": "c30266002051",
-      "excerpt": "- **THEN** both endpoints return an empty/zero payload with `source_available=true` \u2014 this is a genuinely-empty state...",
+      "excerpt": "- **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state...",
       "kind": "clause",
       "scenario": "Unmigrated table is a true empty result, not a degraded one"
     }
@@ -4070,7 +4388,7 @@
     },
     {
       "digest": "5e1d0590fc8e",
-      "excerpt": "- **AND** when `pr` is null, the column renders a single serif-italic line \"No PR \u2014 escalated to user.\"",
+      "excerpt": "- **AND** when `pr` is null, the column renders a single serif-italic line \"No PR — escalated to user.\"",
       "kind": "clause",
       "scenario": "Proposed fix column"
     },
@@ -4124,13 +4442,13 @@
   "restore-qa-remediation-loop/qa-dashboard/QA Overview Page": [
     {
       "digest": "4237b6dec98f",
-      "excerpt": "- `mttr \u00b7 24h`",
+      "excerpt": "- `mttr · 24h`",
       "kind": "clause",
       "scenario": "Overview page layout"
     },
     {
       "digest": "f631b580e861",
-      "excerpt": "- `self-resolved \u00b7 7d`",
+      "excerpt": "- `self-resolved · 7d`",
       "kind": "clause",
       "scenario": "Overview page layout"
     },
@@ -4142,13 +4460,13 @@
     },
     {
       "digest": "c23aa544aa38",
-      "excerpt": "- A mono uppercase eyebrow label (`prs landed \u00b7 24h`, `mttr \u00b7 24h`, `self-resolved \u00b7 7d`, `active cases \u00b7 now`, `fail...",
+      "excerpt": "- A mono uppercase eyebrow label (`prs landed · 24h`, `mttr · 24h`, `self-resolved · 7d`, `active cases · now`, `fail...",
       "kind": "clause",
       "scenario": "KPI strip values"
     },
     {
       "digest": "2d7877077812",
-      "excerpt": "- **AND** when MTTR is computed over an empty sample (no `pr_merged` closures in the window), the cell shows `\u2014` and ...",
+      "excerpt": "- **AND** when MTTR is computed over an empty sample (no `pr_merged` closures in the window), the cell shows `—` and ...",
       "kind": "clause",
       "scenario": "KPI strip values"
     },
@@ -4240,7 +4558,7 @@
     },
     {
       "digest": "d4ef780d5f57",
-      "excerpt": "- **AND** the response includes `runtime_credential_alert: string | null` \u2014 non-null when a workhorse-tier `model_cat...",
+      "excerpt": "- **AND** the response includes `runtime_credential_alert: string | null` — non-null when a workhorse-tier `model_cat...",
       "kind": "clause",
       "scenario": "Circuit breaker threshold and runtime-credential-alert on the wire"
     }
@@ -4366,7 +4684,7 @@
     },
     {
       "digest": "8234a9f5aedc",
-      "excerpt": "- **AND** this exception is bounded to the `evidence_lines[]` field \u2014 all other narrative fields are anonymized by th...",
+      "excerpt": "- **AND** this exception is bounded to the `evidence_lines[]` field — all other narrative fields are anonymized by th...",
       "kind": "clause",
       "scenario": "Notes fields are agent-authored (not re-anonymized internally)"
     }
@@ -4409,10 +4727,10 @@
       "scenario": "Agent determines issue is unfixable"
     }
   ],
-  "restore-qa-remediation-loop/qa-investigation-dispatch/Journal Event Emission \u2014 Dispatch": [
+  "restore-qa-remediation-loop/qa-investigation-dispatch/Journal Event Emission — Dispatch": [
     {
       "digest": "46ea90a65bde",
-      "excerpt": "- **THEN** the dispatcher inserts a `qa_investigation_events` row with `step = 'merged'`, `text = \"CI green \u00b7 merged\"...",
+      "excerpt": "- **THEN** the dispatcher inserts a `qa_investigation_events` row with `step = 'merged'`, `text = \"CI green · merged\"...",
       "kind": "clause",
       "scenario": "merged event on PR merge"
     },
@@ -4486,7 +4804,7 @@
     },
     {
       "digest": "fc017c951d3c",
-      "excerpt": "- **AND** does NOT scan rotated files (e.g., `.log.1`) \u2014 if rotation happens mid-patrol, the `session_records` source...",
+      "excerpt": "- **AND** does NOT scan rotated files (e.g., `.log.1`) — if rotation happens mid-patrol, the `session_records` source...",
       "kind": "clause",
       "scenario": "Efficient seeking (current file only)"
     }
@@ -4502,7 +4820,7 @@
   "restore-qa-remediation-loop/qa-triage/Three-Source Deduplication": [
     {
       "digest": "ff98b48ac52a",
-      "excerpt": "- **NOTE** `dispatch_pending` is NOT a valid status and is NOT included here \u2014 there is no deferred pre-launch state;...",
+      "excerpt": "- **NOTE** `dispatch_pending` is NOT a valid status and is NOT included here — there is no deferred pre-launch state;...",
       "kind": "clause",
       "scenario": "Check active healing attempts (includes open PRs)"
     },
@@ -4545,6 +4863,612 @@
       "scenario": "Reactive findings between patrols"
     }
   ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Complete eleven-input independent coverage reporting": [
+    {
+      "digest": "72060a9e28e4",
+      "excerpt": "The non-required reporter SHALL validate eleven distinct same-run CoverageData inputs independently before combine/re...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a56e3461fb37",
+      "excerpt": "ID: REQ-ci-shard-assurance-006 Source: bu-ly3lv5.6 P9; original complete S1-S5 and ten folded source objects; adopted...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "45c123a8c981",
+      "excerpt": "- **WHEN** five unit and six integration inputs have exact current source population/tracing/head/run/attempt/digest ...",
+      "kind": "clause",
+      "scenario": "Eleven real valid inputs pass the actual reader"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Deterministic whole-file weighted assignment": [
+    {
+      "digest": "dd40f19c68d5",
+      "excerpt": "The partitioner SHALL assign each freshly selected lane file exactly once to five unit or six integration shards usin...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "703d7cbd674c",
+      "excerpt": "ID: REQ-ci-shard-assurance-002 Source: bu-ly3lv5.6 P4/P12; original complete S1-S5 and ten folded source objects; ado...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "1d97a40495e7",
+      "excerpt": "- **WHEN** the same inventory and weights are supplied in different input iteration orders",
+      "kind": "clause",
+      "scenario": "Identical inputs give identical assignment"
+    },
+    {
+      "digest": "95c81b818a50",
+      "excerpt": "- **THEN** canonical output is identical, each required shard is nonempty and union/disjointness match the fresh file...",
+      "kind": "clause",
+      "scenario": "Identical inputs give identical assignment"
+    },
+    {
+      "digest": "b09f1a60578f",
+      "excerpt": "- **WHEN** an eligible file has missing, zero, NaN, infinite, stale or incompatible cost evidence",
+      "kind": "clause",
+      "scenario": "Unknown durations cannot drop a file"
+    },
+    {
+      "digest": "f11a5e4ea49f",
+      "excerpt": "- **THEN** the finite median-or-one default assigns it normally and advisory degradation never changes membership",
+      "kind": "clause",
+      "scenario": "Unknown durations cannot drop a file"
+    },
+    {
+      "digest": "010de435017c",
+      "excerpt": "- **THEN** unchanged test files retain compatible measured costs, changed or new files receive finite median-or-one d...",
+      "kind": "clause",
+      "scenario": "Source changes preserve compatible cost hints"
+    },
+    {
+      "digest": "2517abca747f",
+      "excerpt": "- **AND** incompatible runtime, dependency, selector, age or tracing profiles never supply hints for the current assi...",
+      "kind": "clause",
+      "scenario": "Source changes preserve compatible cost hints"
+    },
+    {
+      "digest": "250b633da082",
+      "excerpt": "- **THEN** the file is whole in each lane while each actual eligible item is executed exactly once in its own lane",
+      "kind": "clause",
+      "scenario": "Mixed markers retain their two lane homes"
+    },
+    {
+      "digest": "7b0f6980409f",
+      "excerpt": "- **WHEN** the bounded scheduled observer finishes or fails",
+      "kind": "clause",
+      "scenario": "Durations refresh is advisory and read only"
+    },
+    {
+      "digest": "43f62dd00617",
+      "excerpt": "- **THEN** it emits provenance-bound candidate weights or UNKNOWN without source commits, test-population changes or ...",
+      "kind": "clause",
+      "scenario": "Durations refresh is advisory and read only"
+    },
+    {
+      "digest": "9ae56ccb716e",
+      "excerpt": "- **AND** an inventory consumer MAY restore a runtime-compatible profile from the latest successful main-branch obser...",
+      "kind": "clause",
+      "scenario": "Durations refresh is advisory and read only"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Fail-closed matrix routing and event policy": [
+    {
+      "digest": "5995919a7a75",
+      "excerpt": "Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate a...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "8fd979909da9",
+      "excerpt": "ID: REQ-ci-shard-assurance-004 Source: bu-ly3lv5.6 P6-P7; original complete S1-S5 and ten folded source objects; adop...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "0a683f4ff0df",
+      "excerpt": "- **WHEN** merge_group or a full backend PR executes",
+      "kind": "clause",
+      "scenario": "A full terminal tree requires eleven backend carriers"
+    },
+    {
+      "digest": "e94560f13c46",
+      "excerpt": "- **THEN** fresh inventory, five unit and six integration children, guards and independent preflight must succeed; an...",
+      "kind": "clause",
+      "scenario": "A full terminal tree requires eleven backend carriers"
+    },
+    {
+      "digest": "8508ee4b5bb2",
+      "excerpt": "- **WHEN** a genuine scoped backend PR or classifier-proven docs-only PR is evaluated",
+      "kind": "clause",
+      "scenario": "Scoped and docs skips remain explicitly bounded"
+    },
+    {
+      "digest": "1612e365dda4",
+      "excerpt": "- **THEN** only the matching current skip policy is accepted and preflight never counts as a heavy child",
+      "kind": "clause",
+      "scenario": "Scoped and docs skips remain explicitly bounded"
+    },
+    {
+      "digest": "132805d95efe",
+      "excerpt": "- **THEN** the dedicated inventory job performs complete inventory/budget while existing heavy/preflight post-queue s...",
+      "kind": "clause",
+      "scenario": "Main push retains fresh inventory without rerunning heavy lanes"
+    },
+    {
+      "digest": "ff1887f1e2a4",
+      "excerpt": "- **WHEN** classifier/planner/inventory-change evidence is absent or an added needed job lacks skip permission",
+      "kind": "clause",
+      "scenario": "Unknown inputs widen or fail"
+    },
+    {
+      "digest": "990d33d7b034",
+      "excerpt": "- **THEN** selection widens to full when it can be validly executed and final malformed or unknown verdict evidence f...",
+      "kind": "clause",
+      "scenario": "Unknown inputs widen or fail"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Fresh collected membership and one inventory": [
+    {
+      "digest": "3b5fff55fe87",
+      "excerpt": "The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and p...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "ee5d7323af0e",
+      "excerpt": "ID: REQ-ci-shard-assurance-001 Source: bu-ly3lv5.6 P1-P3; original complete S1-S5 and ten folded source objects; adop...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a3e3759ddc61",
+      "excerpt": "- **WHEN** the source-owned collector processes actual items under both roots",
+      "kind": "clause",
+      "scenario": "Both lane populations preserve their actual selectors"
+    },
+    {
+      "digest": "810b6251d422",
+      "excerpt": "- **THEN** the unit and integration opaque identity sets equal independent unchanged-selector controls, including inh...",
+      "kind": "clause",
+      "scenario": "Both lane populations preserve their actual selectors"
+    },
+    {
+      "digest": "932dab4a9b34",
+      "excerpt": "- **WHEN** five seeded new files and a conftest-only change alter the collected corpus",
+      "kind": "clause",
+      "scenario": "New files are included without registration"
+    },
+    {
+      "digest": "65bce1886f38",
+      "excerpt": "- **THEN** all eligible identities appear once in the correct lanes without .github registration edits and conftest c...",
+      "kind": "clause",
+      "scenario": "New files are included without registration"
+    },
+    {
+      "digest": "66592f54348d",
+      "excerpt": "- **WHEN** collection fails, is empty unexpectedly or has malformed/stale identity/config evidence",
+      "kind": "clause",
+      "scenario": "Unknown collection cannot become a budget pass"
+    },
+    {
+      "digest": "a7c1083d18f3",
+      "excerpt": "- **THEN** the inventory job refuses both inventory and budget success and required check fails",
+      "kind": "clause",
+      "scenario": "Unknown collection cannot become a budget pass"
+    },
+    {
+      "digest": "565c762d1975",
+      "excerpt": "- **WHEN** dated17501 or budget-update17522/4935 counts are presented",
+      "kind": "clause",
+      "scenario": "Historical counts do not replace current population"
+    },
+    {
+      "digest": "4ced253eb1fb",
+      "excerpt": "- **THEN** the actual fresh source population governs equality and historical counts remain provenance only",
+      "kind": "clause",
+      "scenario": "Historical counts do not replace current population"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Frontend static test and browser evidence is complete": [
+    {
+      "digest": "0e6213770a1c",
+      "excerpt": "The frontend required context SHALL combine mandatory static/knip/build evidence with both complete Vitest shard verd...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "ddc7ec664f04",
+      "excerpt": "ID: REQ-ci-shard-assurance-007 Source: bu-ly3lv5.6 P10; original complete S1-S5 and ten folded source objects; adopte...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "7bda95539b2a",
+      "excerpt": "- **THEN** frontend and the required applicable gate refuse success without Vitest hiding the earlier static failure",
+      "kind": "clause",
+      "scenario": "Every frontend contributor is required"
+    },
+    {
+      "digest": "210ee1cace2b",
+      "excerpt": "- **WHEN** the Playwright e2e job fails, is cancelled or is skipped in a merge group, a main push or a pull request t...",
+      "kind": "clause",
+      "scenario": "A browser failure fails the required check"
+    },
+    {
+      "digest": "1b60795d5a69",
+      "excerpt": "- **THEN** the required check refuses success, so the merge group cannot land",
+      "kind": "clause",
+      "scenario": "A browser failure fails the required check"
+    },
+    {
+      "digest": "31108b3b2c63",
+      "excerpt": "- **AND** every other pull request requires the job's explicit skip",
+      "kind": "clause",
+      "scenario": "A browser failure fails the required check"
+    },
+    {
+      "digest": "9905537014cc",
+      "excerpt": "- **WHEN** the guards-built dist has valid source/run/attempt/config/lock digests and nonempty contents",
+      "kind": "clause",
+      "scenario": "Browser reuses a genuine build only"
+    },
+    {
+      "digest": "27a45018e781",
+      "excerpt": "- **THEN** browser tests use it without a second build while locked browser and OS dependencies remain verified",
+      "kind": "clause",
+      "scenario": "Browser reuses a genuine build only"
+    },
+    {
+      "digest": "9c4accb257b7",
+      "excerpt": "- **WHEN** dist is empty, missing, stale, tampered or belongs to another attempt",
+      "kind": "clause",
+      "scenario": "Stale or absent build is not readiness"
+    },
+    {
+      "digest": "715d14548d86",
+      "excerpt": "- **THEN** the browser proof is unavailable/non-passing rather than a fabricated cache hit",
+      "kind": "clause",
+      "scenario": "Stale or absent build is not readiness"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Independent complete-identity execution reconciliation": [
+    {
+      "digest": "d5e19664d037",
+      "excerpt": "Every required matrix child SHALL produce source/run/attempt-bound collected and executed opaque item receipts indepe...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "fdc432ad252c",
+      "excerpt": "ID: REQ-ci-shard-assurance-003 Source: bu-ly3lv5.6 P5; original complete S1-S5 and ten folded source objects; adopted...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a12d70940fa3",
+      "excerpt": "- **WHEN** one carrier substitutes a different parameter identity while preserving file counts and masked JUnit names",
+      "kind": "clause",
+      "scenario": "Same counts with different parameters fail"
+    },
+    {
+      "digest": "4395aaf44a10",
+      "excerpt": "- **THEN** the reconciler fails by complete opaque identity comparison",
+      "kind": "clause",
+      "scenario": "Same counts with different parameters fail"
+    },
+    {
+      "digest": "735ee22e8214",
+      "excerpt": "- **WHEN** one logical item starts twice or one whole file is forced into two shards",
+      "kind": "clause",
+      "scenario": "Duplicate execution fails independently of assignment"
+    },
+    {
+      "digest": "c87a1000ecc9",
+      "excerpt": "- **THEN** reconciliation and required check fail while the genuine exactly-once companion passes",
+      "kind": "clause",
+      "scenario": "Duplicate execution fails independently of assignment"
+    },
+    {
+      "digest": "977f92438618",
+      "excerpt": "- **WHEN** a child is skipped, missing, cancelled, truncated or emits no complete receipt",
+      "kind": "clause",
+      "scenario": "Missing and partial children cannot hide behind matrix success"
+    },
+    {
+      "digest": "3607595eaee6",
+      "excerpt": "- **THEN** all eleven expected child identities are checked and preflight cannot report success",
+      "kind": "clause",
+      "scenario": "Missing and partial children cannot hide behind matrix success"
+    },
+    {
+      "digest": "05ce5073d381",
+      "excerpt": "- **WHEN** a later attempt or malicious payload supplies raw parameter/provider strings or mismatched nonce/head/config",
+      "kind": "clause",
+      "scenario": "Retry identity and privacy remain exact"
+    },
+    {
+      "digest": "796437a4d480",
+      "excerpt": "- **THEN** the artifact is rejected without logging raw values and ordinary same-attempt sanitized evidence passes",
+      "kind": "clause",
+      "scenario": "Retry identity and privacy remain exact"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Measured efficiency and owned integration remain explicit": [
+    {
+      "digest": "71c0841ebb02",
+      "excerpt": "The implementation SHALL preserve finite watchdogs, all protected checks and the five-minute lane target. Matrix conv...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "8824063779bc",
+      "excerpt": "ID: REQ-ci-shard-assurance-008 Source: bu-ly3lv5.6 P11-P12; original complete S1-S5 and ten folded source objects; ad...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "4f00325aa1e5",
+      "excerpt": "- **WHEN** guards, eleven backend children, two Vitest children, browser and post jobs become eligible",
+      "kind": "clause",
+      "scenario": "Concurrent capacity follows the actual DAG"
+    },
+    {
+      "digest": "3eaca6d6d986",
+      "excerpt": "- **THEN** dependencies bound peak14 and account for20 full-mode expanded rows and21 total declared expanded rows, in...",
+      "kind": "clause",
+      "scenario": "Concurrent capacity follows the actual DAG"
+    },
+    {
+      "digest": "3fa4f3927c04",
+      "excerpt": "- **WHEN** route/guards/spread/lane performance observations are incomplete",
+      "kind": "clause",
+      "scenario": "Metrics retain their full ten-run windows"
+    },
+    {
+      "digest": "6a42c3dfa4d3",
+      "excerpt": "- **THEN** the15s/180s/<15%/five-minute promises remain UNMET and no seven-minute amendment or fabricated samples are...",
+      "kind": "clause",
+      "scenario": "Metrics retain their full ten-run windows"
+    },
+    {
+      "digest": "0b2db96fcab7",
+      "excerpt": "- **WHEN** planner/manifests/inventory/budget/smoke/static/build/reporting enforcement moves",
+      "kind": "clause",
+      "scenario": "Every moved checker has an enforcing survivor"
+    },
+    {
+      "digest": "93ec138a164a",
+      "excerpt": "- **THEN** a command/scope/failure-mutation map identifies its actual mandatory survivor with positive and negative c...",
+      "kind": "clause",
+      "scenario": "Every moved checker has an enforcing survivor"
+    }
+  ],
+  "shard-lanes-with-pytest-split/ci-shard-assurance/Smoke proof preserves real execution and release provenance": [
+    {
+      "digest": "2f9842ff2a0a",
+      "excerpt": "Scoped execution SHALL preserve the dedicated smoke command and release fields. Full execution MAY reuse shard smoke ...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "79919003d370",
+      "excerpt": "ID: REQ-ci-shard-assurance-005 Source: bu-ly3lv5.6 P8; original complete S1-S5 and ten folded source objects; adopted...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "c3e566f7a2d6",
+      "excerpt": "- **WHEN** a backend PR is admitted scoped",
+      "kind": "clause",
+      "scenario": "Scoped smoke remains independently executed"
+    },
+    {
+      "digest": "e9f81d094116",
+      "excerpt": "- **THEN** the actual original tests-only smoke command executes and retains SHA, timing, exit, outcome and skipped-c...",
+      "kind": "clause",
+      "scenario": "Scoped smoke remains independently executed"
+    },
+    {
+      "digest": "7b1e75a90125",
+      "excerpt": "- **WHEN** every dedicated smoke-selected item was executed successfully by the same full lane run",
+      "kind": "clause",
+      "scenario": "Complete full-lane smoke has truthful derived evidence"
+    },
+    {
+      "digest": "f08773854b99",
+      "excerpt": "- **THEN** the record labels derived-full-lanes and records actual shard commands separately from the smoke selector",
+      "kind": "clause",
+      "scenario": "Complete full-lane smoke has truthful derived evidence"
+    },
+    {
+      "digest": "85bf75faeafe",
+      "excerpt": "- **WHEN** the dedicated selector has an item absent from successful lane proof",
+      "kind": "clause",
+      "scenario": "A smoke gap triggers the real command"
+    },
+    {
+      "digest": "474928870f65",
+      "excerpt": "- **THEN** the existing dedicated smoke command runs or preflight refuses success rather than manufacturing zero or c...",
+      "kind": "clause",
+      "scenario": "A smoke gap triggers the real command"
+    }
+  ],
+  "shard-lanes-with-pytest-split/testing/CI Shard Ordering and Complete Timing Evidence": [
+    {
+      "digest": "3dae981fa92e",
+      "excerpt": "CI shard preparation SHALL preserve every manifest file, selected item identity, marker, loadfile fixture boundary, n...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "97b586b5f82f",
+      "excerpt": "- **WHEN** complete compatible timing evidence exists for the exact selected file and node population",
+      "kind": "clause",
+      "scenario": "Duration ordering preserves membership"
+    },
+    {
+      "digest": "8a1484eea264",
+      "excerpt": "- **THEN** the same files execute in stable duration-descending order with original loadfile grouping",
+      "kind": "clause",
+      "scenario": "Duration ordering preserves membership"
+    },
+    {
+      "digest": "81ae7bf5ae27",
+      "excerpt": "- **AND** restoring the actual scheduler reordering defeats the positioned order assertion while the corrected schedu...",
+      "kind": "clause",
+      "scenario": "Duration ordering preserves membership"
+    },
+    {
+      "digest": "4451fbc352c2",
+      "excerpt": "- **WHEN** evidence is missing, stale, incomplete, nonfinite, negative, duplicated or incompatible with source, lane,...",
+      "kind": "clause",
+      "scenario": "Invalid timing evidence has a truthful fallback"
+    },
+    {
+      "digest": "2cda79830036",
+      "excerpt": "- **THEN** the original lexical schedule and full selected population remain",
+      "kind": "clause",
+      "scenario": "Invalid timing evidence has a truthful fallback"
+    },
+    {
+      "digest": "9310077f5114",
+      "excerpt": "- **AND** the receipt reports UNKNOWN rather than a guessed weight or a performance pass",
+      "kind": "clause",
+      "scenario": "Invalid timing evidence has a truthful fallback"
+    },
+    {
+      "digest": "cc444620ffee",
+      "excerpt": "- **WHEN** the pinned inherited loadfile scheduler is exercised with planted unequal file duration and item-count groups",
+      "kind": "clause",
+      "scenario": "Scheduler behavior is actually reached"
+    },
+    {
+      "digest": "df31f2d09a02",
+      "excerpt": "- **THEN** the selected no-reorder mechanism preserves duration order without splitting file fixtures",
+      "kind": "clause",
+      "scenario": "Scheduler behavior is actually reached"
+    },
+    {
+      "digest": "b1ce250ac642",
+      "excerpt": "- **AND** a default-reorder causal control reaches the wrong order and every original item still executes",
+      "kind": "clause",
+      "scenario": "Scheduler behavior is actually reached"
+    },
+    {
+      "digest": "714e5f9795b3",
+      "excerpt": "- **WHEN** the actual selected pytest items execute and their JUnit is later sanitized",
+      "kind": "clause",
+      "scenario": "Result identity precedes sanitization"
+    },
+    {
+      "digest": "be14f4d249df",
+      "excerpt": "- **THEN** stable complete-node digest multiplicities, phase outcomes and selected-population equality are recorded f...",
+      "kind": "clause",
+      "scenario": "Result identity precedes sanitization"
+    },
+    {
+      "digest": "5f0934863f94",
+      "excerpt": "- **AND** redacted parameter names and identical aggregate counts are not treated as exact identity proof",
+      "kind": "clause",
+      "scenario": "Result identity precedes sanitization"
+    },
+    {
+      "digest": "061562bfac2c",
+      "excerpt": "- **WHEN** a complete named run supplies wrapper start and item phase/completion observations",
+      "kind": "clause",
+      "scenario": "Timing records actual boundaries"
+    },
+    {
+      "digest": "3e830c4fae17",
+      "excerpt": "- **THEN** job setup, first actual result, first one percent and final five percent are measured from actual timestamps",
+      "kind": "clause",
+      "scenario": "Timing records actual boundaries"
+    },
+    {
+      "digest": "4b55f9461e98",
+      "excerpt": "- **AND** missing progress, observer failure, cancellation or early maxfail leaves the affected metric UNKNOWN",
+      "kind": "clause",
+      "scenario": "Timing records actual boundaries"
+    },
+    {
+      "digest": "645d8e5dfc76",
+      "excerpt": "- **THEN** existing item, job, UV and browser bounds, finalizers and known healthy-workload floors survive until genu...",
+      "kind": "clause",
+      "scenario": "Watchdogs retain complete healthy-workload compatibility"
+    },
+    {
+      "digest": "008fed1ac1c4",
+      "excerpt": "- **AND** a helper timeout/cancellation negative and successful healthy companion test actual reachability; twice a f...",
+      "kind": "clause",
+      "scenario": "Watchdogs retain complete healthy-workload compatibility"
+    },
+    {
+      "digest": "ba3b3ad64039",
+      "excerpt": "- **WHEN** the observer collects actual timing or falls back for unavailable data",
+      "kind": "clause",
+      "scenario": "Timing collection does not repartition the corpus"
+    },
+    {
+      "digest": "f7fddb753f31",
+      "excerpt": "- **THEN** the original ten manifests and full selected item multiplicities remain unchanged",
+      "kind": "clause",
+      "scenario": "Timing collection does not repartition the corpus"
+    },
+    {
+      "digest": "60068430b922",
+      "excerpt": "- **AND** it does not adopt .6 replacement inventory, planner exemptions or extra shard membership",
+      "kind": "clause",
+      "scenario": "Timing collection does not repartition the corpus"
+    }
+  ],
+  "shard-lanes-with-pytest-split/testing/Composed read-only local pre-push refusal": [
+    {
+      "digest": "7a687a76ff2d",
+      "excerpt": "- **WHEN** a partition or collected-budget check requires current test membership",
+      "kind": "clause",
+      "scenario": "Fresh collection-dependent predicate preserves actual population"
+    },
+    {
+      "digest": "d1b99f161b3b",
+      "excerpt": "- **THEN** the real collect-only path and current predicates execute against the complete fresh population",
+      "kind": "clause",
+      "scenario": "Fresh collection-dependent predicate preserves actual population"
+    }
+  ],
+  "slim-module-abc-and-tool-registrar/core-modules/Module Abstract Base Class": [
+    {
+      "digest": "6e6e3e700063",
+      "excerpt": "Every pluggable module MUST subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "a8d9e984e63d",
+      "excerpt": "- **WHEN** a module subclass omits one or more abstract members",
+      "kind": "clause",
+      "scenario": "Incomplete module implementation fails"
+    }
+  ],
+  "slim-module-abc-and-tool-registrar/core-modules/Tool Group Filtering": [
+    {
+      "digest": "f1b5036f2e2c",
+      "excerpt": "Inside `register_tools()`, modules define a local `_tool(group)` helper that returns `mcp.tool()` when the group is e...",
+      "kind": "clause",
+      "scenario": "Contract: _tool(group) decorator pattern"
+    },
+    {
+      "digest": "dec0e5a0eea7",
+      "excerpt": "```python def _tool(group: str): if group_enabled(config, group): return mcp.tool() return lambda fn: fn",
+      "kind": "clause",
+      "scenario": "Contract: _tool(group) decorator pattern"
+    }
+  ],
   "specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point": [
     {
       "digest": "1ba03738c9e6",
@@ -4572,7 +5496,7 @@
     },
     {
       "digest": "b03513f63765",
-      "excerpt": "- **THEN** it contains `@AGENTS.md` as its sole content \u2014 a runtime file reference that the LLM CLI resolves to the c...",
+      "excerpt": "- **THEN** it contains `@AGENTS.md` as its sole content — a runtime file reference that the LLM CLI resolves to the c...",
       "kind": "clause",
       "scenario": "CLAUDE.md delegates to AGENTS.md via file reference"
     },
@@ -4590,7 +5514,7 @@
     },
     {
       "digest": "a4ccd410bf8b",
-      "excerpt": "- **THEN** its first line is `@../shared/AGENTS.md` \u2014 pulling shared butler instructions (tool execution contract, ca...",
+      "excerpt": "- **THEN** its first line is `@../shared/AGENTS.md` — pulling shared butler instructions (tool execution contract, ca...",
       "kind": "clause",
       "scenario": "AGENTS.md composes shared instructions"
     },
@@ -4599,6 +5523,12 @@
       "excerpt": "- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles",
       "kind": "clause",
       "scenario": "AGENTS.md composes shared instructions"
+    },
+    {
+      "digest": "e69f93fa9eaa",
+      "excerpt": "- **THEN** it engages interactive response mode as defined in the butler's CLAUDE.md",
+      "kind": "clause",
+      "scenario": "Interactive response mode"
     }
   ],
   "specify-roster-identity-owner-operations-overlay/core-spawner/System Prompt Composition": [

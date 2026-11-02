@@ -20,8 +20,7 @@ import pytest
 
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
 
 pytestmark = pytest.mark.unit
 
@@ -47,7 +46,7 @@ def _build_app(app) -> tuple:
     mock_mgr = AsyncMock(spec=MCPClientManager)
     mock_mgr.get_client = AsyncMock(side_effect=AssertionError("parse must not call MCP"))
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db, mock_mgr
 

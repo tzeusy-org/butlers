@@ -14,20 +14,13 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.router_discovery import discover_butler_routers
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
 _MODULE_NAME = "lifestyle_api_router"
-
-
-class _Row(dict):
-    def __getitem__(self, key):
-        return super().__getitem__(key)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _get_db_dep():
@@ -37,7 +30,7 @@ def _get_db_dep():
             f"Router module '{_MODULE_NAME}' not found after discovery. "
             "Ensure roster/lifestyle/api/router.py is present."
         )
-    return sys.modules[_MODULE_NAME]._get_db_manager
+    return get_db
 
 
 def _wire_pool(app, mock_pool):
@@ -57,10 +50,10 @@ class TestTasteSummary:
         pool.fetchval = AsyncMock(side_effect=[220, 340, 61, 12])
         pool.fetch = AsyncMock(
             side_effect=[
-                [_row({"kind": "track", "n": 220})],
+                [Record({"kind": "track", "n": 220})],
                 [
-                    _row({"signal_kind": "listen_completed", "n": 200}),
-                    _row({"signal_kind": "listen_skipped", "n": 140}),
+                    Record({"signal_kind": "listen_completed", "n": 200}),
+                    Record({"signal_kind": "listen_skipped", "n": 140}),
                 ],
             ]
         )
@@ -99,8 +92,8 @@ class TestTasteSummary:
         pool.fetchval = AsyncMock(side_effect=[RuntimeError("connection reset"), 340, 61, 12])
         pool.fetch = AsyncMock(
             side_effect=[
-                [_row({"kind": "track", "n": 220})],
-                [_row({"signal_kind": "listen_completed", "n": 340})],
+                [Record({"kind": "track", "n": 220})],
+                [Record({"signal_kind": "listen_completed", "n": 340})],
             ]
         )
         _wire_pool(app, pool)
@@ -184,7 +177,7 @@ class TestTasteWorks:
         pool.fetchval = AsyncMock(return_value=250)
         pool.fetch = AsyncMock(
             return_value=[
-                _row(
+                Record(
                     {
                         "id": "11111111-1111-1111-1111-111111111111",
                         "kind": "track",
@@ -239,7 +232,7 @@ class TestTasteVerdicts:
         pool.fetchval = AsyncMock(return_value=61)
         pool.fetch = AsyncMock(
             return_value=[
-                _row(
+                Record(
                     {
                         "id": "22222222-2222-2222-2222-222222222222",
                         "work_id": None,

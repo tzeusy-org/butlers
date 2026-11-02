@@ -8,7 +8,7 @@ to the session span.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 import pytest
 from opentelemetry import trace
@@ -71,6 +71,7 @@ class ContextCapturingAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "context-capturing"
 
+    @override
     async def invoke(
         self,
         prompt: str,

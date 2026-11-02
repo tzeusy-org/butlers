@@ -273,14 +273,16 @@ class TestGetApprovalsPolicy:
         result = await get_approvals_policy_quiet_hours(mock_pool)
         assert result is None
 
-    async def test_returns_none_on_db_error(self):
+    async def test_unavailable_read_is_distinct_from_missing_policy(self):
         """DB error (table absent or connection error) → returns None, not exception."""
         from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
 
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(side_effect=Exception("relation does not exist"))
-        result = await get_approvals_policy_quiet_hours(mock_pool)
-        assert result is None
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+
+        with pytest.raises(AttentionReadUnavailable):
+            await get_approvals_policy_quiet_hours(mock_pool)
 
     async def test_preserves_missing_timezone_for_fail_open_evaluation(self):
         """A partial persisted policy is not silently reinterpreted as UTC."""

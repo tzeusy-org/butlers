@@ -8,10 +8,8 @@ Covers:
 - GET /relationship/groups — list groups includes labels field
 - GET /relationship/groups/{id} — get group includes labels field
 
-Pattern: create_app() causes dynamic modules to be loaded and wired via
-wire_db_dependencies. After create_app(), the relationship router module is
-available in sys.modules["relationship_api_router"]. We override its
-_get_db_manager via app.dependency_overrides using the module's own function.
+Pattern: create_app() loads the relationship router dynamically while all
+routers share the public get_db dependency used by these overrides.
 """
 
 from __future__ import annotations
@@ -25,6 +23,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -37,23 +37,6 @@ _NOW = "2026-01-01T00:00:00+00:00"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(
@@ -83,7 +66,7 @@ def _make_app(pool):
     rel_module = sys.modules.get("relationship_api_router")
     if rel_module is None:
         raise RuntimeError("relationship_api_router not found in sys.modules after create_app()")
-    app.dependency_overrides[rel_module._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 
@@ -94,7 +77,7 @@ def _make_app(pool):
 
 class TestCreateLabel:
     async def test_create_label_returns_201(self):
-        label_row = _row({"id": _LID, "name": "VIP", "color": "#ff0000"})
+        label_row = Record({"id": _LID, "name": "VIP", "color": "#ff0000"})
         pool = _mock_pool()
 
         async def _fetch(q: str, *args):
@@ -133,12 +116,12 @@ class TestCreateLabel:
 
 class TestGetGroupLabels:
     async def test_returns_labels_for_group(self):
-        label_row = _row({"id": _LID, "name": "Friend", "color": None})
+        label_row = Record({"id": _LID, "name": "Friend", "color": None})
 
         async def _fetch(q: str, *args):
             # _table_columns queries pg_attribute with to_regclass
             if "pg_attribute" in q:
-                return [_row({"column_name": "group_id"})]
+                return [Record({"column_name": "group_id"})]
             return [label_row]
 
         pool = _mock_pool()
@@ -274,7 +257,7 @@ class TestRemoveGroupLabel:
 
 class TestListGroupsLabels:
     async def test_list_groups_includes_labels_field(self):
-        group_row = _row(
+        group_row = Record(
             {
                 "id": _GID,
                 "name": "Test Group",
@@ -284,7 +267,7 @@ class TestListGroupsLabels:
                 "updated_at": _NOW,
             }
         )
-        label_row = _row({"group_id": _GID, "id": _LID, "name": "VIP", "color": "#ff0000"})
+        label_row = Record({"group_id": _GID, "id": _LID, "name": "VIP", "color": "#ff0000"})
 
         # Track calls to distinguish between the two pg_attribute calls and other fetches
         pg_attr_call_count = 0
@@ -295,9 +278,9 @@ class TestListGroupsLabels:
                 pg_attr_call_count += 1
                 # Both _table_columns calls (groups + group_labels) return columns
                 return [
-                    _row({"column_name": "id"}),
-                    _row({"column_name": "description"}),
-                    _row({"column_name": "updated_at"}),
+                    Record({"column_name": "id"}),
+                    Record({"column_name": "description"}),
+                    Record({"column_name": "updated_at"}),
                 ]
             if "group_labels" in q and "JOIN labels" in q:
                 return [label_row]

@@ -10,11 +10,13 @@
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
+- [Off-Node Backup Copy](offsite-backup-copy.md) — encrypted restic copy of the dumps to the owner's tailnet device (disabled by default; owner-gated steps)
 - [Data Retention](data-retention.md) — per-table retention decisions, opt-in pruners
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff
 - [Connector Scaling](connector-scaling.md) — horizontal scaling for connectors
 - [Decision Beads](decision-beads.md) — owner-decision bead convention and its linter
+- [Ambient Projections](ambient-projections-home-assistant.md) — glance formats (JSON, text, 1-bit PNG) and a Home Assistant package with an edge staleness sensor
 - [Troubleshooting](troubleshooting.md) — common issues, debugging, health checks
 - [Runtime Attention](runtime-attention.md) — runtime-attention paging path and its stored functions
 - [QA Publication Boundary](qa-publication-boundary.md) — durable publication operations and ambiguous-lineage holds (publication disabled)
@@ -22,3 +24,4 @@
 - [Fleet and QA-Patrol Conditions](fleet-condition-controller.md) — independent fleet condition, QA patrol age, and per-butler handoff
 - [Relationship Effective-Time Cutover](relationship-effective-time-cutover.md) — draft contract: signed receipt, lifecycle fence, and gated rel036 for the legacy-index drop
 - [Receiver-Derived Routing Cutover](receiver-derived-routing-cutover.md) — transitional: flag cutover and rollback boundary until production activation
+- [Coordinator Guardrails](coordinator-guardrails.md) — beads coordinator reconciliation rules and bd quirks

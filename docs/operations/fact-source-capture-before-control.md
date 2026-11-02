@@ -32,9 +32,13 @@ from complete shard, smoke, coverage or release evidence. Existing candidate AFT
 and the mandatory full protected source tree remain separate.
 
 The producer invokes the existing owned `install_ci_uv.py` within its own confined domain,
-with a private path-output sink. The existing thirteen workflow installer consumers remain
-unchanged; installation is part of this control rather than a new workflow installer step.
-The existing confined child subreaper owns every execution domain. The aggregate 2480-second
+with a private path-output sink. Ordinary workflow installer consumers remain unchanged by this control; installation is part
+of the control rather than a new workflow installer step.
+The executor-local `scripts/fact_source_capture_before_supervisor.py` owns every execution
+domain. It preserves the applied diagnostic-only supervisor from PR5082
+(`2e970c17a1708014f78394f14f184a483e9d9c3c`), with only the terminal module-level
+`raise SystemExit(2) from None` spelling required by current lint. Every supplier function
+and scanner/cleanup predicate is unchanged; the retired shared action is not restored. The aggregate 2480-second
 budget starts before checkout and includes the preserved 640-second UV installer and
 640-second environment reserve, two 480-second node envelopes including cleanup, and 120
 seconds each for setup and evidence. The 45-minute job is provisional, not measured p95.
@@ -69,3 +73,15 @@ observation is validated against an exact schema before projection. A cancelled/
 helper may leave no such observation, which remains unknown; lifecycle refusal is never
 promoted to a successful preparation or paired witness. The original preparation, aggregate
 and process-cleanup deadlines and predicates are unchanged.
+
+The optional lifecycle `first_scan_refusal` is either null or exactly four bounded integers:
+`s` identifies supervisor/owned-descendant/settlement scan sites (1/2/3); `k` identifies
+ENOENT/ESRCH/EACCES/EPERM/other-OS/value errors (1 through 6); `o` identifies task listing,
+child-file open/context, read or PID conversion (1 through 4). `b` records only prior/current
+identity presence, equality and departed-state bits; it contains no PID, TID, path or text.
+A missing, duplicate or malformed diagnostic, zero/invalid refusal count, impossible bit
+combination or accepted same-identity departed ENOENT does not export a tuple. This projection
+never changes the existing refusal latch, cleanup completeness, return status or deadlines.
+Synthetic tuple controls establish the software projection only. The historical two scan
+refusals remain unlocalized: these new fields cannot retrospectively establish their cause,
+prove that a future refusal will recur, or claim PG CALL, BEFORE or paired AFTER completion.

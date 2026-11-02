@@ -20,7 +20,7 @@ _MODELS_PATH = Path(__file__).resolve().parents[1] / "api" / "models.py"
 
 def _load_models_module():
     spec = importlib.util.spec_from_file_location(
-        "relationship_api_models_for_group_test", _MODELS_PATH
+        "_relationship_api_models_for_group_test", _MODELS_PATH
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

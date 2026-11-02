@@ -17,12 +17,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     """Register all relationship MCP tools as closures over *module*."""
 
     from butlers.core.tool_call_capture import get_current_runtime_session_id
-    from butlers.modules.base import group_enabled
+    from butlers.modules.base import tool_registrar
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
@@ -1150,7 +1147,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             entity_id,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_update(
         entity_id: str,
         canonical_name: str | None = None,
@@ -1166,7 +1163,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             metadata=metadata,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_set_posture(entity_id: str, posture: str) -> dict[str, Any]:
         """Record how the owner wants a person treated: active, memorial, quiet or no_contact.
 
@@ -1207,7 +1204,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     # =================================================================
-    # Facts triple-store tools (group: entity — central writer)
+    # Facts triple-store tools (unconditional central writer)
     # =================================================================
 
     # Import the library WRITER FUNCTION directly. Note ``butlers.tools.
@@ -1414,7 +1411,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _predicate_coverage(module._get_pool(), entity_id, predicates)
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def relationship_record_coverage(
         entity_id: uuid.UUID,
         predicate: str,

@@ -17,7 +17,7 @@ import asyncpg
 from pydantic import BaseModel, BeforeValidator, Field
 
 from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
-from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, group_enabled
+from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 from butlers.transport_identifiers import is_whatsapp_transport_identifier
 
 
@@ -307,17 +307,11 @@ class MemoryModule(Module):
         self._maintenance_runtime_owner: str | None = None
         self._entity_rebind_tasks: list[asyncio.Task[None]] = []
 
-    @property
-    def name(self) -> str:
-        return "memory"
+    name = "memory"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return MemoryModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the full reclassification command as safety-critical."""
@@ -673,9 +667,9 @@ class MemoryModule(Module):
         own schema, so its ``episodes``/``facts``/``rules`` tables never collide
         with a same-named domain table in the butler schema (bu-93y4rt /
         bu-w6jca owner decision). Idempotent and a no-op when no override is set
-        or the override equals the butler's own schema. Mirrors the existing
-        chronicler/relationship side-pool pattern (``role`` defaults to ``None``,
-        matching those pools).
+        or the override equals the butler's own schema. The established primary
+        Database supplies the owner role; the private schema supplies only the
+        search path. Missing PostgreSQL privileges remain a startup refusal.
         """
         if self._memory_db is not None:
             return
@@ -686,17 +680,7 @@ class MemoryModule(Module):
             return
         from butlers.db import Database
 
-        mem_db = Database(
-            db_name=self._db.db_name,
-            schema=override,
-            host=self._db.host,
-            port=self._db.port,
-            user=self._db.user,
-            password=self._db.password,
-            ssl=self._db.ssl,
-            min_pool_size=self._db.min_pool_size,
-            max_pool_size=self._db.max_pool_size,
-        )
+        mem_db = Database.for_owned_schema(self._db, override)
         await mem_db.connect()
         self._memory_db = mem_db
         logger.info(
@@ -754,7 +738,8 @@ class MemoryModule(Module):
         """Return a lazily-created asyncpg pool scoped to the chronicler schema.
 
         Creates a new pool on first call using the same PostgreSQL connection
-        details as ``self._db`` but with ``search_path = chronicler, public``.
+        details and verified primary role as ``self._db``, only for the actual
+        Chronicler owner, with ``search_path = chronicler, public``.
         Returns ``None`` when the memory module is not initialised (e.g. in
         tests that do not configure a DB).
 
@@ -765,17 +750,7 @@ class MemoryModule(Module):
         if self._chronicler_pool is None:
             from butlers.db import Database
 
-            ch_db = Database(
-                db_name=self._db.db_name,
-                schema="chronicler",
-                host=self._db.host,
-                port=self._db.port,
-                user=self._db.user,
-                password=self._db.password,
-                ssl=self._db.ssl,
-                min_pool_size=self._db.min_pool_size,
-                max_pool_size=self._db.max_pool_size,
-            )
+            ch_db = Database.for_owned_schema(self._db, "chronicler")
             await ch_db.connect()
             self._chronicler_pool = ch_db.pool
         return self._chronicler_pool
@@ -787,7 +762,8 @@ class MemoryModule(Module):
         audit row so session-side merges leave history regardless of entry path
         (spec: relationship-merge-review). Created on first call using the same
         PostgreSQL connection details as ``self._db`` but with
-        ``search_path = relationship, public`` (mirrors the chronicler pool).
+        ``search_path = relationship, public``. Only the established Relationship
+        primary owner may open it; other butlers cannot assume a sibling role.
         Returns ``None`` when the memory module is not initialised (e.g. in tests
         that inject a mock pool directly into entity_merge).
 
@@ -798,17 +774,7 @@ class MemoryModule(Module):
         if self._relationship_pool is None:
             from butlers.db import Database
 
-            rel_db = Database(
-                db_name=self._db.db_name,
-                schema="relationship",
-                host=self._db.host,
-                port=self._db.port,
-                user=self._db.user,
-                password=self._db.password,
-                ssl=self._db.ssl,
-                min_pool_size=self._db.min_pool_size,
-                max_pool_size=self._db.max_pool_size,
-            )
+            rel_db = Database.for_owned_schema(self._db, "relationship")
             await rel_db.connect()
             self._relationship_pool = rel_db.pool
         return self._relationship_pool
@@ -880,12 +846,7 @@ class MemoryModule(Module):
         from butlers.modules.memory.tools import reading as _reading
         from butlers.modules.memory.tools import writing as _writing
 
-        # Build a group-aware tool decorator: returns @mcp.tool() when the
-        # group is enabled, or a no-op passthrough when disabled.
-        def _tool(group: str):
-            if group_enabled(config, group):
-                return mcp.tool()
-            return lambda fn: fn  # no-op — function defined but not registered
+        _tool = tool_registrar(mcp, config)
 
         # --- Writing tools ---
 

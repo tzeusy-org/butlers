@@ -68,11 +68,10 @@ def test_approval_request_deferred_rows_are_not_coalesced() -> None:
                     {
                         "verb": "approve",
                         "callback_token": f"apr1:{token_suffix}:a:0123456789abcdef",
-                        "dashboard_url": "https://dashboard.example.test/approvals",
                     },
                     {
                         "verb": "open_dashboard",
-                        "dashboard_url": "https://dashboard.example.test/approvals",
+                        "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
                     },
                 ],
             },

@@ -26,14 +26,17 @@ from butlers.daemon import ButlerDaemon
 from butlers.modules.base import ToolMeta
 from butlers.modules.registry import default_registry
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = pytest.mark.contract
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = _THIS_FILE.parents[2]
 _D4_FIELDS = (
     "owner_domain",
     "effect_class",
     "output_trust",
     "output_sensitivity",
     "resource_params",
+    "selection_bound",
     "safety_args",
     "approval_policy",
     "idempotency",
@@ -91,7 +94,7 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
         response = catalog["calendar_respond"]
         assert {"calendar_respond", "calendar_response_fence_status"} <= set(catalog)
         assert response.classification_complete
-        assert response.group_name == "core"
+        assert response.group_name == "response"
         assert catalog["calendar_response_fence_status"].group_name == "direct"
         assert all(getattr(response, field, None) is not None for field in _D4_FIELDS)
         assert response.effect_class == "communicate"
@@ -131,7 +134,7 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
 async def _complete_core_catalog(name):
     daemon = ButlerDaemon(_ROOT / "roster" / name, db=SimpleNamespace(pool=AsyncMock()))
     daemon.config = load_config(_ROOT / "roster" / name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=None)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(update={"core_groups": None})
     daemon.config.modules = {}
     daemon.mcp = FastMCP(f"authorization-core-{name}")
     daemon.spawner = MagicMock()
@@ -194,13 +197,85 @@ async def _provider_catalogs():
     assert not errors, errors
 
 
+def _catalog_runtime_databases(monkeypatch: pytest.MonkeyPatch):
+    """Establish actual owner Databases while keeping driver I/O in memory.
+
+    Runtime role validation, verification, codec setup and private derivation
+    stay real. Only asyncpg connection/pool creation is replaced; these fake
+    driver results are software setup, never PostgreSQL authorization evidence.
+    """
+    from butlers.db import Database
+
+    databases = []
+
+    def connection():
+        conn = AsyncMock()
+        conn.terminate = MagicMock()
+        conn.fetchval.return_value = True
+        return conn
+
+    async def connect(**kwargs):
+        return connection()
+
+    async def create_pool(**kwargs):
+        conn = connection()
+        await kwargs["init"](conn)
+        setup = kwargs.get("setup")
+        if setup is not None:
+            await setup(conn)
+        pool = AsyncMock()
+        pool.fetchval.return_value = None
+
+        class Acquisition:
+            async def get(self):
+                if setup is not None:
+                    await setup(conn)
+                return conn
+
+            def __await__(self):
+                return self.get().__await__()
+
+            async def __aenter__(self):
+                return await self.get()
+
+            async def __aexit__(self, *exc):
+                await pool.release(conn)
+
+        pool.acquire = MagicMock(side_effect=Acquisition)
+        databases.append(kwargs["init"].__self__)
+        return pool
+
+    monkeypatch.setattr("butlers.db.asyncpg.connect", AsyncMock(side_effect=connect))
+    monkeypatch.setattr("butlers.db.asyncpg.create_pool", AsyncMock(side_effect=create_pool))
+
+    def primary_database(schema):
+        db = Database(
+            db_name="butlers",
+            schema=schema,
+            role=f"butler_{schema}_rw",
+            host="localhost",
+            port=5432,
+            user="catalog-fixture",
+            password=None,
+            ssl=None,
+            min_pool_size=1,
+            max_pool_size=1,
+        )
+        return db
+
+    async def close_databases():
+        for db in reversed(databases):
+            await db.close()
+        databases.clear()
+
+    return primary_database, close_databases
+
+
 async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Execute native registration and wrapping, never provider or handler bodies."""
-    from pathlib import Path
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from butlers.config import load_config
     from butlers.core.tool_catalog import validate_authorization_catalog
@@ -208,33 +283,21 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
     from butlers.daemon import ButlerDaemon
     from butlers.modules.registry import default_registry
 
-    roster = Path(__file__).resolve().parents[2] / "roster"
+    roster = _THIS_FILE.parents[2] / "roster"
     registry = default_registry()
     await _provider_catalogs()
     for variant in ("general", "switchboard", "messenger", "relationship", "chronicler"):
         synthetic = await _complete_core_catalog(variant)
         validate_authorization_catalog(synthetic, store_writers=STORE_WRITERS)
-    # Native private-memory pool construction is part of registration; opening
-    # a database is outside this definition gate. Keep its actual config intact.
-    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    # Keep real owner/private-memory establishment, with no driver network I/O.
+    new_runtime_database, close_runtime_databases = _catalog_runtime_databases(monkeypatch)
     catalogs = {}
     for directory in sorted(roster.iterdir()):
         if not (directory / "butler.toml").exists():
             continue
         daemon = ButlerDaemon(
             directory,
-            db=SimpleNamespace(
-                pool=AsyncMock(),
-                schema=directory.name,
-                db_name="butlers",
-                host="localhost",
-                port=5432,
-                user="catalog-fixture",
-                password=None,
-                ssl=None,
-                min_pool_size=1,
-                max_pool_size=1,
-            ),
+            db=new_runtime_database(directory.name),
         )
         daemon.config = load_config(directory)
         daemon.mcp = FastMCP(f"authorization-{directory.name}")
@@ -243,6 +306,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         daemon._module_configs = daemon._validate_module_configs()
         before_tasks = asyncio.all_tasks()
         try:
+            await daemon.db.connect()
             daemon._register_core_tools()
             await daemon._register_module_tools()
             await daemon._apply_approval_gates()
@@ -261,6 +325,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
                 task.cancel()
             if registration_tasks:
                 await asyncio.gather(*registration_tasks, return_exceptions=True)
+            await close_runtime_databases()
     assert set(catalogs) == {p.name for p in roster.glob("*/butler.toml") for p in [p.parent]}
     for owner in ("messenger", "relationship"):
         response = catalogs[owner]["calendar_respond"]
@@ -314,7 +379,6 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
 
 
 async def test_authorization_catalog_rejects_real_definition_mutations() -> None:
-    from dataclasses import replace
 
     from butlers.core.tool_catalog import (
         AUTHORIZATION_FIELDS,
@@ -354,6 +418,9 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
         ("idempotency", "sometimes"),
         ("owner_authority", "yes"),
         ("resource_params", ("absent_parameter",)),
+        ("selection_bound", {"absent_parameter": True}),
+        ("selection_bound", {}),
+        ("selection_bound", {"key": "yes"}),
         ("safety_args", ("_command_digest",)),
         ("owner_domain", " "),
         ("approval_policy", "enabled"),
@@ -425,7 +492,6 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
 async def test_authorization_policy_freezes_and_changes_generation_only() -> None:
     policy = {"enabled": True, "constraints": {"recipient": ["owner"]}}
     parties = ["query"]
-    from dataclasses import replace
 
     from butlers.core.tool_catalog import RecipientParameters
 
@@ -447,6 +513,7 @@ async def test_authorization_policy_freezes_and_changes_generation_only() -> Non
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("query",),
+        selection_bound={"query": False},
         safety_args=(),
         approval_policy=policy,
         idempotency="none",
@@ -531,7 +598,6 @@ asyncio.run(main())
 
 
 async def test_module_declarations_cannot_override_actual_owner_or_policy(monkeypatch) -> None:
-    from dataclasses import replace
 
     from butlers.modules.calendar import CalendarModule
 
@@ -571,3 +637,40 @@ async def test_module_declarations_cannot_override_actual_owner_or_policy(monkey
     monkeypatch.setattr(CalendarModule, "tool_metadata", incorrect_policy)
     with pytest.raises(ToolCatalogError, match="calendar_respond.*approval_policy"):
         await _roster_catalog("messenger")
+
+
+def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
+    """REQ-capability-authorization-002/-018: each resource param carries an explicit mark."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    unmarked = [
+        (entry.canonical_name, entry.resource_params, entry.selection_bound)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        if not isinstance(entry.selection_bound, dict)
+        or set(entry.selection_bound) != set(entry.resource_params or ())
+        or any(not isinstance(flag, bool) for flag in entry.selection_bound.values())
+    ]
+    assert not unmarked, unmarked
+
+    # Selection-bound is true only where a spec requires the scope be exactly what the owner
+    # picked (REQ-capability-authorization-018; RFC 0038 D7). A bound param makes its capability
+    # neither listed nor callable without an owner-surface selection record, and obligation,
+    # third-party, caused and message-admitted goals never carry one, so no current param
+    # qualifies. Adding the first one is a deliberate edit to this pin.
+    bound = {
+        (entry.module_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, flag in entry.selection_bound.items()
+        if flag
+    }
+    assert bound == set()
+
+
+async def test_finance_fixed_warning_read_is_registered_sensitive_and_never_owner_authority():
+    catalog = await _roster_catalog("finance")
+    descriptor = catalog["subscription_warning_still_relevant"]
+    assert descriptor.owner_domain == "finance"
+    assert descriptor.effect_class == "read" and descriptor.owner_authority is False
+    assert descriptor.output_sensitivity == "sensitive"
+    assert descriptor.read_stores == ("subscriptions",) and descriptor.write_stores == ()
+    assert descriptor.llm_presentable is False

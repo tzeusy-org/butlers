@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 import time
 from pathlib import Path
@@ -16,6 +16,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.ingestion_policy import IngestionPolicyEvaluator
 
 pytestmark = pytest.mark.unit
@@ -38,11 +39,8 @@ _RULE = {
 
 def _db_dependency():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+        importlib.import_module("butlers.api._roster.switchboard.router")
+    return get_db
 
 
 async def _test(app, envelope: dict) -> dict:

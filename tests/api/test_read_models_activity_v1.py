@@ -14,13 +14,13 @@ Verifies:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 
-from butlers.api.read_models.activity_v1 import (
+from butlers.api.read_models.activity import (
     ACTION_COLUMNS,
     EPISODE_COLUMNS,
     READ_MODEL_VERSION,
@@ -35,6 +35,7 @@ from butlers.api.read_models.activity_v1 import (
     row_to_episode,
     row_to_session,
 )
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -47,13 +48,6 @@ _EPISODE_ID = uuid4()
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_record(d: dict):
-    """Wrap a dict in a MagicMock that supports subscript access."""
-    m = MagicMock()
-    m.__getitem__ = lambda self, k: d[k]
-    return m
 
 
 def _session_dict(**overrides) -> dict:
@@ -141,7 +135,7 @@ def test_episode_columns_is_non_empty_string():
 
 
 def test_row_to_session_maps_all_fields():
-    row = _make_record(_session_dict())
+    row = Record(_session_dict())
     dto = row_to_session(row)
 
     assert isinstance(dto, ActivitySessionRow)
@@ -155,13 +149,13 @@ def test_row_to_session_maps_all_fields():
 
 
 def test_row_to_session_none_prompt_allowed():
-    row = _make_record(_session_dict(prompt=None))
+    row = Record(_session_dict(prompt=None))
     dto = row_to_session(row)
     assert dto.prompt is None
 
 
 def test_row_to_session_none_completed_at_allowed():
-    row = _make_record(_session_dict(completed_at=None))
+    row = Record(_session_dict(completed_at=None))
     dto = row_to_session(row)
     assert dto.completed_at is None
 
@@ -172,7 +166,7 @@ def test_row_to_session_none_completed_at_allowed():
 
 
 def test_row_to_action_maps_all_fields():
-    row = _make_record(_action_dict())
+    row = Record(_action_dict())
     dto = row_to_action(row)
 
     assert isinstance(dto, ActivityActionRow)
@@ -185,13 +179,13 @@ def test_row_to_action_maps_all_fields():
 
 
 def test_row_to_action_none_agent_summary_allowed():
-    row = _make_record(_action_dict(agent_summary=None))
+    row = Record(_action_dict(agent_summary=None))
     dto = row_to_action(row)
     assert dto.agent_summary is None
 
 
 def test_row_to_action_none_session_id_allowed():
-    row = _make_record(_action_dict(session_id=None))
+    row = Record(_action_dict(session_id=None))
     dto = row_to_action(row)
     assert dto.session_id is None
 
@@ -202,7 +196,7 @@ def test_row_to_action_none_session_id_allowed():
 
 
 def test_row_to_episode_maps_all_fields():
-    row = _make_record(_episode_dict())
+    row = Record(_episode_dict())
     dto = row_to_episode(row)
 
     assert isinstance(dto, ActivityEpisodeRow)
@@ -215,13 +209,13 @@ def test_row_to_episode_maps_all_fields():
 
 
 def test_row_to_episode_none_content_allowed():
-    row = _make_record(_episode_dict(content=None))
+    row = Record(_episode_dict(content=None))
     dto = row_to_episode(row)
     assert dto.content is None
 
 
 def test_row_to_episode_none_importance_allowed():
-    row = _make_record(_episode_dict(importance=None))
+    row = Record(_episode_dict(importance=None))
     dto = row_to_episode(row)
     assert dto.importance is None
 
@@ -234,7 +228,7 @@ def test_row_to_episode_none_importance_allowed():
 async def test_query_activity_sessions_returns_typed_dtos():
     """Returns a list of ActivitySessionRow DTOs from pool rows."""
     mock_pool = AsyncMock()
-    row = _make_record(_session_dict())
+    row = Record(_session_dict())
     mock_pool.fetch = AsyncMock(return_value=[row])
 
     result = await query_activity_sessions(mock_pool, limit=10)
@@ -282,7 +276,7 @@ async def test_query_activity_sessions_returns_empty_list_when_no_rows():
 async def test_query_activity_actions_returns_typed_dtos():
     """Returns a list of ActivityActionRow DTOs from pool rows."""
     mock_pool = AsyncMock()
-    row = _make_record(_action_dict())
+    row = Record(_action_dict())
     mock_pool.fetch = AsyncMock(return_value=[row])
 
     result = await query_activity_actions(mock_pool, limit=10)
@@ -321,7 +315,7 @@ async def test_query_activity_actions_skips_undefined_table():
 async def test_query_activity_episodes_returns_typed_dtos():
     """Returns a list of ActivityEpisodeRow DTOs from pool rows."""
     mock_pool = AsyncMock()
-    row = _make_record(_episode_dict())
+    row = Record(_episode_dict())
     mock_pool.fetch = AsyncMock(return_value=[row])
 
     result = await query_activity_episodes(mock_pool, limit=10)

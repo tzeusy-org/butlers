@@ -11,7 +11,7 @@ Connectors are transport adapters that normalize events from external systems (T
 
 ## Envelope Contract
 
-The wire shape is defined by Pydantic models in `roster/switchboard/tools/routing/contracts.py`:
+The wire shape is defined by Pydantic models in `roster/switchboard/tools/contracts.py`:
 `IngestEnvelopeV1` and its blocks `IngestSourceV1`, `IngestEventV1`, `IngestSenderV1`,
 `IngestPayloadV1`, and `IngestControlV1`. The closed vocabularies — `SourceChannel`,
 `SourceProvider`, `PolicyTier`, `IngestionTier` — and the allowed channel-to-provider pairs
@@ -83,6 +83,32 @@ The same decision applies before and inside the advisory lock. Connectors must:
 - Send stable source identity fields on every submission, including retries.
 - Provide `control.idempotency_key` when the source has no stable event id.
 - Treat duplicate acceptance as success, not error.
+
+## Dark goal input and reply references
+
+The trusted closed goal harness reads canonical retained `normalized_text`, attachments and
+`payload.untrusted_spans` by server request reference. It recomputes the input digest and returns a
+frozen sequence whose marked ranges and attribution labels are data. There is no caller-supplied
+trusted cache, duplicate raw store, live ingress consumer, model launch or key mount. Owner sender
+verification is independent of quoted authors, display names and body claims. Email From/domain
+verdicts alone do not authenticate an owner principal. Authenticated dashboard authority requires
+the private stored owner admission bound to the exact accepted origin/body and unique live entity.
+
+`event.in_reply_to_ref` identifies the message being answered; `event.reply_target_ref` identifies
+where to send the current reply. Neither is a caller-selected goal/effect ID. Exact stored inbound
+or outbound provenance must match transport, endpoint, conversation and verified recipient.
+Unknown/foreign references create no guessed continuity. Missing inbound trust is exposed; a bot
+reply uses the producing goal's actual exposure. A live owner prompt may receive one immutable
+source-bound inbox entry without a new budget or invocation; Stop/expiry are rechecked after locks.
+
+Channel kind comes only from the authoritative registry. A successful missing/invalid declaration
+means message; lookup failure refuses. Feed input records through its domain-owned deterministic
+service and creates no goal without a matching Git declaration. Registry kind drift cannot change
+the canonical accepted request identity or allocate a second budget on retry.
+
+Roll out receiver/schema before marker/reference producers because envelope models forbid extras.
+Complete buffered and filtered replay propagation before consumption. Keep live activation off;
+rollback disables activation/consumption before removing reader or producer support.
 
 ## Sender Authentication Verdict
 

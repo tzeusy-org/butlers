@@ -19,127 +19,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  route:
-    timeout-minutes: 2
-    # Stdlib-only routing cannot establish testcase membership. Uncertainty widens.
+  go-bridge:
+    # New lane: source-derived bound, not measured healthy/p95 calibration.
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
-    outputs:
-      backend: ${{ steps.classify.outputs.backend }}
-      frontend: ${{ steps.classify.outputs.frontend }}
-      mode: ${{ steps.classify.outputs.mode }}
-      test_paths: ${{ steps.classify.outputs.test_paths }}
-      inventory: ${{ steps.classify.outputs.inventory }}
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Filter changed paths
-        id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
-        with:
-          list-files: json
-          filters: |
-            docs:
-              - 'about/**'
-              - 'openspec/**'
-              - 'docs/**'
-              - '*.md'
-              - '.beads/**'
-              - 'LICENSE'
-            all:
-              - '**'
-
-      - name: Classify and conservatively plan with stdlib only
-        id: classify
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          ALL_FILES: ${{ steps.filter.outputs.all_files }}
-          DOCS_FILES: ${{ steps.filter.outputs.docs_files }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 scripts/ci_route.py
-
-  inventory:
-    timeout-minutes: 35
-    # Fresh membership, both budgets and the exact attempt assignment are the
-    # only backend prerequisites. Static guards remain mandatory final gates.
-    runs-on: ubuntu-latest
-    needs: [route]
-    if: needs.route.outputs.inventory == 'true'
-    permissions:
-      contents: read
-      actions: read
+    defaults:
+      run:
+        working-directory: whatsapp-bridge
+        shell: bash
     env:
-      CI_COVERAGE: '0'
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+          persist-credentials: false
+      - name: Set up Go 1.25.11
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
-
-      - name: Restore compatible advisory file weights
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: uv run --no-sync python scripts/ci_weight_candidates.py --restore --output "${RUNNER_TEMP}/ci-weights"
-
-      - name: Collect one fresh installed pytest inventory and enforce both budgets
-        run: uv run --no-sync python scripts/ci_partition.py --weights "${RUNNER_TEMP}/ci-weights/weights.json" --output "${RUNNER_TEMP}/ci-inventory"
-
-      - name: Upload exact attempt inventory and assignment
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory/*.json
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
+          go-version: '1.25.11'
+          check-latest: false
+          cache: true
+          cache-dependency-path: whatsapp-bridge/go.sum
+      - name: Test the Go bridge
+        run: timeout --signal=TERM --kill-after=30s 10m go test -mod=readonly -count=1 -timeout=5m ./...
+      - name: Verify Go lockfiles are unchanged
+        run: git diff --exit-code -- go.mod go.sum
 
   guards:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; inventory owns membership/budgets, preflight owns reconciliation and smoke.
+    # their exact scopes; smoke owns the lane counts, test budget and smoke
+    # tests, and check-totals reconciles the lane totals after the groups finish.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
     # load-bearing repo knowledge. Steps run under `!cancelled()` so one failing
     # guard never hides the findings of the others; the last step fails the job
-    # if any guard step failed. Runs on every event. The active
-    # `main-merge-queue` ruleset requires `guards` alongside `check` and
-    # `frontend` on the exact `merge_group` tree; unlike path-filtered
-    # `frontend`, this job never skips.
+    # if any guard step failed. Runs on every event; `alls-green` requires it.
     runs-on: ubuntu-latest
-    needs: [route]
     permissions:
       contents: read
       pull-requests: read
@@ -149,13 +69,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Set up Node 24
         uses: actions/setup-node@v6
@@ -170,31 +85,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: uv lock --check
 
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
+      - name: Cache pinned lint tools
         uses: actions/cache@v4
         continue-on-error: true
         with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
+          path: .tmp/lint-tools
+          key: lint-tools-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/lint-tool-versions.json') }}
 
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
+      - name: Install lint tools
+        run: make install-lint-tools
 
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Prepare trusted Pyright source
+        run: make prepare-typecheck
 
       - name: Lint
         id: lint
@@ -225,8 +127,19 @@ jobs:
         run: |
           # Fetch-point admission: reruns see actual current metadata, while
           # the commit range below remains bound to this event's source head.
-          python3 scripts/fetch_pr_metadata.py \
-            --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP"
+          # 97s retry budget; nominal 100s TERM + 3s KILL command envelope.
+          # The step shell stays outside the helper's supervised process group.
+          if timeout --signal=TERM --kill-after=3s 100s \
+            python3 scripts/fetch_pr_metadata.py \
+              --number "$PR_NUMBER" --output-dir "$RUNNER_TEMP" 2>/dev/null; then
+            :
+          else
+            status=$?
+            rm -f -- "$RUNNER_TEMP/pr_title.txt" "$RUNNER_TEMP/pr_body.txt" \
+              "$RUNNER_TEMP/pr_metadata_receipt.json" 2>/dev/null || true
+            echo 'pr_metadata: unavailable_or_invalid'
+            exit "$status"
+          fi
 
       - name: Fetch review comments (best-effort)
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
@@ -368,29 +281,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_cited_requirements_resolve.py
 
-      # Frontend-copy-inventory guard (bu-erfdj): frontend/COPY_INVENTORY.md
-      # is generated by scripts/extract-frontend-copy.py, is committed so copy changes
-      # surface in review, and tells readers not to edit it by hand -- but nothing ever
-      # regenerated it, so it drifted silently while presenting itself as authoritative.
-      # Committing the inventory only pays off if it is guaranteed current, so this
-      # regenerates it from the checked-out frontend sources and fails on any diff.
-      # The generator parses .tsx files directly (no node_modules, no npm install) and
-      # its output is a pure function of those files with no timestamp or other
-      # nondeterministic field, so this gate cannot flap.
-      - name: Regenerate the frontend copy inventory
-        id: frontend_copy_regenerate
-        if: ${{ !cancelled() }}
-        run: python3 scripts/extract-frontend-copy.py
-
-      - name: Check the committed inventory matches the regenerated one
-        id: frontend_copy
-        if: ${{ !cancelled() }}
-        run: |
-          if ! git diff --exit-code -- frontend/COPY_INVENTORY.md; then
-            echo "::error file=frontend/COPY_INVENTORY.md::Frontend copy inventory is stale. Regenerate it with 'python3 scripts/extract-frontend-copy.py' and commit the result."
-            exit 1
-          fi
-
       # Duplicate-name guard (bu-ayrbg): two branches each added a
       # module-level `_fenced_code_blocks` to one test file with incompatible
       # return types. The definitions were far apart, git auto-merged them, and
@@ -418,6 +308,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
 
+      # Reviewed source classification, not a runtime policy conversion certificate.
+      - name: Check reviewed host-policy selector inventory
+        id: host_policy_selectors
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_host_policy_selectors.py
+
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
@@ -435,9 +331,8 @@ jobs:
             archived_requirements=${{ steps.archived_requirements.outcome }}
             countable_tasks=${{ steps.countable_tasks.outcome }}
             cited_requirements=${{ steps.cited_requirements.outcome }}
-            frontend_copy_regenerate=${{ steps.frontend_copy_regenerate.outcome }}
-            frontend_copy=${{ steps.frontend_copy.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
+            host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do
@@ -459,207 +354,68 @@ jobs:
           exit "$failed"
 
       - name: Set up Node 24
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "24.22.0"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
-
       - name: Install dependencies
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm ci
 
-
       - name: Lint
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint
 
-
       - name: Em-dash copy gate (bu-370uj)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint:emdash
 
-
       - name: Query-result coercion gate (bu-ep4ks.5)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint:query-coercion
 
-
       - name: Import graph (knip)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run knip
 
-
       - name: Build
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run build
 
-
-      - name: Preserve bounded Node tooling and owner-time/visual-role survivors
-        if: needs.route.outputs.frontend == 'true'
-        working-directory: frontend
-        run: |
-          node --test --test-timeout=300000 scripts/worktree-tooling-contract.mjs route-a-api-receipt.test.mjs
-          npm run lint:owner-time
-          npm run lint:visual-role-css
-
-      - name: Bind the single frontend build to this exact checkout and attempt
-        if: needs.route.outputs.frontend == 'true'
-        run: python3 scripts/ci_frontend_evidence.py seal --artifact "${RUNNER_TEMP}/frontend-build"
-
-      - name: Upload the source-bound browser build
-        if: needs.route.outputs.frontend == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-frontend-build
-          path: ${{ runner.temp }}/frontend-build
-          if-no-files-found: error
-          retention-days: 14
-          overwrite: true
-
-  check-preflight:
+  smoke:
     timeout-minutes: 27
     runs-on: ubuntu-latest
-    needs: [route, guards, check-unit, check-integration]
-    # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    if: always() && needs.guards.result == 'success' && (needs.route.outputs.mode == 'full' || needs.route.outputs.mode == 'scoped')
+    # Starts beside the lane groups: nothing here needs a test result, so an
+    # over-budget tree fails within minutes instead of after the whole suite.
+    # check-totals compares the groups with these counts later.
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
+
+      - name: Count each lane and check the test budget
+        # One fresh --collect-only count per lane of the same selection the groups
+        # run; check-totals requires the groups to sum to it (bu-29wkwj.2).
+        run: uv run --no-sync python scripts/ci_lanes.py count --output "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
+
+      - name: Upload the lane counts
+        uses: actions/upload-artifact@v4
         with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
-
-      - name: Download fresh full inventory
-        if: needs.route.outputs.mode == 'full'
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-
-      - name: Download all eleven child test receipts
-        if: needs.route.outputs.mode == 'full'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ci-*-test-evidence
-          path: ${{ runner.temp }}/ci-test-receipts
-
-      - name: Reconcile eleven logical execution populations and derive smoke evidence
-        id: reconcile
-        if: needs.route.outputs.mode == 'full'
-        env:
-          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
-        run: |
-          uv run --no-sync python scripts/ci_preflight_reconcile.py \
-            --inventory-dir "${RUNNER_TEMP}/ci-inventory" \
-            --receipts "${RUNNER_TEMP}/ci-test-receipts" \
-            --output "${RUNNER_TEMP}/ci-artifacts/smoke"
+          name: ci-lane-counts
+          path: ${{ runner.temp }}/ci-lane-counts/lane-counts.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
 
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
-        if: needs.route.outputs.mode == 'scoped' || steps.reconcile.outputs.smoke_covered != 'true'
         env:
-          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
           TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: |
-          mkdir -p "$SMOKE_EVIDENCE_DIR"
-          SMOKE_CMD="uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short"
-
-          START_TS=$(date +%s)
-          set +e
-          $SMOKE_CMD --junit-xml="$SMOKE_EVIDENCE_DIR/raw-junit.xml" 2>&1 | tee "$SMOKE_EVIDENCE_DIR/smoke.log"
-          SMOKE_EXIT=${PIPESTATUS[0]}
-          set -e
-          END_TS=$(date +%s)
-          DURATION_S=$((END_TS - START_TS))
-          [ "$SMOKE_EXIT" -eq 0 ] && STATUS=PASS || STATUS=FAIL
-
-          # Write release-evidence JSON and emit a clearly-formatted log line.
-          SMOKE_EXIT_VAL=$SMOKE_EXIT \
-          SMOKE_SHA="${{ github.sha }}" \
-          SMOKE_DURATION=$DURATION_S \
-          SMOKE_STATUS=$STATUS \
-          SMOKE_CMD_VAL="$SMOKE_CMD" \
-          SMOKE_EVIDENCE_DIR="$SMOKE_EVIDENCE_DIR" \
-          python3 << 'PYEOF'
-          import json, os, sys, xml.etree.ElementTree as ET
-
-          sha = os.environ["SMOKE_SHA"]
-          duration_s = int(os.environ["SMOKE_DURATION"])
-          exit_code = int(os.environ["SMOKE_EXIT_VAL"])
-          status = os.environ["SMOKE_STATUS"]
-          cmd = os.environ["SMOKE_CMD_VAL"]
-          evidence_dir = os.environ["SMOKE_EVIDENCE_DIR"]
-
-          try:
-              root = ET.parse(os.path.join(evidence_dir, "raw-junit.xml")).getroot()
-              skipped_classes = sorted({
-                  tc.get("classname") or tc.get("name", "unknown")
-                  for tc in root.findall(".//testcase")
-                  if tc.find("skipped") is not None
-              })
-          except (ET.ParseError, OSError) as exc:
-              print(exc, file=sys.stderr)
-              skipped_classes = ["unavailable"]
-
-          evidence = {
-              "cmd": cmd,
-              "sha": sha,
-              "duration_s": duration_s,
-              "status": status,
-              "exit_code": exit_code,
-              "skipped_classes": skipped_classes,
-          }
-          with open(os.path.join(evidence_dir, "release-evidence.json"), "w") as f:
-              json.dump(evidence, f, indent=2)
-
-          print(f"SMOKE-RELEASE-EVIDENCE cmd={cmd!r} sha={sha!r} duration={duration_s}s status={status!r} skipped_classes={skipped_classes!r}")
-          print()
-          print(json.dumps(evidence, indent=2))
-          PYEOF
-
-          exit "$SMOKE_EXIT"
+        run: python3 scripts/ci_smoke.py --output "${RUNNER_TEMP}/ci-artifacts/smoke"
 
       - name: Prepare smoke test duration evidence
         if: ${{ always() && steps.smoke.outcome != 'skipped' }}
@@ -692,16 +448,42 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  check-totals:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    needs: [smoke, check-unit, check-integration]
+    # No group may drop or duplicate a test: each lane's group counts must sum
+    # to smoke's fresh --collect-only count. Standard library only, so it needs
+    # no Python environment setup.
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
+
+      - name: Download the lane counts
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-lane-counts
+          path: ${{ runner.temp }}/ci-lane-counts
+
+      - name: Download every lane group's evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-receipts
+
+      - name: Check the lane groups add up
+        run: python3 scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts" --expected "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
+
   check-unit:
     timeout-minutes: 28
     runs-on: ubuntu-latest
-    needs: [route, inventory]
-    # Whole-file computed assignment, independently recollected before execution.
+    # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
-    if: needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'
+        group: [1, 2, 3, 4, 5]
 
     env:
       CI_COVERAGE: '0'
@@ -709,96 +491,34 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
-
-      - name: Download current inventory and computed assignment
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-
-      - name: Compute compatible shard timing key
-        id: timing-key
-        run: |
-          set -euo pipefail
-          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane unit --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory")"
-          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory shard timings
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
-          key: ${{ steps.timing-key.outputs.key }}
-
-      - name: Unit tests (shard ${{ matrix.shard }})
-        # Computed whole-file assignments preserve whole-file fixture lifetime. The selector
-        # owns the current marker expression and explicitly keeps xdist loadfile.
+      - name: Unit tests (group ${{ matrix.group }})
         env:
-          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}
-          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
-        run: uv run python scripts/check_ci_test_shards.py run --lane unit --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory"
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}
+        run: uv run python scripts/ci_lanes.py run --lane unit --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}"
 
-      - name: Save complete shard timings
-        if: success()
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
-          key: ${{ steps.timing-key.outputs.key }}
-
-      - name: Prepare unit shard ${{ matrix.shard }} duration evidence
+      - name: Prepare unit group ${{ matrix.group }} duration evidence
         if: always()
         run: |
           python3 scripts/summarize_junit_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/raw-junit.xml" \
-            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/junit.xml" \
-            --durations-output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.shard }}/top-durations.txt" \
+            --input "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt" \
             --limit 25
 
-      - name: Upload unit shard ${{ matrix.shard }} test evidence
+      - name: Upload unit group ${{ matrix.group }} test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-unit-${{ matrix.shard }}-test-evidence
+          name: ci-unit-${{ matrix.group }}-test-evidence
           path: |
-            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/junit.xml
-            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/top-durations.txt
-            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/shard-observation.json
-            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/runner-observation.json
-            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.shard }}/condensation-refusal-*.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/junit.xml
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/durations.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -806,13 +526,11 @@ jobs:
   check-integration:
     timeout-minutes: 36
     runs-on: ubuntu-latest
-    needs: [route, inventory]
-    # Whole-file computed assignment, independently recollected before execution.
+    # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
-    if: needs.route.outputs.mode == 'full' && needs.inventory.result == 'success'
+        group: [1, 2, 3, 4, 5, 6]
 
     env:
       CI_COVERAGE: '0'
@@ -820,39 +538,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
+      - name: Set up the CI Python environment
+        uses: ./.github/actions/ci-python-environment
 
       - name: Free disk space before testcontainers
         # Runner disk capacity varies. Preserve the cleanup that eliminated
@@ -886,276 +573,38 @@ jobs:
           echo "Disk usage after cleanup decision:"
           df -h /
 
-      - name: Download current inventory and computed assignment
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-inventory
-          path: ${{ runner.temp }}/ci-inventory
-
-      - name: Compute compatible shard timing key
-        id: timing-key
-        run: |
-          set -euo pipefail
-          timing_key="$(uv run --no-sync python scripts/check_ci_test_shards.py timing-key --lane integration --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory")"
-          printf 'key=%s\n' "$timing_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory shard timings
-        uses: actions/cache/restore@v4
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/shard-observation.json
-          key: ${{ steps.timing-key.outputs.key }}
-
-      - name: Integration tests (shard ${{ matrix.shard }})
-        # Inventory produces the fresh assignment; this child independently verifies
-        # its actual items before Docker/testcontainers run. Preflight reconciles after all children.
+      - name: Integration tests (group ${{ matrix.group }})
         env:
-          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}
-          CI_SHARD_TIMINGS: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/shard-observation.json
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
           TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: uv run python scripts/check_ci_test_shards.py run --lane integration --shard ${{ matrix.shard }} --inventory-dir "${RUNNER_TEMP}/ci-inventory"
+        run: uv run python scripts/ci_lanes.py run --lane integration --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}"
 
-      - name: Save complete shard timings
-        if: success()
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/shard-observation.json
-          key: ${{ steps.timing-key.outputs.key }}
-
-      - name: Prepare integration shard ${{ matrix.shard }} duration evidence
+      - name: Prepare integration group ${{ matrix.group }} duration evidence
         if: always()
         run: |
           python3 scripts/summarize_junit_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/raw-junit.xml" \
-            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/junit.xml" \
-            --durations-output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.shard }}/top-durations.txt" \
+            --input "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt" \
             --limit 25
 
-      - name: Upload integration shard ${{ matrix.shard }} test evidence
+      - name: Upload integration group ${{ matrix.group }} test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-integration-${{ matrix.shard }}-test-evidence
+          name: ci-integration-${{ matrix.group }}-test-evidence
           path: |
-            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/junit.xml
-            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/top-durations.txt
-            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/shard-observation.json
-            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.shard }}/runner-observation.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/junit.xml
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
-
-  check-affected:
-    timeout-minutes: 82
-    outputs:
-      verified: ${{ steps.selected-execution.outputs.verified }}
-    # Affected-test lane (bu-v28ho): the route job's evidence when it
-    # selected a scoped plan. Runs the planner-selected test paths directly
-    # instead of the full eleven-child matrix. The merge queue still exercises
-    # every shard before main; owned daily/manual coverage assurance separately
-    # instruments the same complete populations.
-    runs-on: ubuntu-latest
-    needs: [route]
-    # Explicit route admission bounds the scoped lane; the required final
-    # verdict still refuses a failed classifier or static guard.
-    if: always() && needs.route.result == 'success' && github.event_name == 'pull_request' && needs.route.outputs.mode == 'scoped'
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12.15"
-
-      - name: Install uv
-        run: python3 scripts/install_ci_uv.py
-
-      - name: Compute exact environment cache key
-        id: environment-key
-        run: |
-          set -euo pipefail
-          cache_key="$(python3 scripts/ci_environment.py key)"
-          printf 'key=%s\n' "$cache_key" >> "$GITHUB_OUTPUT"
-
-      - name: Restore advisory environment cache
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: .venv
-          key: ${{ steps.environment-key.outputs.key }}
-
-      - name: Install request file-access observer
-        run: |
-          set -euo pipefail
-          if ! command -v strace >/dev/null 2>&1; then
-            sudo apt-get update -q
-            sudo apt-get install -y --no-install-recommends strace
-          fi
-          strace --version
-
-      - name: Install dependencies
-        run: python3 scripts/ci_environment.py prepare
-
-      - name: Affected tests (scoped plan)
-        id: selected-execution
-        env:
-          TEST_PATHS_JSON: ${{ needs.route.outputs.test_paths }}
-          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/affected
-          # Keep the same real integration/testcontainers runner and defaults.
-          TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: |
-          uv run --no-sync python scripts/ci_affected.py --output "$TEST_EVIDENCE_DIR"
-
-      - name: Prepare affected-test duration evidence
-        if: always()
-        run: |
-          python3 scripts/summarize_junit_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/affected/raw-junit.xml" \
-            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/affected/junit.xml" \
-            --durations-output "${RUNNER_TEMP}/ci-artifacts/affected/top-durations.txt" \
-            --limit 25
-
-      - name: Upload affected-test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-affected-test-evidence
-          path: |
-            ${{ runner.temp }}/ci-artifacts/affected/junit.xml
-            ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
-            ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
-            ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
-            ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json
-            ${{ runner.temp }}/ci-artifacts/affected/condensation-refusal-*.json
-          retention-days: 14
-          if-no-files-found: error
-          overwrite: true
-
-  check:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [route, guards, inventory, check-preflight, check-unit, check-integration, check-affected]
-    if: always()
-    steps:
-      - name: Fail closed from prerequisite verdicts only
-        id: gate
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import PurePosixPath
-          def admitted_paths(paths: object) -> bool:
-              """Checkout-free selected-file admission, mirrored by the required verdict."""
-              return (
-                  isinstance(paths, list)
-                  and bool(paths)
-                  and all(isinstance(path, str) for path in paths)
-                  and len(paths) == len(set(paths))
-                  and all(
-                      PurePosixPath(path).as_posix() == path
-                      and not any(part in {".", ".."} for part in path.split("/"))
-                      and "\\" not in path
-                      and "::" not in path
-                      and path.endswith(".py")
-                      and path.startswith(("tests/", "roster/"))
-                      and not path.startswith("tests/e2e/")
-                      and not any(ord(character) < 32 for character in path)
-                      for path in paths
-                  )
-              )
-
-          def verdict(*, needs: dict, event: str, ref: str) -> bool:
-              """Only verdicts; unknown jobs/skips/results and malformed outputs fail closed."""
-              expected = {
-                  "route",
-                  "guards",
-                  "inventory",
-                  "check-preflight",
-                  "check-unit",
-                  "check-integration",
-                  "check-affected",
-              }
-              if not isinstance(needs, dict) or not expected <= needs.keys():
-                  return False
-              if any(
-                  not isinstance(value, dict)
-                  or value.get("result") not in {"success", "skipped"}
-                  or not isinstance(value.get("outputs"), dict)
-                  or any(not isinstance(item, str) for item in value["outputs"].values())
-                  for value in needs.values()
-              ):
-                  return False
-              if needs["route"]["result"] != "success" or needs["guards"]["result"] != "success":
-                  return False
-              outputs = needs["route"]["outputs"]
-              if outputs.get("backend") not in {"true", "false"} or outputs.get("frontend") not in {
-                  "true",
-                  "false",
-              }:
-                  return False
-              mode = outputs.get("mode")
-              if event == "merge_group":
-                  if mode != "full" or outputs["backend"] != "true" or outputs["frontend"] != "true":
-                      return False
-              elif event == "push" and ref == "refs/heads/main":
-                  if mode != "push" or outputs["backend"] != "true" or outputs["frontend"] != "true":
-                      return False
-              elif event == "pull_request":
-                  if mode not in {"docs", "scoped", "full"} or (mode == "docs") != (
-                      outputs["backend"] == "false"
-                  ):
-                      return False
-              else:
-                  return False
-              try:
-                  paths = json.loads(outputs["test_paths"])
-              except (KeyError, ValueError):
-                  return False
-              if not isinstance(paths, list) or any(
-                  not isinstance(path, str)
-                  or not path.startswith(("tests/", "roster/"))
-                  or any(part in {".", ".."} for part in path.split("/"))
-                  or any(ord(character) < 32 for character in path)
-                  for path in paths
-              ):
-                  return False
-              if bool(paths) != (mode == "scoped"):
-                  return False
-              if mode == "scoped" and (
-                  not admitted_paths(paths)
-                  or needs["check-affected"]["outputs"].get("verified") != "true"
-              ):
-                  return False
-              if outputs.get("inventory") != ("true" if mode in {"full", "push"} else "false"):
-                  return False
-              results = {
-                  "route": "success",
-                  "guards": "success",
-                  "inventory": "success" if mode in {"full", "push"} else "skipped",
-                  "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
-                  "check-affected": "success" if mode == "scoped" else "skipped",
-                  "check-unit": "success" if mode == "full" else "skipped",
-                  "check-integration": "success" if mode == "full" else "skipped",
-              }
-              return all(job["result"] == results.get(name, "success") for name, job in needs.items())
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          passed = verdict(needs=needs, event=os.environ['EVENT_NAME'], ref=os.environ['REF'])
-          if passed:
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-                  stream.write(f"shards_ran={str(needs['route']['outputs']['mode'] == 'full').lower()}\n")
-          raise SystemExit(0 if passed else 1)
-          PY
 
   frontend-vitest:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route]
-    if: needs.route.outputs.frontend == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -1181,52 +630,33 @@ jobs:
           retention-days: 14
           overwrite: true
 
-  frontend:
+  frontend-assurance:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards, frontend-vitest]
-    if: always()
+    needs: [frontend-vitest]
+    # Both Vitest children must together run the complete fresh item population.
     steps:
-      - name: Required frontend verdict
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          valid = set(needs) == {'route', 'guards', 'frontend-vitest'}
-          valid = valid and all(isinstance(v, dict) and v.get('result') in {'success', 'skipped'} for v in needs.values())
-          valid = valid and needs['route']['result'] == needs['guards']['result'] == 'success'
-          applicable = needs.get('route', {}).get('outputs', {}).get('frontend')
-          valid = valid and applicable in {'true', 'false'}
-          valid = valid and needs['frontend-vitest']['result'] == ('success' if applicable == 'true' else 'skipped')
-          raise SystemExit(0 if valid else 1)
-          PY
       - uses: actions/checkout@v6
-        if: needs.route.outputs.frontend == 'true'
       - name: Download actual Vitest child one
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-1
           path: ${{ runner.temp }}/vitest-1
       - name: Download actual Vitest child two
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-2
           path: ${{ runner.temp }}/vitest-2
       - name: Independently reconcile both current Vitest populations
-        if: needs.route.outputs.frontend == 'true'
         run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
 
   frontend-e2e:
-    timeout-minutes: 14
+    # Provisional: ceil((2*228s before envelope + 720s installer reserve)/60).
+    timeout-minutes: 20
     runs-on: ubuntu-latest
-    needs: [route, guards]
-    # merge_group and push:main: always (cheap, no coverage dependency).
-    # pull_request: only when frontend/ changed (fail-closed, see `changes`).
-    if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true')
+    # Builds its own bundle so the browser lane starts beside guards instead
+    # of waiting for it (bu-29wkwj.2). Required through `alls-green` on every
+    # event (owner decision bu-w72da2 = A).
 
     defaults:
       run:
@@ -1259,19 +689,13 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}
-
       - name: Install Playwright browsers
+        # Emergency guard outside the native 720s budget and its cleanup/diagnostics.
+        timeout-minutes: 13
         run: npm run test:e2e:install
 
-      - name: Download the guards build
-        uses: actions/download-artifact@v4
-        with:
-          name: ci-frontend-build
-          path: ${{ runner.temp }}/frontend-build
-
-      - name: Validate exact source and build content before browser reuse
-        working-directory: .
-        run: python3 scripts/ci_frontend_evidence.py consume --artifact "${RUNNER_TEMP}/frontend-build"
+      - name: Build
+        run: npm run build
 
       - name: Run Playwright e2e tests
         run: npm run test:e2e
@@ -1283,3 +707,57 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           retention-days: 7
+
+  alls-green:
+    # The one required check (bu-29wkwj.3). Every workload is a direct need and
+    # must report success: a failure, cancellation or skip anywhere fails it.
+    # `always()` keeps this job from being skipped itself, which GitHub would
+    # treat as passing.
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs:
+      - go-bridge
+      - guards
+      - smoke
+      - check-totals
+      - check-unit
+      - check-integration
+      - frontend-vitest
+      - frontend-assurance
+      - frontend-e2e
+    if: always()
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EXPECTED_JOBS: "9"
+        run: |
+          printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          printf '%s' "$NEEDS_JSON" | jq -e --argjson n "$EXPECTED_JOBS" \
+            'type == "object" and length == $n and all(.[]; .result == "success")' > /dev/null
+
+  # Compatibility adapters for the `main-merge-queue` ruleset, which still requires
+  # the `check`, `guards` and `frontend` contexts. Each only mirrors `alls-green`.
+  # The ruleset switch to `alls-green` alone is a separate owner act
+  # (scripts/setup_main_ruleset.sh); a follow-up then deletes these two jobs.
+  check:
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs: [alls-green]
+    if: always()
+    steps:
+      - name: Mirror alls-green
+        env:
+          RESULT: ${{ needs.alls-green.result }}
+        run: test "$RESULT" = success
+
+  frontend:
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs: [alls-green]
+    if: always()
+    steps:
+      - name: Mirror alls-green
+        env:
+          RESULT: ${{ needs.alls-green.result }}
+        run: test "$RESULT" = success

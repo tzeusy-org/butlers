@@ -29,38 +29,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from butlers.testing.records import Record as _MockRecord
+
 pytestmark = pytest.mark.unit
 
 _SOURCE_ID = "8d0f2f1e-3f6a-4a1b-9d5f-2c9a1b7e4d33"
 _OTHER_SOURCE_ID = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-
-
-class _MockRecord:
-    """Minimal asyncpg.Record-like object backed by a dict."""
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def keys(self):
-        return self._data.keys()
-
-    def values(self):
-        return self._data.values()
-
-    def items(self):
-        return self._data.items()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
 
 
 def _node_pool(node: dict[str, Any] | None) -> AsyncMock:

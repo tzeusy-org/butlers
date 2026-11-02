@@ -17,11 +17,12 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import audit as audit_module
+from butlers.api.deps import get_db
 from butlers.api.routers.audit import _PRIVILEGED_CONSEQUENCE_SQL
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.audit_helpers import clear_audit_log_for_test
 
 SCHEDULE_ACTIONS = (
     "schedule.create",
@@ -83,7 +84,7 @@ async def pool(postgres_container, migrated_db_url: str):
     p = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
     )
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
+    await clear_audit_log_for_test(p)
     yield p
     await p.close()
 
@@ -94,7 +95,7 @@ def audit_app(pool: asyncpg.Pool) -> FastAPI:
     mock_db.credential_shared_pool.return_value = pool
     mock_db.pool.return_value = pool
     application = create_app()
-    application.dependency_overrides[audit_module._get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 

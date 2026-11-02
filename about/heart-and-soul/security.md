@@ -162,9 +162,7 @@ butler's schema even though all schemas live in one database.
 - The migration role and any superuser connection retain full access to all
   schemas, consistent with the trust model (the owner and whoever holds the
   database credentials are trusted).
-- Role enforcement degrades to a warning if the per-butler role cannot be
-  verified, unless `strict_role_enforcement` is set, in which case startup fails
-  closed.
+- A butler runtime pool must have its designated runtime role before serving queries. Missing or unverifiable roles, inability to assume the role, and a missing role configuration for a butler schema cause startup or connection acquisition to fail closed in every environment. No development or deployment-posture setting permits shared-user runtime continuation.
 
 ## Approval Gates
 
@@ -194,6 +192,17 @@ explicit owner confirmation before proceeding.
 - Approval timeouts must result in denial, not silent approval.
 - The approval mechanism must work across all notification channels (dashboard,
   Telegram, etc.).
+
+Dashboard step-up is required only for standing-rule creation or promotion,
+Vouch, Contain, and mode loosening. Ordinary approve, reject, edit and dispatch
+remain one-tap owner decisions after their existing authentication, exact-call
+and currentness checks; owner-only status alone does not add step-up. Step-up
+uses an authenticated dashboard owner session and a single-use nonce bound to
+the exact action and current version, consumed atomically with that action
+(RFC 0038 D13). The independent passkey factor is on a different device from
+the Telegram phone. Telegram identity or a presentation ACK cannot supply that
+factor. This contract does not register a factor, change credentials or release
+a held Vouch, Contain or mode action.
 
 ## Credential Management
 
@@ -372,7 +381,8 @@ The principle: **services get the minimum network access they need and
 nothing more.** The network, firewall, and port-binding contract lives in
 [RFC 0008](../legends-and-lore/rfcs/0008-deployment-network-security.md).
 Containers receive only the environment they declare, and goal invocations run
-in the session sandbox with only `PATH` and their model credential.
+in the session sandbox with only `PATH`, their model credential, their MCP config
+and adapter-owned pointers to files staged inside the sandbox.
 
 ### Principles
 

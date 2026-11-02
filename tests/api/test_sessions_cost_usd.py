@@ -27,9 +27,10 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.sessions import _get_db_manager as _sessions_get_db
+from butlers.api.deps import get_db as _sessions_get_db
 from butlers.api.routers.sessions import _get_pricing_optional as _sessions_get_pricing
 from butlers.core.pricing import ModelPricing, PricingConfig
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -90,17 +91,11 @@ def _make_session_row(**overrides: object) -> dict:
     return row
 
 
-def _make_record(row: dict):
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
-
-
 def _make_app_with_sessions(rows: list[dict]) -> object:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(
-        side_effect=lambda sql, args, **kw: ({"atlas": [_make_record(r) for r in rows]}, [])
+        side_effect=lambda sql, args, **kw: ({"atlas": [Record(r) for r in rows]}, [])
     )
     app = create_app()
     app.dependency_overrides[_sessions_get_db] = lambda: mock_db
@@ -110,7 +105,7 @@ def _make_app_with_sessions(rows: list[dict]) -> object:
 def _make_butler_app_with_sessions(rows: list[dict]) -> object:
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(return_value=len(rows))
-    mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in rows])
+    mock_pool.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     app = create_app()

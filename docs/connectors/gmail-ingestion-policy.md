@@ -68,7 +68,7 @@ Standard `ingest.v1` envelope with full normalized text and provider payload.
 Slim envelope that preserves identity and threading while minimizing payload size:
 
 - `payload.raw` MUST be `null` (enforced by the Switchboard envelope contract in
-  `roster/switchboard/tools/routing/contracts.py`).
+  `roster/switchboard/tools/contracts.py`).
 - `payload.normalized_text` MUST contain subject-only text (no full body).
 - `control.ingestion_tier` MUST be `"metadata"`.
 - Switchboard MUST bypass LLM classification. It persists the event in `switchboard.message_inbox`

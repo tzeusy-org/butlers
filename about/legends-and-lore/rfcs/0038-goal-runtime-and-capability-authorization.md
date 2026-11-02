@@ -118,8 +118,9 @@ Non-goals:
 - Multi-user authority. One owner; every grant is a narrowing of the owner's.
 - Replacing the approvals, insight, notify, scheduler, identity or memory
   subsystems. They remain the owners of their decisions.
-- Engineering executors and model functions (D18), which are not reasoning
-  sessions over owner capabilities and keep their own contracts.
+- Engineering executors, model functions and dashboard fast answers (D18),
+  which are not reasoning sessions over owner capabilities and keep their own
+  contracts.
 
 ## Vocabulary
 
@@ -262,9 +263,14 @@ listener; the session host itself exposes no inbound port to the dashboard.
 Each invocation runs in its own kernel-enforced filesystem and process domain
 (Bubblewrap, as `src/butlers/cli_auth/sandbox.py` already uses; the session
 host must permit unprivileged user namespaces) holding only `PATH`, its staged
-model credential and its MCP config. One invocation cannot read another's
-token or files, and the whole descendant domain is terminated before results
-are accepted.
+model credential, its MCP config and adapter-owned file pointers. A file pointer
+is an environment variable the runtime adapter sets whose value is only the path
+of a file or directory staged inside that invocation's own domain, such as
+Gemini's `GEMINI_SYSTEM_MD` and `GEMINI_CLI_SYSTEM_SETTINGS_PATH`. A pointer's
+value is never secret, and the files it names hold no secret other than the
+staged model credential and the invocation's own MCP config. One invocation cannot
+read another's token or files, and the whole descendant domain is terminated
+before results are accepted.
 
 Runtime built-in tools are disabled: no shell, filesystem, web fetch or local
 MCP servers, and no provider-hosted tools (server-side web search or fetch,
@@ -290,9 +296,11 @@ effect_class          read | record | communicate | transact | actuate | adminis
 output_trust          trusted | untrusted | stamped
                       (stamped: trust is read from each returned item's stamp, D6)
 output_sensitivity    ordinary | sensitive
-resource_params       argument names that select a resource (entity, account, device)
+resource_params       argument names that select a resource (entity, account, device),
+                      each optionally selection-bound (D7)
 safety_args           argument names an approval must pin (RFC 0021)
-approval_policy       existing approvals gating config for the tool
+approval_policy       existing approvals gating config for the tool, plus an
+                      approval mode: default | always_per_event (D13)
 idempotency           none | key_required
 owner_authority       true when the write steers future sessions (rules, profile)
 recipient_params      argument names that identify parties a call delivers content
@@ -349,6 +357,40 @@ Two owner rules apply to every origin, grant and exposure state, lead or child:
   can reach: Home Assistant's service gateway is `actuate`, under the RFC 0028
   risk map in which unknown services are protected.
 
+**Owner tightening, rule inputs and categories.** The owner may impose
+`never` or `always_ask` by capability, region or effect class. These are
+selectors of the existing S1 policy `scope` (capability/resource), not another
+policy record or grant: capability selects the catalog's exact capability
+identity; region selects capabilities by their catalog `owner_domain`; effect
+class selects capabilities by their catalog `effect_class`. Resource scope
+continues to narrow those capabilities. Match these selectors against the
+current catalog on every call, including new capabilities in a selected region
+or class; do not freeze a one-time expansion that silently drops a restriction
+after publication. An unresolved selector or unreadable current catalog cannot
+be treated as an empty permissive match. Existing S1 id, monotonic version,
+constraint, expiry, owner-action identity, CAS and audit fields are unchanged.
+`never` refuses and `always_ask` parks the exact otherwise-permitted effect;
+neither grants a tool, widens a resource/selection scope, clears a label or
+removes another approval constraint.
+
+A standing rule's typed slots accept values supplied by the owner, a device or
+deterministic code. A different principal may supply a slot only when the
+owner's rule-creation card explicitly permits **that rule's own recipient** to
+fill **that exact slot**. This is not permission for arbitrary third parties,
+for other slots or for free text; missing or mismatched supplier provenance
+makes the rule ineligible. A valid slot does not declassify its value or change
+D6's per-invocation exposure and held typed-value/cited-label boundaries.
+
+After an invocation reads sensitive data, a standing rule for communication to
+anyone other than the owner must explicitly name every applicable sensitive
+category the invocation read: `health`, `finance`, `location`, `routine`,
+`relationship_notes`, `credentials` (S1). Missing category coverage makes the
+rule ineligible and parks an otherwise-permitted call for per-event owner
+approval; an independently refused call stays refused. Unknown labels
+retain S1's all-category restriction. Naming categories is necessary, not
+sufficient: recipient/template pins, slot provenance, grant/currentness,
+selection, exposure, park-only and `always_per_event` constraints still apply.
+
 Two kinds of tool are never LLM-presentable and therefore never grantable:
 
 - **Owner-decision tools**: approve, reject and edit actions, create or promote
@@ -389,6 +431,22 @@ Rules:
 
 - **Email is never owner origin by itself.** A message is owner-origin only when
   RFC 0017 authorizes its channel and sender; otherwise it is third-party.
+- **Audio preserves authorship only through qualified ASR.** The transcript of
+  the verified owner's own non-forwarded Telegram voice note, Telegram audio
+  file or authenticated dashboard recording is owner input when produced by
+  the instruction-free ASR-class transform defined in D18. The connector or
+  dashboard ingress holds and binds the sender authorization, actual source
+  media, forwarding/quotation/embedding evidence, transform identity and
+  successful outcome, and exact transcript to the original ingest identity;
+  no payload field, transcript words or model output establishes these facts.
+  Forwarded, quoted, embedded, non-owner and room audio remains third-party
+  material. An owner forwarding such material stays the enclosing sender, but
+  the goal starts exposed and the material is fenced as data. If transformed
+  span boundaries cannot be established, mark the whole affected transcript.
+  Missing or mismatched evidence cannot authorize owner-authored speech;
+  retries and replay retain the original deduplicated admission and can never
+  upgrade authorship or reduce exposure. Failure supplies no invented words.
+  Independently authenticated captions or typed text retain their own handling.
 - **Device and telemetry feeds are not messages.** Home Assistant state,
   wellness readings and other feeds that carry no message from a person wake
   reasoning only through a declared subscription, admitted with origin
@@ -467,6 +525,35 @@ RFC 0021 promotion ladder.
 
 ### D7. Wire contract, call verification and keys
 
+**Constraint order and urgency.** Apply the S1 intersections in order:
+current catalog/origin/grant, invocation exposure/category/slot constraints,
+owner law, mode tightening, then health/admission restrictions. The per-call
+transaction and existing goal/effect locks fence the current policy version
+before an effect is committed for forwarding. A committed tightening is seen
+by the next call; a call racing that fence either commits under the prior
+version before the tightening or is held/refused under the new one. A retry
+cannot restore an earlier policy version. Record the holding/refusing stage
+and every constraining term and version in the typed receipt, without content
+or secret-bearing arguments; do not claim that an unreadable stage passed.
+Committed effects remain honestly recorded, not described as undone. Missing
+or stale invocation binding and unknown origin never acquire authority from
+policy or urgency.
+
+Only an allowlisted deterministic safety producer, a matching current
+owner-authored break-through rule, or an obligation explicitly flagged for
+break-through by the owner at creation may bypass quiet-hours or sleep
+suppression. The delivery boundary verifies server-held producer identity or
+persisted owner provenance, not a caller's label or message. Model invocations,
+including owner-started goals, cannot choose high priority; model-presentable
+`notify` has no priority/urgency argument. Missing, unknown, stale, revoked or
+spoofed urgency provenance is routine for suppression, not an exception.
+Retries and fallback cannot raise urgency. Record the classification/cause
+without message content. A verified suppression exception does not bypass
+capability, recipient, category, grant, approval, Stop, mode or health rules;
+it changes only the quiet/sleep hold that the owner authorized. Pre-switch
+notify enforcement belongs to .3, and first-switch `deliver()` enforcement to
+.22; neither changes this authority boundary.
+
 **Session tokens.** Sessions reach the broker over MCP streamable HTTP on the
 session listener's goal endpoint. The runner writes the invocation's MCP config
 with a bearer **invocation token**: 256 random bits, stored only as a hash,
@@ -495,6 +582,32 @@ lead epoch matching:
 Stop takes the goal row `FOR UPDATE` (D14), so a call either commits before the
 Stop or is refused after it. The broker then forwards the call to the owning
 domain with an `X-Butlers-Assertion` header and records the result.
+
+**Owner selection records.** Some resource scopes must be exactly what the
+owner picked, such as the sources an owner checklist may read. A capability
+opts in by declaring those resource parameters selection-bound in its catalog
+entry (D4). The control plane holds a **selection record** for each owner
+pick: id, subject (owning domain and subject reference), capability, an exact,
+bounded set of resource identifiers, the authenticated owner action that wrote
+it (actor, owner surface, request id, time), and state `active` or `revoked`
+with revoke time and actor. Only an authenticated owner action on the D19
+owner surface, through a control-plane endpoint, writes or revokes a record;
+the request id makes a repeated submit resolve to one record, and a record is
+immutable except for that one-way revoke. Goals, standing rules, approvals,
+service-plane relays, domains and connectors cannot write one, and no tool that
+writes one is LLM-presentable or grantable (D4). A selection reaches a goal
+only through the owner-origin admission (D5) of the owner-surface action that
+wrote or referenced it; third-party, obligation, staffer and caused admissions
+carry none, and a selection named in message text, model output, arguments,
+envelopes or rule slots is ignored. When minting a grant, the broker sets the
+scope of each selection-bound parameter to exactly the identifiers of that
+active record; with no record the scope is empty and the capability is neither
+listed nor callable. Delegation intersects that scope (D9). Step 2 of the
+per-call check also requires the record to be active, so a revoke refuses the
+next call in the same transaction that serializes Stop; reads already returned
+are not recalled. A selection is not an effect, so no approval, "Approve all"
+tap or standing rule creates or extends one, and selection-bound reads keep
+their effect class, output trust and sensitivity.
 
 **Assertion.** An Ed25519 signature, with key id `kid`, over:
 
@@ -642,6 +755,11 @@ and ends the goal `budget_exhausted` with whatever results and effects exist.
 
 ### D11. State machines
 
+The following goal diagram is the pre-switch `sw_047` representation. The
+proposed dated S2 amendment defines the target states and complete lossless
+mapping, subject to its reserved adoption. Invocation and effect states below
+remain unchanged.
+
 Goal:
 
 ```text
@@ -718,12 +836,57 @@ Before dispatch the broker re-checks that the goal is not stopped. A stopped
 goal cancels its parked effects; a goal whose lead has finished waits in
 `settling` and still executes approvals that arrive.
 
+**One tap and narrow step-up.** Ordinary approve, reject, edit and dispatch
+remain one tap after the existing owner, exact stored-call, current-version,
+Stop and grant checks. Step-up is required only to create or promote a standing
+rule, Vouch, Contain, or loosen a mode. Being owner-only under D4 does not itself
+require step-up. Rule creation/promotion uses the dashboard's authenticated
+owner session and independent passkey factor on a different device from the
+Telegram phone. A Telegram request without that confirmation gets a
+non-mutating open-dashboard handoff, never an automatic approval. The same
+step-up boundary applies when the existing Vouch, Contain and mode-loosening
+owners implement their actions; it does not activate those held consumers or
+change factor custody.
+
+The step-up nonce binds the authenticated owner/session, action kind and
+identity, exact action digest (including recipients and arguments), current
+action/policy version, and expiry. Verify those bindings, revocation and
+unconsumed state and consume it atomically with the authorized owner transition
+and its audit receipt. A missing, invalid, expired, revoked, wrong-owner,
+wrong-session, wrong-action or stale-version nonce refuses that transition;
+a changed action or digest needs a fresh confirmation. A failed transaction
+commits neither mutation nor consumption. Concurrent decisions on the same
+current action/version have one winner across dashboard and Telegram. Retrying
+the same completed action reads back that outcome, not another rule or effect;
+replay cannot authorize a second or different action. A presentation ACK,
+callback token, delivery fallback or model text is not a step-up nonce. No
+nonce overrides Stop, a revoked grant/selection or current effect constraints.
+
 Standing rules and the promotion ladder of RFC 0021 apply unchanged to
 unexposed invocations; exposed invocations can use only the standing rules D4
 exempts. A standing rule is **template-pinned** when its argument constraints
 fix every content-bearing argument to an exact value or to an owner-authored
 template whose slots accept only typed values (dates, amounts, identifiers),
-never free text. A Stop-cancelled parked effect takes a new approvals status,
+never free text.
+
+A capability whose catalog entry declares the approval mode
+`always_per_event` is applied as park-only in every grant that includes it,
+whatever the goal's origin, cause or exposure, lead or child. The declaration
+travels with the tool's descriptor, so no butler configuration, owner policy or
+standing rule can remove it, and a tool that declares it without an approvals
+gate in its owning butler is not grantable. No standing rule approves such a
+call, no rule can be created for the capability, the gate's owner-directed
+auto-approve does not apply, and its approvals never count toward promotion.
+The per-event approval is the owner's approval of the parked call or of the
+owner's edit, the owner's own submit on the owner surface, or one "Approve all"
+tap on a decision set that shows every item's exact call and recipients with
+per-item untick; an approved wait envelope never pre-approves a later call.
+The mode adds nothing to any ceiling. `calendar_respond` declares it
+(author-detail item 3), and so do
+capabilities whose effects must always be the owner's own act, such as
+confirming an owner checklist revision.
+
+A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain
 executable by the approvals executor and are recorded with goal origin
 `legacy`, a field separate from the approvals module's existing producer
@@ -802,8 +965,11 @@ digests, never arguments or results.
 
 ### D18. Model use outside goals
 
-Two kinds of model use are not goal invocations. Each keeps its own contract
-and never reaches the broker or a domain capability:
+Three kinds of model use are not goal invocations. Each keeps its own
+contract. Engineering executors and model functions never reach the broker or
+a domain capability. A dashboard fast answer reaches only allowlisted read
+capabilities, and only through deterministic code calling the broker, never
+through its model calls:
 
 - **Engineering executors.** QA investigation agents and self-healing agents
   (RFC 0015) work on the repository with a shell and a worktree. They keep
@@ -818,17 +984,103 @@ and never reaches the broker or a domain capability:
   benchmark probes, which send fixed prompts and record only measurements.
   They have no tools; any consequence comes from the deterministic code that
   reads their typed output, and their output entering a goal is third-party
-  content.
+  content except for the narrow authorship-preserving transform below.
+- **Dashboard fast answers** (later owner decision `bu-u5euwb.21`). A narrow
+  path that answers the owner's dashboard question from live data without a
+  goal. Its model calls are model functions; what sets the kind apart is that
+  deterministic code reads data between them and the result is an
+  owner-facing answer. Its contract:
+  - *Scope.* Only a question the owner types into the authenticated dashboard
+    (owner origin, D5). It is read-only: it produces no effect, parks no
+    approval, starts no goal, child or obligation, and writes nothing but its
+    one reply and its audit records.
+  - *Admission.* Deterministic control-plane code checks the turn's
+    eligibility, then makes one model-function call that returns a typed plan:
+    whether the turn is an eligible question and which reads, at most three,
+    answer it. The model holds no tools, MCP config, invocation token or
+    capability, and deterministic code validates the plan before acting on
+    it. This binary eligibility choice, between this fast answer and an
+    ordinary owner goal, is the only model classification before admission; it
+    selects no route, butler, origin, ceiling or goal, so D1's removed route
+    classification gains no successor here. The call may be retried
+    once on the same model, before any read, only when its output fails the
+    schema.
+  - *Reads.* Deterministic code, not the model, makes each planned read. Each
+    names a capability on a fixed, checked-in allowlist whose current catalog
+    entry (D4) is `read`, grantable, has no `approval_policy` gate, approval
+    mode `default` and no selection-bound `resource_params`; current owner
+    `never` tightening still applies. A plan naming anything else is rejected
+    whole before its first read. Each read's capability and arguments are fixed
+    by the validated plan; no read result selects or parameterizes another
+    read. The
+    broker forwards each read exactly as it forwards a dashboard
+    service-plane call (D7): origin `owner`, principal `dashboard`, `goal_id`
+    null, under a signed assertion the owning domain verifies. The allowlist
+    narrows the owner's ceiling and never widens it. Tool visibility,
+    discovery metadata, catalog search provenance and ranking grant no
+    authority. Broadening the allowlist needs an owner decision.
+  - *Phrasing.* Exactly one model-function call, with no retry, composes one
+    answer from the validated read results, which enter it fenced as data.
+    The answer's sources are derived by server code from the reads; the
+    model cannot add or change them.
+  - *Output and attribution.* One idempotent reply in the thread that asked,
+    attributed as a fast answer with its model calls and reads, not as a goal
+    or goal outcome. Reads and model calls are audited by identifier and
+    digest (D17); its spans and audit records carry its runtime identity in
+    place of `goal_id` and `invocation_id`, outside the goal ledger. When any
+    read's output is `untrusted`, or `stamped` with an item that is not
+    untainted owner authority (D6), the reply renders URLs inert with link
+    previews disabled, as D4 requires of owner `notify` under exposure. The
+    stored reply is stamped as non-owner model output, so any goal that reads
+    it, including as thread context at admission, is exposed (D6).
+  - *Stop and replay.* One durable runtime identity, owned by the control
+    plane and registered against the asking message before the first model
+    call, spans every call and the reply. Owner Stop on that message fences
+    every later read, model call and reply, and is confirmed only after
+    in-flight work settles. There is no provider failover, and no uncertain
+    attempt is replayed: an unknown reply outcome is settled from its durable
+    receipt or reported as unknown.
+  - *Fallback.* Before the first read starts, any ineligibility,
+    unavailability, schema or provider failure, or uncertainty ends the fast
+    answer and the unchanged message goes to owner-goal admission (D5);
+    nothing the fast answer produced enters that goal's admission, origin,
+    ceiling or exposure. A Stop admits no goal. Once a read has started,
+    nothing re-executes the turn: a failed read or phrasing call ends in an
+    honest failure reply, never a fabricated answer.
+
+  The kind is built on the control plane in the dark build and switched on by
+  the cutover release; it does not extend today's classification path, which
+  stays frozen and is deleted at the switch. Its mechanics (lease and recovery
+  timings, reply observation windows, the allowlist's entries, model
+  resolution and latency evidence) belong to the re-scoped
+  `define-dashboard-fast-answer-runtime` change.
+
+**Instruction-free ASR-class transcription** preserves the source's authorship,
+not a model's asserted authorship. It takes only audio and fixed server-held
+decoding configuration, no task or conversation instructions, tools or
+capabilities, and transcribes rather than composes, summarizes, translates or
+answers. Only a verified implementation of this class and its bound successful
+outcome can preserve the owner authorship of the D5 sources. A tool-less
+instructable model, an outcome's `stt_backend` label or transcript text cannot
+qualify itself. All other model-function outputs remain third-party. ASR never
+removes source forwarding, quotation, embedding, room or non-owner provenance,
+and never raises the source's authority. An unavailable, timed-out, cancelled,
+empty or unacceptable result creates no transcript or owner-audio admission.
+Finite engineering-configured byte, decoded-duration and execution bounds and
+owned cleanup still apply, with no outside speech-service or instructable-model
+fallback. `payload.transcription` remains outcome metadata, not authorization.
 
 Model use that today runs outside a session but composes owner-facing text or
 judgment, such as briefing elaboration, chronicler narration, insight
 synthesis, dashboard quick-add and memory consolidation, becomes an obligation
-or owner goal at the switch rather than a model function.
+or owner goal at the switch rather than a model function. Dashboard fast
+answers are the single named exception.
 
 Any other model use is a goal invocation. Adding a kind to this list requires
-an RFC amendment. Pending OpenSpec changes that add a model path, such as
-`define-dashboard-fast-answer-runtime`, must be re-scoped as goals or as a
-named kind here before approval.
+an RFC amendment. `define-dashboard-fast-answer-runtime` is re-scoped to the
+dashboard fast-answer kind above (`bu-u5euwb.28`) before approval. Any other
+pending OpenSpec change that adds a model path must be re-scoped as goals or
+as a named kind here before approval.
 
 ### D19. Owner surface: one mind, specialized regions
 
@@ -914,7 +1166,7 @@ invocation lineage.
 | 0018 Connector scope | Remains. |
 | 0019 Proactive egress and automation | Remains rejected/parked. Caused admissions run only declared subscriptions; they are not the parked rule engine. |
 | 0020 Calendar overlay read exception | Remains. |
-| 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable (D4, D6, D13). |
+| 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable, and no standing rule targets or approves an `always_per_event` capability (D4, D6, D13). |
 | 0022 Cross-process event transport | Remains; events from effects carry goal lineage for caused admissions. |
 | 0023 Approval delivery intent recovery | Remains. |
 | 0024 Messenger correspondence ledger (proposed) | Independent. |
@@ -976,7 +1228,9 @@ All evidence is produced in a dev namespace against the release candidate:
    attempting grandchildren through every creation path, including caused
    admissions and runtime obligations; forged, replayed, expired and
    wrong-audience assertions; stale-epoch tokens; direct calls to domain ports
-   and service listeners from the sandbox; provider-hosted tool use.
+   and service listeners from the sandbox; provider-hosted tool use; dashboard
+   fast answers whose plan or read results attempt a read off the allowlist, a
+   fourth read, a tool call or any effect.
 3. Replay evaluation over a fixed set of recorded owner requests and
    scheduled obligations, graded by the owner rubric for whole-goal success,
    constraint preservation and corrections needed, with latency and total cost.
@@ -1068,6 +1322,680 @@ item 1, and authorizes no production change. Every answer excludes enabling
 `transact` and production changes. This confirmation does not release the
 hard-cutover gates or alter the private-custody boundary.
 
+### Later owner decisions
+
+| Recorded | Decision | Effect on this RFC |
+|---|---|---|
+| 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
+| 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
+| 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
+| 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |
+
+## Proposed shared switch and M7 interfaces (2026-10-24)
+
+**Exact-text review carrier: bu-dhloi1.19; adoption pending.** This section and
+its explicitly identified D6/D11 successor wording are the concrete amendment
+for the recorded two-cutover answer, not an assertion of implementation or
+activation. The current accepted contract applies until the required
+independent conformance review and reserved exact-text adoption are recorded.
+Adoption of this text is not permission to deploy or execute either cutover.
+The requirement, source-owner and approval maps are in the active change's
+[shared contract coverage](../../../openspec/changes/generalist-lead-focused-delegation/shared-contract-coverage.md).
+
+### S0. Representation and version discipline
+
+Unless named otherwise, IDs are UUIDs, generations/epochs/versions are
+nonnegative 64-bit integers (CAS increments by one; overflow refuses), digests
+are SHA256 of versioned canonical UTF-8 JSON, times are finite UTC instants,
+and zones are validated IANA names. References resolve through the owning
+service under grants, never ambient cross-schema SQL. Arrays are unique,
+bounded sets; unknown fields/types/versions refuse rather than normalize away.
+Null means explicitly absent, never an empty permission or current evidence.
+Effective engineering limits are validated positive finite runtime_config
+snapshots; a missing snapshot refuses work rather than removing a bound.
+State changes and their immutable audit/identity receipt commit together.
+
+### S1. Labels, descriptors and authorization
+
+The six sensitivity categories are exactly `health`, `finance`, `location`,
+`routine`, `relationship_notes`, `credentials`. A label is version 1 with
+`label_instr` (I: instruction provenance), `label_data` (D: data provenance),
+and `label_sens` (C: a subset of those categories). I and D are sets of opaque,
+server-resolved principal references, not sender text or model assertions.
+The principal kinds are `owner`, `owner_device`, `domain`, `external`, `world`;
+domain/external references use registered opaque identities, never an email,
+credential or payload. Existing content-authority stamps determine whether a
+principal is owner-authoritative; a principal name alone grants nothing.
+Unknown or unreadable provenance is `{world}` in I and D, and all six in C
+when sensitivity is unknown. Reject unknown category/kind/schema versions;
+never drop an unknown member to make a call admissible.
+
+Join is component-wise set union. An invocation's label only increases,
+including across callbacks, queues, receipts, storage, child results and
+recovery. A read joins returned labels before its result can reach a model;
+a write binds the invoking label, writer goal/invocation, and a closed
+`exposure_cause` enum (`ingress`, `read`, `child`, `inbox`, `recovery`,
+`legacy_unknown`) in the same call/fence transaction. Stamped readers include
+memory, facts, capture, notes, history, episodes, insight and decision stores.
+Missing stamp or failed label persistence refuses the operation; an unlabelled
+result is not a trusted empty response. Successful writes cannot lose labels
+when their producer retries or a deferred writer resumes.
+
+For the proposed first-switch target, this paragraph replaces only D6's
+start-from-goal-aggregate bullet and clarifies its goal exposure reporting
+sentence: the call policy uses the actual invocation and its
+input/cause/predecessor chain, not a reporting aggregate as a substitute. The goal retains the union
+for audit and outcome reporting. A clean sibling already running independently
+is not contaminated just by that aggregate, but a child inherits its caller,
+a returned child contaminates its reader, and a replacement/escalated lead
+inherits its predecessor, consumed inbox and recovered context/effects.
+Unknown legacy lineage retains at least the old Boolean restriction. At the
+first switch, free text and typed values carrying third-party/unknown data
+retain D6 exposure: no reminder-date, cited-evidence or typed-shape laundering.
+The M7 typed-value semantic choice remains held on `bu-4c7nvp.1.1`, and
+cited-label steering remains held on `bu-7ry1sy`.
+
+The descriptor extension has `categories` (set of the six names), `depends_on`
+(set of declared dependency IDs), and `interactive_profiles` (set of registered
+profile IDs). This augments, never replaces, D4 effect/trust/sensitivity,
+resource/recipient arguments, approval mode and owner-authority metadata.
+`bu-dhloi1.6` owns the single descriptor change for labels/categories;
+`bu-dhloi1.14` adds dependency declarations after it;
+`bu-dhloi1.12` adds the `owner-fast` profile after .14. Missing metadata is
+ungrantable; metadata, discovery, a profile or a condition cannot grant a tool.
+
+A tighten-only policy record has `id`, `scope` (capability/resource),
+`version` (positive monotonic integer), `constraint` (`never`, `always_ask`),
+`expires_at` (null or finite future time), owner-action identity and audit
+receipt. The owner-authenticated control-plane surface alone writes it using
+expected-version CAS; no model capability, domain or connector does. The
+broker evaluates catalog/origin/grant, invocation exposure/category/slot
+constraints, owner law, mode tightening and health/admission restrictions in
+that order, recording every constraining term/version in a typed receipt.
+`never` refuses; `always_ask` parks the exact otherwise-permitted effect.
+Neither grants, clears taint nor overrides always-per-event/selection rules.
+Unreadable policy refuses; an expired term ceases only its own tightening and
+never restores a revoked grant. A concurrent tightening affects the next call,
+not the truth of already committed effects. .18 owns the separate owner-law,
+mode, urgency and step-up policy wording; these are only its structural slots.
+
+### S2. Waiting, epochs, inbox, plans and migration
+
+The source baseline is actual main `5d4a979aba57b24da0f6c14734197c381d111bbf`,
+`roster/switchboard/migrations/047_goal_ledger.py` (`sw_047`), followed directly
+by `050_admission_attempt_bindings.py` (`sw_050`) and
+`051_record_only_admission_reason.py` (`sw_051`), and
+`src/butlers/core/goal_ledger.py`, not a proposed `control.goals` schema.
+Allocations sw_048/sw_049 are held and are not delivered chain members.
+Keep `switchboard.goals`, `invocations`, `effects`, `budgets`,
+`admission_decisions` and `goal_inbox` identities, foreign keys, immutable
+admission/source-key deduplication and ordinary runtime-role fences.
+The landed sw_050 `admission_attempt_bindings` backfill and immutable
+`attempt_id/source_key/decision_id` binding, composite decision/source FK,
+Switchboard-only runtime RLS and refusal to downgrade durable rows remain
+mandatory. Ledger `existing()`/`bind_attempt()` must resolve every returned
+attempt to its original canonical decision. The landed sw_051 terminal reason
+`recorded_without_goal` remains a durable no-goal disposition; preserve its
+atomic locked constraint replacement and refusal to downgrade while such rows
+exist. Neither a record-only attempt nor a replay can mint a new goal.
+
+The first-switch target goal states are `admitted`, `running`, `waiting`,
+`completed`, `partial`, `failed`, `stopped`, `budget_exhausted`.
+`admitted -> running -> waiting -> admitted` may repeat only through a recorded
+wake. Terminal states admit no wake. Waiting releases the runtime slot, not
+the goal budget, effect history or obligations. Completion still requires the
+owner reply's genuine delivery receipt and honest dependent-effect outcomes.
+
+| Record | Required fields and invariant |
+|---|---|
+| Goal extension | `legacy_status` (original status), `label_version/I/D/C`, `thread_id`, `plan_version`, `wait_generation`; existing origin/ceiling/config/catalog digests and budgets remain immutable except existing permitted counters |
+| Epoch | `(goal_id, epoch)` unique; predecessor invocation, `reason` (`initial`, `wake`, `recovery`, `escalation`), input/inbox refs, label snapshot, grant digest, durable launch intent and state `pending/launching/running/finished/failed`; one live lead remains enforced by the existing partial unique index |
+| Thread | UUID PK; owner entity, channel and opaque conversation key with a unique `(owner,channel,key)` identity; goals reference this one owner thread registry by FK, not a second waiting-thread table |
+| Plan | `(goal_id,version)` PK; predecessor version, premise/source refs, bounded step refs, created epoch and digest; append-only; goal/envelope `(goal_id,plan_version)` FKs bind it; changed premise creates a new version, never edits the approved one |
+| Wait envelope | UUID PK, original goal/epoch, immutable predicate definitions/digest and source set, generation-owned condition-instance IDs, finite deadline, positive maximum wakes, consumed wakes, permitted source set, grant snapshot/digest, plan version/digest, label snapshot, approval effect/ref if required, generation and state `open/fired/expired/cancelled`; no arbitrary text predicate |
+| Inbox extension | One discriminated inbox as S2.1 below; retain every existing reply binding, source/decision uniqueness, role fence and historical consumption; new input kinds never fabricate reply effects |
+| Wake intent | Stable `(envelope_id,generation,fire_event_id)` identity, successor epoch and outbox state `pending/claimed/launched/failed`; unique successor per fired generation; no receipt is an instruction to replay an effect |
+
+#### S2.1. Discriminated admission and one-time inbox consumption
+
+The existing inbox is extended, not replaced by a second queue. Every row keeps
+`id UUID PK`, `goal_id UUID NOT NULL`, `decision_id UUID NOT NULL UNIQUE`,
+`source_key TEXT NOT NULL UNIQUE`, `source_ref TEXT NOT NULL`, original
+`created_at`, and immutable label/input provenance. Add `input_kind` with exactly
+`owner_reply`, `owner_non_reply`, `condition_fire`; `event_id UUID NULL`;
+`envelope_id UUID NULL`; `envelope_generation BIGINT NULL`; `consumed_epoch
+BIGINT NULL`; and immutable `legacy_consumed BOOLEAN NOT NULL DEFAULT false`.
+The kind-specific constraints are:
+
+| Input kind | Trusted source identity / admission | Delivery/effect and event bindings |
+|---|---|---|
+| owner_reply | Existing verified message source key/ref and joined canonical decision; no caller-asserted owner | `delivery_ref TEXT NOT NULL` and `reply_effect_id UUID NOT NULL`; retain the existing composite FK `(goal_id,reply_effect_id)` to effects; event_id may be absent when the original ingress had no UUID; envelope fields null |
+| owner_non_reply | Verified same-thread owner message source key/ref, within S2's running join fence; source_kind=message, joined reason=input_joined | Both delivery_ref and reply_effect_id NULL; event_id is the original ingress UUID if present, otherwise NULL; envelope fields null; no prior outgoing reply is required |
+| condition_fire | Trusted evaluator SourceRef(kind=occurrence, id=`condition:<envelope UUID>`, occurrence=`gen:<generation>:event:<fire-event UUID>`), joined reason=condition_joined; source_ref retains this id and decision.occurrence_key retains the occurrence | delivery_ref/reply_effect_id NULL; event_id, envelope_id and envelope_generation NOT NULL, bound to that envelope generation/fire receipt for this goal; never a fake message or reply effect |
+
+All source_key values retain the existing SourceRef.key algorithm: SHA256 of
+UTF-8 json.dumps([kind,id,occurrence], sort_keys=True, separators=(",",":"));
+occurrence is NULL for messages. The evaluator alone constructs condition
+components from its durable fire receipt, not a caller-supplied string.
+Owner message source keys retain the verified transport's original identity,
+not a model-supplied dedup token. Existing message/occurrence/feed/domain/staffer
+source_kind values remain unchanged. The target admission decision adds the
+same immutable input_kind discriminator, nullable for decisions without an
+inbox input (initial admission, refusal or record-only). New joined inbox
+decisions require the matching non-null kind; validated historical reply joins
+backfill owner_reply. The new input_joined/condition_joined reasons are allowed
+only with result=joined and the matching kind. Existing
+reply_joined/new_goal/refusal/recorded_without_goal reasons keep their exact
+meaning. The native admission writer derives all fields; a caller cannot
+select a joined reason or authenticate itself by providing them. Refused or
+record-only decisions create no inbox row, goal or wake. A condition joins the
+existing goal without resetting its budget or counting as a new-goal admission.
+
+Keep decision/source uniqueness and sw050 attempt bindings. Add a validated
+unique decision key `(id,goal_id,source_key)` and composite inbox FK to it;
+its goal/source must match the original canonical decision. Envelope-generation
+and consumption-epoch FKs bind `(goal_id,envelope_id,generation)` and
+`(goal_id,consumed_epoch)` to their owning records. A condition row's event_id additionally matches that
+generation's immutable fire event/receipt. No cross-goal event/effect
+binding is accepted. Only the existing restricted admission/evaluator writer
+can insert; only the fenced goal runner consumes. Retain Switchboard runtime
+RLS, immutable source fields and non-grantable writer authority.
+
+Consumption changes `(consumed_at,consumed_epoch)` atomically from `(NULL,NULL)`
+to `(finite server time, actual running epoch)` once, under that goal/epoch's
+Stop/lease fence. Every other column is immutable. A duplicate read returns the
+existing tuple without changing it; another epoch, timestamp rewrite or partial
+tuple update refuses. For original already-consumed rows alone, migration sets
+legacy_consumed=true, keeps the exact non-null consumed_at, and leaves
+consumed_epoch=NULL rather than inventing a historical epoch. Such rows are
+never consumed again. All unconsumed legacy rows have legacy_consumed=false
+and use the new two-column transition when first consumed. New rows cannot set
+the legacy marker; it requires the bounded migration role/backfill.
+
+Before activation, classify every old inbox row as owner_reply, retain its
+non-null delivery/effect/source/decision fields and validate its existing
+same-goal effect FK. Add/backfill the discriminator/legacy marker and composite
+keys, then atomically replace the reply-only NOT NULL/check constraints and
+consumed_at-only trigger with the discriminated checks and one-time tuple
+trigger. Keep the old trigger until its replacement is installed in the same
+transaction; no unguarded writer interval. Preserve all old timestamps/rows and
+sw050/sw051 reasons, RLS and downgrade refusals. Parity must prove old reply
+joins still work before new kinds are admitted. Rollback holds new-kind
+admission/consumption and retains rows/epochs; never coerce a new row to a fake
+reply or deploy an old consumer that would redeliver a consumed legacy row.
+
+Creating an envelope checks the current condition snapshot before subscribing.
+The evaluator's conditional `open -> fired` CAS, wake-count increment, inbox
+entry and durable launch intent commit atomically. A failed launch before any
+invocation starts may retry that same intent within its deadline; lease/crash
+recovery cannot mint another successor. New grants intersect the original
+ceiling, previous envelope, current policy and causing input. A plan change or
+new exposure cannot extend a wait. Owner approval binds the exact effect and
+envelope digest; it allows bounded follow-ups inside that envelope only. An
+exposed run cannot extend it. Waiting solely for the owner's answer needs no
+additional approval; that answer is still authenticated and cannot approve an
+unrelated effect. Deadline/horizon exhaustion produces `partial` with pending
+work and receipts; it never silently executes or loses a parked effect.
+
+#### S2.2. Cumulative subsequent wakes under one approval
+
+An envelope's UUID, original approval/digest, AST/condition source set, plan
+binding, original deadline and maximum_wakes are immutable. consumed_wakes is
+a cumulative counter across all generations, initially 0. Each immutable generation registration is keyed `(goal_id,envelope_id,generation)` with its condition
+instance IDs, predecessor fire/epoch and registration cursor. Its winning
+fire cursor and unique successor intent are append-only receipts, never
+rewritten registration facts; generation starts 0 and increases by one without reuse.
+Conditions are generation-owned instances of the same immutable predicate,
+not mutated fired instances or a second evaluator.
+
+After its unique successor has actually run and returns to waiting, only the
+fenced lifecycle owner may request rearm. In one goal/envelope lock/CAS
+transaction, verify that the successor belongs to this exact fired generation,
+no live competing lead exists, the goal is nonterminal/not Stopped,
+consumed_wakes < maximum_wakes and the original deadline has not passed.
+The AST, source set, plan/digest and approval must be unchanged; effective grants
+must be the same or narrower and invocation labels retain every accumulated
+join. This reuses the approval only within those unchanged bounds. Added
+sources, changed plan/predicate/effect arguments, later deadline, larger maximum
+or any widening require a genuinely new envelope and whatever original approval
+that envelope requires; exposure cannot extend it. A new envelope never erases
+old cumulative history or grants permission through that history.
+
+Rearm atomically appends generation+1, snapshots the durable source cursor,
+creates its condition instances and moves envelope fired→open; count/approval/
+deadline remain unchanged. The new replay cursor starts at the prior fire
+cursor; the current snapshot high-water is recorded separately and cannot
+advance consumption past unseen events. Evaluate the complete interval after
+the prior fire through that high-water, then continue its durable stream. The preceding fire cursor/event is its exclusive
+lower bound. A source arriving between this snapshot and commit is caught by
+the same durable replay stream, not a lossy subscription. Only a new eligible
+trusted event after that bound may trigger another generation. Already-true
+levels may contribute to an all/any result but cannot themselves manufacture
+another wake; the old owner input, settled effect, transition or fixed at tick
+is not a new event. A fixed at leaf fires at most once per envelope. This
+adds no repeating timer or advanced M7 predicate.
+
+Each winning fire increments the cumulative counter exactly once and commits
+its condition cursor/result, fired state, condition_joined decision/inbox binding, one successor epoch and outbox intent
+in one transaction. Generation/event uniqueness and the same goal fence apply
+to rearm/fire/launch. Concurrent rearm retries return the existing generation;
+a crash before commit leaves the old fired generation, and after commit resumes
+the new cursor without a second generation/count. Launch retry claims the same
+intent and consumes that inbox tuple once, never counts a second wake. Stop or
+expiry winning the lock prevents rearm/fire/launch; a prior committed winner
+remains honest history, with pending launch cancelled by Stop. When pending work requests another wait, deadline or
+count exhaustion expires that wait with partial/pending receipts, no reset or
+new approval invented. Old generation events cannot fire a newer generation.
+
+Stop locks/fences the goal, cancels open envelopes/pending wake intents and
+pending decisions, revokes tokens and prevents a post-Stop launch. A call/fire
+that commits first remains in history; one that loses the fence is refused.
+Inbox delivery occurs between tool calls under the same Stop fence. A running
+same-chat non-reply joins only the single matching owner goal within an
+engineering-configured window of 2–10 minutes, with a receipt/thread chip and
+`/new`. Ambiguous/out-of-window input starts a separate admitted goal. A
+waiting goal joins only by exact reply/button binding. A stop word stops the
+old goal and starts separate admitted work; it is not an unfenced new turn.
+
+| Current landed sw_047 → sw_050 → sw_051 state/data | Lossless target disposition |
+|---|---|
+| admitted / running | Same state and original identity; recover a live lease through the existing epoch fence before any new lead |
+| settling | waiting on the exact outstanding effects, or the original terminal outcome if every dependency settled; preserve all parked effect IDs and receipts |
+| awaiting_approval | waiting on the exact approval/effect binding; missing legacy binding remains held with explicit unavailable evidence, never auto-approved |
+| recovering | admitted with a recovery intent and incremented epoch only after old-lead fencing; no new admission, budget reset or dispatch |
+| completed / partial / failed / stopped / budget_exhausted | Identical terminal state and dependent effect outcomes |
+| invocation statuses / effects | Preserve every current status, including launching/escalated and requested/parked/approved/dispatched/unknown/refused/rejected/expired/cancelled; uncertain dispatch stays unknown |
+| admission attempts / recorded_without_goal | Preserve every immutable source-to-canonical decision binding and composite FK, including backfilled rows; replay returns the existing decision; a record-only terminal result stays goal-less; keep runtime RLS and durable-row downgrade refusal |
+| inbox / origin / exposure / receipts | Preserve decision/source uniqueness, consumed_at, thread refs, ceiling, joined exposure, immutable origin/cause and original receipt/delivery/prompt bindings; unknown labels fail closed |
+
+Migrations retain a per-row source status and conversion receipt, verify counts,
+FKs, pending effects, inbox consumption and authority before enabling readers,
+and refuse inconsistent input rather than guessing a completion/approval.
+Serial order is schema/constraints and restrictive role functions, labelled
+producer adapters, backfill/replay with original identity, shadow readers,
+parity verification, then one admitted switch to enforcement/sole writers.
+No permanent dual-writing or second ledger is permitted. A rollback before
+activation keeps old readers and new receipts; after activation disable new
+admission/wakes and redeploy only a compatible old reader, keeping all effect
+and label evidence. Never reverse labels, replay uncertain effects, reopen a
+cancelled decision or destructively downgrade newly written data.
+
+### S3. One perception registry and trusted writer interface
+
+`public.situation_slots`, `public.timeline`, `public.owner_modes`, typed
+condition instances and suppression records are shared coordination projections.
+Domain source-region stores remain the record of truth. These replace, at the
+named future activation, the old context projection; they do not authorize
+`public.life_records`, a sibling owner_clock, observations or presence store.
+
+Registry entries declare `kind`, schema version, owning domain/writer role,
+primitive type (`boolean`, finite number, bounded enum, timestamp, opaque
+reference), bounds/enum, category set, freshness policy, and read visibility.
+Bounded products/sets of these declared primitives have fixed field/enum schemas,
+not free JSON. No arbitrary title, prose, URL or raw coordinate is a typed primitive. Writer
+identity is derived from the authenticated database/service role and declared
+kind, never a request's `writer` field or a grantable generic record tool.
+
+#### S3.1. Initial kind, alias and mode wire registry
+
+The following is the closed initial registry (schema_version=1). UUID references
+resolve under the existing owner/domain grants; no arbitrary string is a ref.
+All reads retain labels and S5's availability-only restriction for exposed or
+third-party goals. Detail visibility below is owner-authenticated or explicitly
+granted private domain detail, never a grant created by this table. Each source
+has a validated finite freshness profile; migration caps fresh_until at its
+original expires_at and existing per-signal maximum in context_bus.py. Missing
+profile/evidence is unknown. No legacy timestamp/TTL is renewed by conversion.
+
+| Canonical kind | Exact typed value / subject | Sole projection writer and visibility | Legacy/read aliases (never an extra store or writer) |
+|---|---|---|---|
+| owner.place | Product `{presence: inside / outside, place_ref: UUID|null, locality_ref: UUID|null}`; subject actual owner UUID; refs resolve named place or elsewhere+city/country, never raw coordinates | Home Dots .17 reducer; location category, owner-only timeline | owner.presence aliases this kind; at_home/in_space/away feed their original source-labelled evidence to Home, not direct slot writes or a second presence table; unmapped room text stays an opaque source ref/unknown |
+| owner.activity | Set of at most8 enum members `traveling,sleeping,meeting,focused,exercising,sick,socializing,commuting`; subject owner UUID | .21's deterministic activity projection, preserving each authorized producer's evidence/expiry; categories routine plus health for sleeping/sick/exercising | Each of those8 legacy signals maps to its same enum member; concurrent assertions remain separately attributable, never a priority-picked arbitrary winner |
+| owner.clock | Product `{zone: validated IANA name, basis: phone / owner / home / utc_fallback / owner_confirmed_booking, evidence_ref: UUID}`; subject owner UUID | .21; location/routine detail | owner_clock is a read alias only; phone fix changes zone with notice+undo, booking/flight-only evidence asks once; no automatic change from an unconfirmed booking |
+| system.dep | Enum `available,degraded,blind,down,held,unconfigured`, with S6 closed cause/source age; subject registered dependency UUID | .14 health reducer; privacy-filtered health/holding reason under existing surface policy | system.dep.<registered-id>, including system.dep.conditions, resolve to this kind+subject; no arbitrary suffix creates a kind |
+| expect.window | Product `{start: UTC,end: UTC,deviation: pending|within|missed, expectation_kind: registered enum}` with start<end; subject confirmed routine UUID | Chronicler's confirmed bu-xxfkhk feeder; routine category | expect.<registered-kind>[subject] resolves to this row; draft/inferred routines create no expectation or obligation |
+| home.sensing | Enum `available,degraded,unavailable`; subject configured Home sensing-group UUID | Home deterministic health projection; permitted Home detail only | Historical home.sensing name is canonical; all-inputs-unmeasurable is the slot state, not a fabricated available value |
+| owner.mode | Set of the8 mode IDs below, with separate finite duration/hold/source refs in owner_modes; subject owner UUID | .21 owner-authenticated mutation only at first switch; routine/health/location labels as applicable | Read projection of owner_modes only, not a second slot copy; no mode entry from a legacy activity alias |
+| owner.suppression | Product `{active: boolean, record_ref: UUID|null}` referencing the existing versioned suppression/DND record; NULL ref only for confirmed configured absence, never unavailable read; subject owner UUID | Existing canonical attention/DND mutation owner; .21 adapter retains that authority | dnd aliases this record/read; existing generation/replay, bounded-read unavailable and exact expiry semantics remain |
+
+The actual twelve legacy signal names are all accounted for above. Original
+Travel/Health/General/Relationship/Home/Switchboard producer permissions,
+verified owner invocation requirements and source records remain; adapters
+submit typed evidence only through the named reducer interface, never gain
+canonical slot mutation by copying a legacy writer string. Multiple old source
+assertions/receipts remain evidence refs with their individual expiry; if an
+input cannot be safely mapped it stays unknown with its source record retained,
+and parity blocks that consumer's activation. No deletion or silent all-clear.
+
+The closed git mode IDs are exactly `asleep`, `travel`, `house_unattended`,
+`sick`, `focus`, `hosting`, `holiday`, `emergency`. Display phrase “house
+unattended” aliases house_unattended; sleep/asleep aliases asleep and
+focus/focused aliases focus only when explicitly referring to an owner mode.
+Activity sleeping/focused does not itself mutate a mode. “In flight” is a
+travel-derived posture flag, not a ninth mode. Unknown/custom IDs refuse.
+The eight names come from the recorded closed-list direction bu-u33sb7 and
+its historical pursuit carrier (218607d8e, feat-situation-modes); their wire
+slugs are fixed here for .9/.21. Owner-only duration/holds/break-through edits,
+.5 step-up on loosening, sick exemptions, owner-confirmed travel-only absence
+arming and wake brief earliest 06:00/fallback 09:30 remain as recorded there.
+No automatic entry rule, desk selector or mode-policy activation is added;
+.18 retains policy wording and .21 the separately authorized switch.
+
+| Projection | Required identity and fields |
+|---|---|
+| situation_slots | UUID PK; `(kind,subject_entity)` unique with `NULLS NOT DISTINCT` (or equivalent separate partial indexes for null/non-null); state `known/unknown/unmeasurable/unconfigured`, typed value or opaque ref, source, observed_at, fresh_until, evidence refs, I/D/C, generation, registered writer |
+| timeline | Stable event UUID plus unique `(source,event_key)`; kind, nullable subject, class `transition/record/occurrence/point`, operation `assert/retract`, nullable retracts_event_id, at/confirmed_at/late as S3.2, effective span, observed_at, IANA zone/lived date, bounded typed measures, source refs, labels and generation; no second copy of source prose |
+| owner_modes | Versioned projection of declared mode IDs, effective interval, source/ref, label, generation and cause; .18 owns tightening policy, .21 activation, not the registry writer |
+| conditions / suppressions | Stable ID, registry kind/subject or goal binding, immutable predicate/source boundary, finite interval, generation, source/ref, label and state; existing approval/attention authority is not replaced by an anonymous bool |
+
+The stable event UUID is UUIDv5 with namespace
+`e90a74c8-7ccd-5de7-b5f8-c82bc75e0c32` and the canonical JSON array
+`["perception-event-v1", source, event_key]` as its name. Source is a registered
+opaque source ID; event_key is its immutable ingestion/occurrence identity
+(max 256 UTF-8 bytes), not observed time alone. Unique source/event-key and
+UUID constraints both apply; a collision or digest mismatch refuses. Replay
+must use the original key, never a newly generated UUID.
+
+The one trusted writer API accepts `(kind, subject, source, event_key,
+expected_generation, observed_at, effective_span, typed_value_or_ref,
+evidence_refs, labels, at, confirmed_at, retracts_event_id=null)`. The registry derives the writer and validates type,
+source authority, finite times and permitted kind before DML. A retry with the
+same source/event key and digest returns the same event/receipt; changed bytes
+under that key refuse. CAS loss returns conflict/current generation, never
+last-writer-wins. Successful CAS updates one slot generation and appends its
+transition event/receipt atomically. Stale evidence cannot move a current slot
+backward; late data can append explicitly historical timeline evidence without
+changing present state. Reducer-specific hysteresis belongs to its named owner,
+not a second ingestion or authority API.
+
+#### S3.2. Confirmation, late evidence and history-preserving retraction
+
+A transition additionally stores from_state/to_state (the four slot states)
+and from_value/to_value under the kind schema, with a value NULL exactly when
+its state is not known. These fields are NULL for non-transition records.
+A place leave specifically means known inside→known outside; an unknown prior
+state cannot fabricate one. The CAS writer captures the actual prior slot,
+not a caller-asserted from_value.
+
+For new timeline assertions, `at` is the effective UTC transition/occurrence
+instant from the source; `confirmed_at` is the finite UTC instant at which the
+owning reducer durably confirmed it, with confirmed_at>=at. Both are immutable
+source-event facts reused on replay, not regenerated from retry wall time.
+`observed_at` remains the underlying observation time. `late BOOLEAN` is derived
+and stored as confirmed_at-at>15 minutes (exactly 15 is not late), never accepted
+as a caller override. Historical imported rows lacking confirmation keep an
+explicit legacy-unknown confirmation receipt and cannot become real-time
+wake evidence by inventing confirmed_at. All fields are in the event digest.
+
+A normal event has operation=assert and retracts_event_id=NULL. Home Dots .17
+alone confirms leave/enter using its existing three-minute/two-fix/SSID-veto
+and symmetric-enter rules; this contract changes none of that hysteresis. A
+confirmed re-entry within 10 minutes of a prior leave's at uses the same writer
+API with retracts_event_id=that original leave UUID. The target must be an
+existing asserted owner.place leave for the same owner/source/reducer lineage;
+its at must precede the re-entry at by at most 10 minutes. Missing/foreign/
+non-leave target, unearned reducer authority or out-of-window retraction refuses
+before DML. Input sources remain authorized projections; no Home cross-schema
+coordinate read or new raw retention is permitted.
+
+The one slot CAS transaction appends the new enter assertion and a separate
+history-preserving retraction record targeting that leave, plus its receipt.
+The enter assertion keeps operation=assert and target NULL; the request's
+retracts_event_id parameter creates only its bound auxiliary retraction.
+The retraction has class=record, operation=retract, target UUID NOT NULL,
+typed_value/from_value/to_value/from_state/to_state=NULL and the enter's
+at/confirmed_at/late with the union of enter and original leave labels; it does not delete
+or update the original leave. Its source is the same reducer and event_key is
+`retract:<enter-event UUID>:<leave-event UUID>`; the S3 UUIDv5 rule derives its
+stable event ID. A same-kind/subject target FK and unique retract target
+constrain it; one enter/CAS may not create multiple retractions. The tuple and
+both event/receipt inserts commit or roll back together, with one slot
+increment, never a second CAS/lock protocol. Duplicate enter/retraction replay
+returns both original receipts; changed key bytes or concurrent stale CAS
+refuse without an orphan record or loss of history. Historical late input may
+append its labelled history/retraction under the same target checks, but cannot
+move current state backward or reverse an already committed downstream effect.
+
+`timeline.query` returns immutable original records, operation/target,
+confirmed_at/late and derived `retracted` (true iff a valid target record
+exists); filters/pagination must include the target relation in one consistent
+snapshot, even when the retraction is outside the page/window. Default real-time
+transition readers and the evaluator skip late or retracted assertions and
+never treat a retraction record itself as a new transition/absence. Owner-only
+Home/Chronicles history renders the original leave with its retraction link and
+late status, not a deleted edge. Four-state situation reads still obey slot
+freshness. S4's separate10-minute event-age horizon also applies; neither rule
+relabels old data fresh. Already fired work/effects retain honest receipts;
+a retraction alone cannot replay, undo or authorize them. Old readers that lack
+these flags cannot activate until .21 parity proves this disposition. Rollback
+holds the new reader/reducer, retains all events/targets and canonical receipts,
+and cannot fall back to a competing presence/clock store.
+
+Read APIs return state, typed value/ref, source/age/freshness, labels and
+availability reason. A known value past fresh_until reads as unknown with its
+last value separately labelled stale; it is not current knowledge. Configured
+healthy absence, unconfigured producer and all-inputs-unmeasurable are distinct.
+Missing transport/failed producer is not an all-clear. Raw coordinates stay in
+the connector/domain; model place is a named place or elsewhere plus city/country.
+Transition history retains 400 days under the recorded visibility answer;
+existing raw-fix expiry and vitals discoverability are not changed here.
+
+`bu-dhloi1.9` owns representation and restrictive writer roles; Dots
+`bu-jv1moa.17` consumes this exact event/CAS API for owner.place reduction.
+`bu-dhloi1.21` owns clock/modes and actual consumer activation;
+`bu-dhloi1.14` owns system.dep projection; `bu-xxfkhk` owns confirmed expect.*
+feeding. Representation is usable dark without .6 activation. No current
+scheduler/notification/preamble reader changes just because the tables exist.
+
+### S4. Minimal conditions and deterministic evaluator
+
+The first-switch predicate is a tagged AST with leaves `decision(subject_id,
+outcome)`, `owner_input(goal_id,binding_ref)`, `effect_settled(effect_id,
+status_set)`, `at(instant,zone)` and `transition(kind,subject,from,to)`.
+`all`/`any` combine at most16 leaves to depth2; no text expressions, code,
+arbitrary SQL, implicit subscribers or model evaluation. Unknown tags, fields,
+state values, undeclared sources, excessive depth/size (8KiB canonical JSON)
+or a grant/source mismatch refuse before registration. Referenced decision,
+inbox and effect identities must belong to the bound goal/subject.
+
+An instance stores id, canonical predicate/digest, goal/envelope ref, immutable
+source set and grant digest, finite expiry, cursor, generation, current result
+`true/false/unknown`, and state `open/fired/expired/cancelled`.
+`register` checks the current consistent snapshot and returns instance/receipt;
+`evaluate` accepts only trusted source events and advances the durable cursor;
+`consume_fire` claims the unique fire intent, not an arbitrary launch command.
+These APIs are deterministic infrastructure, not LLM tools to widen sources.
+
+Evaluation joins labels and records event identity, snapshot generation,
+result/reason and cursor in the same transaction as `open -> fired` and the
+outbox intent. Duplicate/reordered/replayed events cannot re-fire. Unknown or
+unmeasurable inputs evaluate unknown, never false/healthy. `all` requires all
+true; `any` requires one true; otherwise known false wins only when logically
+sufficient, and remaining unknown stays explicit. Transition leaves ignore
+real-time events older than10 minutes; historical evidence remains recorded.
+An `at` leaf crossed by a clock jump fires once late before expiry, never
+replays each missed tick. Time resolves from owner clock, configured home zone,
+then UTC, with source/age; no hidden local-machine/Singapore timezone default.
+
+Each condition instance is keyed to its envelope generation. S2.2 alone
+creates the next generation with its exclusive prior-fire cursor and unchanged
+approval/count/deadline bounds; a fired instance itself is never reset.
+Restart resumes its durable cursor and replays to the same unique intent.
+Evaluator unavailability retains work and reports `system.dep.conditions`;
+no guessed wake or fake healthy snapshot. Scheduler delivers trusted time
+occurrences; it does not introduce another expression language. Watches and
+advanced temporal composition are M7, not first-switch activation.
+
+### S5. Starting context, read purity and owner-fast profile
+
+`context.search` accepts bounded `query`, opaque entity anchors, `as_of`,
+optional `[since,until)` window, regions/kinds and `k`; grants and labels are
+server-derived. Version1 engineering defaults are query1024 UTF-8 bytes,
+16 anchors,16 regions/kinds, k1–20,1000ms per-domain and2000ms total deadline,
+and4096 tokens for the complete packet. Effective finite positive limits are
+snapshotted from runtime_config with the request; missing/invalid limits refuse.
+These are bounded initial settings, not measured latency claims or authority.
+Budget changes cannot widen source/category permissions.
+
+The starting envelope has version, goal/epoch/plan, immutable lead-policy and
+owner-profile digests, effective clock/source, authorized situation, open
+loops/decisions, recall items, domain index, budget/deadline snapshot,
+availability map and digest. Stable policy/profile/contract bytes precede the
+cache breakpoint; all dynamic evidence follows it. Children receive only the
+brief and narrowed relevant envelope, not daemon/domain session composition.
+Read calls may append their own immutable ledger receipt but never update fact
+reference_count, last_referenced_at, authority, rule priority or ranking.
+Any later read-history ranking fold needs its separately adopted owner-only,
+unexposed contract; this spec does not enable one.
+
+Recall uses rank-level fusion, not unrelated raw domain scores. Each whole
+item includes source/region/reference, age, category and authority/taint label,
+conflict-set ID and source evidence. Order of credence is explicit owner
+correction/endorsement, owner-authored evidence, domain-sourced evidence, then
+attributed third-party/unknown; this orders display, never grants trust or
+silently resolves conflicts. Timeout marks that domain degraded; all-failed
+is unavailable, not an empty success. Budget truncation omits whole items with
+reason/count, never clips a reference or label away from its body.
+
+Only owner-authored text and otherwise permitted typed data may inline; other
+material stays an opaque broker-resolved reference. Resolving it still joins
+its actual D6 label; a shape does not make a typed-value exception. Exposed and
+third-party goals get only owner availability (`busy_until` or unknown), never
+place/health/routine details. Default recall excludes all six sensitive
+categories. Explicit search is grant/category checked and its owner card names
+the categories; it cannot bypass the availability-only situational view,
+private custody, exposure restrictions or raw-coordinate exclusion.
+
+`owner-fast` is a versioned interactive profile, not a new role or runtime.
+Its fields are profile ID/revision, lead role, stable policy/profile digests,
+finite runtime-config budget refs and eager capability IDs. Eager IDs are
+chosen from replay and intersected with the current grant; they never grant.
+Model Resolution's existing role/tier/priority/eligibility and escalation
+rules remain unchanged. Reserve one owner-origin slot within total capacity
+five; waiting releases a slot, recovery reclaims through the lease fence.
+Content-free timings correlate ingest, admission, queue, runtime start,
+first-visible sign, first answer word and final delivery; absent timing is
+unknown, not zero. First switch records comparable median/p95 baselines only.
+
+### S6. Owner delivery, acknowledgement and recovery
+
+One canonical ledger subject references exactly one existing effect/decision,
+goal answer or pending ask; it is not another approval authority. Fields are
+subject UUID/kind, owner entity, source goal/effect or ask ref, immutable content
+and action digests, generation, state `pending/delivered/acknowledged/decided/
+cancelled/expired/unknown`, typed urgency/holding-reason slots and receipt refs.
+Presentation rows carry subject/generation, authenticated route/surface,
+provider delivery ref, retry key and state `pending/sent/failed/unknown/retracted`.
+Many presentations share one canonical decision/ack. Recipients come from the
+live owner identity and trusted route, never model-provided surface text.
+
+An action token binds subject, action, exact argument/recipient digest,
+owner/surface, generation, nonce and finite expiry; store only its verifier.
+Tokens use an unpredictable 256-bit nonce and SHA256 verifier; tokens and
+provider IDs are not telemetry or push payload. A token is not authentication.
+The authenticated callback preserves the existing owner/route allowlist,
+auth-before-body/pool and CSRF/Origin contract, validates every binding and the
+current subject fence. Subject CAS, effect approval/decision and receipt are atomic; duplicate
+callbacks return the same outcome. Ack is not approval. Changed arguments,
+wrong owner/surface, expired/stale token or generation refuses without effect.
+Winning action invalidates every competing presentation token; attempt
+retraction, but failed retraction leaves harmless stale UI, never a live action.
+
+Retry uses unique `(subject,surface,generation)`. Ambiguous provider send stays
+unknown with a receipt and is reconciled, never blindly retried as new success.
+Initial answers use the original reply target. Desk-first 3-minute fallback,
+presence-based selection, streaming and advanced Why/push surfaces remain
+later-owned. A push interface may carry only a fixed non-sensitive cause and
+opaque subject reference; no title, health/location value, message, URL action
+token or credential. Opening it requires normal owner authentication before
+subject details/actions. Urgency, step-up and platform provisioning remain
+.18/.22/operational policy, not a grant from this schema.
+
+`bu-dhloi1.13` is the sole delivery identity/token writer and migrates existing
+RFC0023 approval-delivery, attention and decision presentation references with
+an explicit source-to-subject map. Shadow reads prove parity before the atomic
+sole-writer switch; no permanent second callback family or double dispatch.
+Rollback disables new delivery/actions, preserves verifier generations,
+receipts and old-ID mappings, and never makes stale callbacks executable.
+
+Capability health (.14) uses `available/degraded/blind/down/held/unconfigured`
+plus source age/generation and closed cause IDs `oauth_revoked`,
+`credential_missing`, `provider_unavailable`, `domain_unreachable`,
+`signal_unmeasurable`, `policy_held`, `not_configured`, `unknown`.
+An unreadable projection returns `state=null, availability=unknown`; this is
+not an extra healthy state or an exception string. Unreadable projection is
+unknown: preserve normal authorization and underlying call checks, never
+report healthy or grant access. Known down returns capability_unavailable
+without waiting for a timeout. One generation-CAS reducer publishes system.dep
+through .9. Terminal failed/budget-exhausted/admission-refused owner asks with
+no delivery create one model-free cause line and one pending-ask ID. Recovery
+coalesces one Run/Drop subject; Run admits new work under current rules once,
+Drop never runs it, and age over 24h expires dropped(stale), not auto-replay.
+
+### S7. Gateway and later static-key interface
+
+One reviewed git workload profile declares authenticated workload identity and
+two disjoint route classes. An internal peer entry binds the exact source
+workload principal, destination service principal, verified service-discovery
+identity, transport/protocol and destination port. Both endpoints authenticate;
+a caller header, DNS spelling or membership in a private address range is not
+authority. Only that exact reviewed peer/port is allowed, including the existing
+session-host→control-plane listener or deliberately declared beads-export/Dolt
+leg where its profile already authorizes it. Wrong peer/port/source/protocol,
+undeclared internal destination or identity mismatch is default-denied; there
+is no CIDR-wide exemption, new peer/host authorization or implicit lateral route.
+
+External entries instead bind exact public DNS hostname/port and workload
+identity through the shared gateway. On this external route Host/SNI/request
+identity must agree; refuse IP literals, metadata, private/link-local/LAN/tailnet
+destinations and undeclared endpoints, including every redirect (3xx is a
+refusal, not an implicit second host or internal-peer grant). DNS/connection
+rebinding must not turn a declared public host into a forbidden address.
+An external request can never fall back to the internal-peer route. There is
+no runtime widening API or model-supplied identity header for either class.
+Multiple additive network policies must not leave another open path. Gateway outage denies external egress, records a
+content-free cause, and preserves connector cursors with finite backoff.
+Audit includes workload/host/byte counts/verdict, never payload, token or header.
+
+Later static-key support requires an explicitly registered non-OAuth endpoint,
+separate workload profile and credential handle, gateway-side custody and
+provider-specific header placement. Models and requesting workloads receive no
+key; logs, errors and redirects cannot disclose it. Missing eligibility or
+custody proof refuses. There is no fallback to a caller key, arbitrary URL,
+other workload's credential, live host addition or analysis-host admission.
+`bu-dhloi1.15` owns gateway enforcement; `bu-dhloi1.25` owns later static-key
+implementation/provisioning conditions. These interfaces authorize no secret
+read, credential use, host change, deployment or research execution.
+
+### S8. Two cutovers and closure boundaries
+
+The first switch includes conservative labels, representation and named
+perception/clock/reducer successors, waiting/epochs, minimal evaluator,
+read-pure context, owner-delivery identity, catalog/health interfaces,
+owner-fast baseline measurement and declared gateway enforcement. Representation
+may land dark before its producer/reader activation; existing .17 context,
+ASR and selection/approval contracts stay in force until their named successor.
+
+M7 separately owns typed boundary enforcement and its held semantic decision,
+decision-set UX/approval, streaming/Stop, live capability selection, advanced
+conditions/watches, procedure distillation and healing. Current per-event
+approval semantics and their decision-set/wait-envelope guards are retained;
+this split does not suspend them while M7 builds its richer surface. M7
+absolute latency targets are no-tool 4s median/10s p95, first-visible 1s p95 and
+first-word 2s median/4s p95; no first-switch performance acceptance is inferred
+from those targets. Exposure-causes/approval observations have no invented
+numeric tap ceiling.
+
+Before .19 closes, independent normative review and reserved exact-text
+adoption identify the immutable adopted commit, downstream owners consume that
+commit, and the coordinator applies the candidate requirement/source/boundary
+map to existing M6 `bu-enbrs2` after verifying real edges. M6 cannot archive or
+release the old contract while selected first-switch successors are absent,
+and must not depend on M7/later consumers. A source draft, green authoring
+checks or an owner direction alone is not that handoff, actual runtime proof,
+release approval or operational authorization.
+
+
 ## Alternatives considered
 
 - **Keep specialist sessions and add a read-only generalist.** Preserves two
@@ -1101,7 +2029,7 @@ hard-cutover gates or alter the private-custody boundary.
 | `goal-orchestration` 005 finite work | D10 |
 | `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
 | `goal-orchestration` 007 domain care | D2, D5 |
-| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover |
+| `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover, later owner decision `bu-u5euwb.21` |
 | `capability-authorization` 001 sandbox | D1, D3 |
 | `capability-authorization` 002 catalog metadata | D4 |
 | `capability-authorization` 003 origin ceilings | D5 |
@@ -1118,3 +2046,5 @@ hard-cutover gates or alter the private-custody boundary.
 | `capability-authorization` 014 owner decisions unreachable | D4 |
 | `capability-authorization` 015 `transact` disabled | D4, D5, D9, owner decision 8 |
 | `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |
+| `capability-authorization` 017 always-per-event approval mode; `module-approvals` 003 and 005; `autonomy-tracker` 001 | D4, D5, D13, later owner decision `bu-p5umi2.4` |
+| `capability-authorization` 018 owner selection records bind selection-bound resource scopes | D4, D5, D7, D9, later owner decision `bu-p5umi2.4` (OQ1) |

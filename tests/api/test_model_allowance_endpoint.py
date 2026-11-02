@@ -16,7 +16,7 @@ import pytest
 
 from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.model_settings import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 pytestmark = pytest.mark.unit
@@ -46,7 +46,7 @@ def _db(app, *, rows=(), side_effect=None):
     pool.fetch = AsyncMock(return_value=list(rows), side_effect=side_effect)
     manager = MagicMock(spec=DatabaseManager)
     manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: manager
+    app.dependency_overrides[get_db] = lambda: manager
     return pool
 
 

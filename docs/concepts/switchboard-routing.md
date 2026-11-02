@@ -222,7 +222,7 @@ psql -h localhost -U butlers -d butlers -c \
   with `notify.v1` in `input.context.notify_request`, and Messenger answers `route_response.v1`
   with the normalised delivery in `result.notify_response`, including on error paths.
   `RouteInputV1.context` therefore accepts `str | dict`, and `parse_notify_request()`
-  (`roster/switchboard/tools/routing/contracts.py`) is the one `notify.v1` parser. Messenger rejects
+  (`roster/switchboard/tools/contracts.py`) is the one `notify.v1` parser. Messenger rejects
   a `notify_request.origin_butler` that differs from `request_context.source_sender_identity`
   before any side effect. Error classes match the route executors (`validation_error`,
   `target_unavailable`, `timeout`, `overload_rejected`, `internal_error`).

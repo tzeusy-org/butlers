@@ -25,18 +25,12 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.contacts import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
 SEARCH_PATH = "/api/contacts/search"
-
-
-def _make_record(row: dict) -> MagicMock:
-    """Return a MagicMock that supports dict-style item access (asyncpg.Record-like)."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
 
 
 def _name_row(*, canonical_name="Alice Smith", entity_id=None):
@@ -61,7 +55,7 @@ def _wire(app: FastAPI, *, name_rows=None, id_rows=None, id_error=None, shared_p
     mock_db = MagicMock(spec=DatabaseManager)
     if shared_pool_error is not None:
         mock_db.credential_shared_pool.side_effect = shared_pool_error
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_db] = lambda: mock_db
         return None
 
     pool = AsyncMock()
@@ -70,12 +64,12 @@ def _wire(app: FastAPI, *, name_rows=None, id_rows=None, id_error=None, shared_p
         if "entity_facts" in sql:
             if id_error is not None:
                 raise id_error
-            return [_make_record(r) for r in (id_rows or [])]
-        return [_make_record(r) for r in (name_rows or [])]
+            return [Record(r) for r in (id_rows or [])]
+        return [Record(r) for r in (name_rows or [])]
 
     pool.fetch = AsyncMock(side_effect=_fetch)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return pool
 
 

@@ -726,7 +726,7 @@ def _path_matches(fe_template: str, api_path: str) -> bool:
     fe_segs = ("/api" + fe_template).split("/")
     api_segs = api_path.split("/")
     return len(fe_segs) == len(api_segs) and all(
-        _segment_matches(f, a) for f, a in zip(fe_segs, api_segs)
+        _segment_matches(f, a) for f, a in zip(fe_segs, api_segs, strict=True)
     )
 
 
@@ -1011,7 +1011,7 @@ _LIMIT_LITERAL_PINS: list[tuple[str, str, str, str, str]] = [
     ),
     (
         "general-collections",
-        "components/butler-detail/ButlerGeneralEntitiesTab.tsx",
+        "components/general/ButlerGeneralEntitiesTab.tsx",
         r"\bDROPDOWN_FETCH_LIMIT\s*=\s*(\d+)",
         "/api/general/collections",
         "limit",
@@ -1133,6 +1133,7 @@ def test_cross_summary_backend_payload_shapes_match() -> None:
         ),
         ("/relationship/contacts", "/api/relationship/groups", False),
         (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts", False),
+        ("/relationship/contacts", "/api/relationship/contacts/{contact_id}", False),
         # A pure `${id}` segment names a parameter, never a literal sibling route.
         (f"/relationship/contacts/{_WILDCARD}", "/api/relationship/contacts/overdue", False),
         # ...however many wildcards it has, e.g. `${id}${qs}` with a query suffix.

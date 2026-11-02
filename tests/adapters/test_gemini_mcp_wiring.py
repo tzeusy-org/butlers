@@ -5,6 +5,7 @@ Header values are synthetic and never printed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -36,7 +37,9 @@ async def _invoke(mcp_servers: dict, env: dict[str, str] | None = None) -> dict:
             cmd=list(cmd),
             env=child_env,
             settings_path=settings,
-            settings=json.loads(Path(settings).read_text()) if settings else None,
+            settings=json.loads(await asyncio.to_thread(Path(settings).read_text))
+            if settings
+            else None,
         )
         process = AsyncMock(returncode=0)
         process.communicate.return_value = (
@@ -88,13 +91,19 @@ async def test_each_invocation_gets_its_own_config_path_and_cleans_up() -> None:
     first = await _invoke(_SERVERS)
     second = await _invoke(_SERVERS)
     assert first["settings_path"] != second["settings_path"]
-    assert not Path(first["settings_path"]).exists()
+    assert not await asyncio.to_thread(Path(first["settings_path"]).exists)
 
 
-async def test_no_servers_adds_no_mcp_wiring() -> None:
+async def test_no_servers_admits_no_user_or_project_mcp_server() -> None:
     seen = await _invoke({})
-    assert seen["settings_path"] is None
-    assert "--allowed-mcp-server-names" not in seen["cmd"]
+    # Settings are still staged (they carry the turn limit) but name no MCP server.
+    assert seen["settings"]["mcpServers"] == {}
+    # --skip-trust trusts the cwd; without an allowlist the CLI would start every user- or
+    # project-level server. The CLI rejects an empty name, so a name no server uses admits none.
+    cmd = seen["cmd"]
+    assert "--skip-trust" in cmd
+    allowed = cmd[cmd.index("--allowed-mcp-server-names") + 1]
+    assert allowed == "butlers-no-mcp-servers"
 
 
 async def test_invoke_trusts_the_butler_server_so_headless_tool_calls_are_not_denied() -> None:

@@ -1,101 +1,93 @@
 ## MODIFIED Requirements
 
 ### Requirement: System Prompt Composition
-For every admitted roster agent in `roster_overlay` mode, the spawner SHALL assemble the final system prompt from this closed
-ordered list: (1) resolved roster identity, (2) shared `BUTLER_SKILLS.md` then `MCP_LOGGING.md`,
-(3) an optional active owner-operations overlay, (4) general
-timezone/locale/date/time/week/currency/measurement-system instructions, (5) situational context,
-(6) blind-spot disclosure, (7) Switchboard routing
-instructions for Switchboard only, and (8) memory context. No unnamed source SHALL be injected.
-Every present adjacent layer SHALL be separated by exactly one blank line. An absent optional layer
-SHALL contribute neither content nor separator. The owner overlay SHALL be enclosed in reserved
-BEGIN/END markers identifying `source=owner_operations`, `trust=trusted_owner_input`, and its integer
-version. Delimiters establish provenance only; the system SHALL NOT claim that they mechanically
-prevent natural-language conflict with roster identity. Every runtime adapter SHALL receive the same
-already composed bytes and SHALL NOT expand references, reorder layers, or add a system-prompt
-source.
-An unavailable owner-overlay store SHALL omit only the overlay, preserve roster identity, and emit a
-content-blind operational warning. Existing availability behavior remains layer-specific: general
-settings, situational context, Switchboard routing, and memory failures omit only their layer;
-blind-spot failures retain their separate fail-closed disclosure contract. An invalid roster identity
-or unknown source name SHALL block adapter invocation.
-The compatibility exceptions SHALL be migration-seeded `precutover_legacy_hold` for existing agents
-not yet cut over and owner-selected `legacy_full_replacement` during the approved migration rollback
-window after cutover. Both SHALL use the preserved pre-cutover base selector plus its then-authorized
-dynamic suffixes, SHALL omit the new owner-operations overlay, and SHALL be reported as
-identity-replacing rather than as satisfying roster-plus-overlay composition.
-If `legacy_full_replacement` remains selected when the deployment-owned rollback deadline is absent,
-malformed, or expired, the spawner SHALL fail with fixed category `legacy_rollback_expired` before
-adapter invocation. It SHALL neither continue the identity replacement nor automatically select
-`roster_overlay`. The authenticated owner SHALL still be permitted to transition the stored mode to
-`roster_overlay`. The migration-seeded `precutover_legacy_hold` SHALL NOT use the rollback deadline.
+The goal runner SHALL compose lead input from lead policy, owner profile, fenced goal input,
+domain/guidance index and recovery ledger summary under RFC0038 D15, and child input from the D9
+brief and its governing guidance references. Domain daemons SHALL NOT compose reasoning-session
+prompts. Domain CLAUDE.md and shared snippets SHALL be versioned guidance resolved by shared core;
+other context SHALL arrive through stamped `context.search`, domain reads and `guidance.load`.
+The old eight-layer prompt, automatic memory/settings/blind-spot/routing suffixes and situational
+injection SHALL NOT remain an alternate goal prompt path. Required guidance failures SHALL NOT
+substitute generated or DB-defined identity. Returned evidence SHALL preserve honest missing-source
+and fail-closed disclosure without widening grants or making private custody reachable.
+Every adapter SHALL receive byte-identical runner-composed input and SHALL NOT resolve includes,
+reorder sources or add a system-prompt source. Existing declared shared-snippet order and exact
+separators SHALL be preserved within loaded guidance, not appended as goal layers. Literal bounded
+owner operations and their source/trust/version metadata SHALL NOT become automatic prompt input;
+provenance or delimiters SHALL NOT be represented as semantic isolation or authority.
+The separate D18/RFC0015 engineering executor SHALL retain its launching guidance, approved shared
+snippets, anonymized payload and isolated shell/worktree contract, without situational injection;
+it SHALL NOT exempt staffer triage goals or re-enable domain sessions. Historical legacy modes,
+acknowledgements and deployment rollback deadlines SHALL confer no goal prompt-selection authority.
+Unavailable, malformed, denied or expired legacy selection SHALL fail closed without content
+disclosure, partial adapter input, silent legacy continuation or automatic overlay activation.
 
 ID: REQ-core-spawner-004
 Source: specify-roster-identity-owner-operations-overlay design D1-D2 and D7; heart-and-soul/vision.md Rule 5
 Scope: v1-mandatory
 
 #### Scenario: System prompt with includes
-- **WHEN** the roster root contains valid bare references or an allowed HTML include
-- **THEN** shared core resolves those references into the roster identity before the spawner appends another layer
-- **AND** include syntax in an owner overlay remains literal
+- **WHEN** shared core loads required domain guidance, or launching guidance for a separate D18 engineering executor, with valid bare references or an allowed HTML include
+- **THEN** the server resolves it under the corresponding guidance contract before returning or handing off its declared bytes
+- **AND** include-looking owner operations remain literal, and a goal does not use domain guidance as a replacement system prompt
 
 #### Scenario: Context preamble injected when signals active
-- **WHEN** the spawner prepares an invocation and active situational-context signals exist
-- **THEN** the context preamble appears after general settings and any active owner overlay
-- **AND** it appears before blind-spot disclosure, Switchboard routing, and memory context
+- **WHEN** active situational-context signals exist while the runner prepares an invocation
+- **THEN** no situational-context preamble is injected into a goal or D18 executor prompt
+- **AND** relevant context is retrieved only through an authorized stamped capability; lead policy/profile or child brief retains its governing role
 
 #### Scenario: No context preamble when no signals
-- **WHEN** the spawner prepares an invocation and no active situational-context signals exist
-- **THEN** no situational-context layer or separator is added
-- **AND** all other present layers retain their defined order
+- **WHEN** no active situational-context signals exist
+- **THEN** no context preamble or placeholder separator is added
+- **AND** the prescribed lead/child inputs and any explicitly loaded guidance retain their defined bytes and order
 
 #### Scenario: Context query failure does not block invocation
-- **WHEN** the situational-context query fails after roster identity is valid
-- **THEN** the failure is logged as a content-blind warning
-- **AND** invocation proceeds without the situational-context layer
-- **AND** roster identity and every other available authorized layer remain unchanged
+- **WHEN** a legacy situational-context query would fail during prompt preparation
+- **THEN** invocation does not depend on that retired query and no implicit context query or preamble is added
+- **AND** an authorized context-read failure is reported content-blind with honest source availability, without substituting a prompt source or widening authority
 
 #### Scenario: Every allowed layer has stable precedence
-- **WHEN** all eight allowed layers are present for Switchboard
-- **THEN** the final prompt contains them in the exact normative order with one blank line between adjacent layers
-- **AND** the owner overlay carries its source, trust, and version markers
-- **AND** the general-settings layer retains timezone, locale, local date/time, week start, currency, and measurement-system instructions
+- **WHEN** a lead or child invocation and its versioned guidance are prepared
+- **THEN** D15 lead policy/profile and prescribed context or the D9 child brief determine the input, with deterministic declared bytes and separators
+- **AND** shared guidance keeps BUTLER_SKILLS.md before MCP_LOGGING.md for declared participants
+- **AND** settings such as timezone, locale, local date/time, week start, currency and measurement system may arrive through admitted context or authorized stamped reads, never automatic old eight-layer suffixes
+- **AND** stored owner operations keep source/trust/version provenance without becoming another system-prompt source
 
 #### Scenario: Overlay store failure preserves identity
-- **WHEN** the owner-overlay query is unavailable, malformed, or denied to the runtime reader
-- **THEN** the spawner continues with the resolved roster identity and other authorized layers
-- **AND** no legacy full-replacement row or generated prompt is substituted
-- **AND** operational evidence contains no roster or overlay text
+- **WHEN** the operations store is unavailable, malformed or denied to a reader
+- **THEN** no domain-spawner overlay query or fallback changes the goal's lead policy/profile or child brief
+- **AND** no legacy row, generated prompt or cross-domain credential substitutes for the failed read
+- **AND** authorized-read operational evidence is content-blind and reports the unavailable source honestly
 
 #### Scenario: Unnamed prompt source blocks invocation
-- **WHEN** composition is asked to inject a system-prompt source outside the closed list
+- **WHEN** composition is asked to inject a system-prompt source outside the prescribed lead/child inputs or the separate engineering-executor contract
 - **THEN** the request fails before any runtime adapter starts
 - **AND** no partial prompt is delivered
 
 #### Scenario: Runtime adapters preserve composed bytes
-- **WHEN** the same composed prompt is dispatched through any supported runtime adapter
-- **THEN** each adapter receives the byte-identical composed system prompt
-- **AND** adapter-specific transport does not resolve roster files, reorder layers, or append instructions
+- **WHEN** the same runner-composed lead/child input, or separately governed executor input, is dispatched through supported adapters
+- **THEN** each receives byte-identical input
+- **AND** adapter transport does not resolve roster files, reorder sources or append instructions
 
 #### Scenario: Natural-language conflict is not reported as structural isolation
-- **WHEN** trusted owner overlay text contradicts a roster instruction in natural language
-- **THEN** the structural prompt still contains both delimited sources in the defined order
-- **AND** no response, audit event, or test result claims the delimiter guarantees model obedience or semantic isolation
+- **WHEN** owner operations conflict with versioned guidance in natural language
+- **THEN** stored provenance and literal bytes remain truthful without automatic injection into a goal prompt
+- **AND** no response, audit or test claims delimiters guarantee obedience, authenticate text, increase a grant or provide semantic isolation
 
 #### Scenario: Legacy rollback uses the compatibility selector only
-- **WHEN** the owner-gated mode history selects `legacy_full_replacement` during the approved rollback window
-- **THEN** the spawner uses the preserved pre-cutover base selector and authorized dynamic suffixes for that agent
-- **AND** it does not add an owner-operations overlay or report roster identity as structurally present
-- **AND** no other mode or agent inherits that exception
+- **WHEN** historical mode state or a request names `legacy_full_replacement` during an old approved window
+- **THEN** goal composition refuses that selector even with acknowledgement and an existing legacy head
+- **AND** a separately authorized operational restore is not a second in-process goal mode
+- **AND** history, least privilege and content-blind evidence remain intact, with no exception inherited by another agent
 
 #### Scenario: Pre-cutover hold preserves existing selection without owner attribution
-- **WHEN** an existing agent's migration-seeded mode is `precutover_legacy_hold`
-- **THEN** the spawner uses the preserved pre-cutover selector and authorized dynamic suffixes
-- **AND** it does not report that the owner selected rollback or that roster identity is structurally present
-- **AND** leaving the hold is one-way
+- **WHEN** historical migration evidence records `precutover_legacy_hold`
+- **THEN** it preserves the fact of the old selection without claiming owner action or structural goal-prompt authority
+- **AND** no goal invocation consumes the selector, no new agent is assigned the hold and no API permits re-entry
+- **AND** leaving obsolete state does not rewrite its provenance or silently activate operations text
 
 #### Scenario: Selected legacy rollback expires closed
-- **WHEN** mode history selects `legacy_full_replacement` but the server rollback deadline is absent, malformed, or expired
-- **THEN** the spawner fails with `legacy_rollback_expired` before invoking a runtime adapter
-- **AND** it does not continue legacy replacement or automatically select `roster_overlay`
-- **AND** the failure contains no roster, overlay, or legacy prompt text
+- **WHEN** an obsolete rollback selector is presented with missing, malformed or expired deployment rollback configuration
+- **THEN** selection fails before adapter invocation with fixed content-blind category `legacy_rollback_expired`
+- **AND** it neither continues legacy replacement nor automatically selects `roster_overlay`
+- **AND** even an open historical deadline cannot authorize a D15 exception; separately authorized safe exit preserves history

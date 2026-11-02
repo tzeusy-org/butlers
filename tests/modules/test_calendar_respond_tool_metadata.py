@@ -2,8 +2,8 @@
 
 Messenger and Relationship enable Calendar responses in their roster config, and
 both failed to start with "incomplete tool presentation metadata: calendar_respond"
-because the module declared half of the presentation fields. Presentation is owned
-by the central inventory; the module declares argument sensitivities only.
+because the module declared half of the presentation fields. Conditional response
+registration owns its complete descriptor through the module metadata channel.
 """
 
 from __future__ import annotations
@@ -32,3 +32,7 @@ def test_roster_response_config_metadata_passes_catalog_validation(butler_name: 
 
     validate_tool_metadata("calendar_respond", "calendar", metadata)
     assert metadata.arg_sensitivities["_write"] is True
+    assert metadata.group_name == "response"
+    assert calendar_config["groups"] == (
+        ["response"] if butler_name == "messenger" else ["core", "response"]
+    )

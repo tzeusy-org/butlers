@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.qa import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -122,7 +122,7 @@ def _build_app(
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool
 
 
@@ -485,7 +485,16 @@ async def test_case_detail_failed_state_quotes_error_detail() -> None:
     assert body["error_detail"] == "RuntimeError: Codex CLI exited with code 1: connection reset"
 
 
-async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -> None:
+@pytest.mark.parametrize(
+    ("export_retained", "refusal_recorded"),
+    [(True, None), (False, True)],
+    ids=["retained-export", "refusal-receipt"],
+)
+async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal(
+    export_retained: bool, refusal_recorded: bool | None
+) -> None:
+    """Either trusted publisher trace proves it handled the attempt: a retained export,
+    or a receipt for a refusal before retention (bu-mc01y5.28)."""
     attempt_id = _uuid7_with_timestamp(1_771_234_567_899)
     row = _make_case_row(
         id=attempt_id,
@@ -494,6 +503,9 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
         pr_url=None,
         pr_number=None,
         finding_structured_evidence={"investigation_notes": _notes_payload()},
+        pr_absence_proven=True,
+        export_retained=export_retained,
+        refusal_recorded=refusal_recorded,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 
@@ -508,6 +520,50 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
     assert body["investigation_notes"]["diff_snapshot"]
 
 
+@pytest.mark.parametrize(
+    ("pr_absence_proven", "export_retained", "refusal_recorded"),
+    [
+        (False, True, None),
+        (None, True, None),
+        (True, False, None),
+        (True, None, None),
+        (True, False, False),
+        (False, False, True),
+    ],
+)
+async def test_case_detail_never_claims_unpublished_without_proof_of_no_pr(
+    pr_absence_proven: bool | None,
+    export_retained: bool | None,
+    refusal_recorded: bool | None,
+) -> None:
+    """A retained diff plus missing PR metadata is not proof that no PR exists.
+
+    A lost ``pr_create`` response leaves no local PR metadata while a PR may
+    exist, so without ledger proof of absence the state stays ambiguous.  An
+    empty ledger is proof only for an attempt the publisher handled (a retained
+    export or a refusal receipt): a pre-ledger attempt has no rows either.
+    """
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_901)
+    row = _make_case_row(
+        id=attempt_id,
+        status="failed",
+        error_detail="publication_ambiguous",
+        finding_structured_evidence={"investigation_notes": _notes_payload()},
+        pr_absence_proven=pr_absence_proven,
+        export_retained=export_retained,
+        refusal_recorded=refusal_recorded,
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["proposal_state"] == "ambiguous"
+    assert body["proposal_diff_snapshot"] == _notes_payload()["diff_snapshot"]
+    assert body["pr"] is None
+
+
 async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> None:
     attempt_id = _uuid7_with_timestamp(1_771_234_567_900)
     diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
@@ -516,6 +572,8 @@ async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> No
         status="failed",
         error_detail="git_auth_failed: repository write authorization failed",
         finding_structured_evidence={"investigation_notes": {"diff_snapshot": diff_snapshot}},
+        pr_absence_proven=True,
+        export_retained=True,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 

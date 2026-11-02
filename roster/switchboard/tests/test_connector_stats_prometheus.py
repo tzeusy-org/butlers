@@ -22,11 +22,14 @@ Tested behaviors:
 from __future__ import annotations
 
 import importlib
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from butlers.api.routers import ingestion_connectors
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record
+
+_THIS_FILE = Path(__file__).resolve()
 
 # ---------------------------------------------------------------------------
 # Helper: load the router module with a fresh import
@@ -35,7 +38,7 @@ from butlers.api.routers import ingestion_connectors
 
 def _load_router():
     """Reload the switchboard router to pick up patched env vars."""
-    mod_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    mod_path = _THIS_FILE.parents[1] / "api" / "router.py"
     spec = importlib.util.spec_from_file_location("_sw_router_under_test", mod_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -47,39 +50,8 @@ def _load_router():
 # ---------------------------------------------------------------------------
 
 
-class _FakePool:
-    """Minimal pool stub — returns empty list for fetch, raises for fetchrow/fetchval.
-
-    The connector-stats DB path calls pool.fetch() to query the ingestion_events
-    + filtered_events UNION. Returning [] simulates a connector with no events
-    (empty timeseries).
-    """
-
-    async def fetchrow(self, *args, **kwargs):
-        raise RuntimeError("Should not query DB via fetchrow in these endpoints")
-
-    async def fetch(self, *args, **kwargs):
-        return []
-
-    async def fetchval(self, *args, **kwargs):
-        raise RuntimeError("Should not query DB via fetchval in these endpoints")
-
-
-class _FakePoolWithRows:
-    """Pool stub returning synthetic UNION rows (ingested/failed/filtered) for
-    connector-stats DB-path tests."""
-
-    def __init__(self, rows: list[dict]):
-        self._rows = rows
-
-    async def fetchrow(self, *args, **kwargs):
-        raise RuntimeError("Not used in connector stats DB path")
-
-    async def fetch(self, *args, **kwargs):
-        return self._rows
-
-    async def fetchval(self, *args, **kwargs):
-        raise RuntimeError("Not used in connector stats DB path")
+# The connector-stats DB path only calls pool.fetch() (the ingestion_events +
+# filtered_events UNION); fetchrow/fetchval stay unconfigured so they refuse.
 
 
 class _FakeDBWithRows:
@@ -87,7 +59,7 @@ class _FakeDBWithRows:
         self._rows = rows
 
     def pool(self, name: str):
-        return _FakePoolWithRows(self._rows)
+        return fake_pool(fetch=self._rows)
 
     @property
     def butler_names(self) -> list[str]:
@@ -101,7 +73,7 @@ class _FakeDBWithRows:
 
 class _FakeDB:
     def pool(self, name: str):
-        return _FakePool()
+        return fake_pool(fetch=[])
 
     @property
     def butler_names(self) -> list[str]:
@@ -142,15 +114,11 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
     bucket1 = datetime(2024, 1, 15, 10, 0, 0, tzinfo=UTC)
     bucket2 = datetime(2024, 1, 15, 11, 0, 0, tzinfo=UTC)
 
-    # asyncpg returns Record objects; use dicts with dict-like access via mapping
-    class _FakeRecord(dict):
-        pass
-
     # bu-c48im: the DB series is now skip-aware — the UNION query returns a
     # messages_filtered column (connectors.filtered_events volume) alongside
     # ingested/failed.
     fake_rows = [
-        _FakeRecord(
+        Record(
             {
                 "bucket": bucket1,
                 "messages_ingested": 120,
@@ -158,7 +126,7 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
                 "messages_filtered": 9,
             }
         ),
-        _FakeRecord(
+        Record(
             {
                 "bucket": bucket2,
                 "messages_ingested": 87,
@@ -204,12 +172,9 @@ async def test_get_connector_stats_7d_returns_daily_rows():
     DISTINCT messages_filtered series preserved per bucket."""
     from datetime import UTC, datetime
 
-    class _FakeRecord(dict):
-        pass
-
     day1 = datetime(2024, 1, 15, 0, 0, 0, tzinfo=UTC)
     fake_rows = [
-        _FakeRecord(
+        Record(
             {
                 "bucket": day1,
                 "messages_ingested": 100,
@@ -321,11 +286,9 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
 
     os.environ.pop("PROMETHEUS_URL", None)
 
-    sys.modules.pop("switchboard_api_models", None)
     import importlib
-    from pathlib import Path
 
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+    router_path = _THIS_FILE.parents[1] / "api" / "router.py"
     spec = importlib.util.spec_from_file_location("_sw_router_ifanout_nourl", router_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -367,11 +330,9 @@ async def test_get_ingestion_fanout_returns_db_matrix_when_producer_is_available
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
             import importlib
-            from pathlib import Path
 
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            router_path = _THIS_FILE.parents[1] / "api" / "router.py"
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_ok", router_path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -404,11 +365,9 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
         new=AsyncMock(return_value=fake_error_result),
     ):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
             import importlib
-            from pathlib import Path
 
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            router_path = _THIS_FILE.parents[1] / "api" / "router.py"
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_err", router_path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -441,8 +400,7 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            router_path = _THIS_FILE.parents[1] / "api" / "router.py"
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_empty", router_path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -489,8 +447,7 @@ async def test_get_ingestion_fanout_degrades_when_metric_family_is_absent():
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "0"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
-            sys.modules.pop("switchboard_api_models", None)
-            router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
+            router_path = _THIS_FILE.parents[1] / "api" / "router.py"
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_absent", router_path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)

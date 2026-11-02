@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -52,7 +51,7 @@ async def _write_resolution(
         state,
         matched_amount,
         matched_currency,
-        json.dumps(_refs(matches or [])),
+        _refs(matches or []),
         unmatched_reason,
         unverifiable_reason,
         evidence_horizon_at,

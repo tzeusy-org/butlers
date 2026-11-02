@@ -1,4 +1,4 @@
-.PHONY: check-lock check-format lint format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-ci-test-shards check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -6,8 +6,36 @@ CI_UNIT_PYTEST_ARGS = tests/ roster/ -q --maxfail=1 --tb=short --ignore=tests/e2
 CI_INTEGRATION_PYTEST_ARGS = tests/ roster/ -q --maxfail=5 --tb=short -m "integration and not nightly and not bench and not perf" -n auto --dist loadfile --cov=src/butlers --cov-append --cov-report=json:coverage.json --cov-report=term-missing
 BASE ?= origin/main
 
+# One shared lint path: CI's Lint step runs exactly `make lint`. The pinned gitleaks and
+# actionlint come only from `make install-lint-tools`; a missing tool fails, never skips.
+lint: export UV_NO_SYNC = 1
 lint:
-	uv run ruff check src/ tests/
+	uv run ruff check src/ tests/ roster/ scripts/
+	uv run --no-sync lint-imports
+	$(MAKE) --no-print-directory secrets-scan lint-workflows lint-tools-self-test
+	$(MAKE) --no-print-directory typecheck
+
+# Explicit setup only: initial public-source checker environment is never installed by a check.
+prepare-typecheck:
+	.venv/bin/python -B scripts/pyright_runtime.py prepare
+
+typecheck:
+	.venv/bin/python -B scripts/pyright_runtime.py check
+
+update-type-baseline:
+	.venv/bin/python -B scripts/pyright_runtime.py update
+
+install-lint-tools:
+	python3 scripts/lint_tools.py install
+
+secrets-scan:
+	python3 scripts/lint_tools.py secrets-scan
+
+lint-workflows:
+	python3 scripts/lint_tools.py lint-workflows
+
+lint-tools-self-test:
+	python3 scripts/lint_tools.py self-test
 
 # Identical nonmutating static survivors in the hosted guards job.
 check-lock:
@@ -130,7 +158,7 @@ test-ci-integration:
 	$(QG_GATE) run --tee --log "$$LOG" -- $(CI_INTEGRATION_PYTEST_ARGS); \
 	$(QG_GATE) verdict "$$LOG"
 
-# Quality-gate default: parallel xdist (see docs/PYTEST_QG_ALTERNATIVES_QKX5.md benchmark).
+# Quality-gate default: parallel xdist (see docs/testing/ci.md).
 # --dist loadfile keeps tests from the same file on the same worker so module-scoped fixtures
 # are not torn down mid-module (important for shared FastAPI app and module-scoped DB pools).
 test-qg:
@@ -164,18 +192,12 @@ test-qg-parallel:
 check-for-update-joins:
 	python3 scripts/check_for_update_joins.py src/ tests/ roster/
 
-# Fail-closed replacement for the former integration-only coverage guard.
-# Collects the real unit and integration marker populations and rejects stale,
-# missing, overlapping, or zero-selected checked-in file manifests.
-check-ci-test-shards:
-	uv run --no-sync python scripts/check_ci_test_shards.py
-
 # Per-lane collected-test budget ratchet (bu-r5mnn). Fails when a CI lane
 # collects more tests than scripts/test-budget-baseline.json allows: condense
 # tests in the same PR, or raise the budget with
 # `uv run --no-sync python scripts/check_test_budget.py --update-baseline` and
 # state the net test delta and why in the PR body. Mirrors the CI
-# check-preflight step.
+# smoke job's budget step.
 check-test-budget:
 	uv run --no-sync python scripts/check_test_budget.py
 
@@ -231,26 +253,26 @@ check-duplicate-names:
 
 # Every guard the CI `guards` job runs, locally, before you push (bu-r5mnn).
 # check-openspec-strict is skipped with a message when `openspec` is not on
-# PATH; everything else is a plain python3 script. The frontend-copy inventory
-# check regenerates the committed file and fails on any diff, exactly as CI
-# does, so run it on a clean worktree or expect the diff to be yours.
+# PATH; everything else is a plain python3 script or an existing frontend lint step.
 # GUARDS_BASE is the fork point the frontend guard diffs against.
 GUARDS_BASE ?= origin/main
 export GUARDS_BASE
-check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
+check-guards: check-host-policy-selectors check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
-	python3 scripts/extract-frontend-copy.py
-	git diff --exit-code -- frontend/COPY_INVENTORY.md
-	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}" --skip-inventory
+	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}"
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \
 	else \
 		echo "check-guards: openspec not on PATH, skipping check-openspec-strict (CI runs it)"; \
 	fi
 
-check: lint check-for-update-joins check-ci-test-shards check-test-budget check-guards test
+.PHONY: check-host-policy-selectors
+check-host-policy-selectors:
+	python3 scripts/check_host_policy_selectors.py
+
+check: lint check-for-update-joins check-test-budget check-guards test
 
 # Local dry run of the session-link step of the CI `guards` job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

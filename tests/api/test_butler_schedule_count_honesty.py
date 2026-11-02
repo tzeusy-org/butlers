@@ -6,13 +6,17 @@ import httpx
 import pytest
 
 from butlers.api import models
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_mcp_manager
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db, get_mcp_manager
 from butlers.api.models import butler as butler_models
-from butlers.api.routers.butlers import _get_db_manager
 
 from .conftest import make_mock_mcp_manager
 
 pytestmark = pytest.mark.unit
+
+
+def _provide(value):
+    """Dependency override returning ``value`` as bound now, not at request time."""
+    return lambda: value
 
 
 async def test_list_and_summary_models_omit_unobserved_schedule_count(app):
@@ -20,14 +24,14 @@ async def test_list_and_summary_models_omit_unobserved_schedule_count(app):
     db = MagicMock()
     db.fan_out_with_status = AsyncMock(return_value=({"general": [(7,)]}, []))
     app.dependency_overrides[get_butler_configs] = lambda: configs
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         for online, status in [(True, "ok"), (False, "down")]:
             manager = make_mock_mcp_manager(online=online)
-            app.dependency_overrides[get_mcp_manager] = lambda: manager
+            app.dependency_overrides[get_mcp_manager] = _provide(manager)
             response = await client.get("/api/butlers")
             assert response.status_code == 200
             payload = response.json()

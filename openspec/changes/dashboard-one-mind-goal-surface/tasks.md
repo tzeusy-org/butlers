@@ -31,3 +31,10 @@
 - [ ] 4.6 Qualify all five amended synthetic mocks across light/dark, desktop/tablet/phone, native pointer/keyboard, Hold/release/unknown/partial status and research disclosure/coverage, including only-Theme theme changes, Dispatch statuses/rows/commit pills, 44×44 coarse targets, contrast and focus/content access.
 - [ ] 4.7 Retain immutable complete default before/after authoring diagnostics and automatic populations, require owned affected-authoring PASS against native1c4c with all owned errors resolved, and run exact strict/overwrite/full guards/fresh inventory/budgets/knip/hygiene on final bytes without a debt reset or product test.
 - [ ] 4.8 Obtain a normal private exact-source checkpoint and fresh independent whole-boundary review before ROOT releases publication; final PR/hosted checks and the existing bu-xmd7yu HOLD sequence remain outstanding.
+
+## 5. Gap amendment (bu-85bqeq.1)
+
+- [x] 5.1 Add REQ-dashboard-goal-continuity-007 (cross-channel continuation by reference) and REQ-dashboard-goal-continuity-008 (typed knowledge gaps in the read-only answer lane through one granted Memory gap record capability, aligned with ask-once-knowledge-gaps and bu-q7vx1q.70), and amend REQ-dashboard-goal-continuity-004 to admit that single write.
+- [x] 5.2 Add REQ-fleet-case-file-015 (contributor filter on the case list), REQ-dashboard-regions-005 (Situations view), REQ-dashboard-regions-006 (standing orders listing) and REQ-dashboard-regions-007 (page verbs from one registry).
+- [x] 5.3 Owner answers the cross-channel continuation question and adopts the amendment by merging; on "no", replace REQ-dashboard-goal-continuity-007 with a separate-threads statement before merge. (Owner questionnaire 2026-10-27, item d19-gap-amendment-adoption = A: continuation yes, gap record granted, adopt after D18 conforming text.)
+- [x] 5.4 Conform REQ-dashboard-goal-continuity-004 and -008 to the D18 dashboard fast-answer kind (owner decision bu-u5euwb.21 = C): the fast answer may answer first and records no gap; gap capture covers declines by the admitted answer goal only.

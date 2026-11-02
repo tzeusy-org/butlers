@@ -1,5 +1,11 @@
 # CI queue admission experiment
 
+> **Closed and retired.** `bu-q1hzqn.8` was closed as not worthwhile at current
+> demand, no ruleset change was ever applied, and `scripts/ci_queue_admission.py`
+> (with its test) was deleted in `bu-99t5s3.2`. The commands below are kept as a
+> historical record; recover the tooling from commit `d4dd952ed` if the trial is
+> ever reopened.
+
 `bu-q1hzqn.8` owns a reversible capacity trial after pipeline PR #4530 lands.
 No setting changes with this source. The setup script still defaults to five
 concurrent merge-group builds. Build admission is independent of the maximum

@@ -687,72 +687,6 @@ class TestSandboxEnforcement:
 
 
 # ---------------------------------------------------------------------------
-# 12.5: Anonymization gate
-# ---------------------------------------------------------------------------
-#
-# Scenario: PR with PII is blocked, attempt transitions to anonymization_failed
-
-
-class TestAnonymizationGate:
-    """Integration: anonymization gate blocks PRs with PII."""
-
-    async def test_anonymization_failure_transitions_to_failed_status(self):
-        """When anonymization fails, attempt status transitions to anonymization_failed."""
-        from butlers.core.qa.dispatch import QaDispatchConfig, _run_investigation_session
-
-        pool = _make_pool()
-        attempt_id = uuid.uuid4()
-        finding_id = uuid.uuid4()
-        update_calls: list[tuple] = []
-
-        async def capture_update_status(p, aid, status, **kwargs):
-            update_calls.append((aid, status))
-
-        finding = _make_qa_finding(severity=1)
-
-        # Simulate a spawner that succeeds (agent ran) but PR creation fails due to anonymization
-        spawner = MagicMock()
-        mock_result = MagicMock()
-        mock_result.success = True
-        mock_result.session_id = uuid.uuid4()
-        mock_result.error = None
-        spawner.trigger = AsyncMock(return_value=mock_result)
-
-        worktree_path = Path("/tmp/qa-wt-anon-test")
-
-        with (
-            patch(
-                "butlers.core.qa.dispatch.update_attempt_status", side_effect=capture_update_status
-            ),
-            patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
-            patch(
-                "butlers.core.qa.dispatch._create_qa_pr",
-                new_callable=AsyncMock,
-                return_value=(None, None, None, "anonymization_failed"),
-            ),
-        ):
-            await _run_investigation_session(
-                pool=pool,
-                repo_root=Path("/tmp/repo"),
-                attempt_id=attempt_id,
-                finding_id=finding_id,
-                branch_name="qa/finance/test",
-                worktree_path=worktree_path,
-                finding=finding,
-                config=QaDispatchConfig(),
-                spawner=spawner,
-                gh_token="ghtoken",
-            )
-
-        # Publication fails closed before any PR payload exists: the attempt ends
-        # "failed" (publication_unavailable) and never reaches anonymization_failed.
-        assert any(status == "failed" for _, status in update_calls), (
-            f"Expected failed in status transitions: {update_calls}"
-        )
-        assert not any(status == "anonymization_failed" for _, status in update_calls)
-
-
-# ---------------------------------------------------------------------------
 # 12.7: Patrol crash recovery
 # ---------------------------------------------------------------------------
 #
@@ -1049,13 +983,13 @@ class TestConcurrencyModel:
 
 
 # ---------------------------------------------------------------------------
-# AC 6 (bu-i0geq): SelfHealingModule.report_error → Switchboard route() →
+# AC 6 (bu-i0geq): Core QaRelay.report_error → Switchboard route() →
 #                   QaModule.report_finding end-to-end relay integration
 # ---------------------------------------------------------------------------
 #
-# Scenario: a butler's SelfHealingModule has been wired with a real
+# Scenario: a butler's Core QaRelay has been wired with a real
 # switchboard_client (as daemon._wire_module_runtime() now does). When
-# report_error is called, the finding travels from SelfHealingModule through
+# report_error is called, the finding travels from Core QaRelay through
 # Switchboard's route() tool to QaModule's report_finding handler, where it
 # is enqueued in the ButlerReportsSource buffer.
 
@@ -1064,15 +998,15 @@ class TestSelfHealingToQaRelayIntegration:
     """Integration: report_error → Switchboard route() → QA report_finding (AC 6)."""
 
     async def test_report_error_relays_finding_to_qa_module(self):
-        """Full relay: SelfHealingModule.report_error calls route(), which lands in QaModule.
+        """Full relay: Core QaRelay.report_error calls route(), which lands in QaModule.
 
         Simulates the Switchboard forwarding mechanism: when the Switchboard
         receives a route() call for target_butler="qa" and tool_name="report_finding",
         it invokes QaModule's _handle_report_finding() directly.
         """
+        from butlers.core.qa.relay import QaRelay
         from butlers.core.qa.sources.butler_reports import ButlerReportsSource
         from butlers.modules.qa import QaModule
-        from butlers.modules.self_healing import SelfHealingModule
 
         # Set up QA module with a real ButlerReportsSource buffer
         qa_mod = QaModule()
@@ -1097,11 +1031,8 @@ class TestSelfHealingToQaRelayIntegration:
         client = MagicMock()
         client.call_tool = mock_call_tool
 
-        # Wire the SelfHealingModule with the mock client (as daemon does after bu-i0geq fix)
-        sh_mod = SelfHealingModule()
-        # Identity flows through register_tools per spec; use it here too.
-        await sh_mod.register_tools(MagicMock(), None, None, butler_name="general")
-        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+        # Bind the core relay to the current Switchboard transport
+        sh_mod = QaRelay("general", None, lambda: client)
         sh_mod._pool = None  # No DB required for this relay path
 
         # Invoke report_error — triggers the full relay chain
@@ -1136,7 +1067,7 @@ class TestSelfHealingToQaRelayIntegration:
         Confirms graceful degradation: missing QA registration → explicit unconfirmed
         reception, never a local dispatcher.
         """
-        from butlers.modules.self_healing import SelfHealingModule
+        from butlers.core.qa.relay import QaRelay
 
         async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
             if tool_name == "list_butlers":
@@ -1147,8 +1078,7 @@ class TestSelfHealingToQaRelayIntegration:
         client = MagicMock()
         client.call_tool = mock_call_tool
 
-        sh_mod = SelfHealingModule()
-        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+        sh_mod = QaRelay("general", None, lambda: client)
         sh_mod._pool = None
 
         result = await sh_mod._handle_report_error(

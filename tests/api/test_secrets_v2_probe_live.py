@@ -30,7 +30,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.secrets_v2 import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -47,13 +49,6 @@ _CLIENT_ID = "fake-client-id"
 _CLIENT_SECRET = "fake-client-secret"
 
 
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
-
-
 def _make_entity_info_row(
     *,
     entity_id: str | None = None,
@@ -64,12 +59,12 @@ def _make_entity_info_row(
     last_test_ok: bool | None = True,
     last_test_code: int | None = None,
     last_test_message: str | None = None,
-) -> MagicMock:
+) -> Record:
     from uuid import uuid4
 
     row_id = uuid4()
     eid = entity_id or str(uuid4())
-    return _make_row(
+    return make_row(
         id=row_id,
         entity_id=eid,
         type=info_type,
@@ -86,8 +81,8 @@ def _make_entity_info_row(
 def _make_butler_secrets_row(
     key: str,
     value: str,
-) -> MagicMock:
-    return _make_row(secret_key=key, secret_value=value)
+) -> Record:
+    return make_row(secret_key=key, secret_value=value)
 
 
 def _make_shared_pool(
@@ -116,7 +111,7 @@ def _make_shared_pool(
         # Raw token fetch by PK (used by probe to get refresh token)
         if "entity_info" in sql and "WHERE id = $1" in sql:
             if raw_token_value is not None:
-                return _make_row(value=raw_token_value)
+                return make_row(value=raw_token_value)
             return None
         # Full entity_info row (used by _fetch_single_user_secret)
         if "entity_info" in sql or "entities" in sql:
@@ -196,7 +191,7 @@ def _make_db(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 

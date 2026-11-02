@@ -1,3 +1,55 @@
+## Current target and historical scope
+
+This change is re-scoped by adopted RFC 0038 D1/D2/D19 and the
+`reconcile-dashboard-conversation-contracts` row in
+`generalist-lead-focused-delegation/collision-dispositions.md`. Dashboard
+reasoning ingress SHALL enter goal admission, not select or resume a
+target-butler session. Switchboard owns admission and the goal ledger; domains
+are capability services. Dashboard bodies and detailed continuity belong to
+`dashboard-one-mind-goal-surface` under D19.
+
+The original Context, landed-evidence table, Decisions 1-3 and Migration Plan
+below record the pre-cutover reconciliation and its remaining roadmap work.
+Their classify/route, pin and provider-resume references describe that phase
+only. They SHALL NOT authorize a post-cutover alternative to goal admission,
+a domain session or D19 implementation. Completed work is historical evidence,
+not proof that the goal-runtime conversion is implemented.
+
+### Goal-admission conversion
+
+- The dashboard API SHALL authenticate the owner before constructing the
+  immutable conversation envelope. Client-supplied source, sender, target or
+  context content SHALL NOT confer owner authority or choose a session.
+- Preserve `dashboard` / `internal`, the server-assigned
+  `dashboard:web:{conversation_id}`, message/retry identity and persisted
+  privacy-filtered page context. A retry reuses the original captured envelope;
+  it does not recapture context or create another admission.
+- Preserve the deduplicated ingestion event and `request_id`. After cutover,
+  request lineage follows its admitted goal and lead/child invocations through
+  the goal ledger, as the generalist ingestion-registry delta already requires.
+  Pre-cutover routed sessions retain their stored lineage and remain readable;
+  a route trigger is not goal origin or invocation lineage.
+- Legacy per-butler and sticky routing pins apply only before cutover. After
+  cutover they SHALL NOT dispatch a target session, grant capabilities or
+  enlarge goal authority. No new body, region-hint vocabulary or cross-goal
+  resume protocol is defined here. D19 owns those surface contracts; D9's
+  no-resume rule remains unchanged.
+- The former dashboard discretion bypass applies only to legacy serving
+  traffic. Post-cutover dashboard messages use ordinary authenticated goal
+  admission; a channel label is not an origin credential or policy bypass.
+- Live dashboard wiring remains disconnected in ISOLATED_CANDIDATE. Legacy
+  serving references do not authorize traffic into that profile; only the
+  owner-authorized SWITCHED_RELEASE connects actual ingress, as already
+  required by the generalist control-plane contract.
+- Direct dashboard ingress never becomes connector provenance. Connector-only
+  filtered-event joins, status semantics and ingestion duties are unchanged.
+
+All fifteen scenario headings remain stable. Pin/classification/discretion scenarios have
+explicit legacy and successor dispositions, rather than dropping provenance or
+leaving obsolete mechanisms as post-cutover authority. No new consumer,
+subscription, grant or runtime activation is introduced. Roadmap task 2.2 still
+requires its separate recorded owner approval and is not executed here.
+
 ## Context
 
 Dashboard conversations deliberately enter the standard Switchboard spine as
@@ -28,6 +80,10 @@ work remains held until this vocabulary/provenance authority is merged and the
 recovery carrier is rebased and reverified.
 
 ## Goals / Non-Goals
+
+These original goals apply to pre-cutover reconciliation. In particular,
+"preserve the existing specialist-routing policy" preserves its historical
+contract until cutover, not a post-cutover classification/dispatch engine.
 
 **Goals:**
 
@@ -118,6 +174,13 @@ history without silently releasing a new fleet-executable slice.
   only after owner approval and keep any successors gated.
 
 ## Migration Plan
+
+These numbered steps are the original reconciliation sequence. This amendment
+changes only proposal/design/tasks and the two delta requirements. It does not
+replay completed steps, mutate canonical RFC/spec files or Beads, implement
+runtime, tick tasks or archive. All ten task identities and seven checked/three
+unchecked states remain intact. Future source owners must earn actual
+admission, authorization, dedupe/retry and lineage tests before runtime credit.
 
 1. Record the exact merged commit/PR and targeted verification evidence for
    anchor/resume tasks 4.1-4.2 and for the durable Stop/dispatch prerequisites.

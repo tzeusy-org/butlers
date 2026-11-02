@@ -19,7 +19,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.butler_logs import _get_db_manager as _logs_get_db
+from butlers.api.deps import get_db as _logs_get_db
+from butlers.testing.records import Record, row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -32,7 +33,7 @@ _NOW = datetime.now(tz=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _log_row(
     *,
     level: str = "INFO",
     msg: str = "test message",
@@ -40,19 +41,15 @@ def _make_row(
     request_id=None,
     metadata=None,
     ts: datetime | None = None,
-) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = MagicMock(
-        side_effect=lambda key: {
-            "ts": ts or _NOW,
-            "level": level,
-            "msg": msg,
-            "source": source,
-            "request_id": request_id,
-            "metadata": metadata,
-        }[key]
+) -> Record:
+    return row(
+        ts=ts or _NOW,
+        level=level,
+        msg=msg,
+        source=source,
+        request_id=request_id,
+        metadata=metadata,
     )
-    return row
 
 
 def _make_app(rows: list, *, pool_raises: Exception | None = None) -> object:
@@ -88,7 +85,7 @@ def _make_app_no_pool() -> object:
 
 async def test_logs_returns_loglines_shape() -> None:
     """GET /api/butlers/{name}/logs returns a LogLines response with correct shape."""
-    row = _make_row(level="INFO", msg="session started", source="spawner")
+    row = _log_row(level="INFO", msg="session started", source="spawner")
     app = _make_app([row])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

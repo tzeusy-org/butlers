@@ -61,7 +61,7 @@ class TestFetchSituationalContextPreamble:
             return_value=[_make_entry()],
         ):
             result = await fetch_situational_context_preamble(AsyncMock(), "general")
-        assert result == "[User Context: traveling (Paris, explicit)]"
+        assert result == "[User Context: traveling (explicit)]"
 
         # Empty signals → None
         with patch(
@@ -152,11 +152,11 @@ class TestSpawnerSituationalContextInjection:
         with patch(
             "butlers.core.spawner.fetch_situational_context_preamble",
             new_callable=AsyncMock,
-            return_value="[User Context: traveling (Paris, explicit)]",
+            return_value="[User Context: traveling (explicit)]",
         ):
             await spawner.trigger(prompt="do task", trigger_source="trigger")
         assert adapter.captured_system_prompts[-1] == (
-            "Base prompt.\n\n[User Context: traveling (Paris, explicit)]"
+            "Base prompt.\n\n[User Context: traveling (explicit)]"
         )
 
         # No preamble (None) → prompt unchanged; spawn succeeds
@@ -260,17 +260,15 @@ class TestFormatContextPreamble:
                 confidence=conf,
             )
 
-        # With value
+        # Unattested free text is omitted (REQ-context-bus-009)
         assert format_context_preamble([_e("traveling", "Paris")]) == (
-            "[User Context: traveling (Paris, explicit)]"
+            "[User Context: traveling (explicit)]"
         )
         # Without value
         assert format_context_preamble([_e("dnd")]) == "[User Context: dnd (explicit)]"
         # Multiple
         multi = format_context_preamble([_e("traveling", "Paris"), _e("meeting", "standup", 0.8)])
-        assert multi == (
-            "[User Context: traveling (Paris, explicit), meeting (standup, high confidence)]"
-        )
+        assert multi == ("[User Context: traveling (explicit), meeting (high confidence)]")
         # Empty
         assert format_context_preamble([]) == ""
 

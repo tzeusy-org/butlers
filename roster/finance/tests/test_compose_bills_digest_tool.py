@@ -12,22 +12,11 @@ from __future__ import annotations
 
 from datetime import date
 
+from fastmcp import FastMCP
+
 from butlers.modules._roster_finance.tools import register_tools
+from butlers.testing.mcp import registered_tools
 from butlers.tools.finance.bills import compose_upcoming_bills_digest
-
-
-class _FakeMCP:
-    """Captures registered tool closures by name."""
-
-    def __init__(self) -> None:
-        self.tools: dict = {}
-
-    def tool(self):
-        def _decorator(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-
-        return _decorator
 
 
 class _FakeModule:
@@ -37,20 +26,20 @@ class _FakeModule:
         raise AssertionError("compose_bills_digest must not touch the pool")
 
 
-def _register() -> dict:
-    mcp = _FakeMCP()
+async def _register() -> dict:
+    mcp = FastMCP()
     register_tools(mcp, _FakeModule(), config=None)
-    return mcp.tools
+    return await registered_tools(mcp)
 
 
-def test_compose_bills_digest_tool_is_registered():
-    tools = _register()
+async def test_compose_bills_digest_tool_is_registered():
+    tools = await _register()
     assert "compose_bills_digest" in tools
 
 
 async def test_tool_delegates_to_tested_function():
     """The tool returns exactly what compose_upcoming_bills_digest() produces."""
-    tools = _register()
+    tools = await _register()
     sweep = {
         "auto_settled": [{"payee": "HSBC", "amount": "45.00", "paid_at": "2026-06-20"}],
         "candidates": [],
@@ -80,7 +69,7 @@ async def test_tool_delegates_to_tested_function():
 
 async def test_tool_passes_through_early_exit_none():
     """When nothing is worth sending, the tool returns message=None (early exit)."""
-    tools = _register()
+    tools = await _register()
     empty_sweep = {"auto_settled": [], "candidates": []}
     empty_bills = {"needs_action": [], "autopay": [], "predicted": [], "totals": {}}
     empty_predictions = {"predictions": []}

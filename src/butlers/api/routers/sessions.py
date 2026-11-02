@@ -17,7 +17,7 @@ Single-session detail is served ONLY by the cross-butler ``GET
 session ids are globally unique, and the global path resolves pinned rows and
 deep links without a ``?butler=`` hint. Cross-butler reads (list + detail
 fan-outs) go through the versioned read-model boundary in
-``butlers.api.read_models.sessions_v1`` rather than constructing ad-hoc SQL
+``butlers.api.read_models.sessions`` rather than constructing ad-hoc SQL
 inline.
 """
 
@@ -34,7 +34,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import TypeAdapter, ValidationError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -64,7 +64,7 @@ from butlers.api.models.session import (
 )
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bound
-from butlers.api.read_models.sessions_v1 import (
+from butlers.api.read_models.sessions import (
     SUMMARY_COLUMNS,
     SessionDetailRow,
     SessionSummaryRow,
@@ -93,11 +93,6 @@ _PROMPT_DYNAMIC_SOURCES = (
     "switchboard_routing_instructions",
     "memory_context",
 )
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_pricing_optional() -> PricingConfig | None:
@@ -332,6 +327,36 @@ async def _attach_session_extras(detail: SessionDetail, pool, session_id: UUID) 
     same enrichment is shared by the butler-scoped and cross-butler by-id
     detail endpoints so both return an identical ``SessionDetail`` shape.
     """
+    from butlers.api.models.served_identity import ServedAttempt
+    from butlers.core.runtimes.served_identity import bounded
+
+    try:
+        rows = await pool.fetch(
+            """SELECT id,attempt_index,outcome,served_identity,
+                      resolution_receipt->'winner'->>'model_id' AS requested_model_id
+               FROM public.model_dispatch_attempts WHERE session_id=$1
+               ORDER BY attempt_index,ts,id""",
+            session_id,
+        )
+        detail.served_attempts = [
+            ServedAttempt(
+                attempt_id=row["id"],
+                attempt_index=row["attempt_index"],
+                outcome=row["outcome"],
+                requested_model_id=row["requested_model_id"],
+                served_identity=bounded(row["served_identity"])
+                if isinstance(row["served_identity"], dict)
+                else None,
+            ).model_dump()
+            for row in rows
+        ]
+        detail.served_source_state = (
+            "observed" if any(row["served_identity"] is not None for row in rows) else "historical"
+        )
+    except Exception:
+        detail.served_source_state = "unavailable"
+        logger.debug("Session serving evidence unavailable")
+
     # Attach process log if available (best-effort — table may not exist yet)
     try:
         receipt = await pool.fetchval(
@@ -455,7 +480,8 @@ async def list_sessions(
         ),
     ),
     request_id: str | None = Query(None, description="Filter by request_id"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> KeysetResponse[SessionSummary]:
     """Return keyset-paginated sessions aggregated across all butler databases.
@@ -578,7 +604,8 @@ async def get_session_aggregate(
             "the common KPI-strip path never pays for it."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionAggregate]:
     """Return a filter-aware, window-true session rollup across all butlers.
 
@@ -669,7 +696,8 @@ async def get_session_aggregate(
 async def get_session_prompt_receipt(
     session_id: UUID,
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionPromptReceipt]:
     """Return the exact effective prompt to the authenticated dashboard owner.
 
@@ -743,7 +771,8 @@ async def get_session_prompt_receipt(
 @router.get("/{session_id}", response_model=ApiResponse[SessionDetail])
 async def get_session(
     session_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionDetail]:
     """Return full detail for a single session, resolving it across butlers.
 
@@ -818,7 +847,8 @@ async def list_butler_sessions(
         ),
     ),
     request_id: str | None = Query(None, description="Filter by request_id"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> PaginatedResponse[SessionSummary]:
     """Return paginated sessions for a single butler.
@@ -831,11 +861,11 @@ async def list_butler_sessions(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     # Map bare day keys onto owner-timezone day boundaries (reuse this butler's
     # own pool to read the shared public general settings).
@@ -901,7 +931,8 @@ GROUP BY trigger_source
 async def get_butler_session_kinds(
     name: str,
     window_days: int = Query(7, ge=0, description="Rolling window in days (default 7)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SessionKindBreakdown]:
     """Return session counts grouped by trigger_source for a rolling window.
 
@@ -913,11 +944,11 @@ async def get_butler_session_kinds(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_SESSION_KINDS_SQL, window_days)
 
@@ -952,7 +983,8 @@ _VALID_WINDOW_DAYS = {7, 30}
 async def get_butler_daily_activity(
     name: str,
     window_days: int = Query(7, description="Rolling window in days; must be 7 or 30"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DailyActivity]:
     """Return daily session counts for a butler over a rolling 7- or 30-day window.
 
@@ -970,11 +1002,11 @@ async def get_butler_daily_activity(
 
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_DAILY_ACTIVITY_SQL, window_days)
 
@@ -1015,7 +1047,8 @@ ORDER BY 1 DESC
 async def get_butler_hourly_activity(
     name: str,
     window_hours: int = Query(24, ge=1, le=24, description="Rolling window in hours (default 24)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[HourlyActivity]:
     """Return hourly session counts for a butler over a rolling window.
 
@@ -1030,11 +1063,11 @@ async def get_butler_hourly_activity(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch(_HOURLY_ACTIVITY_SQL, window_hours)
 
@@ -1082,7 +1115,8 @@ WHERE started_at >= NOW() - ($1 * INTERVAL '1 day')
 async def get_butler_latency_stats(
     name: str,
     window_days: int = Query(7, ge=1, le=365, description="Rolling window in days (default 7)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[LatencyStats]:
     """Return latency percentile statistics for a butler over a rolling window.
 
@@ -1095,11 +1129,11 @@ async def get_butler_latency_stats(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     row = await pool.fetchrow(_LATENCY_STATS_SQL, window_days)
 
@@ -1135,7 +1169,8 @@ async def get_butler_friction_summary(
     period: Literal["today", "7d", "30d"] = Query(
         "today", description="Summary period: 'today', '7d', or '30d'"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[FrictionSummary]:
     """Return typed friction-episode counts and session outcomes for a butler.
 
@@ -1148,11 +1183,11 @@ async def get_butler_friction_summary(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     friction = await _friction_summary(pool, period)
     outcomes = await _sessions_summary(pool, period)

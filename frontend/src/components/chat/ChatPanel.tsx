@@ -32,6 +32,7 @@ import {
 import type { ConversationSummary } from "@/api/types.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
+import { isTitleEditorEscape } from "./title-editor-escape.ts";
 import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
@@ -45,6 +46,10 @@ import {
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
+import {
+  firstResumableConversation,
+  useSelectedConversation,
+} from "@/hooks/use-conversation-metadata.ts";
 
 // ---------------------------------------------------------------------------
 // ChatPanel inner content (mounted once Sheet is open)
@@ -58,6 +63,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const queryClient = useQueryClient();
 
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [hasNewConversationIntent, setHasNewConversationIntent] = useState(false);
+  const hasResumedRef = useRef(false);
   // Set by a message-search jump-to-message result (bu-qaisp, parity with
   // FloatingChatWidget's bu-0ynlk.9) — consumed once that message's bubble
   // has rendered (see the effect below).
@@ -65,7 +72,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const composerContext = JSON.stringify([butlerName, activeConversationId ?? "new"]);
   const [composer, setComposer] = useState({ context: "", value: "" });
   const inputValue = composer.context === composerContext ? composer.value : "";
-  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const setInputValue = (value: string) => {
+    // Typing or restoring a draft chooses this new thread before a delayed
+    // discovery response can resume an old one. Clearing it keeps that intent.
+    if (activeConversationId === null && value.length > 0) {
+      hasResumedRef.current = true;
+      setHasNewConversationIntent(true);
+    }
+    setComposer({ context: composerContext, value });
+  };
   const draft = useDraft("chat.message", [butlerName, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), true, { message: "" });
   const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
   const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
@@ -76,8 +91,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   const pricingMap = pricingMapData ?? null;
 
   // Fetch conversations list
-  const { data: conversationsData, isLoading: isLoadingConversations } =
-    useConversations(butlerName);
+  const {
+    data: conversationsData,
+    isLoading: isLoadingConversations,
+    isError: isConversationsError,
+    refetch: refetchConversations,
+  } = useConversations(butlerName);
   const conversations: ConversationSummary[] = useMemo(
     () => conversationsData?.data ?? [],
     [conversationsData],
@@ -131,6 +150,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   function switchConversation(direction: 1 | -1) {
     if (conversations.length === 0) return;
     draft.dismiss(() => {
+    hasResumedRef.current = true;
+    setHasNewConversationIntent(false);
     abandonCurrentStream();
     const idx = conversations.findIndex((c) => c.id === activeConversationId);
     if (direction === -1) {
@@ -172,17 +193,15 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // Resume the most recent conversation ONCE per mount (== once per Sheet
   // open, since ChatContent unmounts entirely when the Sheet closes via the
   // `{open && <ChatContent />}` gate in ChatPanel below) — gated by
-  // hasResumedRef so a later "New conversation" click (which also sets
-  // activeConversationId to null) does not get immediately overridden back
-  // to the existing thread by this same effect. Mirrors FloatingChatWidget's
-  // identical guard.
-  const hasResumedRef = useRef(false);
+  // hasResumedRef so explicit New, typed/restored new-thread work and later
+  // selections cannot be overridden by delayed discovery or refresh results.
   useEffect(() => {
     if (hasResumedRef.current) return;
-    if (conversations.length === 0) return;
+    const resumable = firstResumableConversation(conversations);
+    if (!resumable) return;
     hasResumedRef.current = true;
     if (activeConversationId == null) {
-      setActiveConversationId(conversations[0].id);
+      setActiveConversationId(resumable.id);
     }
   }, [conversations, activeConversationId]);
 
@@ -202,11 +221,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     previousButlerNameRef.current = butlerName;
     abandonCurrentStream();
     hasResumedRef.current = false;
+    setHasNewConversationIntent(false);
     setActiveConversationId(null);
     resetTurnState();
   }, [butlerName, abandonCurrentStream, resetTurnState]);
 
-  const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
+  const activeConversation = useSelectedConversation(activeConversationId, conversations);
 
   // Once the jumped-to conversation's messages have rendered, scroll/focus
   // the anchor message. A miss (bubble not in the DOM yet) just waits for
@@ -238,6 +258,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
 
   function handleNewConversation() {
     draft.dismiss(() => {
+      hasResumedRef.current = true;
+      setHasNewConversationIntent(true);
       abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
@@ -258,6 +280,12 @@ export function ChatContent({ butlerName }: ChatContentProps) {
       ? streaming.dispatchReceipt
       : undefined;
 
+  // No selected history is not proof of an empty thread while initial
+  // discovery is unknown (or its first row is about to auto-resume).
+  // Deliberately choosing New establishes a fresh composer independently.
+  const unresolvedDiscovery = activeConversationId === null && !hasNewConversationIntent &&
+    (conversationsData === undefined || isConversationsError || conversations.length > 0);
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Sidebar */}
@@ -266,6 +294,8 @@ export function ChatContent({ butlerName }: ChatContentProps) {
         activeConversationId={activeConversationId}
         onSelectConversation={(id, messageId) => {
           draft.dismiss(() => {
+          hasResumedRef.current = true;
+          setHasNewConversationIntent(false);
           abandonCurrentStream();
           setActiveConversationId(id);
           setPendingScrollMessageId(messageId ?? null);
@@ -285,7 +315,22 @@ export function ChatContent({ butlerName }: ChatContentProps) {
           routedButler={visibleDispatchReceipt?.routedButler}
         />
 
-        {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
+        {isConversationsError && (
+          <div>
+            <ConversationReadError
+              label="conversation discovery"
+              onRetry={() => void refetchConversations()}
+            />
+            {conversationsData && (
+              <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+                Showing cached conversations; this list may be out of date.
+              </p>
+            )}
+          </div>
+        )}
+
+        {(isLoadingConversations && unresolvedDiscovery) ||
+          (isLoadingMessages && activeConversationId && visibleMessages.length === 0) ? (
           <MessageThreadSkeleton />
         ) : (
           <MessageThread
@@ -293,7 +338,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
             streaming={streaming}
             pricingMap={pricingMap}
             conversationId={activeConversationId}
-            suppressEmptyState={isMessagesError}
+            suppressEmptyState={isMessagesError || unresolvedDiscovery}
           />
         )}
 
@@ -381,6 +426,10 @@ export function ChatPanel({
           side="right"
           showCloseButton={true}
           className="w-full sm:max-w-[480px] p-0 flex flex-col overflow-hidden"
+          onEscapeKeyDown={(event) => {
+            // A rename editor consumes its own Escape (cancel the edit).
+            if (isTitleEditorEscape(event)) event.preventDefault();
+          }}
         >
           <SheetHeader className="px-4 py-3 border-b shrink-0">
             <SheetTitle className="text-base">Chat with {butlerName}</SheetTitle>

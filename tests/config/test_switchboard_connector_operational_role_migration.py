@@ -552,7 +552,7 @@ def test_heartbeat_promotes_a_cursor_created_row(switchboard_db_url):
             from datetime import UTC, datetime
             from uuid import uuid4
 
-            from butlers.connectors.known_contact_state import (
+            from butlers.core.known_contact_state import (
                 CLASSIFICATION_KEY,
                 KnownContactSnapshot,
             )

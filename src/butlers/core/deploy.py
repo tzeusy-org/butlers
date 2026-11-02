@@ -6,9 +6,10 @@ build`` + ``docker compose up -d``) by hand — with one idempotent verb:
 ``butlers deploy``.
 
 Pipeline: build the ``butlers-app`` image stamped with the current git SHA →
-force-rerun the one-shot ``migrations`` service → refresh the bind-mounted
-beads export → recreate services under an explicit, hotreload/dev-profile-free
-compose invocation → poll ``/health`` → record the outcome to
+force-rerun the one-shot ``migrations`` service → recreate services under an
+explicit, hotreload/dev-profile-free
+compose invocation → poll ``/health`` → wait for sustained semantic
+readiness (``butlers.core.deploy_readiness``; REQ-dashboard-api-064) → record the outcome to
 ``public.deployments`` (success **or** failed — a failed deploy is recorded
 too, so it is visible in the ledger rather than silent; see
 ``butlers.core.deployments``).
@@ -38,19 +39,6 @@ bu-zhfd0, the incident where core_155..161 sat unrun in prod for six days):
   raises), so this pipeline can never recreate services under the
   bind-mounted, working-tree-sourced containers that motivated this bead in
   the first place — see the "PROD DEPLOYS" note atop ``docker-compose.yml``.
-- **Beads export missing/stale in the compose project directory.** bu-hmdqz.6.
-  ``docker-compose.yml`` bind-mounts ``./.beads/issues.export.jsonl:ro`` (a
-  relative host path, resolved against ``config.repo_root``) into
-  ``dashboard-api``/``dashboard-api-hotreload``/``butlers-up``/
-  ``butlers-up-hotreload``, feeding ``compute_decision_digest()``
-  (``butlers.jobs.decision_review``). ``bd export`` only ever runs on the
-  host, never inside a container, and a deploy commonly runs from a snapshot
-  worktree whose ``.beads/`` may lack the export entirely or hold a stale
-  one. :func:`materialize_beads_export` refreshes it right before
-  ``recreate_services`` binds it into the freshly recreated containers, so
-  the Decisions lane and weekly digest/escalation jobs are never stuck
-  ``decisions_available=False`` purely because of deploy-flow plumbing.
-
 Testability: :func:`run_deploy` accepts an injected ``pool`` so unit tests
 can mock every subprocess/HTTP boundary while integration tests exercise the
 real ``public.deployments`` write via ``butlers.core.deployments`` against a
@@ -73,6 +61,7 @@ from pathlib import Path
 import asyncpg
 import httpx
 
+from butlers.core.deploy_readiness import SustainedReadinessTarget, await_sustained_readiness
 from butlers.core.deployments import record_deployment, resolve_core_migration_head
 from butlers.db import db_params_from_env
 
@@ -136,7 +125,7 @@ class DeployError(RuntimeError):
     """Raised when a deploy pipeline phase fails; carries the phase name.
 
     ``phase`` is one of ``"build"``, ``"migrate"``, ``"recreate"``,
-    ``"health-check"`` — used verbatim in the failed ledger row's log line
+    ``"health-check"``, ``"semantic-readiness"`` — used verbatim in the failed ledger row's log line
     and in the CLI's error message so a failure is immediately actionable.
     """
 
@@ -237,6 +226,10 @@ class DeployConfig:
     #: See :func:`preflight_check`. Off by default: the canonical prod deploy
     #: must fail closed if it is pointed at a frozen worktree or divergent HEAD.
     allow_dirty_root: bool = False
+    #: Roster-derived sustained-readiness wait (REQ-dashboard-api-064). ``None``
+    #: fails the semantic-readiness phase closed: process ``/health`` alone
+    #: never completes a deploy.
+    readiness: SustainedReadinessTarget | None = None
 
     def __post_init__(self) -> None:
         forbidden = _FORBIDDEN_PROFILES & set(self.profiles)
@@ -659,68 +652,6 @@ def run_migrations(config: DeployConfig, endpoint: RestoreDrillEndpoint | None =
     )
 
 
-def materialize_beads_export(config: DeployConfig) -> bool:
-    """Best-effort: (re)generate ``.beads/issues.export.jsonl`` in *config.repo_root*.
-
-    bu-hmdqz.6. ``docker-compose.yml`` bind-mounts
-    ``./.beads/issues.export.jsonl:ro`` into ``dashboard-api``,
-    ``dashboard-api-hotreload``, ``butlers-up``, and ``butlers-up-hotreload``
-    -- a relative *host* path resolved against the compose project directory
-    (``config.repo_root``, since ``docker compose`` always runs with that as
-    ``cwd`` here). ``bd export`` itself only ever runs on the host (``bd``
-    talks to the remote Dolt server at ``<dolt-host>:3307``; the
-    tracker endpoint is unreachable from inside any container by policy -- see
-    ``decision_review.py``'s module docstring), and a
-    prod deploy commonly runs from a snapshot worktree (see this module's
-    "PROD DEPLOYS" docstring note) whose ``.beads/`` may have no export at
-    all, or a stale one from whenever that worktree was last synced. Without
-    refreshing it here, right before ``recreate_services`` binds it into the
-    freshly recreated containers, ``compute_decision_digest()`` sees a
-    missing/stale file and everything downstream of it (dashboard-api's
-    ``/api/decisions``, Switchboard's weekly digest/escalation jobs) degrades
-    to ``decisions_available=False`` forever -- even though the underlying
-    bd/Dolt data is perfectly healthy.
-
-    Best-effort, like :func:`_best_effort_migration_head`: a missing/failing
-    ``bd`` binary on the deploy host must never fail the whole prod deploy
-    over an ancillary governance surface that already degrades honestly
-    on its own when this file is absent or stale -- logs a warning and
-    returns ``False`` instead of raising.
-
-    Deliberately exports to ``issues.export.jsonl``, never
-    ``issues.jsonl`` -- see the bd 1.0.4 auto-import-loop hazard documented
-    in AGENTS.md/CLAUDE.md.
-
-    Ensures *export_path* exists as a regular file before ever touching
-    ``bd`` (classic Docker bind-mount trap, flagged in PR #3174 review): if
-    the host path backing a ``:ro`` bind mount doesn't exist yet, Docker
-    creates a *directory* there to satisfy the mount, and every subsequent
-    ``bd export -o`` to that path then fails permanently with
-    ``IsADirectoryError`` -- this is not self-healing. Touching an empty
-    placeholder first (parent-dir + file, no-op if already a file) means a
-    ``bd export`` failure below only ever leaves behind stale/empty content,
-    never a directory that wedges the mount forever.
-    """
-    export_path = config.repo_root / ".beads" / "issues.export.jsonl"
-    export_path.parent.mkdir(parents=True, exist_ok=True)
-    if not export_path.exists():
-        export_path.touch()
-    cmd = ["bd", "export", "-o", str(export_path)]
-    try:
-        proc = subprocess.run(cmd, cwd=config.repo_root, capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        logger.warning("deploy: could not materialize beads export (%s): %s", cmd, exc)
-        return False
-    if proc.returncode != 0:
-        logger.warning(
-            "deploy: `bd export` failed (exit %d): %s",
-            proc.returncode,
-            (proc.stderr or proc.stdout or "").strip()[-2000:],
-        )
-        return False
-    return True
-
-
 def prepare_restore_drill_executor(
     config: DeployConfig, endpoint: RestoreDrillEndpoint
 ) -> RestoreDrillFirewallCapability:
@@ -854,6 +785,21 @@ async def wait_for_health(config: DeployConfig) -> None:
     raise DeployError("health-check", f"timed out after {config.health_timeout_s}s: {last_error}")
 
 
+async def wait_for_semantic_readiness(config: DeployConfig, pool: asyncpg.Pool) -> str:
+    """Hold completion until readiness is sustained; return the content-blind receipt.
+
+    Raises ``DeployError("semantic-readiness", <receipt>)`` on timeout, a false
+    final sample, or a missing readiness configuration, so a short green
+    ``/health`` window can never record a successful deploy.
+    """
+    if config.readiness is None:
+        raise DeployError("semantic-readiness", "no sustained-readiness configuration")
+    receipt = await await_sustained_readiness(config.readiness, pool)
+    if not receipt.passed:
+        raise DeployError("semantic-readiness", receipt.to_json())
+    return receipt.to_json()
+
+
 async def _make_pool() -> asyncpg.Pool:
     params = db_params_from_env()
     database = os.environ.get("POSTGRES_DB", "butlers")
@@ -883,6 +829,8 @@ class DeployResult:
     #: Preflight guard reasons that were downgraded to warnings via
     #: ``allow_dirty_root`` (empty for a clean canonical-checkout deploy).
     overrides: tuple[str, ...] = ()
+    #: Content-blind sustained-readiness receipt (JSON) for a successful deploy.
+    readiness_receipt: str | None = None
 
 
 async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) -> DeployResult:
@@ -918,10 +866,10 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
             endpoint = _resolve_restore_drill_endpoint(config)
             build_image(config, git_sha)
             run_migrations(config, endpoint)
-            materialize_beads_export(config)
             capability = prepare_restore_drill_executor(config, endpoint)
             recreate_services(config, endpoint, capability)
             await wait_for_health(config)
+            readiness_receipt = await wait_for_semantic_readiness(config, pool)
         except DeployError as exc:
             migration_head = await _best_effort_migration_head(pool)
             await record_deployment(
@@ -951,6 +899,7 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
             migration_head=migration_head,
             result="success",
             overrides=overrides,
+            readiness_receipt=readiness_receipt,
         )
     finally:
         if owns_pool:

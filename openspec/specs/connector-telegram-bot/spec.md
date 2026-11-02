@@ -2,7 +2,9 @@
 
 ## Purpose
 The Telegram Bot connector is the butler ecosystem's primary user-facing chat interface. It receives Telegram updates from a bot account, normalizes them into `ingest.v1` envelopes for Switchboard ingestion, and provides the bidirectional channel through which butlers communicate with the user. The bot account is the "face" of the butler system on Telegram — users message the bot, and butlers reply through the Messenger butler's channel tools. This connector handles the inbound half of that loop.
+
 ## Requirements
+
 ### Requirement: Telegram Bot Identity and Role
 The Telegram bot connector SHALL bridge a Telegram bot account into the butler ecosystem as the primary interactive chat channel.
 
@@ -61,6 +63,10 @@ Each Telegram update SHALL be normalized to the canonical `ingest.v1` envelope.
 ### Requirement: Tiered Text Extraction
 The connector SHALL extract human-readable text from Telegram messages using a four-tier fallback strategy.
 
+ID: REQ-connector-telegram-bot-005
+Source: bu-r0dsz; [Observed] `src/butlers/connectors/telegram_bot.py` `_extract_normalized_text`
+Scope: v1-mandatory
+
 #### Scenario: Tier 1 — text field
 - **WHEN** a Telegram message has a `text` field
 - **THEN** it is used as `payload.normalized_text`
@@ -77,6 +83,16 @@ The connector SHALL extract human-readable text from Telegram messages using a f
   - `[Sticker: <emoji>]` (includes the sticker's emoji)
   - `[Contact: <name>]` (includes the contact's display name)
   - `[Poll: <question>]` (includes the poll question text)
+
+#### Scenario: Tier 3 supersession — voice-note transcription
+- **WHEN** a message's only extractable content is a `voice` field, and the
+  `telegram-voice-transcription` capability's eligibility gate, media bounds, and STT call all
+  succeed with acceptable confidence for that note
+- **THEN** the transcript text supersedes the `[Voice message]` descriptor as `payload.normalized_text`
+  (per that capability's Successful Transcript requirement)
+- **AND** every other case — an ineligible or forwarded note, a disabled feature, an oversize or overlong note,
+  a download/transcode/STT failure, or an empty/low-confidence result — leaves this Tier 3 scenario's
+  `[Voice message]` descriptor exactly as specified above, unconditional and unchanged
 
 #### Scenario: Tier 4 — service messages (skipped)
 - **WHEN** a message has no extractable content (service messages, non-message updates)

@@ -177,7 +177,28 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 
 #### Scenario: Priority 3 — Content hash fallback
 - **WHEN** neither explicit key nor usable event ID is available
-- **THEN** the dedupe key is `"hash:{channel}:{endpoint_identity}:{sender}:{hour_bucket}:{content_hash[:16]}"` where `content_hash` is SHA256 of `normalized_text:sender_identity` and `hour_bucket` is the hourly time window (`YYYYMMDDHH`)
+- **THEN** the dedupe key is `"hash:{channel}:{endpoint_identity}:{sender}:{hour_bucket}:{content_hash[:16]}"` where `content_hash` is SHA256 of `bearer_scrubbed_normalized_text:sender_identity` and `hour_bucket` is the hourly time window (`YYYYMMDDHH`)
+- **AND** text containing no bearer material hashes exactly as its `normalized_text`
+
+#### Scenario: Keys never derive from withheld bearer material
+- **WHEN** the submitted text contains bearer material (one-time codes, reset or magic links) that ingest withholds from the stored text
+- **THEN** every stored dedupe or content-hash key (`request_context.dedupe_key`, `request_context.content_hash_key`, `public.ingestion_events.dedupe_key`) is derived from the scrubbed text and never from the raw text
+- **AND** two submissions differing only in the withheld material derive the same content-hash key
+- **AND** the Switchboard MUST NOT store any value from which the withheld material can be recovered by hashing candidate values
+
+#### Scenario: Secondary content-hash lookup skips withheld bearer text
+- **WHEN** a submission has a Priority 1 or 2 key and bearer material was withheld from any centrally scrubbed content subtree (including `payload.raw` even when `normalized_text` is benign), whether by ingest or by a connector that scrubbed before submitting (the envelope's `control.bearer_scrubbed` flag, or a canonical withheld-artifact placeholder in the text)
+- **THEN** the Switchboard omits `request_context.content_hash_key` and skips the secondary cross-connector content-hash lookup, inside and outside the advisory lock
+- **AND** primary-key deduplication still applies, so a second code with its own event ID is not dropped as a duplicate
+
+#### Scenario: Scrub failure fails closed
+- **WHEN** scrubbing for key derivation raises
+- **THEN** the content hash is derived from a constant withheld-text marker and `content_hash_key` is omitted
+- **AND** no key is derived from the raw text
+
+#### Scenario: Pipeline ingress dedupe key
+- **WHEN** the in-process pipeline records an ingress without a stable event id or idempotency key
+- **THEN** its payload-hash dedupe key is derived from the bearer-scrubbed message text, scrubbed before the key is built
 
 #### Scenario: Advisory lock serialization
 - **WHEN** the Switchboard processes an ingest submission
@@ -187,6 +208,13 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 #### Scenario: Ingest accepted response
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
+
+#### Scenario: Ingest refusals distinguish validation from transient failure
+- **WHEN** the Switchboard `ingest` tool cannot accept a submission
+- **THEN** an envelope validation refusal SHALL return `status` `"error"` with `retryable` `false` and a content-free `error`; resubmitting the same envelope cannot succeed
+- **AND** a transport-class persistence failure for a valid envelope (connection loss, timeout, serialization failure, deadlock, resource exhaustion, or operator shutdown; SQLSTATE classes 08, 40, 53, 57P, and 57014) SHALL return `status` `"transient_error"` with `retryable` `true` and fixed error text that quotes no driver message or envelope value, instead of raising a string-only tool error (bu-u5euwb.33)
+- **AND** any other persistence failure for a valid envelope, including deterministic SQLSTATE class 22, 23, and 42 errors, SHALL return `status` `"error"` with `retryable` `false` and fixed, content-free error text, so a connector that holds its checkpoint on a transient reply never holds it forever on a poison envelope
+- **AND** any other raised tool error is unexpected and SHALL NOT be read as either refusal kind
 
 ### Requirement: Request Context Construction
 The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
@@ -262,6 +290,7 @@ All connector-to-Switchboard communication SHALL use a lazy, reconnecting MCP cl
 - **WHEN** an MCP tool returns a result
 - **THEN** the client extracts structured data: FastMCP 2.x `.data` attribute first, then falls back to parsing JSON from text content blocks
 - **AND** error results raise `RuntimeError` with the tool name and error content
+- **AND** a tool reply with `status` `"transient_error"` raises `TransientToolError`, a `ConnectionError` subclass that is not retried by the client, so callers that ignore results stay fail-closed and callers that bound poison retries can tell it from a `RuntimeError` tool error without string matching
 
 #### Scenario: MCP tool surface for connectors
 - **WHEN** a connector interacts with Switchboard
@@ -910,3 +939,136 @@ The preview seam SHALL treat provider and sender-domain labels as untrusted hint
 - **THEN** it SHALL reuse the shared preview detector, update only subject_or_preview in locked keyset batches, preserve other columns and report content-free complete/incomplete counts
 - **AND** a complete rerun SHALL change zero rows; rollback/restart/unknown acknowledgements SHALL not skip a row or fabricate completion
 - **AND** source-only implementation SHALL NOT imply live execution or reversal of already redacted bearer material
+
+### Requirement: Auth-state columns on connector_registry
+
+The `public.connector_registry` table SHALL include four additive columns to
+expose auth and scope state. All columns are nullable; no data backfill is
+required.
+
+#### Scenario: Additive columns present
+
+- **WHEN** the `public.connector_registry` schema is the most recent
+  migration head
+- **THEN** the table SHALL include the columns:
+  - `observed_scopes TEXT[] NULL`
+  - `observed_scopes_fetched_at TIMESTAMPTZ NULL`
+  - `required_scopes_version SMALLINT NULL`
+  - `auth_status VARCHAR(32) NULL`
+- **AND** existing columns SHALL be unchanged in type, default, or
+  constraint
+- **AND** existing inserts, queries, and rollups SHALL continue to function
+  without modification
+
+#### Scenario: NULL values are well-defined
+
+- **WHEN** any of the four columns is NULL
+- **THEN** the meaning SHALL be as specified in
+  `connector-oauth-scope-surface/spec` (§Observed-scope storage on
+  connector_registry §Scenario: NULL semantics on read)
+- **AND** dashboard surfaces SHALL NOT treat NULL as a database error — NULL
+  is the documented absence-of-observation state
+
+### Requirement: ConnectorDetailEntry Pydantic auth and scopes blocks
+
+The flat `ConnectorDetailEntry` Pydantic response model SHALL be extended
+additively to include an `auth` block and a `scopes` block, populated per
+`connector-oauth-scope-surface/spec` §Dashboard API response shape. The model
+is defined by `connector-base-spec`.
+
+#### Scenario: ConnectorDetailEntry includes auth block
+
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` returns a
+  `ConnectorDetailEntry` payload
+- **THEN** the payload SHALL include an `auth` field whose shape conforms to
+  `connector-oauth-scope-surface/spec` §Dashboard API response shape
+- **AND** the `auth.status` field SHALL be a non-null enum value drawn from
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}`
+- **AND** the API SHALL apply the documented
+  `expired | rotation-needed` → `needs_reauth` normalization before the
+  typed recovery resolver consumes the response
+- **AND** `auth.recovery_reason` SHALL preserve `expired` or
+  `rotation-needed` when normalization occurred, and otherwise be null
+
+#### Scenario: ConnectorDetailEntry includes scopes block
+
+- **WHEN** the same endpoint returns a `ConnectorDetailEntry` payload
+- **THEN** the payload SHALL include a `scopes` array
+- **AND** for connectors with `auth.status = unsupported`, the array SHALL
+  be the empty list `[]`
+- **AND** for OAuth-bound connectors, the array entries SHALL conform to
+  the per-scope shape in `connector-oauth-scope-surface/spec`
+
+#### Scenario: Backward compatibility for ConnectorSummary
+
+- **WHEN** a `ConnectorSummary` list entry (per
+  `connector-base-spec/spec.md:431-443`) is serialized
+- **THEN** the model SHALL NOT be extended with the `auth` or `scopes`
+  blocks (those are detail-only to keep list-page payloads small)
+- **AND** the list endpoint MAY include a single `auth_status` enum field on
+  each summary entry for the connector-attention strip; despite the legacy
+  field name, this public value SHALL use
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}` and SHALL apply
+  the same stored-cause normalization as `ConnectorDetailEntry.auth.status`
+- **AND** full scope state is reserved for the detail endpoint
+
+### Requirement: OAuth connector observation responsibility
+
+OAuth-bound connectors SHALL maintain `observed_scopes` and `observed_scopes_fetched_at` on their `connector_registry` row per the re-introspection cadence defined in `connector-oauth-scope-surface/spec` §Re-introspection cadence and triggers. The applicability matrix in `connector-oauth-scope-surface/spec` determines which connectors are OAuth-bound. This is an additive responsibility; it does not modify the existing heartbeat protocol.
+
+#### Scenario: OAuth connector updates observed scopes
+
+- **WHEN** an OAuth-bound connector successfully refreshes its access token
+  OR completes a fallback-cadence introspection
+- **THEN** the connector SHALL update its row's `observed_scopes` and
+  `observed_scopes_fetched_at` per the contract in
+  `connector-oauth-scope-surface/spec`
+- **AND** the connector SHALL recompute and persist `auth_status` per the
+  parent spec's §Auth status computation requirement
+
+#### Scenario: Non-OAuth connectors do not observe scopes
+
+- **WHEN** a non-OAuth connector (Telegram bot, OwnTracks, etc.) starts
+- **THEN** it SHALL NOT attempt to populate `observed_scopes` (the column
+  remains NULL)
+- **AND** the dashboard API SHALL compute `auth_status = unsupported` for
+  the row based on the per-connector applicability matrix in
+  `connector-oauth-scope-surface/spec`
+
+### Requirement: Transcription Outcome Payload Field
+
+The `ingest.v1` envelope's `payload` SHALL support an optional `transcription` object that a
+transcription-capable connector populates to record the outcome of its own speech-to-text attempt.
+This field is independent of, and never derived from, a provider's own raw payload — it exists only
+for outcome metadata the provider itself does not report. This requirement is additive: the existing
+`ingest.v1 Envelope Schema` requirement and its scenarios (including `payload.raw`, `payload.
+normalized_text`, and `payload.attachments`) are unchanged, and `payload.transcription` is absent for
+every message no connector-side transcription attempt was made against. Switchboard validates the
+field (`IngestTranscriptionV1`) and stores it with the accepted message's payload so the responding
+session can see why a voice message carries no transcript. It is outcome metadata, never
+authorization (RFC 0038 D18).
+
+ID: REQ-connector-base-spec-012
+Source: bu-r0dsz; [Observed] `roster/switchboard/tools/contracts.py` `IngestTranscriptionV1`
+Scope: v1-mandatory
+
+#### Scenario: Field absent by default
+
+- **WHEN** an `ingest.v1` envelope is constructed for a message no connector-side transcription
+  attempt was evaluated against
+- **THEN** `payload.transcription` is absent (or `None`), and existing consumers reading only
+  `payload.raw`, `payload.normalized_text`, and `payload.attachments` are unaffected
+
+#### Scenario: Field populated for an evaluated transcription attempt
+
+- **WHEN** a connector evaluates a message for its own transcription capability (for example, the
+  `telegram-voice-transcription` capability evaluating a Telegram `voice` message)
+- **THEN** `payload.transcription` is populated with `source_media` (a string naming the media kind,
+  e.g. `"voice"`), `status` (a connector-defined outcome string), `confidence` (float in `[0, 1]` or
+  `null`), `language` (BCP-47 string or `null`), and `stt_backend` (string or `null`)
+
+#### Scenario: Field never carries audio bytes
+
+- **WHEN** `payload.transcription` is populated
+- **THEN** it contains only text/numeric/string outcome metadata — never raw or encoded audio bytes,
+  and never a reference (storage or otherwise) to the original audio

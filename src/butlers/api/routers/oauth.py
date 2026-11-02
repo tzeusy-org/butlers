@@ -86,10 +86,11 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 import butlers.api.routers.audit as _audit
+from butlers.api.deps import OptionalDb
 from butlers.api.models import ApiResponse
 from butlers.api.models.oauth import (
     DeleteCredentialsResponse,
@@ -106,6 +107,7 @@ from butlers.api.models.oauth import (
     UpsertAppCredentialsRequest,
     UpsertAppCredentialsResponse,
 )
+from butlers.connectors.catalog import GOOGLE_DEFAULT_SCOPE_GROUPS, GOOGLE_SCOPE_GROUPS
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import (
@@ -136,15 +138,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Optional DB manager dependency for credential persistence
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies().
-
-    When not wired (e.g. in tests that don't boot the full app), returns None
-    so the callback degrades gracefully to log-only mode.
-    """
-    return None
 
 
 def _make_credential_store(db_manager: Any) -> CredentialStore | None:
@@ -220,44 +213,14 @@ _DEFAULT_REDIRECT_URI = "http://localhost:41200/api/oauth/google/callback"
 # See: https://developers.google.com/health/about
 
 GOOGLE_SCOPE_SETS: dict[str, list[str]] = {
-    # Identity basics — always included implicitly so userinfo calls succeed.
-    "base": [
-        "openid",
-        "email",
-        "profile",
-    ],
-    "calendar": [
-        "https://www.googleapis.com/auth/calendar",
-    ],
-    "drive": [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive",
-    ],
-    "gmail": [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/gmail.modify",
-    ],
-    "contacts": [
-        "https://www.googleapis.com/auth/contacts",
-        "https://www.googleapis.com/auth/contacts.readonly",
-        "https://www.googleapis.com/auth/contacts.other.readonly",
-        "https://www.googleapis.com/auth/directory.readonly",
-    ],
-    # RESTRICTED scopes — require Google privacy/security review for
-    # production mode. Test mode (developer-added users) does not require
-    # verification but has a 7-day refresh token expiry.
-    "health": [
-        "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-        "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-        "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-    ],
+    name: list(scopes) for name, scopes in GOOGLE_SCOPE_GROUPS
 }
 
 # Default scope composition when no scope_set query param is provided.
 # Matches pre-change behaviour: gmail + calendar + contacts + drive + base.
 # Existing callers (Calendar/Drive/Gmail bring-up) get the same scope string
 # they got before the scope_set selector was introduced.
-_DEFAULT_SCOPE_SETS: tuple[str, ...] = ("base", "gmail", "calendar", "contacts", "drive")
+_DEFAULT_SCOPE_SETS: tuple[str, ...] = GOOGLE_DEFAULT_SCOPE_GROUPS
 _DEFAULT_SCOPES = " ".join(
     dict.fromkeys(
         scope for set_name in _DEFAULT_SCOPE_SETS for scope in GOOGLE_SCOPE_SETS[set_name]
@@ -1202,7 +1165,8 @@ async def oauth_google_start(
         "connectors roster. Must match <connector_type>/<endpoint_identity> format. "
         "Invalid values are silently ignored (fallback to page_of_origin routing).",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Begin the Google OAuth authorization flow.
 
@@ -1445,7 +1409,8 @@ async def oauth_google_callback(
     error_description: str | None = Query(
         default=None, description="Human-readable error from Google."
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Handle the Google OAuth callback after user authorization.
 
@@ -1779,7 +1744,8 @@ async def _update_account_refresh_token(
 )
 async def upsert_google_credentials(
     body: UpsertAppCredentialsRequest,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> UpsertAppCredentialsResponse:
     """Store Google app credentials in the database.
 
@@ -1833,7 +1799,8 @@ async def upsert_google_credentials(
     ),
 )
 async def delete_google_credentials_endpoint(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> DeleteCredentialsResponse:
     """Delete all stored Google OAuth credentials from the database.
 
@@ -1877,7 +1844,8 @@ async def delete_google_credentials_endpoint(
     ),
 )
 async def get_google_credential_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> GoogleCredentialStatusResponse:
     """Return masked status of stored Google credentials.
 
@@ -1939,7 +1907,8 @@ async def get_google_credential_status(
     ),
 )
 async def list_google_accounts_endpoint(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> list[GoogleAccountResponse]:
     """List all connected Google accounts."""
     shared_pool = _get_shared_pool(db_manager)
@@ -1958,7 +1927,8 @@ async def list_google_accounts_endpoint(
 )
 async def set_primary_google_account(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> SetPrimaryResponse:
     """Set a Google account as the primary account."""
     shared_pool = _get_shared_pool(db_manager)
@@ -1967,8 +1937,8 @@ async def set_primary_google_account(
 
     try:
         account = await set_primary_account(shared_pool, account_id)
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     return SetPrimaryResponse(account=_account_to_response(account))
 
@@ -1989,7 +1959,8 @@ async def disconnect_google_account(
         default=False,
         description="When true, fully removes the google_accounts row and companion entity.",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> DisconnectAccountResponse:
     """Disconnect a Google account."""
     shared_pool = _get_shared_pool(db_manager)
@@ -2000,8 +1971,8 @@ async def disconnect_google_account(
     try:
         account_before = await get_google_account(shared_pool, account=account_id)
         was_primary = account_before.is_primary
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     await disconnect_account(shared_pool, account_id, hard_delete=hard_delete)
 
@@ -2032,7 +2003,8 @@ async def disconnect_google_account(
 )
 async def get_google_account_status(
     account_id: uuid.UUID,
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> GoogleAccountStatus:
     """Get per-account credential status."""
     shared_pool = _get_shared_pool(db_manager)
@@ -2043,8 +2015,8 @@ async def get_google_account_status(
 
     try:
         account = await get_google_account(shared_pool, account=account_id)
-    except GoogleAccountNotFoundError:
-        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.")
+    except GoogleAccountNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Account {account_id} not found.") from exc
 
     # Check app credentials.
     app_creds = await load_app_credentials(cred_store)
@@ -2122,7 +2094,8 @@ def _account_to_response(account: Any) -> GoogleAccountResponse:
     ),
 )
 async def oauth_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> OAuthStatusResponse:
     """Report the current state of Google OAuth credentials.
 
@@ -3099,7 +3072,8 @@ async def oauth_provider_start(
         "connectors roster. Must match <connector_type>/<endpoint_identity> format. "
         "Invalid values are silently ignored (fallback to page_of_origin routing).",
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Begin the OAuth authorization flow for *provider*.
 
@@ -3303,7 +3277,8 @@ async def oauth_provider_callback(
     error_description: str | None = Query(
         default=None, description="Human-readable error from the provider."
     ),
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> Response:
     """Handle the OAuth callback for *provider*.
 

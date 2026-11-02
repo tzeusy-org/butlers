@@ -20,11 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.secrets_v2 import (
-    _fetch_system_secrets,
-    _get_db_manager,
-    _system_probe_timestamps,
-)
+from butlers.api.deps import get_db
+from butlers.api.routers.secrets_v2 import _fetch_system_secrets, _system_probe_timestamps
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -110,7 +107,7 @@ def _make_db(rows: list[dict]) -> tuple[MagicMock, AsyncMock]:
 def client_and_pool() -> tuple[TestClient, AsyncMock]:
     db, pool = _make_db([_secrets_row(_RESERVED), _secrets_row(_ORDINARY)])
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return TestClient(app), pool
 
 

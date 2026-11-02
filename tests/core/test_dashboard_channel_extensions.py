@@ -60,8 +60,8 @@ def _dashboard_ingest_payload() -> dict[str, Any]:
 class TestSourceChannelContainsDashboard:
     def test_dashboard_accepted_in_all_channel_contracts(self) -> None:
         """IngestEnvelopeV1, RouteRequestContextV1, and RouteSourceMetadataV1 all accept 'dashboard'."""
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
         from butlers.tools.switchboard.routing.contracts import (
-            IngestEnvelopeV1,
             RouteRequestContextV1,
             RouteSourceMetadataV1,
         )
@@ -114,7 +114,7 @@ class TestSourceChannelContainsDashboard:
 class TestAllowedProvidersByChannelDashboard:
     def test_dashboard_provider_validation(self) -> None:
         """dashboard+internal accepted; dashboard+telegram and dashboard+gmail rejected."""
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             _ALLOWED_PROVIDERS_BY_CHANNEL,
             IngestEnvelopeV1,
         )

@@ -10,6 +10,8 @@ The launcher (the goal runner or the Spawner) SHALL maintain a lazy adapter pool
 Source: RFC 0038 D3, D10, D16 and D18
 Scope: v1-mandatory
 
+ID: REQ-core-spawner-016
+
 #### Scenario: Claude Code adapter invocation via subprocess
 - **WHEN** the selected runtime type is `claude`
 - **THEN** the ClaudeCodeAdapter locates the `claude` binary on PATH via `shutil.which("claude")` and invokes it as an async subprocess with the flags `-p`, `--output-format stream-json`, `--bare`, `--no-session-persistence` and `--strict-mcp-config`, adding `--permission-mode bypassPermissions` only for an engineering executor and never for a goal invocation
@@ -37,6 +39,7 @@ Scope: v1-mandatory
 - **WHEN** the `claude` subprocess exits with a non-zero exit code
 - **THEN** the adapter SHALL raise `RuntimeError` with the exit code and stderr content
 - **AND** `last_process_info` SHALL contain the full subprocess metadata
+- **AND** when stdout carries a failed terminal `result` (for example `error_max_turns`, which CLI 2.1.316 exits 1 on), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls, and `is_pre_tool_call` SHALL be false when the stream shows a tool ran (a `tool_use` block or more than one turn)
 
 #### Scenario: Claude Code MCP config isolation
 - **WHEN** the adapter builds the invocation command
@@ -53,6 +56,10 @@ Scope: v1-mandatory
 - **WHEN** the `stream-json` output contains assistant message events with `tool_use` content blocks
 - **THEN** the adapter SHALL extract each tool call's `id`, `name`, and `input` fields
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
+- **AND** read the CLI's native shape, where content blocks nest under the event's `message`
+- **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
+- **AND** mark each call whose name is not `mcp__<server>__<tool>` as `builtin: true` (a CLI built-in such as `Bash`, `Read`, `ToolSearch` or `Agent`)
+- **AND** report `tool_use` made inside a subagent (an event with a non-null `parent_tool_use_id`) as session work, carrying that `parent_tool_use_id` on the record
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess
@@ -109,8 +116,13 @@ Scope: v1-mandatory
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the selected runtime type is `gemini`
-- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
-- **AND** passes only the environment its launcher provides; for a goal invocation that is `PATH`, the staged model credential and the MCP config
+- **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag, `-o stream-json`, `--skip-trust` (headless runs in an untrusted folder exit 55), and `-m <model>` when a model is resolved
+- **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
+- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally` under a root-owned directory whose ancestors are not group/other-writable (the CLI silently skips a system settings file anywhere else), failing before spawn when that directory chain does not qualify
+- **AND** passes `--allowed-mcp-server-names` naming the butler's MCP servers, or a name no server uses when there are none (the CLI rejects an empty name), so user- or project-level MCP servers never start even though `--skip-trust` trusts the working directory
+- **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
+- **AND** passes only the environment its launcher provides plus its adapter-owned file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config, the `GEMINI_SYSTEM_MD` pointer and the `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointer, which names a settings file staged inside the invocation's sandbox
+- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.66.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the selected runtime type is `opencode`
@@ -202,7 +214,11 @@ Scope: v1-mandatory
 - **THEN** no healing dispatch occurs for that exception
 
 ### Requirement: Trigger Source Tracking
-The Spawner's valid trigger sources SHALL be the engineering-executor sources `qa` and `healing`, and the trigger source SHALL be passed through to session creation for audit. The sources `tick`, `external`, `trigger`, `route` and `schedule:<task-name>` SHALL NOT start a Spawner session: the work they named is admitted as a goal, whose origin, cause and invocation lineage (`goal_id`, `invocation_id`, `depth`, `epoch`) take the place of a trigger source.
+The Spawner's valid trigger source SHALL be the engineering-executor source `qa`, and the trigger source SHALL be passed through to session creation for audit. The retired `healing` source SHALL NOT start a Spawner session; historical `healing` provenance remains readable. The sources `tick`, `external`, `trigger`, `route` and `schedule:<task-name>` SHALL NOT start a Spawner session: the work they named is admitted as a goal, whose origin, cause and invocation lineage (`goal_id`, `invocation_id`, `depth`, `epoch`) take the place of a trigger source.
+
+Until the RFC 0038 goal-runtime cutover, the existing ordinary dispatch paths retain the following source-audit contract; it does not authorize a goal invocation or re-enable the retired local healing dispatcher:
+
+Valid trigger sources include `tick`, `external`, `trigger`, `route`, `qa`, and `schedule:<task-name>`. Historical `healing` provenance SHALL remain readable and its existing isolation/recursion safeguards SHALL remain intact; it SHALL NOT enable the retired local dispatcher. The trigger source SHALL be passed through to session creation for audit.
 
 ID: REQ-core-spawner-006
 Source: RFC 0038 D5, D17 and D18; core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
@@ -218,9 +234,10 @@ Scope: v1-mandatory
 - **THEN** the session's `trigger_source` is `"qa"`
 
 #### Scenario: Healing trigger source
-- **WHEN** an existing shared legacy healing dispatcher explicitly spawns an investigation session
-- **THEN** the session's `trigger_source` is `"healing"`
-- **AND** this does not enable direct investigation dispatch by the relay module or Spawner crash handler
+- **WHEN** an existing session carries historical `trigger_source="healing"` provenance
+- **THEN** its original trigger source remains unchanged
+- **AND** neither the core QA relay nor the Spawner crash handler starts a local investigation
+- **AND** new centralized QA investigations retain `trigger_source="qa"`
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails
@@ -228,14 +245,38 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The Spawner SHALL build an explicit environment dict for each engineering executor containing only `PATH` and the credentials that executor's contract declares (for example `GH_TOKEN`, and the CLI auth provider credential its runtime needs, such as `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Spawner credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. A goal invocation's environment SHALL contain only `PATH`, its staged model credential and its MCP config, and SHALL NOT contain `[butler.env]` vars, module or connector credentials, database credentials, or credential-store access. Undeclared env vars SHALL NOT leak through.
+The Spawner SHALL build an explicit environment dict for each engineering executor containing only `PATH` and the credentials that executor's contract declares (for example `GH_TOKEN`, and the CLI auth provider credential its runtime needs, such as `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Spawner credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. A goal invocation's environment SHALL contain only `PATH`, its staged model credential, its MCP config and adapter-owned file pointers, and SHALL NOT contain `[butler.env]` vars, module or connector credentials, database credentials, or credential-store access. An adapter-owned file pointer is a variable the runtime adapter sets whose value is only the path of a file or directory staged inside that invocation's own sandbox; its value SHALL NOT be secret, and the files it names SHALL hold no secret other than the staged model credential and the invocation's own MCP config. Undeclared env vars SHALL NOT leak through.
 
-Source: RFC 0038 D3 and D18
+Until the RFC 0038 goal-runtime cutover, ordinary legacy sessions retain the following isolation contract; it grants no additional credentials to goal invocations or engineering executors:
+
+The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, and the selected runtime's authentication material. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+
+Module channel credentials SHALL NOT be added merely because a module declares or resolves them. Module credential validation and daemon-side resolution SHALL remain available to the modules. An operator MAY explicitly declare a channel variable in `[butler.env]`; that declaration remains subject to the owner-auth and administrative-variable exclusions. Undeclared host variables SHALL NOT leak through, and an explicit empty environment SHALL NOT become ambient environment inheritance at the runtime adapter.
+
+Source: RFC 0038 D3 and D18; bu-13itjw legacy credential isolation
 Scope: v1-mandatory
 
 ID: REQ-core-spawner-010
 
 #### Scenario: Only declared credentials are passed
+- **GIVEN** a legacy session before the RFC 0038 goal-runtime cutover
+- **WHEN** the spawner builds a normal runtime environment
+- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, and selected runtime authentication are included
+- **AND** undeclared module channel credentials and other host environment variables are excluded
+- **AND** daemon-side module validation and credential resolution remain unchanged
+
+#### Scenario: Explicitly declared channel variable
+- **GIVEN** a legacy session before the RFC 0038 goal-runtime cutover
+- **WHEN** an operator declares a module channel variable in `[butler.env]`
+- **THEN** the variable is resolved by the normal declared-variable path
+- **AND** owner-auth and administrative database variables remain withheld
+
+#### Scenario: Empty runtime environment
+- **WHEN** the spawner supplies an empty environment mapping
+- **THEN** the runtime adapter preserves that explicit mapping rather than inheriting the daemon environment
+- **AND** invocation-local MCP configuration variables MAY be added without inheriting unrelated host variables
+
+#### Scenario: Engineering executor declared credentials
 - **WHEN** the Spawner builds an engineering executor's runtime environment
 - **THEN** only `PATH` and the executor's declared credential vars are included
 - **AND** other host environment variables are excluded
@@ -244,6 +285,11 @@ ID: REQ-core-spawner-010
 - **WHEN** the goal runner launches an invocation for a goal that needs a Messenger send capability
 - **THEN** the invocation's environment holds no Telegram bot token, email password or other connector credential
 - **AND** the invocation can reach Messenger's capability only through the broker
+
+#### Scenario: Goal invocations admit only non-secret pointers into their own sandbox
+- **WHEN** a runtime adapter adds a variable to a goal invocation's environment beyond `PATH`, the staged model credential and the MCP config
+- **THEN** the variable is admitted only if its value is the path of a file or directory staged inside that invocation's own sandbox and the named files hold no secret other than the staged model credential and the invocation's own MCP config
+- **AND** a variable that points outside the sandbox, or whose value or named file carries any other secret, makes that adapter ineligible for goal invocations
 
 ### Requirement: System Prompt Composition
 For an engineering executor the Spawner launches, the system prompt is read from `CLAUDE.md` in the launching butler's config directory. Include directives (`<!-- @include path/to/file.md -->`) are resolved relative to the roster directory. Shared prompt snippets (`BUTLER_SKILLS.md`, `MCP_LOGGING.md`) are appended if present. The Spawner SHALL NOT inject situational context into an engineering executor's prompt (RFC 0038 D18): it no longer calls `get_active_context()` or `format_context_preamble()` at launch, and an executor sees only the anonymized payloads RFC 0015 allows.
@@ -370,5 +416,26 @@ Scope: v1-mandatory
 - **THEN** it receives the domain's complete registered MCP list under its existing endpoint contract
 
 #### Scenario: Engineering executors get no MCP servers
-- **WHEN** the Spawner prepares a `qa` or `healing` session
+- **WHEN** the Spawner prepares a `qa` session
 - **THEN** the `mcp_servers` dict is empty
+
+## ADDED Requirements
+
+### Requirement: Starting envelopes have one bounded composition path
+The runner SHALL consume S5's exact starting-envelope/query schema, finite runtime-config snapshots, stable prefix and whole-item limits through brokered authorized reads. It SHALL NOT compose domain daemon prompts, grant from profile metadata or inline untrusted text under a typed-shape exception.
+
+ID: REQ-core-spawner-014
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S5; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: Dynamic evidence changes
+- **WHEN** a new situation, recall item or open loop is added to a repeated owner invocation
+- **THEN** immutable policy/profile/contract prefix bytes stay before the breakpoint, with dynamic labelled evidence afterward
+
+#### Scenario: A domain exceeds the budget
+- **WHEN** a read times out or would exceed the whole packet/item limit
+- **THEN** the domain is explicitly degraded or complete items are omitted with reasons; no body is detached from its label/reference
+
+#### Scenario: A child starts with a narrower brief
+- **WHEN** the runner launches a depth-one child
+- **THEN** only its brief and authorized relevant envelope are supplied, with inherited labels and no domain-daemon session prompt

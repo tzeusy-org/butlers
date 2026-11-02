@@ -8,7 +8,7 @@ Under agentic development every bead adds tests and none removes them:
 the backend suite went from roughly 9.4k to 17.4k collected tests in twelve
 weeks and CI minutes tracked the count. This gate makes suite growth a
 decision instead of a side effect. For each CI lane in
-``scripts/check_ci_test_shards.py`` it counts the node ids the lane's marker
+``scripts/ci_lanes.py`` it counts the node ids the lane's marker
 selection collects today and compares the count against the budget frozen in
 ``scripts/test-budget-baseline.json``. A lane over budget fails with the
 remedy: condense tests in the same PR, or raise the budget deliberately with
@@ -41,13 +41,13 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPTS_DIR.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-import check_ci_test_shards as shards  # noqa: E402
+import ci_lanes as lanes  # noqa: E402
 
 BASELINE_PATH = SCRIPTS_DIR / "test-budget-baseline.json"
 HEADROOM = 0.05
 BASELINE_NOTE = (
     "Per-lane collected-test budget (scripts/check_test_budget.py). A lane over "
-    "budget fails check-preflight: condense tests in the same PR, or run "
+    "budget fails the smoke job: condense tests in the same PR, or run "
     "`uv run python scripts/check_test_budget.py --update-baseline` and state the "
     "net test delta (Tests: +added ~extended -removed) and why in the PR body. "
     "Budgets are current count + 5% at the last update; never raise them silently."
@@ -85,9 +85,9 @@ def load_baseline(path: Path) -> dict[str, int]:
 def collect_counts(*, repo_root: Path = REPO_ROOT) -> dict[str, int]:
     """Count the node ids each CI lane's marker selection collects right now."""
     counts: dict[str, int] = {}
-    for lane in shards.LANES:
+    for lane in lanes.LANES:
         try:
-            counts[lane] = len(shards.collect_lane_node_ids(lane, repo_root=repo_root))
+            counts[lane] = len(lanes.collect_lane_node_ids(lane, repo_root=repo_root))
         except RuntimeError as exc:
             raise BudgetError(f"{lane}: {exc}") from exc
         if counts[lane] == 0:

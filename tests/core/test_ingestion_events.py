@@ -3,9 +3,7 @@
 Covers:
 - Column spec integrity (_UNION_COLUMN_SPEC architectural invariants)
 - ingestion_event_get: get / unified lookup (ingested + filtered fallback)
-- ingestion_events_list: cursor-paginated list with filters and has_more detection
-- encode_cursor / decode_cursor: round-trip and error cases
-- encode_cost_cursor / decode_cost_cursor: cost-sort cursor round-trip (core_126)
+- ingestion_events_list: cursor-paginated list with filters and next_cursor detection
 - ingestion_events_list sort=cost: offset-based pagination (core_126)
 - ingestion_event_set_cost_usd: lazy write-through UPDATE (core_126)
 - ingestion_event_sessions: fan-out, merge, field mapping
@@ -25,14 +23,12 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.records import Record
+
 pytestmark = pytest.mark.unit
 
 
-class _FakeRecord(dict):
-    pass
-
-
-def _make_event_record(**kwargs: Any) -> _FakeRecord:
+def _make_event_record(**kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "received_at": datetime.now(UTC),
@@ -54,10 +50,10 @@ def _make_event_record(**kwargs: Any) -> _FakeRecord:
         "cost_usd": None,  # core_126: denormalized cost; NULL until rollup fetched
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
-def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
+def _make_filtered_event_record(**kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "received_at": datetime.now(UTC),
@@ -79,10 +75,10 @@ def _make_filtered_event_record(**kwargs: Any) -> _FakeRecord:
         "cost_usd": None,  # core_126: filtered events have no sessions, always null
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
-def _make_session_record(**kwargs: Any) -> _FakeRecord:
+def _make_session_record(**kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "trigger_source": "route",
@@ -95,7 +91,7 @@ def _make_session_record(**kwargs: Any) -> _FakeRecord:
         "trace_id": None,
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
 class _FakePool:
@@ -253,7 +249,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
     ambiguous_id = str(uuid.uuid4())
     pool = _FakePool(
         fetch_results=[
-            _FakeRecord(
+            Record(
                 {
                     "id": email_id,
                     "source_channel": "email",
@@ -262,7 +258,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": True,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": safe_id,
                     # Accepted Telegram events use the provider ``telegram``
@@ -273,7 +269,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": True,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": unresolved_id,
                     "source_channel": "webhook",
@@ -282,7 +278,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": None,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": blank_endpoint_id,
                     "source_channel": "telegram_bot",
@@ -291,7 +287,7 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
                     "replay_safe": True,
                 }
             ),
-            _FakeRecord(
+            Record(
                 {
                     "id": ambiguous_id,
                     "source_channel": "sms",
@@ -331,53 +327,36 @@ async def test_ingestion_events_replay_policy_fails_closed() -> None:
 
 
 async def test_ingestion_events_list_and_sessions() -> None:
-    """list returns cursor-paginated result; has_more / next_cursor set correctly;
+    """list returns cursor-paginated result; next_cursor set correctly;
     channel filter passed to SQL; sessions fan-out/merge/cost-decode/rollup."""
     from butlers.core.ingestion_events import (
-        decode_cursor,
-        encode_cursor,
         ingestion_event_rollup,
         ingestion_event_sessions,
         ingestion_events_list,
     )
+    from butlers.pagination import decode_cursor
 
-    # List: empty → items=[], has_more=False, next_cursor=None
+    # List: empty → items=[], next_cursor=None
     result = await ingestion_events_list(_FakePool(fetch_results=[]))
-    assert result["items"] == [] and not result["has_more"] and result["next_cursor"] is None
+    assert result["items"] == [] and result["next_cursor"] is None
 
-    # List: limit=2, 2 rows returned → has_more=False (fetched limit+1=3, got 2)
+    # List: limit=2, 2 rows returned → last page (fetched limit+1=3, got 2)
     rows = [_make_event_record(source_channel="email"), _make_event_record(source_channel="tg")]
     result2 = await ingestion_events_list(_FakePool(fetch_results=rows), limit=2)
     assert len(result2["items"]) == 2
-    assert not result2["has_more"] and result2["next_cursor"] is None
+    assert result2["next_cursor"] is None
     assert isinstance(result2["items"][0]["id"], str)
 
-    # List: limit=2, 3 rows returned (limit+1) → has_more=True, next_cursor set
+    # List: limit=2, 3 rows returned (limit+1) → next_cursor set
     extra_row = _make_event_record(source_channel="extra")
     three_rows = rows + [extra_row]
     result3 = await ingestion_events_list(_FakePool(fetch_results=three_rows), limit=2)
     assert len(result3["items"]) == 2  # only limit rows exposed
-    assert result3["has_more"] and result3["next_cursor"] is not None
+    assert result3["next_cursor"] is not None
 
-    # The next_cursor must round-trip through decode_cursor
-    decoded_ra, decoded_id = decode_cursor(result3["next_cursor"])
-    assert decoded_id == result3["items"][-1]["id"]
-
-    # encode_cursor / decode_cursor round-trip
-    from datetime import UTC, datetime
-
-    ra = datetime(2026, 5, 17, 14, 30, 0, tzinfo=UTC)
-    import uuid
-
-    uid = uuid.uuid4()
-    token = encode_cursor(ra, uid)
-    d_ra, d_id = decode_cursor(token)
-    assert d_id == str(uid)
-    assert d_ra.isoformat() == ra.isoformat()
-
-    # decode_cursor raises ValueError on garbage input
-    with pytest.raises(ValueError):
-        decode_cursor("not-a-valid-cursor")
+    # The next_cursor carries the last returned row's keyset position
+    _decoded_ra, decoded_id = decode_cursor(result3["next_cursor"], scope="ingestion-events.recent")
+    assert str(decoded_id) == result3["items"][-1]["id"]
 
     # List: channel filter in SQL — single channel via channels list
     pool = _FakePool(fetch_results=[])
@@ -510,7 +489,7 @@ async def test_ingestion_events_request_ids_for_trace() -> None:
     assert await ingestion_events_request_ids_for_trace(_FakeDatabaseManager(), "trace-x") == []
 
     # Single butler, single session.
-    db = _FakeDatabaseManager(results={"atlas": [_FakeRecord({"request_id": "req-1"})]})
+    db = _FakeDatabaseManager(results={"atlas": [Record({"request_id": "req-1"})]})
     assert await ingestion_events_request_ids_for_trace(db, "trace-x") == ["req-1"]
     query, args, butler_names = db.fan_out_calls[0]
     assert "trace_id" in query and args == ("trace-x",) and butler_names is None
@@ -520,17 +499,17 @@ async def test_ingestion_events_request_ids_for_trace() -> None:
     # and the result is sorted.
     db2 = _FakeDatabaseManager(
         results={
-            "atlas": [_FakeRecord({"request_id": "req-2"})],
+            "atlas": [Record({"request_id": "req-2"})],
             "herald": [
-                _FakeRecord({"request_id": "req-2"}),
-                _FakeRecord({"request_id": "req-1"}),
+                Record({"request_id": "req-2"}),
+                Record({"request_id": "req-1"}),
             ],
         }
     )
     assert await ingestion_events_request_ids_for_trace(db2, "trace-y") == ["req-1", "req-2"]
 
     # Falsy request_id values are skipped, not coerced into a phantom entry.
-    db3 = _FakeDatabaseManager(results={"atlas": [_FakeRecord({"request_id": None})]})
+    db3 = _FakeDatabaseManager(results={"atlas": [Record({"request_id": None})]})
     assert await ingestion_events_request_ids_for_trace(db3, "trace-z") == []
 
 
@@ -569,43 +548,26 @@ async def test_ingestion_events_received_at_bounds() -> None:
 async def test_cost_cursor_and_cost_sort() -> None:
     """Cost cursor round-trips correctly; sort=cost uses offset pagination (core_126)."""
     import uuid as _uuid
+    from datetime import UTC, datetime
 
     from butlers.core.ingestion_events import (
-        decode_cost_cursor,
-        encode_cost_cursor,
         ingestion_event_set_cost_usd,
         ingestion_events_list,
     )
+    from butlers.pagination import InvalidCursorError, decode_cursor, encode_cursor
 
-    # encode_cost_cursor / decode_cost_cursor round-trip
-    assert decode_cost_cursor(encode_cost_cursor(0)) == 0
-    assert decode_cost_cursor(encode_cost_cursor(40)) == 40
-    assert decode_cost_cursor(encode_cost_cursor(100)) == 100
-
-    # decode_cost_cursor raises ValueError on garbage input
-    with pytest.raises(ValueError):
-        decode_cost_cursor("not-a-cursor")
-
-    # decode_cost_cursor raises ValueError on a keyset cursor (wrong type)
-    from datetime import UTC, datetime
-
-    from butlers.core.ingestion_events import encode_cursor
-
-    keyset_cursor = encode_cursor(datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4())
-    with pytest.raises(ValueError):
-        decode_cost_cursor(keyset_cursor)
-
-    # decode_cost_cursor raises ValueError on negative offset
-    with pytest.raises(ValueError):
-        decode_cost_cursor(encode_cost_cursor(-10))
-
-    # decode_cost_cursor raises ValueError on non-dict payload
-    import base64 as _b64
-    import json as _json
-
-    non_dict_cursor = _b64.urlsafe_b64encode(_json.dumps([1, 2, 3]).encode()).decode()
-    with pytest.raises(ValueError):
-        decode_cost_cursor(non_dict_cursor)
+    # sort=cost refuses a keyset cursor (wrong shape) and a negative offset
+    keyset_cursor = encode_cursor(
+        (datetime(2026, 1, 1, tzinfo=UTC), _uuid.uuid4()), scope="ingestion-events.cost"
+    )
+    with pytest.raises(InvalidCursorError):
+        await ingestion_events_list(_FakePool(fetch_results=[]), sort="cost", cursor=keyset_cursor)
+    with pytest.raises(InvalidCursorError):
+        await ingestion_events_list(
+            _FakePool(fetch_results=[]),
+            sort="cost",
+            cursor=encode_cursor((-10,), scope="ingestion-events.cost"),
+        )
 
     # sort=cost: SQL uses ORDER BY cost_usd DESC NULLS LAST + OFFSET
     pool = _FakePool(fetch_results=[])
@@ -616,20 +578,21 @@ async def test_cost_cursor_and_cost_sort() -> None:
     assert 6 in args  # limit+1 sentinel
     assert 0 in args  # initial offset
 
-    # sort=cost, first page → has_more=False, next_cursor=None when ≤limit rows
+    # sort=cost, first page → next_cursor=None when ≤limit rows
     rows = [_make_event_record(cost_usd=0.05), _make_event_record(cost_usd=0.01)]
     result = await ingestion_events_list(_FakePool(fetch_results=rows), sort="cost", limit=5)
-    assert not result["has_more"] and result["next_cursor"] is None
+    assert result["next_cursor"] is None
     assert len(result["items"]) == 2
 
-    # sort=cost, limit+1 rows returned → has_more=True, cursor encodes offset=limit
+    # sort=cost, limit+1 rows returned → cursor encodes offset=limit
     three = [_make_event_record(cost_usd=x) for x in [0.05, 0.02, 0.01]]
     result2 = await ingestion_events_list(_FakePool(fetch_results=three), sort="cost", limit=2)
-    assert result2["has_more"] and result2["next_cursor"] is not None
-    assert decode_cost_cursor(result2["next_cursor"]) == 2  # next offset = limit
+    assert decode_cursor(result2["next_cursor"], scope="ingestion-events.cost") == (
+        2,
+    )  # next offset = limit
 
     # sort=cost with cursor → offset sent to SQL
-    cursor_val = encode_cost_cursor(20)
+    cursor_val = encode_cursor((20,), scope="ingestion-events.cost")
     pool2 = _FakePool(fetch_results=[])
     await ingestion_events_list(pool2, sort="cost", cursor=cursor_val, limit=10)
     _, sql2, args2 = pool2.calls[0]
@@ -682,12 +645,13 @@ async def test_ingestion_events_list_q_search_coverage() -> None:
 
     # Cursor pagination still composes correctly: adding a cursor must not break
     # the q predicate already in the WHERE clause.
-    import base64
-    import json as _json_mod
     from datetime import UTC, datetime
 
-    cursor_payload = {"ra": datetime(2026, 5, 1, tzinfo=UTC).isoformat(), "id": str(uuid.uuid4())}
-    cursor = base64.urlsafe_b64encode(_json_mod.dumps(cursor_payload).encode()).decode()
+    from butlers.pagination import encode_cursor
+
+    cursor = encode_cursor(
+        (datetime(2026, 5, 1, tzinfo=UTC), uuid.uuid4()), scope="ingestion-events.recent"
+    )
 
     pool2 = _FakePool(fetch_results=[])
     await ingestion_events_list(pool2, q="xyz", cursor=cursor, limit=5)
@@ -736,7 +700,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     )
 
     event_id = uuid.uuid4()
-    ok_row = _FakeRecord({"id": event_id})
+    ok_row = Record({"id": event_id})
 
     # Success. The policy predicate and transition live in the same statement:
     # it locks the resolved registry row so a concurrent unsafe policy change
@@ -789,7 +753,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
         _FakePool(
             fetchrow_results=[None, None, None],
             fetch_results=[
-                _FakeRecord(
+                Record(
                     {
                         "id": str(event_id),
                         "source_channel": "email",
@@ -817,7 +781,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
     decomp = {"signals": [], "reason": "no_signals"}
     result2 = await ingestion_event_get_inbox_lifecycle(
         _FakePool(
-            fetchrow_result=_FakeRecord(
+            fetchrow_result=Record(
                 {"lifecycle_state": "decomposed_empty", "decomposition_output": decomp}
             )
         ),
@@ -835,7 +799,7 @@ async def test_replay_request_and_inbox_lifecycle() -> None:
 
     result3 = await ingestion_event_get_inbox_lifecycle(
         _FakePool(
-            fetchrow_result=_FakeRecord(
+            fetchrow_result=Record(
                 {"lifecycle_state": "routed", "decomposition_output": _json.dumps({"signals": []})}
             )
         ),
@@ -856,11 +820,11 @@ async def test_ingestion_event_replay_history() -> None:
     ts2 = datetime(2026, 5, 17, 10, 5, 0, tzinfo=UTC)
 
     # Row with well-formed JSON note
-    row1 = _FakeRecord(
+    row1 = Record(
         {"ts": ts1, "actor": "dashboard", "note": _json.dumps({"result": "pending", "cost": 0.01})}
     )
     # Row with no note
-    row2 = _FakeRecord({"ts": ts2, "actor": "scheduler", "note": None})
+    row2 = Record({"ts": ts2, "actor": "scheduler", "note": None})
 
     # Returns list of entries with extracted fields
     result = await ingestion_event_replay_history(_FakePool(fetch_results=[row1, row2]), event_id)
@@ -893,7 +857,7 @@ async def test_ingestion_event_replay_history() -> None:
     assert result5 == []
 
     # Row with malformed (non-JSON) note — graceful: fields default to None
-    row_bad = _FakeRecord({"ts": ts1, "actor": "agent", "note": "not-json-{{"})
+    row_bad = Record({"ts": ts1, "actor": "agent", "note": "not-json-{{"})
     result6 = await ingestion_event_replay_history(_FakePool(fetch_results=[row_bad]), event_id)
     assert len(result6) == 1
     assert result6[0]["result"] is None
@@ -1210,7 +1174,7 @@ async def test_window_rollup_source_failure_is_unavailable_not_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_bulk_session_record(request_id: str, **kwargs: Any) -> _FakeRecord:
+def _make_bulk_session_record(request_id: str, **kwargs: Any) -> Record:
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
         "request_id": request_id,
@@ -1225,7 +1189,7 @@ def _make_bulk_session_record(request_id: str, **kwargs: Any) -> _FakeRecord:
         "model": None,
     }
     defaults.update(kwargs)
-    return _FakeRecord(defaults)
+    return Record(defaults)
 
 
 async def test_ingestion_events_sessions_for_ids_empty_ids_short_circuits() -> None:
@@ -1449,8 +1413,8 @@ def test_ingestion_events_list_enrichment_duration_none_when_incomplete() -> Non
 # ---------------------------------------------------------------------------
 
 
-def _make_histogram_row(ts: datetime, status: str, cnt: int) -> _FakeRecord:
-    return _FakeRecord({"bucket_ts": ts, "status": status, "cnt": cnt})
+def _make_histogram_row(ts: datetime, status: str, cnt: int) -> Record:
+    return Record({"bucket_ts": ts, "status": status, "cnt": cnt})
 
 
 async def test_ingestion_events_histogram_rejects_unknown_bucket() -> None:

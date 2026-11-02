@@ -11,7 +11,7 @@
  * Design language: Dispatch. No card chrome, no word-badges — state is a
  * {dot, glyph, colour} only. Display weight 500 (never 700). Numerals are
  * tabular. Mirrors SettingsConsolePage / SettingsModelsPage and the shared
- * atoms in components/butler-detail/atoms.tsx.
+ * atoms in components/ui/atoms.tsx.
  *
  * CSS: .attention-row[data-tone="red"] from frontend/src/index.css — the only
  * state-color-on-background pattern, reserved here for the data-wipe danger zone.
@@ -63,20 +63,20 @@ import { cn } from "@/lib/utils";
 // Types
 // ---------------------------------------------------------------------------
 
-interface PermissionCell {
+export interface PermissionCell {
   granted: boolean;
   reason: string | null;
   updated_at: string | null;
   inherited: boolean;
 }
 
-interface PermissionsMatrix {
+export interface PermissionsMatrix {
   butlers: string[];
   permissions: string[];
   cells: Record<string, Record<string, PermissionCell>>;
 }
 
-interface WebhookRow {
+export interface WebhookRow {
   id: string;
   endpoint: string;
   events: string[];
@@ -173,10 +173,12 @@ async function deleteWebhook(id: string): Promise<void> {
   }
 }
 
-async function testWebhook(id: string): Promise<{ ok: boolean; status_code: number | null; latency_ms: number | null }> {
+export type WebhookTestResult = { ok: boolean; status_code: number | null; latency_ms: number | null };
+
+async function testWebhook(id: string): Promise<WebhookTestResult> {
   try {
     const body = await apiFetch<{
-      data: { ok: boolean; status_code: number | null; latency_ms: number | null };
+      data: WebhookTestResult;
     }>(`/webhooks/${id}/test`, { method: "POST" });
     return body.data;
   } catch (err) {

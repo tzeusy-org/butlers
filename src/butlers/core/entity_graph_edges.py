@@ -431,8 +431,8 @@ async def coverage_for_entities(
 ) -> dict[uuid.UUID, tuple[int, int]]:
     """Batch-count live/withheld edges touching each of ``entity_ids``.
 
-    An entity counts an edge whether it appears as ``subject_entity_id`` or
-    ``object_entity_id`` -- withheld stubs only ever populate the subject
+    An entity counts each edge once, including a self-edge, whether it appears
+    as ``subject_entity_id`` or ``object_entity_id``. Withheld stubs only populate the subject
     side, so they are counted once, on the entity that owns the withheld
     fact. Returns ``{entity_id: (relationships_known, relationships_withheld)}``;
     an entity with no edges at all is simply absent from the mapping, not
@@ -444,14 +444,14 @@ async def coverage_for_entities(
     rows = await pool.fetch(
         """
         SELECT entity_id,
-               COUNT(*) FILTER (WHERE withheld_reason IS NULL)     AS known,
-               COUNT(*) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
+               COUNT(DISTINCT edge_id) FILTER (WHERE withheld_reason IS NULL)     AS known,
+               COUNT(DISTINCT edge_id) FILTER (WHERE withheld_reason IS NOT NULL) AS withheld
         FROM (
-            SELECT subject_entity_id AS entity_id, withheld_reason
+            SELECT id AS edge_id, subject_entity_id AS entity_id, withheld_reason
             FROM public.entity_graph_edges
             WHERE subject_entity_id = ANY($1::uuid[])
             UNION ALL
-            SELECT object_entity_id AS entity_id, withheld_reason
+            SELECT id AS edge_id, object_entity_id AS entity_id, withheld_reason
             FROM public.entity_graph_edges
             WHERE object_entity_id = ANY($1::uuid[])
         ) sides
@@ -516,39 +516,42 @@ async def dossier_for_entity(
     entity counts a live edge on either end, but a withheld stub only on the subject side (the
     only side a stub populates), matching :func:`coverage_for_entities`.  A self-referencing
     live edge is one edge here.  Failures propagate: the caller must report the graph as
-    unavailable rather than substitute an empty dossier.
+    unavailable rather than substitute an empty dossier. All three reads share one read-only
+    repeatable-read snapshot so concurrent projection changes cannot split receipts and totals.
     """
     bounded = max(1, min(int(limit), DOSSIER_RECEIPT_LIMIT_MAX))
-    group_rows = await pool.fetch(
-        f"""
-        SELECT source_schema, source_table, COUNT(*) AS live
-        FROM public.entity_graph_edges
-        WHERE {_LIVE_EDGE_FILTER}
-        GROUP BY source_schema, source_table
-        ORDER BY source_schema, source_table
-        """,
-        entity_id,
-    )
-    edge_rows = await pool.fetch(
-        f"""
-        SELECT id, source_schema, source_table, source_id, subject_entity_id,
-               predicate, object_entity_id, sensitivity, updated_at
-        FROM public.entity_graph_edges
-        WHERE {_LIVE_EDGE_FILTER}
-        ORDER BY updated_at DESC, id
-        LIMIT $2
-        """,
-        entity_id,
-        bounded,
-    )
-    withheld = await pool.fetchval(
-        """
-        SELECT COUNT(*)
-        FROM public.entity_graph_edges
-        WHERE subject_entity_id = $1 AND withheld_reason IS NOT NULL
-        """,
-        entity_id,
-    )
+    async with pool.acquire() as conn:
+        async with conn.transaction(isolation="repeatable_read", readonly=True):
+            group_rows = await conn.fetch(
+                f"""
+                SELECT source_schema, source_table, COUNT(*) AS live
+                FROM public.entity_graph_edges
+                WHERE {_LIVE_EDGE_FILTER}
+                GROUP BY source_schema, source_table
+                ORDER BY source_schema, source_table
+                """,
+                entity_id,
+            )
+            edge_rows = await conn.fetch(
+                f"""
+                SELECT id, source_schema, source_table, source_id, subject_entity_id,
+                       predicate, object_entity_id, sensitivity, updated_at
+                FROM public.entity_graph_edges
+                WHERE {_LIVE_EDGE_FILTER}
+                ORDER BY updated_at DESC, id
+                LIMIT $2
+                """,
+                entity_id,
+                bounded,
+            )
+            withheld = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM public.entity_graph_edges
+                WHERE subject_entity_id = $1 AND withheld_reason IS NOT NULL
+                """,
+                entity_id,
+            )
     receipts = [
         DossierReceipt(
             edge_id=row["id"],

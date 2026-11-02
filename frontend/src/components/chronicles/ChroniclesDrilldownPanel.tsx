@@ -42,6 +42,7 @@ import {
 } from "@/components/workspace/playhead-interp";
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane";
 import { FloatingMapMinimap } from "@/components/chronicles/FloatingMapMinimap";
+import { isTrailOutlier } from "@/components/chronicles/trail-geojson";
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer";
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
@@ -61,9 +62,15 @@ interface ChroniclesDrilldownPanelProps {
   date: string;
   /** Owner IANA timezone for resolving the day window. */
   tz: string;
+  /**
+   * When provided, episode clicks are handed to the owner of a page-level
+   * EpisodeDrawer (the Chronicles `?episode=` door) instead of opening the
+   * panel's own drawer.
+   */
+  onEpisodeSelect?: (episodeId: string) => void;
 }
 
-export function ChroniclesDrilldownPanel({ date, tz }: ChroniclesDrilldownPanelProps) {
+export function ChroniclesDrilldownPanel({ date, tz, onEpisodeSelect }: ChroniclesDrilldownPanelProps) {
   return (
     <section
       aria-label="Day detail"
@@ -71,13 +78,13 @@ export function ChroniclesDrilldownPanel({ date, tz }: ChroniclesDrilldownPanelP
       style={{ borderColor: "var(--border)" }}
     >
       <div id="chronicles-day-detail">
-        <DrilldownBody date={date} tz={tz} />
+        <DrilldownBody date={date} tz={tz} onEpisodeSelect={onEpisodeSelect} />
       </div>
     </section>
   );
 }
 
-function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
+function DrilldownBody({ date, tz, onEpisodeSelect }: ChroniclesDrilldownPanelProps) {
   const mapPanValue = useMapPanContextValue();
 
   // The day window: tz-local midnight boundaries, identical to the backend's
@@ -90,9 +97,13 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
 
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
   const [trendsWindow, setTrendsWindow] = useState<TrendsWindow>("week");
-  const handleEpisodeClick = useCallback((episodeId: string) => {
-    setSelectedEpisodeId(episodeId);
-  }, []);
+  const handleEpisodeClick = useCallback(
+    (episodeId: string) => {
+      if (onEpisodeSelect) onEpisodeSelect(episodeId);
+      else setSelectedEpisodeId(episodeId);
+    },
+    [onEpisodeSelect],
+  );
   const handleDrawerClose = useCallback(() => {
     setSelectedEpisodeId(null);
   }, []);
@@ -125,6 +136,8 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   const timedTrail = useMemo<TimedTrailPoint[]>(() => {
     return pointEvents
       .filter((ev) => ev.canonical_privacy !== "sensitive")
+      // Impossible-jump fixes stay as evidence but never draw on the trail.
+      .filter((ev) => !isTrailOutlier(ev.payload))
       .filter((ev) => {
         const lat = ev.payload.lat;
         const lon = ev.payload.lon ?? ev.payload.lng;
@@ -274,11 +287,13 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
         <WorkScheduleSettings />
       </Section>
 
-      <EpisodeDrawer
-        episodeId={selectedEpisodeId}
-        open={selectedEpisodeId !== null}
-        onClose={handleDrawerClose}
-      />
+      {onEpisodeSelect ? null : (
+        <EpisodeDrawer
+          episodeId={selectedEpisodeId}
+          open={selectedEpisodeId !== null}
+          onClose={handleDrawerClose}
+        />
+      )}
     </div>
   );
 }

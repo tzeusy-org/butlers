@@ -86,7 +86,7 @@ class RuntimeAdapter(abc.ABC):
         model: str | None = None,
         runtime_args: list[str] | None = None,
         cwd: Path | None = None,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ASYNC109 - spawner and every adapter pass timeout=
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the runtime with the given prompt and configuration.
 
@@ -197,6 +197,11 @@ class RuntimeAdapter(abc.ABC):
           is a best-effort signal from the adapter's parser; the spawner should
           combine it with daemon-side tool-call capture for the authoritative
           side-effect gate. Set on all failure paths (non-zero exit, timeout).
+        - ``terminal_error_text`` (str): The provider's structured terminal
+          error (Claude failed result envelope ``result``, Codex ``turn.failed``
+          message, Gemini failed ``result`` ``error.message``, OpenCode ``error``
+          event payload), never tool output. With ``stderr`` it is the only text
+          usage-limit detection trusts on suppressed failures.
 
         Codex-specific:
         - ``retry_attempted`` (bool): Whether adapter-internal retries were made.

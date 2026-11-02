@@ -24,6 +24,20 @@ After a Messenger DND rejection, only the parent authenticated
 `abort.v1(reason=blocked_dnd)` receipt may create `release_retained_dnd`; no
 participant gains a separate DND-derived cross-schema write path.
 
+The future cancellation surface SHALL be deterministic service-plane
+infrastructure under RFC 0038 D1/D2/D7, not a model capability or reasoning goal.
+Named control-plane service-listener endpoints SHALL fix each payload schema
+and recipient operation and authenticate calling daemons against per-endpoint
+allowlists. Recipient operations SHALL authenticate the current-fence
+Switchboard coordinator, not trust payload source claims. The endpoints and
+recipient operations SHALL NOT be LLM-presentable or reachable through the
+session listener. These service identities SHALL NOT grant peer-schema,
+provider or reasoning authority or relax existing local-role/DND checks.
+
+ID: REQ-database-security-013
+Source: proposal.md; design.md D0–D7; RFC 0038 D1/D2/D7; RFC 0009 canonical DND consumer contract
+Scope: v1-mandatory
+
 #### Scenario: Runtime roles prove their own boundaries
 - **WHEN** a PostgreSQL integration test uses actual
   `butler_health_rw`, `butler_switchboard_rw`, and `butler_messenger_rw`

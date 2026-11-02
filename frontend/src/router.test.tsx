@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it, afterEach, beforeEach } from 'vitest'
+import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import {
@@ -478,6 +478,10 @@ describe('router-config unmatched routes and route errors', () => {
   }
 
   it('renders a not-found page inside the shell for an unmatched path, with a way home', () => {
+    const registeredPaths = routes[0].children?.map((route) => route.path)
+    expect(registeredPaths).not.toContain('/decisions')
+    expect(registeredPaths).not.toContain('/beads/:beadId')
+    expect(registeredPaths).toContain('/approvals')
     const catchAll = routes[0].children?.at(-1)
     expect(catchAll?.path).toBe('*')
 
@@ -507,5 +511,33 @@ describe('router-config unmatched routes and route errors', () => {
       (b) => b.textContent === 'Try again',
     )
     expect(retry).toBeDefined()
+  })
+
+  it('reloads the page when Try again is activated in the route error fallback', () => {
+    const reload = vi.fn()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const Boom = () => {
+        throw new Error('route exploded')
+      }
+      renderTable([{ path: '/boom', element: <Boom /> }], '/boom')
+      const retry = Array.from(container.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Try again',
+      )
+      expect(retry).toBeDefined()
+
+      // jsdom's location is non-configurable; keep the real window for everything else.
+      vi.stubGlobal('window', new Proxy(window, {
+        get(target, key) {
+          return key === 'location' ? { reload } : Reflect.get(target, key, target)
+        },
+      }))
+      expect(reload).not.toHaveBeenCalled()
+      act(() => retry!.click())
+      expect(reload).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.unstubAllGlobals()
+      consoleError.mockRestore()
+    }
   })
 })

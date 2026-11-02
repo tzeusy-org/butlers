@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.core.backup_facts_snapshot import publish_backup_facts_snapshot
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
 from butlers.core.qa.sources.infra_state import (
@@ -77,6 +78,9 @@ async def pool(migrated_db_url: str) -> asyncpg.Pool:
     await p.execute("TRUNCATE public.infra_conditions")
     await p.execute("TRUNCATE public.healing_attempts CASCADE")
     await p.execute("TRUNCATE public.healing_dispatch_events")
+    # A fresh "no backups configured" snapshot: an absent one is itself a
+    # BackupFactsUnavailable finding (bu-deqpzd) that would leak into every test.
+    await publish_backup_facts_snapshot(p, "", interval_s=600)
     yield p
     await p.close()
 
@@ -668,6 +672,14 @@ class TestQaPatrolAssurance:
         )
         await reconcile_qa_patrol_assurance(pool, reader, contract)
         assert await self._active(pool) == set()
+
+        # The deployment gate (REQ-dashboard-api-064) counts the same
+        # qualification: only the genuine patrol, never the nonqualifying rows.
+        from butlers.core.deploy_readiness import read_patrols
+
+        window = await pool.fetchval("SELECT clock_timestamp() - interval '1 hour'")
+        assert [p[0] for p in await read_patrols(pool, contract.digest, window)] == [str(genuine)]
+        assert await read_patrols(pool, contract.digest, await pool.fetchval("SELECT now()")) == ()
 
     async def test_absence_is_overdue_or_policy_stopped_until_a_qualifying_patrol(
         self, qa_pool: asyncpg.Pool

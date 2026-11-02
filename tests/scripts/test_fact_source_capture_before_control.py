@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -52,10 +53,16 @@ def phase(name):
 def test_only_executing_old_red_and_paired_green_with_complete_cleanup_qualify():
     """Setup/no-CALL, healthy old code, wrong failure and missing cleanup cannot qualify."""
     before, after = phase("before"), phase("after")
-    import ci_partition
+    import ci_lanes
 
-    with pytest.raises(ValueError):
-        ci_partition.require_receipt_types(before)
+    # The current fan-in consumes strict lane counts; phase diagnostics are not counts.
+    with tempfile.TemporaryDirectory() as directory:
+        counts = Path(directory) / "lane-counts.json"
+        counts.write_text(json.dumps({"unit": 1, "integration": 1}))
+        assert ci_lanes.read_lane_counts(counts) == {"unit": 1, "integration": 1}
+        counts.write_text(json.dumps(before))
+        with pytest.raises(ValueError):
+            ci_lanes.read_lane_counts(counts)
     assert control.require_witness(before, after, {"nonce": "a" * 64}) == "WITNESS_COMPLETE"
     variants = [
         ("collected", 0),
@@ -163,6 +170,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         assert healthy["observation"]["child_exit"] == 0
         assert healthy["observation"]["supervisor_exit"] == 0
         assert healthy["observation"]["settled_complete"] is True
+        assert healthy["observation"].get("first_scan_refusal") is None
         refused = control.run_owned(
             [sys.executable, "-c", "import sys;print('PRIVATE_CHILD');sys.exit(7)"],
             os.environ.copy(),
@@ -219,6 +227,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                     "reason": "latched_refusal",
                     "counts": {key: int(key == "scan_refused") for key in control.REFUSAL_COUNTS},
                     "counts_saturated": False,
+                    "first_scan_refusal": {"s": 2, "k": 1, "o": 2, "b": 7},
                     "kernel_children_closed": True,
                 },
             ],
@@ -229,6 +238,103 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         )
         assert latched["reason"] == "latched_refusal" and latched["counts"]["scan_refused"] == 1
         assert latched["settled_complete"] is False and latched["supervisor_exit"] == 2
+        assert latched.get("first_scan_refusal") == {"s": 2, "k": 1, "o": 2, "b": 7}
+        # Exercise the actual local producer's closed refusal branch without procfs IO.
+        import builtins
+        import errno
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_fact_capture_supervisor", control.SUPERVISOR
+        )
+        supervisor = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(supervisor)
+        # Module-level failures preserve exit2 and never render exception input/context.
+        boundary = subprocess.run(
+            [
+                sys.executable,
+                str(control.SUPERVISOR),
+                "PRIVATE_PARENT",
+                "PRIVATE_START",
+                sys.executable,
+                "-c",
+                "pass",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=5,
+        )
+        assert boundary.returncode == 2 and boundary.stdout == boundary.stderr == b""
+        producer = {
+            "counts": dict.fromkeys(supervisor.REFUSAL_KEYS, 0),
+            "counts_saturated": False,
+            "first_scan_refusal": None,
+        }
+        with monkeypatch.context() as context:
+            context.setattr(supervisor, "process", lambda pid: (101, "S"))
+            context.setattr(supervisor.os, "listdir", lambda path: ["37"])
+
+            def refused_open(*args, **kwargs):
+                raise FileNotFoundError(errno.ENOENT, "PRIVATE_ERROR", "PRIVATE_PATH")
+
+            context.setattr(builtins, "open", refused_open)
+            children, truncated = supervisor.children(37, producer, site=2)
+        assert children == set() and truncated is True
+        assert producer["counts"]["scan_refused"] == 1
+        assert producer.get("first_scan_refusal") == {"s": 2, "k": 1, "o": 2, "b": 7}
+        events = [
+            {"event": "outcome", "code": 0},
+            {"event": "settled", "complete": False},
+            {"event": "diagnostic", "reason": "latched_refusal", **producer},
+        ]
+        projected = control.lifecycle_observation(events, 2, False, False, False)
+        assert projected["first_scan_refusal"] == producer["first_scan_refusal"]
+        assert projected["supervisor_exit"] == 2 and projected["settled_complete"] is False
+        assert "PRIVATE" not in json.dumps(projected)
+        # Only one well-formed closed tuple may be exported; values never escape.
+        malformed = [
+            None,
+            "PRIVATE_VALUE",
+            {},
+            {**producer["first_scan_refusal"], "path": "PRIVATE_PATH"},
+        ]
+        for key, value in (
+            ("s", True),
+            ("s", 0),
+            ("s", 4),
+            ("s", "PRIVATE_SITE"),
+            ("k", 0),
+            ("k", 7),
+            ("o", 0),
+            ("o", 5),
+            ("b", -1),
+            ("b", 32),
+            ("b", 4),
+            ("b", 8),
+            ("b", 15),
+            ("b", 31),
+        ):
+            malformed.append({**producer["first_scan_refusal"], key: value})
+        for value in malformed:
+            invalid = copy.deepcopy(events)
+            invalid[-1]["first_scan_refusal"] = value
+            closed = control.lifecycle_observation(invalid, 2, False, False, False)
+            assert closed["first_scan_refusal"] is None
+            assert closed["supervisor_exit"] == 2 and closed["settled_complete"] is False
+            assert "PRIVATE" not in json.dumps(closed)
+        for count in (0, True, -1, 65536, "PRIVATE_COUNT"):
+            invalid = copy.deepcopy(events)
+            invalid[-1]["counts"]["scan_refused"] = count
+            assert (
+                control.lifecycle_observation(invalid, 2, False, False, False)["first_scan_refusal"]
+                is None
+            )
+        for invalid in (events[:-1], [*events, copy.deepcopy(events[-1])]):
+            assert (
+                control.lifecycle_observation(invalid, 2, False, False, False)["first_scan_refusal"]
+                is None
+            )
+
         # An absolute script path does not choose its editable-repair target.
         controller = tmp_path / "controller"
         controller.mkdir()
@@ -428,15 +534,17 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
         ("aggregate-budget", KeyError("PRIVATE_ENV"), "missing-key"),
         ("PRIVATE_STAGE", ValueError("PRIVATE_PAYLOAD"), "value-error"),
     ]
-    for index, (stage, error, category) in enumerate(cases):
+
+    def refuse(root, output, progress=None):
+        if progress is not None:
+            progress["stage"] = stage
+        raise error
+
+    for index, (stage, _error, category) in enumerate(cases):
+        error = _error
         directory = tmp_path / str(index)
         directory.mkdir()
         monkeypatch.setenv("RUNNER_TEMP", str(directory))
-
-        def refuse(root, output, progress=None):
-            if progress is not None:
-                progress["stage"] = stage
-            raise error
 
         monkeypatch.setattr(control, "execute", refuse)
         assert control.main() == 2
@@ -455,6 +563,23 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
 
     # Execute the real prephase sequence with closed software dependencies. Neither
     # installer failure nor frozen-environment failure may reach the PG child.
+    def install(*args):
+        calls.append("installer")
+        if stage == "uv-install":
+            raise ValueError("uv-install")
+        return {}
+
+    def prepare(command, environment, seconds, *, cwd):
+        calls.append("prepare")
+        assert cwd.name == "workload" and command[-1] == "--prepare-child"
+        assert Path(environment["FACT_CAPTURE_PREPARE_CONFIG"]).parent == cwd.parent
+        return {
+            "exit": 2,
+            "cleanup_complete": True,
+            "timed_out": False,
+            "observation": control.lifecycle_observation([], 0, False, False, False),
+        }
+
     for stage in ("uv-install", "environment-prepare"):
         directory = tmp_path / ("real-" + stage)
         directory.mkdir()
@@ -473,23 +598,6 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
                 "run",
                 lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
             )
-
-            def install(*args):
-                calls.append("installer")
-                if stage == "uv-install":
-                    raise ValueError("uv-install")
-                return {}
-
-            def prepare(command, environment, seconds, *, cwd):
-                calls.append("prepare")
-                assert cwd.name == "workload" and command[-1] == "--prepare-child"
-                assert Path(environment["FACT_CAPTURE_PREPARE_CONFIG"]).parent == cwd.parent
-                return {
-                    "exit": 2,
-                    "cleanup_complete": True,
-                    "timed_out": False,
-                    "observation": control.lifecycle_observation([], 0, False, False, False),
-                }
 
             context.setattr(control, "prepare_uv", install)
             context.setattr(control, "run_owned", prepare)

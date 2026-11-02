@@ -542,6 +542,75 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
     assert fact_authority.source_registry() is prior_registry
 
 
+async def test_single_sender_identity_failure_warns_content_blind_and_routes_without_identity(
+    caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
+    from butlers.identity import IdentityResolutionQueryError
+
+    sentinel = "PRIVATE IDENTITY FAILURE sender@example.test SELECT secret credential-canary"
+    failure = IdentityResolutionQueryError("UniqueViolationError")
+    failure.add_note(sentinel)
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="Routed to health.", tool_calls=[_route_call("health")])
+
+    resolver = AsyncMock(side_effect=failure)
+    pipeline = MessagePipeline(
+        MagicMock(), dispatch, source_butler="switchboard", enable_identity_resolution=True
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    pipeline._resolve_decomp_speakers = AsyncMock()  # type: ignore[method-assign]
+    pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
+
+    prior_registry = fact_authority.source_registry()
+    with (
+        unregistered_identity_source(),
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(identity_inject, "resolve_and_inject_identity", resolver),
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "hello",
+            tool_args={"source_channel": "telegram_bot", "source_id": "sender-1"},
+            message_inbox_id="00000000-0000-0000-0000-000000000099",
+        )
+
+    assert fact_authority.source_registry() is prior_registry
+    resolver.assert_awaited_once_with(
+        pipeline._pool,
+        channel_type="telegram_bot",
+        channel_value="sender-1",
+        display_name=None,
+        notify_owner_fn=None,
+    )
+    pipeline._resolve_decomp_speakers.assert_not_awaited()
+    pipeline._assert_sender_channel_fact.assert_not_awaited()
+    assert result.acked_targets == ["health"]
+    assert result.routing_error is None
+    context = pipeline._set_routing_context.call_args.kwargs
+    assert context["identity_preamble"] is None
+    assert context["source_entity_id"] is None
+    assert context["source_contact_id"] is None
+    warning = next(
+        record
+        for record in caplog.records
+        if record.message == "pipeline.identity_resolution_failed"
+    )
+    assert warning.levelno == logging.WARNING
+    assert warning.failure_class == "IdentityResolutionQueryError"
+    assert warning.args == ()
+    assert warning.exc_info is None
+    assert warning.exc_text is None
+    assert warning.stack_info is None
+    assert sentinel not in caplog.text
+    assert sentinel not in repr([record.__dict__ for record in caplog.records])
+
+
 @pytest.mark.parametrize(
     ("source_channel", "sentinel_identity", "sentinel_chat"),
     [
@@ -3831,7 +3900,7 @@ class TestDeadLetterDashboardUnroutable:
         monkeypatch.setattr(capture_mod, "capture_to_dead_letter", mock_capture)
         fake_reply = AsyncMock(return_value={"id": "msg-1"})
         monkeypatch.setattr(
-            "butlers.api.conversations.conversation_reply_create",
+            "butlers.conversation_messages.conversation_reply_create",
             fake_reply,
         )
 
@@ -3875,7 +3944,7 @@ class TestDeadLetterDashboardUnroutable:
         monkeypatch.setattr(capture_mod, "capture_to_dead_letter", AsyncMock(return_value="dl-id"))
         fake_reply = AsyncMock()
         monkeypatch.setattr(
-            "butlers.api.conversations.conversation_reply_create",
+            "butlers.conversation_messages.conversation_reply_create",
             fake_reply,
         )
 

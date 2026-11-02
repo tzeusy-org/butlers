@@ -37,6 +37,7 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the `claude` subprocess exits with a non-zero exit code
 - **THEN** the adapter SHALL raise `RuntimeError` with the exit code and stderr content
 - **AND** `last_process_info` SHALL contain the full subprocess metadata
+- **AND** when stdout carries a failed terminal `result` (for example `error_max_turns`, which CLI 2.1.316 exits 1 on), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls, and `is_pre_tool_call` SHALL be false when the stream shows a tool ran (a `tool_use` block or more than one turn)
 
 #### Scenario: Claude Code MCP config isolation
 - **WHEN** the adapter builds the invocation command
@@ -53,6 +54,10 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the `stream-json` output contains assistant message events with `tool_use` content blocks
 - **THEN** the adapter SHALL extract each tool call's `id`, `name`, and `input` fields
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
+- **AND** read the CLI's native shape, where content blocks nest under the event's `message`
+- **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
+- **AND** mark each call whose name is not `mcp__<server>__<tool>` as `builtin: true` (a CLI built-in such as `Bash`, `Read`, `ToolSearch` or `Agent`)
+- **AND** report `tool_use` made inside a subagent (an event with a non-null `parent_tool_use_id`) as session work, carrying that `parent_tool_use_id` on the record
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess
@@ -111,8 +116,13 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the butler's runtime type is `gemini`
-- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
+- **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag, `-o stream-json`, `--skip-trust` (headless runs in an untrusted folder exit 55), and `-m <model>` when a model is resolved
+- **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
+- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally` under a root-owned directory whose ancestors are not group/other-writable (the CLI silently skips a system settings file anywhere else), failing before spawn when that directory chain does not qualify
+- **AND** passes `--allowed-mcp-server-names` naming the butler's MCP servers, or a name no server uses when there are none (the CLI rejects an empty name), so user- or project-level MCP servers never start even though `--skip-trust` trusts the working directory
+- **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
 - **AND** passes declared butler env vars to the subprocess
+- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.66.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the butler's runtime type is `opencode`
@@ -210,7 +220,7 @@ Scope: v1-mandatory
 - **THEN** no healing dispatch occurs for that exception
 
 ### Requirement: Trigger Source Tracking
-Valid trigger sources are: `tick`, `external`, `trigger`, `route`, `healing`, and `schedule:<task-name>`. The trigger source SHALL be passed through to session creation for audit.
+Valid trigger sources include `tick`, `external`, `trigger`, `route`, `qa`, and `schedule:<task-name>`. Historical `healing` provenance SHALL remain readable and its existing isolation/recursion safeguards SHALL remain intact; it SHALL NOT enable the retired local dispatcher. The trigger source SHALL be passed through to session creation for audit.
 
 ID: REQ-core-spawner-006
 Source: core-spawner trigger audit; RFC 0015 centralized QA; bu-lsxqb0.6 and bu-1fe7xv rounds 3-4
@@ -221,9 +231,10 @@ Scope: v1-mandatory
 - **THEN** the session's `trigger_source` is `"schedule:daily_digest"`
 
 #### Scenario: Healing trigger source
-- **WHEN** an existing shared legacy healing dispatcher explicitly spawns an investigation session
-- **THEN** the session's `trigger_source` is `"healing"`
-- **AND** this does not enable direct investigation dispatch by the relay module or Spawner crash handler
+- **WHEN** an existing session carries historical `trigger_source="healing"` provenance
+- **THEN** its original trigger source remains unchanged
+- **AND** neither the core QA relay nor the Spawner crash handler starts a local investigation
+- **AND** new centralized QA investigations retain `trigger_source="qa"`
 
 #### Scenario: Healing sessions skip fallback dispatcher
 - **WHEN** a session with `trigger_source = "healing"` fails
@@ -231,14 +242,30 @@ Scope: v1-mandatory
 - **AND** the centralized QA self-recursion barrier remains authoritative for QA-origin findings
 
 ### Requirement: Credential Isolation
-The spawner SHALL build an explicit environment dict for the runtime process containing only: `PATH` (for shebang resolution), declared `[butler.env]` vars, module credential vars, and CLI auth provider credentials (e.g. `ANTHROPIC_API_KEY` for the Claude runtime). Runtime authentication uses either CLI-level OAuth tokens (device-code flow) or API keys entered via the dashboard Settings → CLI Runtime Authentication card, depending on the provider's `auth_mode`. Credentials SHALL be resolved DB-first via `CredentialStore.resolve()` with env-var fallback. Undeclared env vars SHALL NOT leak through.
+The spawner SHALL build an explicit environment dict containing only `PATH` (for shebang resolution), declared `[butler.env]` required/optional variables, distributed-tracing variables, and the selected runtime's authentication material. Runtime authentication uses CLI-level OAuth tokens (device-code flow) or the selected provider's configured API key, depending on its `auth_mode`. Declared variables SHALL be resolved through `CredentialStore.resolve()` when a store is present, without implicit environment fallback; the no-store path MAY resolve them from the process environment. Owner-auth and administrative database variables SHALL always be withheld, even if declared.
+
+Module channel credentials SHALL NOT be added merely because a module declares or resolves them. Module credential validation and daemon-side resolution SHALL remain available to the modules. An operator MAY explicitly declare a channel variable in `[butler.env]`; that declaration remains subject to the owner-auth and administrative-variable exclusions. Undeclared host variables SHALL NOT leak through, and an explicit empty environment SHALL NOT become ambient environment inheritance at the runtime adapter.
+
+Source: RFC 0038 D3 and D18; bu-13itjw legacy credential isolation
+Scope: v1-mandatory
 
 ID: REQ-core-spawner-010
 
 #### Scenario: Only declared credentials are passed
-- **WHEN** the spawner builds the runtime environment
-- **THEN** only `PATH`, declared `[butler.env]` vars, and declared module credential vars are included
-- **AND** other host environment variables are excluded
+- **WHEN** the spawner builds a normal runtime environment
+- **THEN** only `PATH`, declared `[butler.env]` variables, tracing, and selected runtime authentication are included
+- **AND** undeclared module channel credentials and other host environment variables are excluded
+- **AND** daemon-side module validation and credential resolution remain unchanged
+
+#### Scenario: Explicitly declared channel variable
+- **WHEN** an operator declares a module channel variable in `[butler.env]`
+- **THEN** the variable is resolved by the normal declared-variable path
+- **AND** owner-auth and administrative database variables remain withheld
+
+#### Scenario: Empty runtime environment
+- **WHEN** the spawner supplies an empty environment mapping
+- **THEN** the runtime adapter preserves that explicit mapping rather than inheriting the daemon environment
+- **AND** invocation-local MCP configuration variables MAY be added without inheriting unrelated host variables
 
 ### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 The Codex adapter SHALL perform live Codex device-auth reconciliation before
@@ -313,7 +340,7 @@ rotation persistence SHALL be fenced by that attempt's captured snapshot.
   unchanged model-failover contract
 
 ### Requirement: Memory Context Injection
-When the memory module is enabled, the Spawner SHALL fetch memory context via `fetch_memory_context()` before invocation and append it to the system prompt. On successful completion, it SHALL store non-empty session output as an episode via `store_session_episode()` unless the trigger source is exactly `schedule:consolidation`. This automatic episode-write exclusion SHALL NOT suppress the normal session record or change memory-context retrieval. Both memory operations SHALL be fail-open (log and continue).
+When the memory module is enabled, the Spawner SHALL fetch memory context via `fetch_memory_context()` before invocation and append it to the system prompt. On successful completion, it SHALL store non-empty session output as an episode via `store_session_episode()` unless the trigger source is exactly `schedule:consolidation`. This automatic episode-write exclusion SHALL NOT suppress the normal session record or change memory-context retrieval. Separately, the Spawner SHALL NOT fetch or inject memory context for a session whose trigger source is exactly `schedule:consolidation`: that session's only stored-memory context is the partition-filtered dedup context in its prompt (module-memory authority partitions), and recall-based injection would show an owner-partition session facts of every authority. Both memory operations SHALL be fail-open (log and continue).
 
 #### Scenario: Memory context injected into system prompt
 - **WHEN** the memory module is enabled and context is available
@@ -322,6 +349,12 @@ When the memory module is enabled, the Spawner SHALL fetch memory context via `f
 #### Scenario: Memory failure does not block invocation
 - **WHEN** memory context retrieval fails
 - **THEN** the failure is logged and the invocation proceeds with the base system prompt only
+
+#### Scenario: Consolidation session skips memory-context injection
+- **WHEN** memory is enabled and a runtime invocation has
+  `trigger_source="schedule:consolidation"`
+- **THEN** the spawner SHALL NOT call `fetch_memory_context()`
+- **AND** the system prompt SHALL carry no memory context block
 
 #### Scenario: Consolidation session skips automatic episode persistence
 - **WHEN** memory is enabled and a runtime invocation with
@@ -490,6 +523,9 @@ failover is safe.
   SHALL treat the attempt as an empty-response failure even if token usage was reported
 - **AND** when the merged records contain a confirmed non-command MCP tool call, the
   tool-only attempt SHALL remain successful and SHALL NOT trigger model failover
+- **AND** runtime-native tool records (`command_execution` shell work, or Claude CLI
+  built-ins marked `builtin: true`) SHALL NOT count as confirmed MCP tool calls; they
+  remain side-effect evidence, so the empty-response failure is not failover-eligible
 
 #### Scenario: Captured tool calls make failure ineligible
 - **WHEN** captured tool calls for the failed attempt are non-empty
@@ -542,7 +578,7 @@ The spawner SHALL support `stop_accepting()` to reject new triggers and `drain(t
 - **THEN** remaining in-flight tasks are cancelled
 
 ### Requirement: Healing Session Semaphore Bypass
-When the spawner's `trigger()` is called with `trigger_source = "healing"`, the per-butler session semaphore SHALL be bypassed. The global semaphore SHALL still be acquired. This is essential for the module path where the calling session is still holding the per-butler semaphore.
+When the spawner's `trigger()` is called with `trigger_source = "healing"`, the per-butler session semaphore SHALL be bypassed. The global semaphore SHALL still be acquired. This retained isolation behavior does not register or enable the retired local dispatcher.
 
 #### Scenario: Healing bypasses per-butler semaphore
 - **WHEN** `trigger(prompt, trigger_source="healing")` is called and the per-butler semaphore has 0 available slots
@@ -565,28 +601,32 @@ When spawning a healing agent session (`trigger_source = "healing"`), the spawne
 - **AND** includes `PATH` for tool discovery
 - **AND** no other butler-specific credentials or env vars are passed
 
-### Requirement: Healing Configuration in butler.toml
-The daemon SHALL admit self_healing startup only when `[modules.self_healing]` is declared. Its relay config SHALL accept the existing six keys without permitting the reporting butler to override QA investigation policy. The Spawner SHALL have no separately enabled healing fallback.
+### Requirement: Core QA Relay Availability
+The daemon SHALL register `report_error` and `get_healing_status` as logged core tools on every roster, independently of module declarations and `core_groups`. The retired `self_healing` module, its configuration and its skill SHALL NOT be required or registered. The Spawner SHALL have no local healing fallback.
 
 ID: REQ-core-spawner-007
-Source: RFC 0015 centralized QA; bu-1fe7xv rounds 2-4; core-modules explicit startup selection
+Source: RFC 0015 centralized QA; approved-A QA retirement bu-dss7he.1; REQ-core-spawner-006
 Scope: v1-mandatory
 
-#### Scenario: Default healing config
-- **WHEN** `butler.toml` has no `[modules.self_healing]` section
-- **THEN** self_healing remains available to registry discovery but is not admitted to startup or tool registration
-- **AND** no Spawner fallback is enabled
+#### Scenario: Core relay without module configuration
+- **WHEN** a daemon starts without `[modules.self_healing]`, including a staffer or a daemon with no enabled core groups
+- **THEN** both core QA tools are registered with trusted daemon identity and read-only history pool
+- **AND** `error_message`, `traceback`, and `context` retain sensitive argument metadata and normal tool-call logging/session/trace binding
+- **AND** no local investigation, startup recovery, reaper or publisher is installed
 
-#### Scenario: Healing config fields
-- **WHEN** `[modules.self_healing]` is present
-- **THEN** its schema accepts `enabled` (bool, default true), `severity_threshold` (int, default 2), `max_concurrent` (int, default 2), `cooldown_minutes` (int, default 60), `circuit_breaker_threshold` (int, default 5), and `timeout_minutes` (int, default 30)
-- **AND** `enabled=false` prevents report admission while the five legacy dispatch thresholds remain inert compatibility inputs
-- **AND** unknown extra fields are rejected
+#### Scenario: Late transport and cache ownership
+- **WHEN** a report is submitted after Switchboard client creation or replacement
+- **THEN** the relay resolves the daemon's current client and binds its sixty-second QA availability cache to that exact client
+- **AND** Switchboard may use its own registered local MCP transport
+- **AND** no reporting argument selects source identity or publication authority
 
-#### Scenario: Spawner fallback uses module config
-- **WHEN** a reporting butler sets legacy self_healing threshold values and submits a valid report while relay admission is enabled
-- **THEN** the report uses the same QA relay boundary without local dispatch gates or a local investigation
-- **AND** QA retains its own authoritative triage, concurrency, cooldown, breaker and timeout policy
+#### Scenario: Confirmed reception and bounded refusal
+- **WHEN** a core report is submitted
+- **THEN** fingerprinting, severity, summary truncation and relay response shapes remain compatible
+- **AND** QA availability and routing share one two-second absolute deadline
+- **AND** only confirmed QA reception returns `accepted=true`; missing QA, malformed/error envelopes or unconfirmed transport return an honest refusal without local fallback
+- **AND** a timeout does not promise cancellation of already-buffered reception or license a blind replay
+- **AND** QA alone retains triage, concurrency, cooldown, breaker, timeout and publication policy
 
 ### Requirement: Spawner resolves hot config fields per-spawn from the model catalog
 The Spawner SHALL resolve the hot fields (model, runtime_type, args, session_timeout_s) on every `trigger()` call rather than reading them from the static `ButlerConfig`. These fields live on `public.model_catalog` (resolved per complexity tier), not on the `runtime_config` table. The Spawner calls `resolve_model_with_effective_tier()` (`src/butlers/core/model_routing.py`) to obtain the catalog entry id, runtime_type, args, and session_timeout_s for the chosen tier. The `RuntimeConfigAccessor` is still consulted, but only for cold fields (core_groups, max_concurrent, max_queued).
@@ -670,8 +710,8 @@ Guardrails are evaluated as **post-session checks**, not in-flight cancellation.
 
 Three independent budgets SHALL be enforced, each OR-combined with the others:
 
-1. **Consecutive-identical-call count** (`_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD`, default `6`): The maximum run of back-to-back tool calls sharing one `(name, input_fingerprint)` signature. Only *adjacent* duplicates count; any non-identical call resets the streak. The signature uses the call's `input_fingerprint` when present, otherwise a canonical fingerprint of the call's `input`/`args`/`arguments`/`parameters` payload.
-2. **Cumulative tool-call count** (`max_tool_calls`, default `_DEFAULT_MAX_TOOL_CALLS = 0`): Total tool calls observed in the merged session list. A value of `0` disables the check (the shipped default leaves it off).
+1. **Consecutive-identical-call count** (`_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD`, default `6`): The maximum run of back-to-back tool calls sharing one `(name, input_fingerprint)` signature. Only *adjacent* duplicates count; any non-identical call resets the streak. The signature uses the call's `input_fingerprint` when present, otherwise a canonical fingerprint of the call's `input`/`args`/`arguments`/`parameters` payload. Adjacency is judged per thread: calls sharing a `parent_tool_use_id` (one subagent) form one thread and the session's own calls form another, because the runtime stream interleaves them.
+2. **Cumulative tool-call count** (`max_tool_calls`, default `_DEFAULT_MAX_TOOL_CALLS = 0`): Total tool calls observed in the merged session list, including subagent-internal calls and runtime built-ins: delegating to a subagent SHALL NOT shrink the session's count. A value of `0` disables the check (the shipped default leaves it off).
 3. **Cumulative input tokens** (`max_token_budget`, default `None`): Sum of `input_tokens` reported by the adapter for the session. `None` disables the check.
 
 These thresholds are spawner-level parameters / module constants, not `RuntimeConfigAccessor` HOT fields and not `RuntimeSeedConfig` columns. The defaults above are the shipped values; callers MAY pass overrides through `trigger()` / the internal invoke path.
@@ -686,6 +726,12 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **WHEN** a session issues identical calls `A, A, A`, then a different call `B`, then `A` again
 - **THEN** the consecutive-identical streak SHALL reset at `B`
 - **AND** the session SHALL NOT be flagged as a degenerate loop unless a single uninterrupted run of identical calls reaches the threshold
+
+#### Scenario: Subagent calls are judged within their own thread
+- **WHEN** a Claude session's merged tool-call list interleaves calls carrying different `parent_tool_use_id` values (or none)
+- **THEN** the consecutive-identical streak SHALL count only calls of the same thread
+- **AND** a subagent repeating one call to the threshold SHALL trip the loop detector even when its parent's calls interleave
+- **AND** parallel subagents that each stay under the threshold SHALL NOT trip it, however their calls interleave
 
 #### Scenario: Tool-call budget exceeded
 - **WHEN** the cumulative tool-call count for a session exceeds a configured non-zero `max_tool_calls`

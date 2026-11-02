@@ -444,10 +444,18 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
         "raw_payload": None,
         "recorded_at": _NOW,
     }
+    # A movement needs two fixes (bu-2tsgqb.6).
+    later = _NOW + timedelta(minutes=5)
+    second_row = {
+        **point_row,
+        "idempotency_key": "owntracks:abd",
+        "ts": later,
+        "recorded_at": later,
+    }
 
     adapter = OwnTracksPointAdapter()
     with (
-        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[point_row])),
+        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[point_row, second_row])),
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event", new=AsyncMock()),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_upsert),
         patch(
@@ -465,7 +473,7 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    assert result.rows_projected == 1
+    assert result.rows_projected == 2
     # movement episode was captured with entity_id
     assert len(captured) == 1
     mock_upsert_entity.assert_awaited_once()

@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from prometheus_client import Counter
 
-from butlers.connectors.known_contact_state import KnownContactSnapshot
+from butlers.core.known_contact_state import KnownContactSnapshot
 
 if TYPE_CHECKING:
     import asyncpg

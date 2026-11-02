@@ -79,34 +79,13 @@ class PaginatedResponse[T](BaseModel):
     meta: PaginationMeta
 
 
-class CursorPaginationMeta(BaseModel):
-    """Pagination metadata for cursor-based (keyset) list endpoints.
-
-    Replaces offset+total with an opaque cursor token.
-    """
-
-    next_cursor: str | None = None
-    has_more: bool
-
-
-class CursorPaginatedResponse[T](BaseModel):
-    """API response wrapper for cursor-paginated list endpoints.
-
-    ``{"data": [T, ...], "meta": CursorPaginationMeta}``
-    """
-
-    data: list[T]
-    meta: CursorPaginationMeta
-
-
 class KeysetMeta(BaseModel):
-    """Keyset (cursor) pagination metadata that also echoes the page ``limit``.
+    """Keyset (cursor) pagination metadata for the sessions list only.
 
     ``{"limit": 50, "next_cursor": "<opaque>|null", "has_more": true}``
 
-    Distinct from :class:`CursorPaginationMeta` (which omits ``limit``) so the
-    sessions list can surface the effective page size without disturbing other
-    cursor-paginated endpoints.
+    Sessions keep this envelope until the RFC 0038 D19 switch retires them; every
+    other cursor-paginated endpoint returns :class:`butlers.api.pagination.Page`.
     """
 
     limit: int
@@ -528,6 +507,12 @@ class SpendSummary(BaseModel):
     # zero-tuple internally, so totals above are a partial sum, never a
     # confident fleet-wide total when this list is non-empty.
     unavailable_butlers: list[str] = Field(default_factory=list)
+    served_breakdown: list[dict] = Field(default_factory=list)
+    reported_cost_comparisons: list[dict] = Field(default_factory=list)
+    served_source_error: bool = False
+    # Serving evidence is aggregated per (model, authority, provenance) and
+    # capped; true when more groups existed than the cap returned.
+    served_evidence_truncated: bool = False
 
 
 class DailySpend(BaseModel):
@@ -694,8 +679,6 @@ __all__ = [
     "ConversationStats",
     "ConversationSummary",
     "ConversationUpdateRequest",
-    "CursorPaginatedResponse",
-    "CursorPaginationMeta",
     "DailyActivity",
     "DailyActivityBucket",
     "DailySpend",

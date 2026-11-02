@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.model_settings import _get_db_manager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app
 
 pytestmark = pytest.mark.unit
@@ -32,7 +32,7 @@ def _db(app, error: BaseException) -> AsyncMock:
     pool.fetchrow = AsyncMock(side_effect=error)
     manager = MagicMock(spec=DatabaseManager)
     manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: manager
+    app.dependency_overrides[get_db] = lambda: manager
     return pool
 
 

@@ -32,6 +32,8 @@ against these shared ``public`` objects.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 from alembic import op
 
 revision = "core_272"
@@ -41,6 +43,11 @@ depends_on = None
 
 _SWITCHBOARD_ROLE = "butler_switchboard_rw"
 _REFILL_SIG = "public.resolve_health_medication_refill(text, numeric, numeric)"
+_FUNCTION_DDL_LOCK_SQL = """
+SELECT pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended('butlers:core_272:resolve_health_medication_refill', 0::bigint)
+)
+"""
 
 CREATE_REFILL_FN = """
 CREATE OR REPLACE FUNCTION public.resolve_health_medication_refill(
@@ -116,11 +123,36 @@ def _execute_best_effort(statement: str) -> None:
     )
 
 
+@contextmanager
+def _serialized_function_ddl():
+    """Serialize this shared function's complete lifecycle in the owning transaction.
+
+    Earlier core locks cannot survive intervening autocommit revisions. Keep this
+    lock until the caller commits or rolls back, including the ACL statements.
+    """
+    connection = op.get_bind()
+    previous_ms = connection.exec_driver_sql(
+        "SELECT setting::bigint FROM pg_catalog.pg_settings WHERE name = 'lock_timeout'"
+    ).scalar_one()
+    bounded_ms = min(previous_ms, 5000) if previous_ms else 5000
+    connection.exec_driver_sql(
+        "SELECT pg_catalog.set_config('lock_timeout', %s, true)", (f"{bounded_ms}ms",)
+    )
+    op.execute(_FUNCTION_DDL_LOCK_SQL)
+    yield
+    # On a SQL error the outer rollback restores SET LOCAL. Issuing another SQL
+    # statement in that aborted transaction would mask the original failure.
+    connection.exec_driver_sql(
+        "SELECT pg_catalog.set_config('lock_timeout', %s, true)", (f"{previous_ms}ms",)
+    )
+
+
 def upgrade() -> None:
-    _execute_best_effort(CREATE_REFILL_FN)
-    _execute_best_effort(f"REVOKE ALL ON FUNCTION {_REFILL_SIG} FROM PUBLIC")
-    op.execute(
-        f"""
+    with _serialized_function_ddl():
+        _execute_best_effort(CREATE_REFILL_FN)
+        _execute_best_effort(f"REVOKE ALL ON FUNCTION {_REFILL_SIG} FROM PUBLIC")
+        op.execute(
+            f"""
         DO $do$
         BEGIN
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_SWITCHBOARD_ROLE}') THEN
@@ -131,10 +163,12 @@ def upgrade() -> None:
         END
         $do$;
         """
-    )
+        )
 
 
 def downgrade() -> None:
-    _execute_best_effort(
-        "DROP FUNCTION IF EXISTS public.resolve_health_medication_refill(text, numeric, numeric)"
-    )
+    with _serialized_function_ddl():
+        _execute_best_effort(
+            "DROP FUNCTION IF EXISTS "
+            "public.resolve_health_medication_refill(text, numeric, numeric)"
+        )

@@ -896,7 +896,7 @@ async def _reconcile_owner_conditions(
         )
 
 
-async def _register_obligations(db_pool: asyncpg.Pool) -> None:
+async def _register_obligations(db_pool: asyncpg.Pool, *, today: date | None = None) -> None:
     """Best-effort forward obligation ledger write (bu-8cdl1.10 slice 2).
 
     A STATE side effect alongside the insight-candidate delivery above, not
@@ -909,7 +909,7 @@ async def _register_obligations(db_pool: asyncpg.Pool) -> None:
     """
     try:
         async with _finance_scoped_connection(db_pool) as conn:
-            await register_obligations(conn)
+            await register_obligations(conn, today=today)
     except Exception:
         logger.warning("Finance insight scan: obligation ledger registration failed", exc_info=True)
 
@@ -998,7 +998,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     # this STATE side effect is genuinely "alongside, not instead of"
     # candidate delivery rather than silently unreachable whenever an
     # earlier category's submission gets filtered.
-    await _register_obligations(db_pool)
+    await _register_obligations(db_pool, today=today)
 
     # ------------------------------------------------------------------
     # 1. Spending anomalies
@@ -1354,18 +1354,27 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     async with db_pool.acquire() as conn:
         sub_rows = await conn.fetch(
             """
-            SELECT id, service, amount, currency, next_renewal,
+            SELECT s.id, s.service, s.amount, s.currency, s.next_renewal,
+                   s.field_claims, s.date_epoch, s.renewal_source, s.price_source,
+                   selected.warning_date,
                    status, cancellation_url, cancellation_url_source, status_source,
                    notice_period_days, cancel_by, metadata
-            FROM finance.subscriptions
+            FROM finance.subscriptions s
+            CROSS JOIN LATERAL (
+                SELECT min(day) AS warning_date FROM (
+                    SELECT s.next_renewal AS day
+                    UNION ALL
+                    SELECT (claim->>'value')::date FROM jsonb_array_elements(s.field_claims) claim
+                    WHERE claim->>'field' = 'renewal' AND claim->>'resolved' = 'false'
+                ) dates WHERE day >= $1 AND day <= $2
+            ) selected
             -- An owner-set cancelled/paused status silences the warning; one reported by
             -- an extracted write must not (bu-svqpzo.10), so it warns and asks to confirm.
             WHERE (status = 'active'
                    OR (status IN ('cancelled', 'paused') AND status_source = 'extracted'))
               AND frequency = 'yearly'
-              AND next_renewal >= $1
-              AND next_renewal <= $2
-            ORDER BY next_renewal ASC
+              AND selected.warning_date IS NOT NULL
+            ORDER BY selected.warning_date ASC
             """,
             today,
             renewal_window_end,
@@ -1394,7 +1403,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         )
 
     for row in sub_rows:
-        renewal_date = row["next_renewal"]
+        renewal_date = row["warning_date"]
         days_until = (renewal_date - today).days
         sub_id = str(row["id"])
         service = row["service"]
@@ -1444,10 +1453,20 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             if days_until == 0
             else ("tomorrow" if days_until == 1 else f"in {days_until} days")
         )
+        from butlers.tools.finance.subscriptions import field_claims
+
+        pending = [claim for claim in field_claims(row) if not claim.get("resolved", False)]
         renewal_clause = (
             f"Annual subscription renewing {urgency_label}: {service} — "
             f"{currency} {amount:.2f} on {renewal_date.isoformat()}"
         )
+        if row["renewal_source"] != "owner" or renewal_date != row["next_renewal"] or pending:
+            renewal_clause += ". Unverified renewal report; confirm the date and price with Butlers"
+        price_claims = [claim["value"] for claim in pending if claim["field"] == "price"]
+        if price_claims:
+            renewal_clause += ". Unverified reported prices: " + "; ".join(
+                f"{pair['currency']} {pair['amount']}" for pair in price_claims
+            )
         if unknown_door:
             # bu-8cdl1.10: a missing cancellation door is exactly as unusable
             # to the owner as a missing date -- surface an explicit enrichment
@@ -1478,8 +1497,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             )
         if price_change_amount is not None:
             message += (
-                f" Price is set to {price_change_direction or 'change'} to "
-                f"{currency} {price_change_amount} at this renewal."
+                f" Unverified reported price {price_change_direction or 'change'} to "
+                f"{currency} {price_change_amount} at this renewal; confirm the complete price."
             )
         dedup_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
         expires_at = _owner_midnight(renewal_date + timedelta(days=1), zone)
@@ -1487,6 +1506,15 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         keep_going = await _submit(
             priority=priority,
             category="subscription-renewal",
+            premise=probe_premise(
+                "finance",
+                "subscription_warning_still_relevant",
+                {
+                    "subject": sub_id,
+                    "selected_date": renewal_date.isoformat(),
+                    "epoch": row["date_epoch"],
+                },
+            ),
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
@@ -1498,6 +1526,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # As with bills, preserve the source renewal date rather than
                 # treating a finance-local ID as a cross-domain entity identity.
                 "event_date": renewal_date.isoformat(),
+                "date_epoch": row["date_epoch"],
+                "unverified_claims": bool(pending),
                 # bu-8cdl1.10 slice 3: cancellation-door fields so this
                 # insight carries the door + days-remaining-to-act, not just
                 # the amount.

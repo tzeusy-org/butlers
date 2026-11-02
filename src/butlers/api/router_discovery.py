@@ -1,7 +1,7 @@
 """Auto-discovery and loading for roster butler API routers.
 
 Scans roster/{butler}/api/router.py files and dynamically loads them
-via importlib. Each loaded router module must export a module-level
+through the owning roster_imports primitive. Each loaded router must export a module-level
 'router' variable (APIRouter instance).
 
 Usage:
@@ -13,64 +13,17 @@ Usage:
 """
 
 import hashlib
-import importlib.util
 import logging
-import sys
-import threading
 from pathlib import Path
 from types import ModuleType
 
 from fastapi import APIRouter
 
+from butlers.roster_imports import _load_file_module as _load_router_module
+
 logger = logging.getLogger(__name__)
 
-# Default roster location relative to the repository root
-_ROUTER_LOAD_LOCK = threading.RLock()
-
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
-
-
-def _load_router_module(router_path: Path, module_name: str) -> ModuleType:
-    """Load a Python module from a file path using importlib.
-
-    If the module is already loaded in sys.modules, returns the existing
-    module to ensure consistency across test and app initialization.
-
-    Parameters
-    ----------
-    router_path:
-        Path to the router.py file.
-    module_name:
-        Unique module name for sys.modules registration.
-
-    Returns
-    -------
-    ModuleType
-        The loaded module.
-
-    Raises
-    ------
-    ValueError
-        If the module spec cannot be loaded.
-    """
-    with _ROUTER_LOAD_LOCK:
-        if module_name in sys.modules:
-            module = sys.modules[module_name]
-            if Path(module.__file__).resolve() != router_path.resolve():
-                raise ImportError(f"Router cache source differs: {module_name}")
-            return module
-        spec = importlib.util.spec_from_file_location(module_name, router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            if sys.modules.get(module_name) is module:
-                del sys.modules[module_name]
-            raise
-        return module
 
 
 def discover_butler_routers(

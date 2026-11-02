@@ -6,12 +6,12 @@ in-lock lookups, and the request_context stored by the message_inbox INSERT. Syn
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.switchboard.ingestion import ingest as ingest_module
 from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
@@ -64,18 +64,10 @@ async def _drive(text: str, *, bearer_scrubbed: bool = False) -> dict:
     conn.execute = execute
     conn.fetchrow = fetchrow
 
-    @asynccontextmanager
-    async def transaction():
-        yield
-
-    conn.transaction = transaction
-
-    @asynccontextmanager
-    async def acquire():
-        yield conn
+    conn.transaction = lambda: AsyncCtx(None)
 
     pool = MagicMock()
-    pool.acquire = acquire
+    pool.acquire = lambda: AsyncCtx(conn)
     pool.execute = AsyncMock(return_value=None)
     pool.fetch = AsyncMock(return_value=[])
     pool.fetchrow = AsyncMock(return_value=None)

@@ -8,7 +8,7 @@ validation boundary, backfill lifecycle (create/pause/conflict), connectors.
 from __future__ import annotations
 
 import datetime
-import importlib.util
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -18,6 +18,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -28,27 +30,13 @@ _router_path = _roster_root / "switchboard" / "api" / "router.py"
 
 def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {_router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+        importlib.import_module("butlers.api._roster.switchboard.router")
+    return get_db
 
 
 def _get_router_module():
     _get_db_dep()
     return sys.modules[_MODULE_NAME]
-
-
-def _make_row(data: dict):
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    row.keys = lambda: data.keys()
-    row.__iter__ = lambda self: iter(data)
-    return row
 
 
 def _app_with_mock(
@@ -139,7 +127,7 @@ async def test_registry_list_marks_stale_butler_despite_frozen_active_label(app)
     and read 'stale' here even though the stored column still says 'active'.
     """
     long_silent = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=1)
-    row = _make_row(
+    row = Record(
         _registry_row(name="silent-butler", last_seen_at=long_silent, eligibility_state="active")
     )
     _app_with_mock(app, fetch_rows=[row])
@@ -157,7 +145,7 @@ async def test_registry_list_marks_stale_butler_despite_frozen_active_label(app)
 
 async def test_registry_list_reports_active_for_recently_seen_butler(app):
     just_now = datetime.datetime.now(datetime.UTC)
-    row = _make_row(
+    row = Record(
         _registry_row(name="live-butler", last_seen_at=just_now, eligibility_state="active")
     )
     _app_with_mock(app, fetch_rows=[row])
@@ -176,7 +164,7 @@ async def test_registry_list_reports_active_for_recently_seen_butler(app):
 async def test_registry_list_derives_quarantined_regardless_of_stored_state(app):
     """An explicit quarantine (quarantined_at set) must derive as quarantined
     even if the stored eligibility_state column has not caught up."""
-    row = _make_row(
+    row = Record(
         _registry_row(
             name="quarantined-butler",
             last_seen_at=datetime.datetime.now(datetime.UTC),
@@ -205,7 +193,10 @@ async def test_register_missing_butler_uses_mcp_url(tmp_path):
     )
     registry_module = MagicMock()
     registry_module.register_butler = AsyncMock()
-    with patch.dict(sys.modules, {module._REGISTRY_MODULE_NAME: registry_module}):
+    with patch(
+        "butlers.tools.switchboard.registry.registry.register_butler",
+        registry_module.register_butler,
+    ):
         old = module._ROSTER_DIR
         module._ROSTER_DIR = tmp_path
         try:
@@ -213,6 +204,7 @@ async def test_register_missing_butler_uses_mcp_url(tmp_path):
         finally:
             module._ROSTER_DIR = old
     assert ok is True
+    registry_module.register_butler.assert_awaited_once()
     args = registry_module.register_butler.await_args.args
     assert args[2] == "http://localhost:41234/mcp"
 
@@ -288,55 +280,29 @@ async def test_heartbeat_missing_name_422(app):
     assert resp.status_code == 422
 
 
+async def test_heartbeat_rejects_invalid_names_before_roster_path_access(app):
+    module = _get_router_module()
+    roster_dir = MagicMock()
+    roster_dir.__truediv__.side_effect = AssertionError("Invalid heartbeat reached roster path")
+    with patch.object(module, "_ROSTER_DIR", roster_dir):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            for name in ("../x", "/tmp/x"):
+                for row in (None, {"eligibility_state": "active", "last_seen_at": None}):
+                    _app, pool = _app_with_mock(app, fetchrow_result=row)
+                    resp = await client.post(
+                        "/api/switchboard/heartbeat", json={"butler_name": name}
+                    )
+                    assert resp.status_code == 422
+                    pool.fetchrow.assert_not_awaited()
+                    pool.execute.assert_not_awaited()
+    roster_dir.__truediv__.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Eligibility history
 # ---------------------------------------------------------------------------
-
-
-async def test_eligibility_no_transitions_single_segment(app):
-    _app_with_mock(app, fetchrow_result={"eligibility_state": "active"})
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/registry/health/eligibility-history")
-    data = resp.json()["data"]
-    assert data["butler_name"] == "health"
-    assert len(data["segments"]) == 1
-    assert data["segments"][0]["state"] == "active"
-
-
-async def test_eligibility_transitions_correct_segments(app):
-    now = datetime.datetime.now(datetime.UTC)
-    app, mock_pool = _app_with_mock(app, fetchrow_result={"eligibility_state": "active"})
-    mock_pool.fetch = AsyncMock(
-        return_value=[
-            {
-                "previous_state": "active",
-                "new_state": "stale",
-                "observed_at": now - datetime.timedelta(hours=12),
-            },
-            {
-                "previous_state": "stale",
-                "new_state": "active",
-                "observed_at": now - datetime.timedelta(hours=6),
-            },
-        ]
-    )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/registry/health/eligibility-history")
-    states = [s["state"] for s in resp.json()["data"]["segments"]]
-    assert states == ["active", "stale", "active"]
-
-
-async def test_eligibility_unknown_butler_404(app):
-    _app_with_mock(app, fetchrow_result=None)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/switchboard/registry/unknown/eligibility-history")
-    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -594,9 +560,7 @@ async def test_ingestion_rules_list_archived_returns_soft_deleted(app):
 
 async def test_ingestion_rules_create_global_201(app):
     app, mock_pool = _app_with_mock(app)
-    mock_pool.fetchrow = AsyncMock(
-        side_effect=[_make_row({"name": "finance"}), _make_row(_GLOBAL_RULE)]
-    )
+    mock_pool.fetchrow = AsyncMock(side_effect=[Record({"name": "finance"}), Record(_GLOBAL_RULE)])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -647,7 +611,7 @@ async def test_ingestion_rules_create_accepts_canonical_action_201(app):
     """
     skip_rule = dict(_GLOBAL_RULE)
     skip_rule["action"] = "skip"
-    _app, _mock_pool = _app_with_mock(app, fetchrow_result=_make_row(skip_rule))
+    _app, _mock_pool = _app_with_mock(app, fetchrow_result=Record(skip_rule))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -677,7 +641,7 @@ async def test_ingestion_rules_create_accepts_global_source_endpoint_rule(app):
     )
     app, mock_pool = _app_with_mock(app)
     mock_pool.fetchrow = AsyncMock(
-        side_effect=[_make_row({"name": "lifestyle"}), _make_row(endpoint_rule)]
+        side_effect=[Record({"name": "lifestyle"}), Record(endpoint_rule)]
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -779,9 +743,9 @@ async def test_ingestion_rules_restore_archived_clears_deleted_at(app):
     _app, _mock_pool = _app_with_mock(
         app,
         fetchrow_side_effects=[
-            _make_row(archived_existing),  # SELECT existing (no deleted filter)
-            _make_row({"name": "finance"}),  # _assert_route_to_eligible lookup
-            _make_row(restored_row),  # UPDATE ... RETURNING
+            Record(archived_existing),  # SELECT existing (no deleted filter)
+            Record({"name": "finance"}),  # _assert_route_to_eligible lookup
+            Record(restored_row),  # UPDATE ... RETURNING
         ],
     )
     async with httpx.AsyncClient(
@@ -807,8 +771,8 @@ async def test_ingestion_rules_patch_archived_without_restore_409(app):
     _app, _mock_pool = _app_with_mock(
         app,
         fetchrow_side_effects=[
-            _make_row(archived_existing),  # SELECT existing
-            _make_row({"name": "finance"}),  # eligibility lookup (if reached)
+            Record(archived_existing),  # SELECT existing
+            Record({"name": "finance"}),  # eligibility lookup (if reached)
         ],
     )
     async with httpx.AsyncClient(
@@ -861,7 +825,7 @@ _SAMPLE_JOB = {
 
 async def test_backfill_create_201(app):
     app, mock_pool = _app_with_mock(app)
-    mock_pool.fetchrow = AsyncMock(return_value=_make_row(_SAMPLE_JOB))
+    mock_pool.fetchrow = AsyncMock(return_value=Record(_SAMPLE_JOB))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -889,9 +853,103 @@ async def test_backfill_get_nonexistent_404(app):
 
 async def test_backfill_pause_completed_409(app):
     completed_job = {**_SAMPLE_JOB, "status": "completed"}
-    _app_with_mock(app, fetchrow_result=_make_row(completed_job))
+    _app_with_mock(app, fetchrow_result=Record(completed_job))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.patch(f"/api/switchboard/backfill/{_JOB_ID}/pause")
     assert resp.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("operation", "status", "expected"),
+    [
+        (operation, status, expected)
+        for operation, allowed, target in (
+            ("pause", {"pending", "active", "paused"}, "paused"),
+            (
+                "cancel",
+                {"pending", "active", "paused", "error", "cost_capped", "cancelled"},
+                "cancelled",
+            ),
+            ("resume", {"paused"}, "pending"),
+        )
+        for status in (
+            "pending",
+            "active",
+            "paused",
+            "completed",
+            "cancelled",
+            "error",
+            "cost_capped",
+        )
+        if (operation, status) != ("pause", "completed")  # existing owner above
+        for expected in [target if status in allowed else None]
+    ],
+)
+async def test_backfill_lifecycle_controls(app, operation, status, expected):
+    row = {**_SAMPLE_JOB, "status": status}
+    app, pool = _app_with_mock(app)
+    pool.fetchrow = AsyncMock(side_effect=[Record(row), {"status": expected}])
+    with patch("switchboard_api_router.emit_dashboard_audit", new_callable=AsyncMock) as audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(f"/api/switchboard/backfill/{_JOB_ID}/{operation}")
+    assert response.status_code == (200 if expected else 409)
+    if expected:
+        assert response.json()["data"] == {"job_id": _JOB_ID, "status": expected}
+        assert audit.await_args.kwargs["operation"] == f"backfill_job_{operation}"
+        if status != expected:
+            sql, *args = pool.fetchrow.await_args.args
+            assert "AND status" in sql
+            assert status in args[-1]
+    else:
+        audit.assert_not_awaited()
+        assert pool.fetchrow.await_count == 1
+        allowed = {
+            "pause": {"pending", "active"},
+            "cancel": {"pending", "active", "paused", "error", "cost_capped"},
+            "resume": {"paused"},
+        }[operation]
+        assert response.json()["detail"] == (
+            f"Cannot {operation} job in status '{status}'. Must be one of: {sorted(allowed)}"
+        )
+
+
+@pytest.mark.parametrize("failure", ["missing", "malformed", "race", "database", "database_update"])
+async def test_backfill_lifecycle_refusals(app, failure):
+    app, pool = _app_with_mock(app)
+    pool.fetchrow = AsyncMock(
+        side_effect={
+            "missing": [None],
+            "malformed": [],
+            "race": [{"id": _JOB_ID, "status": "active"}, None, None],
+            "database": RuntimeError("unavailable"),
+            "database_update": [{"id": _JOB_ID, "status": "active"}, RuntimeError("unavailable")],
+        }[failure]
+    )
+    job_id = "invalid" if failure == "malformed" else _JOB_ID
+    with patch("switchboard_api_router.emit_dashboard_audit", new_callable=AsyncMock) as audit:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.patch(f"/api/switchboard/backfill/{job_id}/pause")
+    assert (
+        response.status_code
+        == {"missing": 404, "malformed": 422, "race": 409, "database": 503, "database_update": 503}[
+            failure
+        ]
+    )
+    audit.assert_not_awaited()
+    if failure == "malformed":
+        pool.fetchrow.assert_not_awaited()
+    if failure in {"missing", "database", "database_update"}:
+        assert (
+            response.json()["detail"]
+            == {
+                "missing": f"Backfill job '{_JOB_ID}' not found",
+                "database": "Failed to fetch backfill job",
+                "database_update": "Failed to pause backfill job",
+            }[failure]
+        )

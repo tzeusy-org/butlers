@@ -20,7 +20,6 @@ orphaned relational table (``medications``, ``medication_doses``, ``conditions``
 
 from __future__ import annotations
 
-import sys
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -30,6 +29,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -38,29 +39,12 @@ _NOW = datetime.now(tz=UTC)
 
 # Trigger router discovery, then grab the dependency fn from the registered module.
 _APP_SEED = create_app(api_key="")
-_health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
+_health_get_db_manager = get_db
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass mimicking asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _make_app(*, fetch_rows=None, fetchval_result=0):
@@ -112,7 +96,9 @@ async def _request(app, method: str, path: str, **kwargs) -> httpx.Response:
 # ---------------------------------------------------------------------------
 
 
-def _med_fact_row(*, name="Vitamin D", active=True, quantity=None, include_quantity=False) -> _Row:
+def _med_fact_row(
+    *, name="Vitamin D", active=True, quantity=None, include_quantity=False
+) -> Record:
     metadata = {
         "name": name,
         "dosage": "1000IU",
@@ -124,7 +110,7 @@ def _med_fact_row(*, name="Vitamin D", active=True, quantity=None, include_quant
     if include_quantity:
         metadata["quantity"] = quantity
         metadata["quantity_updated_at"] = _NOW.isoformat() if quantity is not None else None
-    return _row(
+    return Record(
         {
             "id": uuid.uuid4(),
             "content": f"{name} 1000IU daily",
@@ -134,8 +120,8 @@ def _med_fact_row(*, name="Vitamin D", active=True, quantity=None, include_quant
     )
 
 
-def _dose_fact_row(*, medication_id: str, skipped=False) -> _Row:
-    return _row(
+def _dose_fact_row(*, medication_id: str, skipped=False) -> Record:
+    return Record(
         {
             "id": uuid.uuid4(),
             "valid_at": _NOW,
@@ -149,8 +135,8 @@ def _dose_fact_row(*, medication_id: str, skipped=False) -> _Row:
     )
 
 
-def _condition_fact_row(*, name="Hypertension", status="managed") -> _Row:
-    return _row(
+def _condition_fact_row(*, name="Hypertension", status="managed") -> Record:
+    return Record(
         {
             "id": uuid.uuid4(),
             "content": f"{name}: {status}",
@@ -165,11 +151,11 @@ def _condition_fact_row(*, name="Hypertension", status="managed") -> _Row:
     )
 
 
-def _symptom_fact_row(*, name="Headache", severity=5, condition_id=None) -> _Row:
+def _symptom_fact_row(*, name="Headache", severity=5, condition_id=None) -> Record:
     meta: dict[str, Any] = {"severity": severity, "notes": "dull ache"}
     if condition_id is not None:
         meta["condition_id"] = condition_id
-    return _row(
+    return Record(
         {
             "id": uuid.uuid4(),
             "content": name,
@@ -180,8 +166,8 @@ def _symptom_fact_row(*, name="Headache", severity=5, condition_id=None) -> _Row
     )
 
 
-def _research_fact_row(*, title="Magnesium and sleep", tags=None) -> _Row:
-    return _row(
+def _research_fact_row(*, title="Magnesium and sleep", tags=None) -> Record:
+    return Record(
         {
             "id": uuid.uuid4(),
             "content": "Studies suggest magnesium improves sleep latency.",
