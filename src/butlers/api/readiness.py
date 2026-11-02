@@ -59,6 +59,7 @@ from butlers.core.job_health import JobHealthStore, record_tick
 from butlers.core.qa.patrol_provenance import (
     LAST_QUALIFYING_PATROL_SQL,
     QUALIFYING_PATROL_STATUSES,
+    qa_patrol_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,7 @@ class FleetReadiness:
         self._switchboard: ExpectedDaemon | None = next(
             (target for target in self._expected if target.name == "switchboard"), None
         )
-        self._qa_contract = next(
-            (getattr(c, "qa_patrol_contract", None) for c in configs if c.name == "qa"), None
-        )
+        self._qa_contract = qa_patrol_contract(configs)
         self._job_health = job_health
         self._clock = clock
         self._client_factory = client_factory or (

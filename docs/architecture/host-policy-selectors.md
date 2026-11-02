@@ -2,15 +2,17 @@
 
 This is the owner-approved S3 inventory-only slice of `bu-m0vjeb.5`. S1 startup phases were
 already delivered in #4931. S2 init-job movement and S4 formal module hooks remain HOLD; the
-original task is not complete. This slice changes no production selector, runtime configuration,
+original task is not complete. The original inventory slice changed no production selector, runtime configuration,
 identity, permission, schema, module hook or existing runtime test. It claims no reduction or
 safe configurability. Source counts and collection do not establish runtime correctness.
 
 The reviewed data is [scripts/host-policy-selectors.json](../../scripts/host-policy-selectors.json).
 Each current row records its enclosing symbol, normalized expression, occurrence, semantic
 category, purpose, governing requirement, actual public line-introducing commit and historical
-lineage. Source line numbers are informational. The source is public
-`773d1d81b8112a951776db56241eaf6988717263`; this inventory introduces no source change.
+lineage. Source line numbers are informational. The original S3 source was public
+`773d1d81b8112a951776db56241eaf6988717263`. The counts below include actual public
+Q4 #5185 at `e9f5bfadc210070822c2ef576416c32e32209849` and the subsequent child11
+extraction of its equivalent QA lookup with the controller's lookup.
 
 ## Consistent counts
 
@@ -24,22 +26,22 @@ comparisons in 30 files, 63 recursively matched comparisons. The 59 original sem
 are retained from the reviewed historical TSV (SHA256
 `5772327e04dce19ae15768a599be6e1e8d22d961d0dc1dc9f96bf0274fc8da62`).
 
-| Definition | Historical d223 | Current public |
-| --- | ---: | ---: |
-| Direct Compare nodes | 59 | 76 |
-| Files containing direct nodes | 30 | 34 |
-| Recursive Compare nodes | 63 | 85 |
-| Supplementary sites, counted separately | 28 | 30 |
-| Total explicitly inventoried sites | 91 | 115 |
+| Definition | Historical d223 | S3 at 773 | Public Q4 e9 | Child11 extraction |
+| --- | ---: | ---: | ---: | ---: |
+| Direct Compare nodes | 59 | 76 | 78 | 77 |
+| Files containing direct nodes | 30 | 34 | 35 | 35 |
+| Recursive Compare nodes | 63 | 85 | 87 | 86 |
+| Supplementary sites, counted separately | 28 | 30 | 30 | 30 |
+| Total explicitly inventoried sites | 91 | 115 | 117 | 116 |
 
 The following category counts use the **same direct definition** on both trees. In particular,
 unrelated spellings and protected identity checks remain in the total; they are not described
 as eliminated host branches.
 
-| Semantic category | Historical direct | Current direct | Historical all 91 | Current all 115 |
+| Semantic category | Historical direct | Current direct | Historical all 91 | Current all 116 |
 | --- | ---: | ---: | ---: | ---: |
 | Canonical identity, authority or provenance | 21 | 34 | 31 | 48 |
-| Protected host/domain contract | 16 | 19 | 20 | 24 |
+| Protected host/domain contract | 16 | 20 | 20 | 25 |
 | Schema ownership | 7 | 7 | 7 | 8 |
 | Historical/availability | 3 | 3 | 6 | 6 |
 | Unrelated enum, module, field or state spelling | 5 | 5 | 19 | 20 |
@@ -75,7 +77,7 @@ The 23 recursive matches without historical lineage are existing public contribu
   retained as an additional unresolved policy candidate. The subsequent public location
   reconciliation at `773d1d81b8` introduces no additional selector.
 
-Together with one legitimate retirement, these explain recursive 63 -> 85. Direct 59 -> 76
+Together with one legitimate retirement, these explain the S3 snapshot's recursive 63 -> 85. Direct 59 -> 76
 uses the same rows and definition. Supplementary growth is +2: the Chronicler continuation
 registry lookup (#5011) and the owner home-place label comparison in the OwnTracks adapter
 (`0f5586470d`). The latter is an unrelated place-label spelling, not a Home daemon selector.
@@ -120,6 +122,22 @@ controller judge the same contract. It inherits that candidate's unresolved stat
 brings the total to ten unresolved sites. Neither is a conversion or safe-configurability
 claim.
 
+Child11 (`bu-fvw4ap.11`) coalesces only those equivalent QA lookups into
+`src/butlers/core/qa/patrol_provenance.py::qa_patrol_contract`, normalized as
+`config.name == 'qa'`. Its current identity is
+`c5df7c64f36d591a1f70b99ac37da905cea8f29fd3b1d64eea4813e876869595`.
+It retains the historical controller lineage
+`f3b13654840eab4e5e788eeef0c7628b2b73e3b523e45a0141aba82de2e18d56`
+and explicitly accounts for the later readiness identity
+`fd74ff6990933f5dd03f3c2ad63eb1277ac4b150d0a4509921feb9e6d9922731`
+through `review_changes`. Both callers use that one shared first-match lookup;
+first missing/disabled/None behavior and object identity are unchanged. The
+historical baseline and every unrelated current row, including the protected
+Switchboard preflight, remain unchanged. The shared site is still
+`HOST_POLICY_CANDIDATE_NEEDS_SHAPING`: nine unresolved sites remain, eight direct.
+This exact relocation/coalescing proves neither safe configurability nor a
+global host-policy reduction. `HOST_POLICY_LIMIT` remains zero.
+
 ## Enforcement and static limits
 
 Run `make check-host-policy-selectors` or `python3 scripts/check_host_policy_selectors.py`.
@@ -159,7 +177,8 @@ The owning contract test exercises actual scanning and review validation, then p
 negative source controls for new unclassified sites, explicit host-policy growth, removal,
 relocation, aliases/getattr, unknown inventory loss and unresolved reclassification. Existing
 CI contract checks execute the real finalizer with each required outcome failing/skipped.
-Production source remains byte-identical; runtime survivors are preserved, not replayed or
-represented as conversion validation. Different-author review, exact-head hosted broad checks,
+The original S3 inventory kept production source byte-identical. Child11's pure extraction
+has selection and actual consumer digest/cadence checks; it preserves runtime survivors
+without claiming real-Postgres or policy-conversion validation. Different-author review, exact-head hosted broad checks,
 protected queue checks and a confirmed merge remain necessary. `make check` and the original
 whole-task acceptance are not claimed complete by scoped local static/software evidence.

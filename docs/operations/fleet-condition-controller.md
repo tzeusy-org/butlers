@@ -11,6 +11,16 @@ owner-attention episode per active fleet or `patrol_overdue` condition. See
 [Runtime Attention](runtime-attention.md#fleet-and-qa-condition-attention).
 `patrol_stopped_by_policy` is an intentional hold and never pages.
 
+The controller callback and semantic readiness select the startup QA contract
+through `core.qa.patrol_provenance.qa_patrol_contract`. It returns the first
+exact-name `qa` config's existing contract object, including `None` for a
+missing or disabled contract; a later duplicate is not a fallback. Readiness
+first rejects duplicate roster names or ports. The lookup does no I/O and does
+not consult registry activity, rebuild the digest, or enable live reconfiguration.
+A configured but registry-stale QA retains its contract for overdue observation.
+Without a contract, readiness denies the QA check and the controller skips only
+patrol assurance; fleet reconciliation and attention retain their existing flow.
+
 ## Conditions
 
 | Source | Identity | Opens when | Resolves when |
