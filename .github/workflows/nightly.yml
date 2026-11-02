@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   nightly:
+    if: github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     timeout-minutes: 25
     runs-on: ubuntu-latest
 
@@ -55,6 +56,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   faketime-matrix:
+    if: github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     # bu-10fgt.4: catches wall-clock time-bomb tests -- fixtures/business logic
     # that freeze one clock reading (e.g. a fixture-computed "_NOW") while
     # comparing it against a fresh datetime.now()/date.today() call elsewhere,
@@ -244,6 +246,7 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   exact-image-sandbox:
+    if: github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     timeout-minutes: 30
     # bu-zfmq2: task 3.6b's real-kernel exact-image proof
     # (test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled)
@@ -356,6 +359,7 @@ jobs:
                 or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment"
 
   quarantined:
+    if: github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     timeout-minutes: 30
     # bu-w4c1iw: tests listed in tests/quarantine.json flake for a known cause
     # owned by a bead, so every default pytest run (PR and merge-queue shards
@@ -389,6 +393,7 @@ jobs:
   # covered one. It uploads the combined report as an artifact and refreshes the
   # main badge; it is not a required check.
   coverage-shards:
+    if: github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: 3.12.15
@@ -512,7 +517,7 @@ jobs:
     timeout-minutes: 27
     needs:
       - coverage-shards
-    if: always()
+    if: (always()) && github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     steps:
       - name: Require every coverage prerequisite
         env:
@@ -637,7 +642,7 @@ jobs:
     needs:
       - coverage-shards
       - coverage-preflight
-    if: always()
+    if: (always()) && github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     steps:
       - name: Require every coverage prerequisite
         env:
@@ -778,6 +783,7 @@ jobs:
           message: ${{ steps.coverage.outputs.percentage }}%
           color: ${{ steps.coverage.outputs.color }}
   durations-refresh:
+    if: github.ref != 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
     # Merges the measured durations of every lane group of the latest successful
     # merge-group CI run into the committed .test_durations that pytest-split
     # balances the CI lane groups with. Those groups run untraced, exactly as the
@@ -864,3 +870,366 @@ jobs:
           gh pr create --base main --head "$branch" \
             --title "ci: refresh .test_durations from merge-group run ${SOURCE_RUN_ID}" \
             --body "Measured by the untraced lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."
+
+  # Temporary NEVER-MERGE control allocation, offered for separate review only.
+  fleet9-native-sql-controls:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/bu-fvw4ap.9-sql-controls-once'
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12.15"
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - name: Check out frozen Fleet9 subject, distinct from control workflow head
+        uses: actions/checkout@v6
+        with:
+          ref: "17cb3f8d4d968a6377de46063f6299d50e16e62b"
+          persist-credentials: false
+      - name: Prepare the supported frozen checkout-owned Python environment
+        uses: ./.github/actions/ci-python-environment
+      - name: Materialize reviewed ephemeral control driver outside checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/fleet9_control_driver.py" <<'FLEET9_DRIVER'
+          """OFFER ONLY. Ephemeral runner-temp driver; never added to product/test source."""
+          from __future__ import annotations
+          
+          import hashlib
+          import json
+          import os
+          import re
+          import selectors
+          import signal
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+          
+          SOURCE = "17cb3f8d4d968a6377de46063f6299d50e16e62b"
+          TREE = "f7741beca2c5e3d4f14dee37fbcdd3756b5e9ee9"
+          CARRIER = "tests/integration/test_infra_state_views_migration.py"
+          TEST = "test_readiness_real_patrol_provenance_lifetime_and_transaction_visibility"
+          NODE = CARRIER + "::" + TEST
+          FROZEN = {'.github/workflows/nightly.yml': 'de1d27f96ef4361e9bd7b3ac11a73c6d4731058462686925c9597636c7e5f135', '.github/workflows/ci.yml': '9bf6bf71c27a31318c719f8e789445691eabac1c3b23f7289bc932c27a028482', '.github/actions/ci-python-environment/action.yml': '0efa8c486bfc721cb0a3fffb6252b92ea1f429571978c91310922c627dc5c962', 'conftest.py': '14bed9841dc14a3e65be3d2f51e30830ffe3e949814535e768b573642a16a531', 'pyproject.toml': '264c41f3017c9676343f3519e656130dc49f7b4e97859623208e28be86697c33', 'uv.lock': '44089f7eee0ce93866f7b2576bfb944e86771536c97e67be46251522a0e7856b', 'scripts/install_ci_uv.py': 'aca2349b4579f4f67242b8bfc8f4679515005a437e393b5f488cb1cdfad6ae8c', 'scripts/ci_environment.py': '81d2f5701c376fd52bd51772e3b874b7b81a722259d2fea4427fd471ae4bce64', 'src/butlers/api/readiness.py': 'd7f88d43eb4a56062e6b47128936b3926961f08e00f553c937c43d4d659c6c77', 'src/butlers/core/qa/patrol_provenance.py': '28e89cdf77400108c1396934f39606933eaab2c79dd1068919feeaf8e4f6e3da', 'tests/integration/test_infra_state_views_migration.py': 'eef0a39afe8d0cc4951354a9d4cd0fe5044b31c5ee0e2d822cba83a6fdab6d60'}
+          EXPECTED = {
+              "completeness": (1854, "label", "incomplete"),
+              "digest": (1854, "label", "wrong-digest"),
+              "newest-any-row": (1838, "status", "clean"),
+          }
+          MODES = ("completeness", "digest", "newest-any-row", "restored")
+          INTERRUPTED = False
+          
+          
+          def sha(data):
+              return hashlib.sha256(data).hexdigest()
+          
+          
+          def binding():
+              assert sys.version_info[:3] == (3, 12, 15)
+              assert Path(".venv").is_dir() and not Path(".venv").is_symlink()
+              assert Path(sys.prefix).resolve() == Path(".venv").resolve()
+              def git(*args):
+                  p = subprocess.run(["git", *args], capture_output=True, timeout=10, check=True)
+                  return p.stdout.decode().strip()
+              assert git("rev-parse", "HEAD") == SOURCE
+              assert git("rev-parse", "HEAD^{tree}") == TREE
+              assert not git("status", "--porcelain", "--untracked-files=no")
+              assert all(sha(Path(name).read_bytes()) == digest for name, digest in FROZEN.items())
+              return {"source": SOURCE, "tree": TREE, "frozen_files": FROZEN, "clean": True,
+                      "Python": list(sys.version_info[:3]), "real_own_venv": True}
+          
+          
+          def child(mode, receipt):
+              import asyncpg
+              import pytest
+              import butlers.api.readiness as readiness
+              from butlers.core.qa.patrol_provenance import LAST_QUALIFYING_PATROL_SQL
+          
+              assert Path(readiness.__file__).resolve() == Path("src/butlers/api/readiness.py").resolve()
+              import butlers.core.qa.patrol_provenance as provenance
+              assert Path(provenance.__file__).resolve() == Path("src/butlers/core/qa/patrol_provenance.py").resolve()
+              state = {"mode": mode, "production_imports_own_source": True, "binding_before": binding(), "collected_exact_one": False,
+                       "phases": {}, "observer_failure": False, "positioned_assertion": False}
+              original = LAST_QUALIFYING_PATROL_SQL
+              substitutions = {
+                  "completeness": ("      AND discovery_complete IS TRUE\n", ""),
+                  "digest": ("      AND enabled_sources_config_digest = $2\n",
+                             "      AND $2::text IS NOT NULL\n"),
+                  "newest-any-row": (original, "SELECT max(completed_at) FROM public.qa_patrols "
+                                     "WHERE $1::text[] IS NOT NULL AND $2::text IS NOT NULL"),
+              }
+              candidate = original
+              if mode in substitutions:
+                  old, new = substitutions[mode]
+                  assert original.count(old) == 1
+                  candidate = original.replace(old, new)
+              else:
+                  assert mode == "restored"
+              readiness.LAST_QUALIFYING_PATROL_SQL = candidate
+              state["original_SQL_sha256"] = sha(original.encode())
+              state["effective_SQL_sha256"] = sha(candidate.encode())
+          
+              class Observer:
+                  def pytest_collection_finish(self, session):
+                      state["collected_exact_one"] = [item.nodeid for item in session.items] == [NODE]
+          
+                  @pytest.hookimpl(hookwrapper=True)
+                  def pytest_runtest_makereport(self, item, call):
+                      outcome = yield
+                      try:
+                          report = outcome.get_result()
+                          assert item.nodeid == NODE
+                          state["phases"][report.when] = report.outcome
+                          if report.when == "call":
+                              state["real_asyncpg_pool"] = isinstance(
+                                  item.funcargs["fleet_readiness_env"].pool, asyncpg.Pool
+                              )
+                          if report.when == "teardown":
+                              state["pool_closed_after_teardown"] = (
+                                  getattr(item.funcargs["fleet_readiness_env"].pool, "_closed", None) is True)
+                          if mode in EXPECTED and call.excinfo is not None:
+                              line, key, value = EXPECTED[mode]
+                              frame = call.excinfo.traceback[-1]
+                              state["positioned_assertion"] = (
+                                  call.excinfo.type is AssertionError
+                                  and Path(frame.path).resolve() == Path(CARRIER).resolve()
+                                  and frame.name == TEST and frame.lineno + 1 == line
+                                  and frame.frame.f_locals.get(key) == value
+                              )
+                              if state["positioned_assertion"]:
+                                  state["assertion_line"] = line
+                                  state["closed_case"] = value
+                      except Exception:
+                          state["observer_failure"] = True  # Never force/replace pytest's report.
+          
+                  def pytest_sessionfinish(self, session, exitstatus):
+                      state["pytest_exit"] = int(exitstatus)
+                      try:
+                          state["binding_after"] = binding()
+                          Path(receipt).write_text(json.dumps(state, sort_keys=True) + "\n")
+                      except Exception:
+                          state["observer_failure"] = True
+                          # No receipt or exit3 is UNKNOWN, never instrumentation success.
+          
+              return int(pytest.main([NODE, "-q", "--tb=short", "-n", "0", "--maxfail=1",
+                                     "--capture=no"],
+                                     plugins=[Observer()]))
+          
+          
+          def finish_group(process):
+              # Popen(start_new_session=True) owns this PGID. WNOWAIT reserves the
+              # direct leader's identity until the LAST nonzero group signal.
+              pgid = process.pid
+              ack = {"direct_leader_reaped": False, "owned_group_absent": False,
+                     "identity_reserved_through_final_signal": False,
+                     "signal_error": False, "absence_probe": "UNKNOWN",
+                     "cleanup_status": "UNKNOWN"}
+              try:
+                  os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                  try:
+                      os.killpg(pgid, signal.SIGTERM)
+                  except ProcessLookupError:
+                      pass
+                  except OSError:
+                      ack["signal_error"] = True
+                  grace = time.monotonic() + 5
+                  while time.monotonic() < grace:
+                      if os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
+                          break
+                      time.sleep(0.02)
+                  # A lost/ambiguous child identity refuses any further nonzero signal.
+                  os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                  try:
+                      os.killpg(pgid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  except OSError:
+                      ack["signal_error"] = True
+                  ack["identity_reserved_through_final_signal"] = True
+              except (ChildProcessError, OSError):
+                  return ack
+          
+              # One post-KILL5s envelope covers BOTH direct reaping and group absence.
+              # After process.wait releases leader identity, NEVER send a nonzero signal.
+              post_kill_deadline = time.monotonic() + 5
+              try:
+                  process.wait(timeout=max(0, post_kill_deadline - time.monotonic()))
+                  ack["direct_leader_reaped"] = True
+              except (subprocess.TimeoutExpired, ChildProcessError, OSError):
+                  return ack
+              while time.monotonic() < post_kill_deadline:
+                  try:
+                      os.killpg(pgid, 0)
+                  except ProcessLookupError:
+                      ack["owned_group_absent"] = True
+                      ack["absence_probe"] = "ProcessLookupError"
+                      break
+                  except OSError:
+                      # Permission, identity ambiguity or unexpected errors are UNKNOWN.
+                      return ack
+                  # Presence is not identity proof; only bounded zero-signal probes follow.
+                  remaining = post_kill_deadline - time.monotonic()
+                  if remaining > 0:
+                      time.sleep(min(0.02, remaining))
+              if (ack["direct_leader_reaped"] and ack["owned_group_absent"]
+                      and ack["identity_reserved_through_final_signal"]
+                      and not ack["signal_error"]):
+                  ack["cleanup_status"] = "COMPLETE"
+              return ack
+          
+          
+          def run_child(mode, receipt, deadline, attempts):
+              command = [sys.executable, str(Path(__file__).resolve()), "child", mode, str(receipt)]
+              attempt = {"mode": mode, "started": False, "child_reaped": False,
+                         "owned_group_absent": False, "cleanup_status": "UNKNOWN",
+                         "owned_group_signalled_before_leader_reap": False}
+              attempts.append(attempt)
+              process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         start_new_session=True)
+              attempt["started"] = True
+              raw = bytearray()
+              complete = False
+              try:
+                  assert process.stdout is not None
+                  with selectors.DefaultSelector() as selector:
+                      selector.register(process.stdout, selectors.EVENT_READ)
+                      while time.monotonic() < deadline and not INTERRUPTED:
+                          for key, _ in selector.select(timeout=min(0.2, max(0, deadline-time.monotonic()))):
+                              data = os.read(key.fd, 65536)
+                              if not data:
+                                  complete = True
+                                  break
+                              raw.extend(data)
+                              if len(raw) > 4 * 1024 * 1024:
+                                  raise RuntimeError("output_cap")
+                          if complete:
+                              break
+                  if not complete:
+                      raise RuntimeError("execution_deadline")
+                  while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                      if time.monotonic() >= deadline or INTERRUPTED:
+                          raise RuntimeError("execution_deadline")
+                      time.sleep(0.02)
+              finally:
+                  cleanup = finish_group(process)
+                  attempt["cleanup"] = cleanup
+                  attempt["child_reaped"] = cleanup["direct_leader_reaped"]
+                  attempt["owned_group_absent"] = cleanup["owned_group_absent"]
+                  attempt["cleanup_status"] = cleanup["cleanup_status"]
+                  attempt["owned_group_signalled_before_leader_reap"] = (
+                      cleanup["identity_reserved_through_final_signal"] and not cleanup["signal_error"])
+                  if receipt.is_file():
+                      state = json.loads(receipt.read_text())
+                      state["owned_group_cleanup"] = cleanup
+                      receipt.write_text(json.dumps(state, sort_keys=True) + "\n")
+              code = process.returncode
+              summaries = re.findall(
+                  r"^=*\s*1 (passed|failed)(?:, \d+ warnings?)? in [\d.]+s[^\r\n]*$",
+                  re.sub(r"\x1b\[[0-9;]*m", "", raw.decode(errors="replace")), re.MULTILINE,
+              )
+              return code, {"output_sha256": sha(raw), "output_bytes": len(raw),
+                            "terminal": summaries[-1] if summaries else "UNKNOWN",
+                            "process_reaped": cleanup["direct_leader_reaped"],
+                            "owned_group_absent": cleanup["owned_group_absent"],
+                            "owned_group_cleanup": cleanup}
+          
+          
+          def driver(output):
+              assert os.environ["GITHUB_REF"] == "refs/heads/agent/bu-fvw4ap.9-sql-controls-once"
+              assert re.fullmatch("[0-9a-f]{40}", os.environ["GITHUB_SHA"])
+              output = Path(output)
+              output.mkdir(parents=True, exist_ok=False)
+              report = {"status": "UNKNOWN", "allocation": "temporary NEVER-MERGE DRAFT PR + existing nightly workflow_dispatch",
+                        "control_workflow_commit": os.environ["GITHUB_SHA"],
+                        "control_workflow_ref": os.environ["GITHUB_REF"],
+                        "binding": binding(), "sequence": [], "attempts": [], "no_broad_population_or_local_privilege": True,
+                        "prior_positive_run": 41379413442,
+                        "prior_positive_executed": "ed8b0ca13c865a23f087f2f9756d978f653d639f",
+                        "prior_positive_manifest_sha256": "196a8249255351401dc3a56242bcdc9d5a9cee9c71e62abcbb87737010155375",
+                        "native_cleanup_if_timeout": "UNKNOWN; no PASS without normal teardown"}
+              deadline = time.monotonic() + 600  # One finite whole four-phase execution budget.
+              try:
+                  for mode in MODES:
+                      receipt = output / (mode + ".json")
+                      code, terminal = run_child(mode, receipt, deadline, report["attempts"])
+                      state = json.loads(receipt.read_text())
+                      expected_exit = 1 if mode in EXPECTED else 0
+                      expected_call = "failed" if mode in EXPECTED else "passed"
+                      good = (code == expected_exit == state["pytest_exit"]
+                              and terminal["process_reaped"] and terminal["owned_group_absent"]
+                              and terminal["owned_group_cleanup"]["cleanup_status"] == "COMPLETE"
+                              and state["owned_group_cleanup"] == terminal["owned_group_cleanup"]
+                              and state["collected_exact_one"] and state["real_asyncpg_pool"]
+                              and state["production_imports_own_source"] and state["pool_closed_after_teardown"]
+                              and state["phases"] == {"setup": "passed", "call": expected_call,
+                                                       "teardown": "passed"}
+                              and not state["observer_failure"]
+                              and state["binding_before"] == state["binding_after"] == report["binding"]
+                              and terminal["terminal"] == ("failed" if mode in EXPECTED else "passed")
+                              and (state["positioned_assertion"] if mode in EXPECTED else True))
+                      report["sequence"].append({"mode": mode, "child_exit": code, **terminal,
+                                                 "verdict": "ASSERTION_RED" if good and mode in EXPECTED
+                                                 else "PASS" if good else "UNKNOWN"})
+                      if not good:
+                          raise RuntimeError("control_not_proven")
+                  if not (len(report["attempts"]) == 4 and all(
+                          a["started"] and a["child_reaped"] and a["owned_group_absent"]
+                          and a["cleanup_status"] == "COMPLETE" for a in report["attempts"])):
+                      raise RuntimeError("owned_cleanup_unknown")
+                  report["status"] = "CONTROLS_PROVEN"
+              except Exception:
+                  report["status"] = "UNKNOWN"
+              finally:
+                  report["binding_after"] = binding()
+                  started = [a for a in report["attempts"] if a["started"]]
+                  report["started_owned_groups"] = len(started)
+                  report["all_owned_child_processes_reaped"] = bool(started) and all(
+                      a["child_reaped"] for a in started)
+                  report["all_owned_process_groups_absent"] = bool(started) and all(
+                      a["owned_group_absent"] for a in started)
+                  report["all_started_owned_cleanup_proven"] = bool(started) and all(
+                      a["child_reaped"] and a["owned_group_absent"]
+                      and a["cleanup_status"] == "COMPLETE" for a in started)
+                  if report["status"] == "CONTROLS_PROVEN" and not (
+                          len(started) == 4 and report["all_started_owned_cleanup_proven"]):
+                      report["status"] = "UNKNOWN"
+                  report["native_fixture_teardown_complete"] = (
+                      len(report["sequence"]) == 4 and report["status"] == "CONTROLS_PROVEN"
+                      and report["all_started_owned_cleanup_proven"])
+                  (output / "report.json").write_text(json.dumps(report, sort_keys=True) + "\n")
+                  print(json.dumps({"status": report["status"], "phases": len(report["sequence"])}))
+              return 0 if report["status"] == "CONTROLS_PROVEN" else 1
+          
+          
+          if __name__ == "__main__":
+              if sys.argv[1] == "child":
+                  raise SystemExit(child(sys.argv[2], sys.argv[3]))
+              assert sys.argv[1] == "run"
+              def interrupted(signum, frame):
+                  global INTERRUPTED
+                  INTERRUPTED = True  # Defer until Popen ownership exists; finally joins.
+              signal.signal(signal.SIGTERM, interrupted)
+              signal.signal(signal.SIGINT, interrupted)
+              try:
+                  result = driver(sys.argv[2])
+              except Exception:
+                  print(json.dumps({"status": "UNKNOWN", "reason": "driver_or_binding_failure"}))
+                  result = 1
+              raise SystemExit(result)
+          FLEET9_DRIVER
+          test "$(sha256sum "$RUNNER_TEMP/fleet9_control_driver.py" | cut -d ' ' -f 1)" = 'd47260243b4dfd78518dfc9b2a646bb2ff527273bd561d7591ea9d57d7ff048e'
+      - name: Three native SQL inverses once each, then restored exact node once
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 610s .venv/bin/python \
+            "$RUNNER_TEMP/fleet9_control_driver.py" run "$RUNNER_TEMP/fleet9-closed-controls"
+      - name: Retain only closed source-bound control outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet9-native-sql-controls-closed
+          path: ${{ runner.temp }}/fleet9-closed-controls/*.json
+          if-no-files-found: error
+          retention-days: 3
