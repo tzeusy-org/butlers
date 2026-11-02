@@ -30,7 +30,6 @@ from butlers.core.qa.publication.state import (
     record_outcome,
     record_reconciliation,
 )
-from butlers.testing.db import open_pool
 
 pytestmark = [
     pytest.mark.integration,
@@ -51,12 +50,8 @@ async def _set_qa_role(connection: asyncpg.Connection) -> None:
 
 
 @pytest.fixture
-async def qa_pool(qa_url: str):
-    qa_pool = await open_pool(qa_url, max_size=10, init=_set_qa_role)
-    try:
-        yield qa_pool
-    finally:
-        await qa_pool.close()
+async def qa_pool(db, qa_url: str):
+    return await db.open(qa_url, max_size=10, init=_set_qa_role)
 
 
 @pytest.fixture

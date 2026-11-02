@@ -40,7 +40,6 @@ import pytest
 
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity, record_token_usage, resolve_model
-from butlers.testing.db import open_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -57,10 +56,8 @@ def ledger_url(fresh_db) -> str:
 
 
 @pytest.fixture
-async def ledger_pool(ledger_url: str) -> asyncpg.Pool:
-    p = await open_pool(ledger_url)
-    yield p
-    await p.close()
+async def ledger_pool(db, ledger_url: str) -> asyncpg.Pool:
+    return await db.open(ledger_url)
 
 
 async def test_purpose_column_exists_and_is_nullable(ledger_pool: asyncpg.Pool) -> None:
