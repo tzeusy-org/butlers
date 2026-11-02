@@ -102,9 +102,12 @@ def test_consolidation_runs_is_append_only_replay_safe_and_reversible(postgres_c
             # role, BIGSERIAL default included; it cannot rewrite or erase history.
             connection.execute(text('SET LOCAL ROLE "butler_general_rw"'))
             connection.execute(text(_INSERT))
-            assert connection.execute(
-                text("SELECT facts_produced FROM public.consolidation_runs")
-            ).scalar_one() == 3
+            assert (
+                connection.execute(
+                    text("SELECT facts_produced FROM public.consolidation_runs")
+                ).scalar_one()
+                == 3
+            )
             for statement in _REWRITES:
                 _assert_denied(connection, statement)
         with engine.begin() as connection:
@@ -118,8 +121,11 @@ def test_consolidation_runs_is_append_only_replay_safe_and_reversible(postgres_c
         command.downgrade(config, "core_306")
         with engine.connect() as connection:
             assert _privileges(connection) == _BOOTSTRAP_DEFAULTS
-            assert connection.execute(
-                text("SELECT count(*) FROM public.consolidation_runs")
-            ).scalar_one() == 1
+            assert (
+                connection.execute(
+                    text("SELECT count(*) FROM public.consolidation_runs")
+                ).scalar_one()
+                == 1
+            )
     finally:
         engine.dispose()

@@ -253,6 +253,8 @@ path before any fact, rule, link or completion write; the sibling partitions sti
 commit independently, and valid third-party evidence stays `third_party`. Each
 successful partition writes its own `public.consolidation_runs` row, and the run's
 `groups_consolidated` counts partitions.
+The row is inserted as the daemon's own `butler_<name>_rw` role; the table is
+append-only for runtime roles (SELECT and INSERT, no UPDATE or DELETE; core_307).
 
 The partitions stop new laundering; they do not reclassify facts consolidated
 before this change. A historical demotion mechanism (operator-only, default
