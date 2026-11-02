@@ -17,11 +17,12 @@ Dependency: chronicler_007 (bu-6t63s) adds tombstone_reason column.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -36,15 +37,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "008_tombstone_memory_calendar_episodes.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("chronicler_008", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -72,32 +64,32 @@ class TestKnownTitleConstants:
 
     def test_memory_consolidation_in_titles(self) -> None:
         """memory_consolidation is in _BUTLER_MEMORY_TASK_TITLES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "memory_consolidation" in mod._BUTLER_MEMORY_TASK_TITLES
 
     def test_memory_episode_cleanup_in_titles(self) -> None:
         """memory_episode_cleanup is in _BUTLER_MEMORY_TASK_TITLES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "memory_episode_cleanup" in mod._BUTLER_MEMORY_TASK_TITLES
 
     def test_memory_purge_superseded_in_titles(self) -> None:
         """memory_purge_superseded is in _BUTLER_MEMORY_TASK_TITLES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "memory_purge_superseded" in mod._BUTLER_MEMORY_TASK_TITLES
 
     def test_source_name_is_google_calendar_completed(self) -> None:
         """_SOURCE_NAME must equal 'google_calendar.completed'."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert mod._SOURCE_NAME == "google_calendar.completed"
 
     def test_tombstone_reason_references_bu_daaff(self) -> None:
         """_TOMBSTONE_REASON must reference bu-daaff (the prevention-track PR)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "bu-daaff" in mod._TOMBSTONE_REASON
 
     def test_tombstone_reason_references_bu_aqqx0(self) -> None:
         """_TOMBSTONE_REASON must reference bu-aqqx0 (this issue)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         assert "bu-aqqx0" in mod._TOMBSTONE_REASON
 
 
@@ -113,7 +105,7 @@ class TestDowngradeSQLShape:
 
     def test_downgrade_is_noop(self) -> None:
         """downgrade() must emit no SQL statements (tombstones are permanent)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -131,7 +123,7 @@ class TestDowngradeSQLShape:
         legitimate-row titles like 'Team retrospective' don't match LIKE
         'memory_%'. This pins the exact-IN-list safety boundary at the SQL level.
         """
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -222,7 +214,7 @@ class TestTombstoneMemoryCalendarEpisodesIntegration:
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_008")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)

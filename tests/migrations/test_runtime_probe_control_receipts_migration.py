@@ -17,7 +17,6 @@ login topology a role is an effective identity, not an unforgeable principal.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import os
 import shutil
 from datetime import UTC, datetime, timedelta
@@ -33,7 +32,7 @@ from butlers.core.runtime_probe_control.receipts import (
     nonce_digest,
 )
 from butlers.core.runtime_probe_control.verification import RuntimeProbeVerificationPersistence
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import create_migrated_test_db, load_migration, migration_db_name
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -54,16 +53,8 @@ _integration = pytest.mark.skipif(not docker_available, reason="Docker not avail
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_201", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _executed_sql(function_name: str) -> str:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_201")
     op = MagicMock()
     with patch.object(module, "op", op):
         getattr(module, function_name)()

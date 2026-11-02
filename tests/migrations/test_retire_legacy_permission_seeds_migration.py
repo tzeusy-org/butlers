@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 
 from butlers.api.deps import get_db
 from butlers.core.permissions import PERMISSION_DEFAULT_GRANTED
+from butlers.testing.migration import load_migration
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 _MIGRATION_PATH = (
@@ -25,17 +25,9 @@ _MIGRATION_PATH = (
 _LEGACY_REASON = "seeded default (core_121)"
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_180", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def _apply(pool, fn_name: str) -> None:
     """Replay the exact SQL emitted by the migration against PostgreSQL."""
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_180")
     sqls: list[str] = []
     fake_op = MagicMock()
     fake_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -73,7 +65,7 @@ class _SwitchboardDb:
 
 @pytest.mark.unit
 def test_migration_chain_and_exact_provenance_guard() -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_180")
 
     assert module.revision == "core_180"
     assert module.down_revision == "core_179"
@@ -85,7 +77,7 @@ def test_migration_chain_and_exact_provenance_guard() -> None:
 
 @pytest.mark.unit
 def test_downgrade_is_an_intentional_noop() -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_180")
     fake_op = MagicMock()
 
     with patch.object(module, "op", fake_op):
