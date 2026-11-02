@@ -57,7 +57,10 @@ def _runtime(pool: Any, blobs: _Blobs, identity: str, download: AsyncMock) -> Gm
 
 
 async def _pools(db: Any, fresh_db: Any) -> tuple[Any, Any]:
-    url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
+    # Off the event loop: building a migration template runs its own asyncio.run().
+    url = await asyncio.to_thread(
+        fresh_db, "core", "switchboard", schemas={"switchboard": "switchboard"}
+    )
     return await db.open(url, schema="switchboard"), await db.open(url)
 
 
