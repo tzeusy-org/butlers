@@ -1,0 +1,50 @@
+"""The shared DB factory: ``db``, ``db_pool`` and ``fresh_db`` (bu-rvgzmf.1)."""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from butlers.testing.migration import table_exists
+
+pytestmark = pytest.mark.integration
+
+
+async def test_db_pool_is_a_private_core_migrated_database(db_pool, db) -> None:
+    other = await db("core")
+    for pool in (db_pool, other):
+        assert await pool.fetchval("SELECT to_regclass('public.state') IS NOT NULL")
+    mine = await db_pool.fetchval("SELECT current_database()")
+    assert mine != await other.fetchval("SELECT current_database()")
+    await db_pool.execute("INSERT INTO state (key, value) VALUES ('k', '{}'::jsonb)")
+    assert await other.fetchval("SELECT count(*) FROM state WHERE key = 'k'") == 0
+
+
+async def test_db_scopes_a_butler_schema_and_round_trips_jsonb(db) -> None:
+    pool = await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+    )
+    assert (await pool.fetchval("SHOW search_path")).startswith("switchboard")
+    assert await pool.fetchval("SELECT count(*) FROM pg_tables WHERE schemaname = 'switchboard'")
+    assert await pool.fetchval("SELECT '{\"a\": 1}'::jsonb") == {"a": 1}
+
+
+def test_fresh_db_stops_at_the_requested_revision(fresh_db) -> None:
+    head = fresh_db("core")
+    early = fresh_db("core", revisions={"core": "core_001"})
+    assert head != early
+    # core_001 creates state; core_002 adds public.entities.
+    assert table_exists(head, "state") and table_exists(early, "state")
+    assert table_exists(head, "entities") and not table_exists(early, "entities")
+
+
+def test_clone_cost_is_reported(fresh_db, record_property) -> None:
+    fresh_db("core")  # the template exists before timing clones
+    started = time.monotonic()
+    for _ in range(5):
+        fresh_db("core")
+    per_clone = (time.monotonic() - started) / 5
+    record_property("core_clone_seconds", round(per_clone, 3))
+    print(f"CORE-CLONE-SECONDS {per_clone:.3f}")
+    assert per_clone < 30
