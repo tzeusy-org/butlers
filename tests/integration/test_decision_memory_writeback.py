@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.identity import ResolvedContact
 from butlers.modules.approvals import operations
 from butlers.modules.approvals.autonomy_tracker import FINGERPRINT_VERSION
@@ -19,7 +18,6 @@ from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.base import ToolMeta
 from butlers.modules.memory.tools.context import memory_context
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -50,33 +48,10 @@ def admitted_standing_rule_boundary(monkeypatch):
     admit_rule_boundary_for_non_auth_owner(monkeypatch)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the exact core, memory, and approvals schemas once."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "approvals"],
-        schemas={"memory": "home_mem"},
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return a clean JSONB-aware pool against the migrated database."""
-    db_pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await db_pool.execute(
-        "TRUNCATE TABLE home_mem.memory_links, home_mem.facts, approval_events, pending_actions, "
-        "approval_rules, autonomy_approval_history, autonomy_suggestions, public.entities "
-        "CASCADE"
-    )
-    yield db_pool
-    await db_pool.close()
+async def home_pool(db) -> asyncpg.Pool:
+    """The exact core, memory (as home_mem), and approvals schemas."""
+    return await db("core", "memory", "approvals", schemas={"memory": "home_mem"})
 
 
 def _writer(pool: asyncpg.Pool) -> DecisionMemoryWriter:
@@ -106,21 +81,21 @@ def _action(entity_id: uuid.UUID, *, action_id: uuid.UUID | None = None) -> Pend
     )
 
 
-async def test_terminal_decisions_upsert_entity_linked_tally_and_recall_it(pool) -> None:
+async def test_terminal_decisions_upsert_entity_linked_tally_and_recall_it(home_pool) -> None:
     """A decision tally is own-store, entity-linked, versioned, and recallable."""
-    entity_id = await pool.fetchval(
+    entity_id = await home_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
         "Avery Example",
         "person",
     )
-    writer = _writer(pool)
+    writer = _writer(home_pool)
 
     approved = _action(entity_id)
     rejected = _action(entity_id)
     await writer.record_terminal_decision(approved, "approved")
     await writer.record_terminal_decision(rejected, "rejected")
 
-    fact = await pool.fetchrow(
+    fact = await home_pool.fetchrow(
         "SELECT subject, predicate, content, scope, metadata, entity_id "
         "FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
@@ -141,7 +116,7 @@ async def test_terminal_decisions_upsert_entity_linked_tally_and_recall_it(pool)
     assert "notify" in fact["subject"]
 
     context = await memory_context(
-        memory_pool_for_schema(pool, "home_mem"),
+        memory_pool_for_schema(home_pool, "home_mem"),
         _EmbeddingEngine(),
         "Should I notify Avery again?",
         butler="home",
@@ -149,21 +124,21 @@ async def test_terminal_decisions_upsert_entity_linked_tally_and_recall_it(pool)
     assert "decision:approval_tally" in context
 
 
-async def test_concurrent_terminal_decisions_do_not_lose_tally_updates(pool) -> None:
+async def test_concurrent_terminal_decisions_do_not_lose_tally_updates(home_pool) -> None:
     """The per-pattern tally lock preserves both simultaneous terminal outcomes."""
-    entity_id = await pool.fetchval(
+    entity_id = await home_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
         "Avery Example",
         "person",
     )
-    writer = _writer(pool)
+    writer = _writer(home_pool)
 
     await asyncio.gather(
         writer.record_terminal_decision(_action(entity_id), "approved"),
         writer.record_terminal_decision(_action(entity_id), "approved"),
     )
 
-    tally = await pool.fetchrow(
+    tally = await home_pool.fetchrow(
         "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
@@ -172,9 +147,9 @@ async def test_concurrent_terminal_decisions_do_not_lose_tally_updates(pool) -> 
     assert tally["metadata"]["reject_count"] == 0
 
 
-async def test_owner_definer_resolution_keeps_tally_entity_linked(pool, monkeypatch) -> None:
+async def test_owner_definer_resolution_keeps_tally_entity_linked(home_pool, monkeypatch) -> None:
     """Writeback shares the gate's owner-only fallback under schema isolation."""
-    entity_id = await pool.fetchval(
+    entity_id = await home_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
         "Owner Example",
         "person",
@@ -203,18 +178,18 @@ async def test_owner_definer_resolution_keeps_tally_entity_linked(pool, monkeypa
         requested_at=datetime.now(UTC),
     )
 
-    await _writer(pool).record_terminal_decision(action, "rejected")
+    await _writer(home_pool).record_terminal_decision(action, "rejected")
 
-    linked_entity_id = await pool.fetchval(
+    linked_entity_id = await home_pool.fetchval(
         "SELECT entity_id FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
     assert linked_entity_id == entity_id
 
 
-async def test_standing_rule_fact_is_updated_on_revocation(pool) -> None:
+async def test_standing_rule_fact_is_updated_on_revocation(home_pool) -> None:
     """Rule grants are descriptive memory facts, not executable policy."""
-    writer = _writer(pool)
+    writer = _writer(home_pool)
     rule = ApprovalRule(
         id=uuid.uuid4(),
         tool_name="notify",
@@ -226,7 +201,7 @@ async def test_standing_rule_fact_is_updated_on_revocation(pool) -> None:
     await writer.record_standing_rule(rule, active=True)
     await writer.record_standing_rule(rule, active=False)
 
-    fact = await pool.fetchrow(
+    fact = await home_pool.fetchrow(
         "SELECT content, metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:standing_rule",
     )
@@ -240,15 +215,15 @@ async def test_standing_rule_fact_is_updated_on_revocation(pool) -> None:
     }
 
 
-async def test_executor_writes_tally_only_after_an_execution_outcome(pool) -> None:
+async def test_executor_writes_tally_only_after_an_execution_outcome(home_pool) -> None:
     """The universal executor seam writes the approved terminal outcome."""
-    entity_id = await pool.fetchval(
+    entity_id = await home_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
         "Avery Example",
         "person",
     )
     action = _action(entity_id)
-    await pool.execute(
+    await home_pool.execute(
         "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at) "
         "VALUES ($1, $2, $3, $4, $5)",
         action.id,
@@ -259,16 +234,16 @@ async def test_executor_writes_tally_only_after_an_execution_outcome(pool) -> No
     )
 
     result = await execute_approved_action(
-        pool=pool,
+        home_pool=home_pool,
         action_id=action.id,
         tool_name=action.tool_name,
         tool_args=action.tool_args,
         tool_fn=lambda **_kwargs: {"ok": True},
-        decision_memory_writer=_writer(pool),
+        decision_memory_writer=_writer(home_pool),
     )
 
     assert result.success is True
-    tally = await pool.fetchrow(
+    tally = await home_pool.fetchrow(
         "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
@@ -277,15 +252,15 @@ async def test_executor_writes_tally_only_after_an_execution_outcome(pool) -> No
     assert tally["metadata"]["last_decision"] == "approved"
 
 
-async def test_operations_rejection_and_rule_changes_write_memory_facts(pool) -> None:
+async def test_operations_rejection_and_rule_changes_write_memory_facts(home_pool) -> None:
     """REST/shared operations preserve the same writeback contract as MCP tools."""
-    entity_id = await pool.fetchval(
+    entity_id = await home_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) VALUES ($1, $2) RETURNING id",
         "Avery Example",
         "person",
     )
     action = _action(entity_id)
-    await pool.execute(
+    await home_pool.execute(
         "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at) "
         "VALUES ($1, $2, $3, $4, $5)",
         action.id,
@@ -294,15 +269,15 @@ async def test_operations_rejection_and_rule_changes_write_memory_facts(pool) ->
         ActionStatus.PENDING.value,
         action.requested_at,
     )
-    writer = _writer(pool)
+    writer = _writer(home_pool)
 
     rejected = await operations.reject_action(
-        pool,
+        home_pool,
         action_id=str(action.id),
         decision_memory_writer=writer,
     )
     approved_action = _action(entity_id)
-    await pool.execute(
+    await home_pool.execute(
         "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at) "
         "VALUES ($1, $2, $3, $4, $5)",
         approved_action.id,
@@ -312,20 +287,20 @@ async def test_operations_rejection_and_rule_changes_write_memory_facts(pool) ->
         approved_action.requested_at,
     )
     executed = await operations.mark_executed(
-        pool,
+        home_pool,
         action_id=str(approved_action.id),
         execution_result={"success": True},
         decision_memory_writer=writer,
     )
     created = await operations.create_approval_rule(
-        pool,
+        home_pool,
         tool_name="notify",
         arg_constraints={"recipient": {"type": "exact", "value": "123456"}},
         description="Notify Avery over Telegram",
         decision_memory_writer=writer,
     )
     revoked = await operations.revoke_approval_rule(
-        pool,
+        home_pool,
         rule_id=created["id"],
         decision_memory_writer=writer,
     )
@@ -333,11 +308,11 @@ async def test_operations_rejection_and_rule_changes_write_memory_facts(pool) ->
     assert rejected["status"] == "rejected"
     assert executed["status"] == "executed"
     assert revoked["active"] is False
-    tally = await pool.fetchrow(
+    tally = await home_pool.fetchrow(
         "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:approval_tally",
     )
-    standing_rule = await pool.fetchrow(
+    standing_rule = await home_pool.fetchrow(
         "SELECT metadata FROM home_mem.facts WHERE predicate = $1 AND validity = 'active'",
         "decision:standing_rule",
     )
