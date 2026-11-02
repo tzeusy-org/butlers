@@ -25,8 +25,9 @@ What it checks, per block under ``## ADDED Requirements`` / ``## MODIFIED Requir
   pending-parent sibling modifying what another change adds), but two ADDED blocks may not;
 * an ADDED ID does not already exist in the canonical ``openspec/specs/<capability>/spec.md``,
   and a MODIFIED ID that the canonical spec gives to a different requirement name fails.
-  A RENAMED FROM/TO pair in the same delta resolves its new name to the old canonical name
-  before either ownership check; renaming cannot mint a replacement canonical ID.
+  An existing canonical current name is authoritative, including an already-synced rename.
+  Otherwise, same-delta RENAMED FROM/TO chains resolve to their canonical ancestor before
+  either ownership check; renaming cannot mint a replacement canonical ID.
   Two further MODIFIED rules reverse-map the requirement name to its ID, so a block cannot
   re-mint an identity that already exists: a MODIFIED block whose requirement already has a
   canonical ID must carry that ID, and a MODIFIED block whose requirement another active change
@@ -284,7 +285,18 @@ def collect(root: Path) -> tuple[list[Block], int]:
             continue
         existing = canonical.setdefault(block.capability, canonical_ids(root, block.capability))
         owners = existing.get(block.req_id)
-        canonical_name = renames[block.path].get(block.name, block.name)
+        canonical_name = block.name
+        if block.kind == "MODIFIED":
+            visited: set[str] = set()
+            while canonical_name in renames[block.path]:
+                # OpenSpec honors an already-synced current name before walking ancestors.
+                if any(canonical_name in names for names in existing.values()):
+                    break
+                if canonical_name in visited:
+                    block.problems.append("cyclic RENAMED requirement lineage")
+                    break
+                visited.add(canonical_name)
+                canonical_name = renames[block.path][canonical_name]
         if block.kind == "ADDED":
             if owners:
                 block.problems.append(
