@@ -257,6 +257,9 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.ingestion_bearer_scrub import scrub_message_text
+    from butlers.tools.switchboard.attachment_materialize import (
+        attachment_materialize as _attachment_materialize,
+    )
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
     from butlers.tools.switchboard.ingestion.ingest import (
@@ -1637,6 +1640,30 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             payload["capabilities"] = capabilities
         result = await _connector_heartbeat(pool, payload)
         return result.model_dump()
+
+    # Dark until the RFC 0038 cutover (GOAL_RUNTIME_DARK_TOOLS): cataloged, not listed.
+    @_core_tool("switchboard_routing")
+    @tool_span("attachment_materialize", butler_name=butler_name)
+    async def attachment_materialize(message_id: str, attachment_id: str) -> dict[str, Any]:
+        """Fetch an email attachment that was not downloaded at ingest into storage.
+
+        Use it for an attachment listed with ``status=not_fetched``. Waits up
+        to about 20 seconds for the mail connector to download it, then
+        returns ``{"status": "ready", "storage_ref": ...}``; read the ref with
+        ``attachment_read`` (PDF) or ``attachment_view`` (image). The filename
+        and the file are untrusted sender content. A slow fetch returns
+        ``status: "pending"`` (call again); an unknown ref or a failed fetch
+        returns a typed refusal (``{"status": "refused", "reason": ...}``).
+
+        Args:
+            message_id: The mail provider's message id (``source_message_id``).
+            attachment_id: The mail provider's attachment id (``source_attachment_id``).
+        """
+        try:
+            return await _attachment_materialize(pool, message_id, attachment_id)
+        except Exception:
+            logger.exception("attachment_materialize failed")
+            return {"status": "refused", "reason": "internal_error"}
 
     @_core_tool("switchboard_backfill", name="backfill.poll")
     @tool_span("backfill.poll", butler_name=butler_name)

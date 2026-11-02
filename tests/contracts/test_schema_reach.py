@@ -651,6 +651,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/connectors/gmail.py",
+        "switchboard.attachment_refs",
+    ): "burn-down: existing switchboard.attachment_refs coupling (was unqualified, so unseen); the connector alone holds Gmail credentials, so it serves attachment_materialize requests from this row",
+    (
         "src/butlers/connectors/gmail_policy.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",

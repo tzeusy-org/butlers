@@ -64,6 +64,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
@@ -210,6 +211,13 @@ SUPPORTED_ATTACHMENT_TYPES: frozenset[str] = frozenset(ATTACHMENT_POLICY.keys())
 # Global hard ceiling: Gmail attachment maximum (25 MB).
 # Any attachment exceeding this cap is skipped regardless of per-type limit.
 GLOBAL_MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
+
+# Lazy-ref fetches requested through Switchboard's attachment_materialize
+# (switchboard.attachment_refs.fetch_requested_at): poll interval, rows per
+# poll, and the age after which a claim by a crashed runtime is reclaimed.
+_MATERIALIZE_POLL_INTERVAL_S = 2.0
+_MATERIALIZE_BATCH = 2
+_MATERIALIZE_CLAIM_STALE_S = 120
 
 
 def _format_google_error(response: httpx.Response) -> str | None:
@@ -700,6 +708,8 @@ class GmailConnectorRuntime:
         # Track how many backfill.poll attempts have been made so we can
         # suppress the first-attempt warning when Switchboard is still starting.
         self._backfill_poll_attempts: int = 0
+        # Lazy attachment fetches requested through Switchboard.
+        self._materialize_task: asyncio.Task[None] | None = None
 
         # Label filter policy (per docs/connectors/gmail-ingestion-policy.md,
         # "Gmail Label Filtering")
@@ -1160,6 +1170,10 @@ class GmailConnectorRuntime:
         else:
             logger.info("Backfill polling disabled via CONNECTOR_BACKFILL_ENABLED=false")
 
+        # Serve on-demand fetches of lazy attachment refs (attachment_materialize).
+        if self._db_pool and self._blob_store:
+            self._materialize_task = asyncio.create_task(self._run_materialize_loop())
+
         # Main ingestion loop
         try:
             await self._run_ingestion_loop()
@@ -1178,6 +1192,13 @@ class GmailConnectorRuntime:
             except asyncio.CancelledError:
                 pass
             self._backfill_task = None
+        if self._materialize_task is not None and not self._materialize_task.done():
+            self._materialize_task.cancel()
+            try:
+                await self._materialize_task
+            except asyncio.CancelledError:
+                pass
+            self._materialize_task = None
 
         # Stop heartbeat
         if self._heartbeat is not None:
@@ -3271,13 +3292,16 @@ class GmailConnectorRuntime:
             async with self._db_pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO attachment_refs
+                    INSERT INTO switchboard.attachment_refs AS r
                         (message_id, attachment_id, filename, media_type, size_bytes,
-                         fetched, blob_ref)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                         fetched, blob_ref, endpoint_identity)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (message_id, attachment_id) DO UPDATE SET
-                        fetched = EXCLUDED.fetched,
-                        blob_ref = EXCLUDED.blob_ref
+                        -- A replayed lazy ref must not forget a fetched blob.
+                        fetched = r.fetched OR EXCLUDED.fetched,
+                        blob_ref = COALESCE(EXCLUDED.blob_ref, r.blob_ref),
+                        endpoint_identity =
+                            COALESCE(r.endpoint_identity, EXCLUDED.endpoint_identity)
                     """,
                     message_id,
                     attachment_id,
@@ -3286,6 +3310,7 @@ class GmailConnectorRuntime:
                     size_bytes,
                     fetched,
                     blob_ref,
+                    self._config.connector_endpoint_identity or None,
                 )
         except Exception as exc:
             logger.warning(
@@ -3435,7 +3460,7 @@ class GmailConnectorRuntime:
 
                 # Include lazy-fetched attachments in the ingest envelope with
                 # source identifiers so downstream butlers know attachments exist
-                # and can trigger on-demand fetch via fetch_attachment().
+                # and can request it through Switchboard's attachment_materialize.
                 lazy_dict: dict[str, Any] = {
                     "media_type": mime_type,
                     "storage_ref": None,
@@ -3492,7 +3517,7 @@ class GmailConnectorRuntime:
                     row = await conn.fetchrow(
                         """
                         SELECT fetched, blob_ref, filename, media_type, size_bytes
-                        FROM attachment_refs
+                        FROM switchboard.attachment_refs
                         WHERE message_id = $1 AND attachment_id = $2
                         """,
                         message_id,
@@ -3520,6 +3545,10 @@ class GmailConnectorRuntime:
         # Download and store.
         try:
             attachment_bytes = await self._download_gmail_attachment(message_id, attachment_id)
+            if len(attachment_bytes) > GLOBAL_MAX_ATTACHMENT_SIZE_BYTES:
+                raise ValueError(
+                    f"attachment exceeds the global cap: {len(attachment_bytes)} bytes"
+                )
 
             # Determine media_type from DB row if available.
             media_type = "application/octet-stream"
@@ -3529,7 +3558,8 @@ class GmailConnectorRuntime:
                 try:
                     async with self._db_pool.acquire() as conn:
                         row = await conn.fetchrow(
-                            "SELECT filename, media_type, size_bytes FROM attachment_refs "
+                            "SELECT filename, media_type, size_bytes "
+                            "FROM switchboard.attachment_refs "
                             "WHERE message_id = $1 AND attachment_id = $2",
                             message_id,
                             attachment_id,
@@ -3581,6 +3611,69 @@ class GmailConnectorRuntime:
                 media_type="unknown", fetch_mode="lazy", result="error"
             )
             return None
+
+    async def materialize_requested_once(self) -> int:
+        """Fetch lazy refs Switchboard's ``attachment_materialize`` requested; return the count.
+
+        Claims up to ``_MATERIALIZE_BATCH`` requested rows written by this account
+        (or by no recorded account), downloads each through ``fetch_attachment``
+        and records a failure as ``fetch_error`` so the waiting caller is told.
+        A claim older than ``_MATERIALIZE_CLAIM_STALE_S`` is reclaimed.
+        """
+        if not self._db_pool or not self._blob_store:
+            return 0
+        async with self._db_pool.acquire() as conn:
+            claimed = await conn.fetch(
+                """
+                WITH claimable AS (
+                    SELECT message_id, attachment_id
+                    FROM switchboard.attachment_refs
+                    WHERE fetch_requested_at IS NOT NULL
+                      AND NOT fetched
+                      AND fetch_error IS NULL
+                      AND (fetch_claimed_at IS NULL
+                           OR fetch_claimed_at < now() - make_interval(secs => $3))
+                      AND (endpoint_identity = $1 OR endpoint_identity IS NULL)
+                    ORDER BY fetch_requested_at
+                    LIMIT $2
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE switchboard.attachment_refs r
+                SET fetch_claimed_at = now()
+                FROM claimable c
+                WHERE r.message_id = c.message_id AND r.attachment_id = c.attachment_id
+                RETURNING r.message_id, r.attachment_id
+                """,
+                self._config.connector_endpoint_identity,
+                _MATERIALIZE_BATCH,
+                float(_MATERIALIZE_CLAIM_STALE_S),
+            )
+        for row in claimed:
+            message_id, attachment_id = row["message_id"], row["attachment_id"]
+            if await self.fetch_attachment(message_id, attachment_id) is not None:
+                continue
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE switchboard.attachment_refs
+                    SET fetch_error = 'fetch_failed', fetch_claimed_at = NULL
+                    WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
+                    """,
+                    message_id,
+                    attachment_id,
+                )
+        return len(claimed)
+
+    async def _run_materialize_loop(self) -> None:
+        """Serve ``attachment_materialize`` requests until the runtime stops."""
+        while self._running:
+            try:
+                await self.materialize_requested_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("attachment materialize poll failed (will retry): %s", exc)
+            await asyncio.sleep(_MATERIALIZE_POLL_INTERVAL_S)
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
@@ -3766,12 +3859,15 @@ class GmailAccountLoop:
         email: str,
         config: GmailConnectorConfig,
         cursor_pool: asyncpg.Pool | None,
+        blob_store: BlobStore | None = None,
     ) -> None:
         self.email = email
         self.endpoint_identity = config.connector_endpoint_identity
         self._config = config
         self._cursor_pool = cursor_pool
-        self._runtime = GmailConnectorRuntime(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
+        self._runtime = GmailConnectorRuntime(
+            config, blob_store=blob_store, db_pool=cursor_pool, cursor_pool=cursor_pool
+        )
         self._task: asyncio.Task[None] | None = None
         self._error: str | None = None
 
@@ -3913,6 +4009,10 @@ class GmailConnectorManager:
 
         # Credential store (shared across accounts for app creds)
         self._credential_store: CredentialStore | None = None
+
+        # Connector blob store for eager and on-demand attachment fetches;
+        # resolved once at start. None records attachments without bytes.
+        self._blob_store: BlobStore | None = None
 
     def _get_credential_store(self) -> CredentialStore:
         """Return or initialize the CredentialStore for app credentials."""
@@ -4079,6 +4179,7 @@ class GmailConnectorManager:
                 email=email,
                 config=account_config,
                 cursor_pool=self._cursor_pool,
+                blob_store=self._blob_store,
             )
             self._loops[email] = loop
             loop.start()
@@ -4184,6 +4285,10 @@ class GmailConnectorManager:
 
         # Register SIGHUP for reload
         self._setup_sighup()
+
+        self._blob_store = await connector_blob_store(
+            self._get_credential_store(), label="Gmail connector"
+        )
 
         # Initial account discovery
         added, removed, unchanged = await self._sync_accounts()

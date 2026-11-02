@@ -30,7 +30,9 @@ The policy is expressed as `ATTACHMENT_POLICY` in `src/butlers/connectors/gmail.
 
 At ingest time, the connector writes metadata-only reference rows to `switchboard.attachment_refs` (keyed by `message_id, attachment_id`) rather than downloading payload bytes. This keeps per-email handling under 100ms. The table tracks `filename`, `media_type`, `size_bytes`, `fetched` (boolean), and `blob_ref` (nullable).
 
-When a butler needs the actual content, it triggers an on-demand fetch: download from the Gmail API, store in BlobStore, update `fetched=true` and `blob_ref`. Repeated requests return the existing `blob_ref` (idempotent).
+When the content is needed, Switchboard's `attachment_materialize` requests an on-demand fetch (see [Fetching lazy refs](#fetching-lazy-refs)): the connector downloads from the Gmail API, stores the bytes in BlobStore and updates `fetched=true` and `blob_ref`. Repeated requests return the existing `blob_ref` (idempotent), and a replayed ingest of the same message keeps it.
+
+The connector reaches the table as `switchboard.attachment_refs` (its pool has no search path) and stores blobs under the connector prefix `{bucket}/connectors/` with the `BLOB_S3_*` credentials it resolves at start (`src/butlers/connectors/blob_store.py`, shared with the Telegram connector). Without them, eager and on-demand fetches are skipped.
 
 ## Calendar `.ics` Direct Routing
 
@@ -38,7 +40,7 @@ When a butler needs the actual content, it triggers an on-demand fetch: download
 
 ## Envelope Contract
 
-The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py`. Both tools, like `attachment_read`, serve only refs under the calling butler's RFC 0016 prefix `{bucket}/{butler}/` or the connector prefix `{bucket}/connectors/`; any other ref returns an `attachment_forbidden` refusal without being fetched. Lazy paths expose enough identity to trigger a fetch once `attachment_materialize` (not yet implemented) lands.
+The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py`. Both tools, like `attachment_read`, serve only refs under the calling butler's RFC 0016 prefix `{bucket}/{butler}/` or the connector prefix `{bucket}/connectors/`; any other ref returns an `attachment_forbidden` refusal without being fetched. A lazy attachment carries `source_message_id` and `source_attachment_id`; the routed prompt lists it as `status=not_fetched` (distinct from `status=unavailable`, a fetch that failed) and says it cannot be retrieved in that session, because `attachment_materialize` is dark until the RFC 0038 cutover. One builder, `build_attachments_block` in `src/butlers/routing_guidance.py`, writes the ATTACHMENTS section for both the primary and recovery route paths.
 
 ### Reading PDFs by page
 
@@ -49,6 +51,18 @@ Page text is untrusted (`content_trust: "untrusted"`): it travels only as JSON s
 ### Viewing scanned pages
 
 `attachment_page_view(storage_ref, page=1)` renders one PDF page to a PNG for a page `attachment_read` marked `no_text_layer`. It runs in the same child (`render` mode of `src/butlers/tools/_pdf_extract.py`) under the same 512 MB and 15-second limits and two shared slots, so text reads and renders together never exceed two children. The scale is fixed from the page size before drawing: at most 200 dpi, 1568 px on the long edge and 1,150,000 px in area. The parent does not trust the child's header on its own: it reads the width and height from the PNG's IHDR chunk and rejects, as `extraction_limit_exceeded`, any output over 4 MB, without a PNG signature, whose IHDR dimensions differ from the header, are below 1 px or fall outside those bounds, or that names a page other than the one requested. The result is a metadata dict (`content_trust: "untrusted"`, page, page count, width, height) followed by an MCP image content block. Scope, size and media refusals match `attachment_read`. The tool is dark (`GOAL_RUNTIME_DARK_TOOLS`) and, because its output is vision input, presenting it also waits on a model with a passing RFC 0036 exact-path vision proof (bu-s1u4br).
+
+### Fetching lazy refs
+
+`attachment_materialize(message_id, attachment_id)` is a Switchboard tool. Only the Gmail connector holds Gmail credentials, so the request travels through the `attachment_refs` row (columns added by `sw_055`):
+
+1. The tool marks the row requested (`fetch_requested_at`) and polls it for up to 20 seconds.
+2. Each account runtime of the connector polls every 2 seconds and claims up to two requested, unfetched rows whose `endpoint_identity` is its own (or NULL, for rows written before `sw_055`) with `FOR UPDATE SKIP LOCKED`, stamping `fetch_claimed_at`. A claim older than 120 seconds is reclaimed.
+3. The runtime calls `fetch_attachment`, which refuses a download over the 25 MB global cap. A failure sets `fetch_error`.
+
+The tool returns `{"status": "ready", "storage_ref", "media_type", "filename", "size_bytes", "content_trust": "untrusted"}`, a refusal (`attachment_not_found`, `fetch_failed`, `invalid_reference`), or `{"status": "pending", "retry_after_s"}` when the connector has not answered in time. Calling again after `fetch_failed` retries. A fetched row returns its existing ref with no download. The ref it returns is readable with `attachment_read`, `attachment_view` and `get_attachment`.
+
+The tool declares RFC 0038 D4 metadata (effect class read, untrusted sensitive output, no recipient parameters) and is dark (`GOAL_RUNTIME_DARK_TOOLS`): Switchboard catalogs it and does not list it to classify-and-route sessions before the cutover.
 
 ## Metrics
 
@@ -121,6 +135,8 @@ psql -h localhost -U butlers -d butlers -c \
   bounds and refusals; `test_attachment_page_view_renders_bounded_png_or_refuses` pins the render
   bounds; `tests/contracts/test_tool_presentation_inventory.py` pins that `attachment_read` and
   `attachment_page_view` are cataloged but not listed.
+- `roster/switchboard/tests/test_attachment_materialize_integration.py` pins the request, claim,
+  fetch, idempotence, replay and refusal paths against a real database.
 
 ## Related Pages
 
