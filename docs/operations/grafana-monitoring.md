@@ -251,9 +251,13 @@ above.
 
 `butlers.domain_event.delivery_failed_permanent_total` is an OTel counter for a
 newly durable `failed_permanent` domain-event delivery. It has only
-`source_butler`, `destination_butler`, and `reason` (`non_retryable` or
-`attempts_exhausted`) labels; it deliberately excludes event IDs, payloads,
-exception text, and timestamps.
+`emitter_butler`, `source_butler`, `destination_butler`, and `reason`
+(`non_retryable` or `attempts_exhausted`) labels; it deliberately excludes event
+IDs, payloads, exception text, and timestamps. `emitter_butler` names the daemon
+that recorded the transition: the publisher for a fresh fan-out, `switchboard`
+for the reconciliation sweep. Two daemons (`butlers up` and a separately deployed
+Switchboard) can record the same route, and without it their cumulative counts
+would share one series and interleave. Every value is a roster butler name.
 
 The Switchboard dashboard displays it with a reset-safe
 `increase(...)` query. The provisioned warning rule is configured to evaluate a
@@ -263,18 +267,12 @@ notification policy. While `isPaused=true`, Grafana performs no evaluation and
 creates no alert instances, so this rule cannot diagnose a missing series or
 evaluation error. Its configured `NoData` and `Error` policies take effect only
 after an owner explicitly enables evaluation.
-A route's series is created by its first failure, so `increase()` has no prior
-sample to compare against. For 15 minutes the rule also counts a series that
-had no sample in the hour before that
-(`m unless max_over_time(m[1h] offset 15m)`), so the first-ever failure on a
-route still alerts. The 1h probe keeps an ingest gap (collector or remote-write
-outage) shorter than an hour from replaying every route's lifetime count. The
-trade-off: after a daemon restart, `increase()` misses the first failure on a route
-whose last sample was 20 to 75 minutes earlier. The series is not pre-created at
-zero. The metric carries no per-process label, and two daemons (`butlers up` and a
-separately deployed Switchboard running the reconciliation sweep) can emit the
-same route labels. One daemon's zeros would interleave with the other's count, and
-`increase()` would read each alternation as a new failure.
+Each daemon creates every route series it can emit at zero on startup: a
+butler primes its own published routes, and Switchboard primes every declared
+route because its sweep re-drives all publishers. The routes come from the
+publishers' git contract declarations. `increase()` therefore has a prior
+sample and sees a route's first-ever failure. The dashboard and the rule both
+sum `emitter_butler` away with `sum by(source_butler, destination_butler, reason)`.
 Enabling evaluation or notification delivery, changing a route, or exercising
 an alert requires a separate owner-approved operational change.
 

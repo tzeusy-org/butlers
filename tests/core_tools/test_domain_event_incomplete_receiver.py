@@ -77,6 +77,7 @@ class TestTheDeliveryOutcome:
             event_id=str(uuid.uuid4()),
             event_type="travel.trip_booked",
             source_butler="travel",
+            emitter_butler="travel",
             payload={"trip_id": "trip-synthetic"},
         )
 
@@ -103,6 +104,7 @@ class TestTheDeliveryOutcome:
             event_id=str(uuid.uuid4()),
             event_type="travel.trip_booked",
             source_butler="travel",
+            emitter_butler="travel",
             payload={"trip_id": "trip-synthetic"},
         )
 
@@ -131,6 +133,7 @@ class TestTheDeliveryOutcome:
             event_id=str(uuid.uuid4()),
             event_type="travel.trip_booked",
             source_butler="travel",
+            emitter_butler="travel",
             payload={"trip_id": "trip-synthetic"},
         )
 

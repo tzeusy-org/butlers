@@ -1024,6 +1024,7 @@ async def test_terminal_fence_wins_over_a_concurrent_task_conflict_and_prevents_
     assert permanent_client.calls == 1
     assert metric_calls == [
         {
+            "emitter_butler": "travel",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1105,6 +1106,7 @@ async def test_terminal_fence_wins_over_a_concurrent_stale_route_failure(
     assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 1)
     assert metric_calls == [
         {
+            "emitter_butler": "travel",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1294,6 +1296,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
     assert await _delivery_status(pool, delivery_id) == ("failed_permanent", 5)
     assert metric_calls == [
         {
+            "emitter_butler": "switchboard",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",
@@ -1310,6 +1313,7 @@ async def test_sweep_does_not_recount_a_concurrently_won_terminal_transition(
     assert replay["newly_permanently_failed"] == 0
     assert metric_calls == [
         {
+            "emitter_butler": "switchboard",
             "source_butler": "travel",
             "destination_butler": "finance",
             "reason": "non_retryable",

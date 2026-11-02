@@ -414,6 +414,29 @@ async def _startup_shared_bootstrap(daemon: Any, state: StartupState) -> None:
             exc_info=True,
         )
 
+    # 8d4. Create this daemon's failed_permanent delivery series at zero so an
+    #      alert's increase() sees a route's first-ever failure (non-fatal).
+    try:
+        from butlers.core_tools._domain_events import (
+            RECONCILIATION_SWEEP_JOB_NAME,
+            prime_failed_permanent_delivery_series,
+        )
+
+        prime_failed_permanent_delivery_series(
+            daemon.config.name,
+            runs_reconciliation_sweep=any(
+                schedule.job_name == RECONCILIATION_SWEEP_JOB_NAME
+                for schedule in daemon.config.schedules
+            ),
+        )
+    except Exception:
+        logger.warning(
+            "prime_failed_permanent_delivery_series failed for butler=%s "
+            "(best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
+
 
 async def _startup_session_recovery(daemon: Any, state: StartupState) -> None:
     """Recover orphaned sessions, best-effort."""
