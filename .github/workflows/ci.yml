@@ -19,57 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  route:
-    timeout-minutes: 2
-    # Stdlib-only routing cannot establish testcase membership. Uncertainty widens.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      backend: ${{ steps.classify.outputs.backend }}
-      frontend: ${{ steps.classify.outputs.frontend }}
-      mode: ${{ steps.classify.outputs.mode }}
-      test_paths: ${{ steps.classify.outputs.test_paths }}
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Filter changed paths
-        id: filter
-        if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
-        with:
-          list-files: json
-          filters: |
-            docs:
-              - 'about/**'
-              - 'openspec/**'
-              - 'docs/**'
-              - '*.md'
-              - '.beads/**'
-              - 'LICENSE'
-            all:
-              - '**'
-
-      - name: Classify and conservatively plan with stdlib only
-        id: classify
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          ALL_FILES: ${{ steps.filter.outputs.all_files }}
-          DOCS_FILES: ${{ steps.filter.outputs.docs_files }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python3 scripts/ci_route.py
-
   go-bridge:
     # New lane: source-derived bound, not measured healthy/p95 calibration.
     timeout-minutes: 15
     runs-on: ubuntu-latest
-    needs: [route]
-    if: needs.route.outputs.backend == 'true'
     permissions:
       contents: read
     defaults:
@@ -98,19 +51,15 @@ jobs:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; preflight owns the lane counts, test budget and smoke,
-    # and check-totals reconciles the lane totals after the groups finish.
+    # their exact scopes; smoke owns the lane counts, test budget and smoke
+    # tests, and check-totals reconciles the lane totals after the groups finish.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
     # load-bearing repo knowledge. Steps run under `!cancelled()` so one failing
     # guard never hides the findings of the others; the last step fails the job
-    # if any guard step failed. Runs on every event. The active
-    # `main-merge-queue` ruleset requires `guards` alongside `check` and
-    # `frontend` on the exact `merge_group` tree; unlike path-filtered
-    # `frontend`, this job never skips.
+    # if any guard step failed. Runs on every event; `alls-green` requires it.
     runs-on: ubuntu-latest
-    needs: [route]
     permissions:
       contents: read
       pull-requests: read
@@ -405,63 +354,42 @@ jobs:
           exit "$failed"
 
       - name: Set up Node 24
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "24.22.0"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
-
       - name: Install dependencies
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm ci
 
-
       - name: Lint
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint
 
-
       - name: Em-dash copy gate (bu-370uj)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint:emdash
 
-
       - name: Query-result coercion gate (bu-ep4ks.5)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run lint:query-coercion
 
-
       - name: Import graph (knip)
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run knip
 
-
       - name: Build
-        if: needs.route.outputs.frontend == 'true'
         working-directory: frontend
         run: npm run build
 
-
-
-
-  check-preflight:
+  smoke:
     timeout-minutes: 27
     runs-on: ubuntu-latest
-    needs: [route]
-    # merge_group: always. pull_request: only when the diff reaches beyond the
-    # docs filter (fail-closed, see `changes`). push:main: skipped by design,
-    # the merge queue already validated this exact tree.
-    # Starts beside the lane groups, not after them: nothing here needs a test
-    # result, so an over-budget tree fails within minutes instead of after the
-    # whole suite. check-totals compares the groups with these counts later.
-    if: needs.route.outputs.mode == 'full' || needs.route.outputs.mode == 'scoped'
+    # Starts beside the lane groups: nothing here needs a test result, so an
+    # over-budget tree fails within minutes instead of after the whole suite.
+    # check-totals compares the groups with these counts later.
 
     steps:
       - uses: actions/checkout@v6
@@ -472,11 +400,9 @@ jobs:
       - name: Count each lane and check the test budget
         # One fresh --collect-only count per lane of the same selection the groups
         # run; check-totals requires the groups to sum to it (bu-29wkwj.2).
-        if: needs.route.outputs.mode == 'full'
         run: uv run --no-sync python scripts/ci_lanes.py count --output "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
 
       - name: Upload the lane counts
-        if: needs.route.outputs.mode == 'full'
         uses: actions/upload-artifact@v4
         with:
           name: ci-lane-counts
@@ -488,66 +414,8 @@ jobs:
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
         env:
-          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
           TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: |
-          mkdir -p "$SMOKE_EVIDENCE_DIR"
-          SMOKE_CMD="uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short"
-
-          START_TS=$(date +%s)
-          set +e
-          $SMOKE_CMD --junit-xml="$SMOKE_EVIDENCE_DIR/raw-junit.xml" 2>&1 | tee "$SMOKE_EVIDENCE_DIR/smoke.log"
-          SMOKE_EXIT=${PIPESTATUS[0]}
-          set -e
-          END_TS=$(date +%s)
-          DURATION_S=$((END_TS - START_TS))
-          [ "$SMOKE_EXIT" -eq 0 ] && STATUS=PASS || STATUS=FAIL
-
-          # Write release-evidence JSON and emit a clearly-formatted log line.
-          SMOKE_EXIT_VAL=$SMOKE_EXIT \
-          SMOKE_SHA="${{ github.sha }}" \
-          SMOKE_DURATION=$DURATION_S \
-          SMOKE_STATUS=$STATUS \
-          SMOKE_CMD_VAL="$SMOKE_CMD" \
-          SMOKE_EVIDENCE_DIR="$SMOKE_EVIDENCE_DIR" \
-          python3 << 'PYEOF'
-          import json, os, sys, xml.etree.ElementTree as ET
-
-          sha = os.environ["SMOKE_SHA"]
-          duration_s = int(os.environ["SMOKE_DURATION"])
-          exit_code = int(os.environ["SMOKE_EXIT_VAL"])
-          status = os.environ["SMOKE_STATUS"]
-          cmd = os.environ["SMOKE_CMD_VAL"]
-          evidence_dir = os.environ["SMOKE_EVIDENCE_DIR"]
-
-          try:
-              root = ET.parse(os.path.join(evidence_dir, "raw-junit.xml")).getroot()
-              skipped_classes = sorted({
-                  tc.get("classname") or tc.get("name", "unknown")
-                  for tc in root.findall(".//testcase")
-                  if tc.find("skipped") is not None
-              })
-          except (ET.ParseError, OSError) as exc:
-              print(exc, file=sys.stderr)
-              skipped_classes = ["unavailable"]
-
-          evidence = {
-              "cmd": cmd,
-              "sha": sha,
-              "duration_s": duration_s,
-              "status": status,
-              "exit_code": exit_code,
-              "skipped_classes": skipped_classes,
-          }
-          with open(os.path.join(evidence_dir, "release-evidence.json"), "w") as f:
-              json.dump(evidence, f, indent=2)
-
-          print(f"SMOKE-RELEASE-EVIDENCE cmd={cmd!r} sha={sha!r} duration={duration_s}s status={status!r} skipped_classes={skipped_classes!r}")
-          print()
-          print(json.dumps(evidence, indent=2))
-          PYEOF
-
-          exit "$SMOKE_EXIT"
+        run: python3 scripts/ci_smoke.py --output "${RUNNER_TEMP}/ci-artifacts/smoke"
 
       - name: Prepare smoke test duration evidence
         if: ${{ always() && steps.smoke.outcome != 'skipped' }}
@@ -583,11 +451,10 @@ jobs:
   check-totals:
     timeout-minutes: 5
     runs-on: ubuntu-latest
-    needs: [route, check-preflight, check-unit, check-integration]
-    # Full mode only: no group may drop or duplicate a test. Each lane's group
-    # counts must sum to check-preflight's fresh --collect-only count. Standard
-    # library only, so it needs no Python environment setup.
-    if: ${{ !cancelled() && needs.route.outputs.mode == 'full' && needs.check-preflight.result == 'success' }}
+    needs: [smoke, check-unit, check-integration]
+    # No group may drop or duplicate a test: each lane's group counts must sum
+    # to smoke's fresh --collect-only count. Standard library only, so it needs
+    # no Python environment setup.
 
     steps:
       - uses: actions/checkout@v6
@@ -612,13 +479,11 @@ jobs:
   check-unit:
     timeout-minutes: 28
     runs-on: ubuntu-latest
-    needs: [route]
     # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4, 5]
-    if: needs.route.outputs.mode == 'full'
 
     env:
       CI_COVERAGE: '0'
@@ -661,13 +526,11 @@ jobs:
   check-integration:
     timeout-minutes: 36
     runs-on: ubuntu-latest
-    needs: [route]
     # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
       matrix:
         group: [1, 2, 3, 4, 5, 6]
-    if: needs.route.outputs.mode == 'full'
 
     env:
       CI_COVERAGE: '0'
@@ -739,189 +602,9 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
-  check-affected:
-    timeout-minutes: 82
-    outputs:
-      verified: ${{ steps.selected-execution.outputs.verified }}
-    # Affected-test lane (bu-v28ho): the route job's evidence when it
-    # selected a scoped plan. Runs the planner-selected test paths directly
-    # instead of the full eleven-child matrix. The merge queue still exercises
-    # every shard before main; owned daily/manual coverage assurance separately
-    # instruments the same complete populations.
-    runs-on: ubuntu-latest
-    needs: [route]
-    # Explicit route admission bounds the scoped lane; the required final
-    # verdict still refuses a failed classifier or static guard.
-    if: always() && needs.route.result == 'success' && github.event_name == 'pull_request' && needs.route.outputs.mode == 'scoped'
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up the CI Python environment
-        uses: ./.github/actions/ci-python-environment
-
-      - name: Affected tests (scoped plan)
-        id: selected-execution
-        env:
-          TEST_PATHS_JSON: ${{ needs.route.outputs.test_paths }}
-          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/affected
-          # Keep the same real integration/testcontainers runner and defaults.
-          TESTCONTAINERS_RYUK_DISABLED: "true"
-        run: |
-          uv run --no-sync python scripts/ci_affected.py --output "$TEST_EVIDENCE_DIR"
-
-      - name: Prepare affected-test duration evidence
-        if: always()
-        run: |
-          python3 scripts/summarize_junit_durations.py \
-            --input "${RUNNER_TEMP}/ci-artifacts/affected/raw-junit.xml" \
-            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/affected/junit.xml" \
-            --durations-output "${RUNNER_TEMP}/ci-artifacts/affected/top-durations.txt" \
-            --limit 25
-
-      - name: Upload affected-test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-affected-test-evidence
-          path: |
-            ${{ runner.temp }}/ci-artifacts/affected/junit.xml
-            ${{ runner.temp }}/ci-artifacts/affected/top-durations.txt
-            ${{ runner.temp }}/ci-artifacts/affected/selected-reference.json
-            ${{ runner.temp }}/ci-artifacts/affected/selected-execution.json
-            ${{ runner.temp }}/ci-artifacts/affected/selected-proof.json
-            ${{ runner.temp }}/ci-artifacts/affected/condensation-refusal-*.json
-          retention-days: 14
-          if-no-files-found: error
-          overwrite: true
-
-  check:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [route, guards, check-preflight, check-totals, check-unit, check-integration, check-affected, frontend-e2e, go-bridge]
-    if: always()
-    steps:
-      - name: Fail closed from prerequisite verdicts only
-        id: gate
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          from pathlib import PurePosixPath
-          def admitted_paths(paths: object) -> bool:
-              """Checkout-free selected-file admission, mirrored by the required verdict."""
-              return (
-                  isinstance(paths, list)
-                  and bool(paths)
-                  and all(isinstance(path, str) for path in paths)
-                  and len(paths) == len(set(paths))
-                  and all(
-                      PurePosixPath(path).as_posix() == path
-                      and not any(part in {".", ".."} for part in path.split("/"))
-                      and "\\" not in path
-                      and "::" not in path
-                      and path.endswith(".py")
-                      and path.startswith(("tests/", "roster/"))
-                      and not path.startswith("tests/e2e/")
-                      and not any(ord(character) < 32 for character in path)
-                      for path in paths
-                  )
-              )
-
-          def verdict(*, needs: dict, event: str, ref: str) -> bool:
-              """Only verdicts; unknown jobs/skips/results and malformed outputs fail closed."""
-              expected = {
-                  "route",
-                  "guards",
-                  "check-preflight",
-                  "check-totals",
-                  "check-unit",
-                  "check-integration",
-                  "check-affected",
-                  "frontend-e2e",
-                  "go-bridge",
-              }
-              if not isinstance(needs, dict) or not expected <= needs.keys():
-                  return False
-              if any(
-                  not isinstance(value, dict)
-                  or value.get("result") not in {"success", "skipped"}
-                  or not isinstance(value.get("outputs"), dict)
-                  or any(not isinstance(item, str) for item in value["outputs"].values())
-                  for value in needs.values()
-              ):
-                  return False
-              if needs["route"]["result"] != "success" or needs["guards"]["result"] != "success":
-                  return False
-              outputs = needs["route"]["outputs"]
-              if outputs.get("backend") not in {"true", "false"} or outputs.get("frontend") not in {
-                  "true",
-                  "false",
-              }:
-                  return False
-              mode = outputs.get("mode")
-              if event == "merge_group":
-                  if mode != "full" or outputs["backend"] != "true" or outputs["frontend"] != "true":
-                      return False
-              elif event == "push" and ref == "refs/heads/main":
-                  if mode != "push" or outputs["backend"] != "true" or outputs["frontend"] != "true":
-                      return False
-              elif event == "pull_request":
-                  if mode not in {"docs", "scoped", "full"} or (mode == "docs") != (
-                      outputs["backend"] == "false"
-                  ):
-                      return False
-              else:
-                  return False
-              try:
-                  paths = json.loads(outputs["test_paths"])
-              except (KeyError, ValueError):
-                  return False
-              if not isinstance(paths, list) or any(
-                  not isinstance(path, str)
-                  or not path.startswith(("tests/", "roster/"))
-                  or any(part in {".", ".."} for part in path.split("/"))
-                  or any(ord(character) < 32 for character in path)
-                  for path in paths
-              ):
-                  return False
-              if bool(paths) != (mode == "scoped"):
-                  return False
-              if mode == "scoped" and (
-                  not admitted_paths(paths)
-                  or needs["check-affected"]["outputs"].get("verified") != "true"
-              ):
-                  return False
-              results = {
-                  "route": "success",
-                  "guards": "success",
-                  "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
-                  "check-totals": "success" if mode == "full" else "skipped",
-                  "check-affected": "success" if mode == "scoped" else "skipped",
-                  "check-unit": "success" if mode == "full" else "skipped",
-                  "check-integration": "success" if mode == "full" else "skipped",
-                  # Playwright e2e is required wherever it runs: every merge group
-                  # and main push, and pull requests the route marks as frontend changes.
-                  "frontend-e2e": "success" if outputs["frontend"] == "true" else "skipped",
-                  "go-bridge": "success" if outputs["backend"] == "true" else "skipped",
-              }
-              return all(job["result"] == results.get(name, "success") for name, job in needs.items())
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          passed = verdict(needs=needs, event=os.environ['EVENT_NAME'], ref=os.environ['REF'])
-          if passed:
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
-                  stream.write(f"shards_ran={str(needs['route']['outputs']['mode'] == 'full').lower()}\n")
-          raise SystemExit(0 if passed else 1)
-          PY
-
   frontend-vitest:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route]
-    if: needs.route.outputs.frontend == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -947,43 +630,24 @@ jobs:
           retention-days: 14
           overwrite: true
 
-  frontend:
+  frontend-assurance:
     timeout-minutes: 18
     runs-on: ubuntu-latest
-    needs: [route, guards, frontend-vitest]
-    if: always()
+    needs: [frontend-vitest]
+    # Both Vitest children must together run the complete fresh item population.
     steps:
-      - name: Required frontend verdict
-        env:
-          NEEDS_JSON: ${{ toJSON(needs) }}
-        run: |
-          python3 - <<'PY'
-          import json, os
-          needs = json.loads(os.environ['NEEDS_JSON'])
-          valid = set(needs) == {'route', 'guards', 'frontend-vitest'}
-          valid = valid and all(isinstance(v, dict) and v.get('result') in {'success', 'skipped'} for v in needs.values())
-          valid = valid and needs['route']['result'] == needs['guards']['result'] == 'success'
-          applicable = needs.get('route', {}).get('outputs', {}).get('frontend')
-          valid = valid and applicable in {'true', 'false'}
-          valid = valid and needs['frontend-vitest']['result'] == ('success' if applicable == 'true' else 'skipped')
-          raise SystemExit(0 if valid else 1)
-          PY
       - uses: actions/checkout@v6
-        if: needs.route.outputs.frontend == 'true'
       - name: Download actual Vitest child one
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-1
           path: ${{ runner.temp }}/vitest-1
       - name: Download actual Vitest child two
-        if: needs.route.outputs.frontend == 'true'
         uses: actions/download-artifact@v4
         with:
           name: ci-vitest-2
           path: ${{ runner.temp }}/vitest-2
       - name: Independently reconcile both current Vitest populations
-        if: needs.route.outputs.frontend == 'true'
         run: python3 scripts/ci_vitest.py --reconcile "${RUNNER_TEMP}/vitest-1/receipt.json" "${RUNNER_TEMP}/vitest-2/receipt.json"
 
   frontend-e2e:
@@ -991,14 +655,8 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     # Builds its own bundle so the browser lane starts beside guards instead
-    # of waiting for it (bu-29wkwj.2).
-    needs: [route]
-    # Required through the `check` verdict (owner decision bu-w72da2 = A):
-    # merge_group and push:main always run it; pull_request runs it only when the
-    # route classifies the PR as frontend: frontend/, .github/workflows/, scripts/ci_
-    # or scripts/check_ci_ changed, or the diff is undeterminable (fail-closed, see
-    # `route`). Every other PR requires the explicit skip.
-    if: github.event_name == 'merge_group' || github.event_name == 'push' || (github.event_name == 'pull_request' && needs.route.outputs.frontend == 'true')
+    # of waiting for it (bu-29wkwj.2). Required through `alls-green` on every
+    # event (owner decision bu-w72da2 = A).
 
     defaults:
       run:
@@ -1031,7 +689,6 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json') }}-${{ steps.playwright-version.outputs.version }}
-
       - name: Install Playwright browsers
         # Emergency guard outside the native 720s budget and its cleanup/diagnostics.
         timeout-minutes: 13
@@ -1050,3 +707,57 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           retention-days: 7
+
+  alls-green:
+    # The one required check (bu-29wkwj.3). Every workload is a direct need and
+    # must report success: a failure, cancellation or skip anywhere fails it.
+    # `always()` keeps this job from being skipped itself, which GitHub would
+    # treat as passing.
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs:
+      - go-bridge
+      - guards
+      - smoke
+      - check-totals
+      - check-unit
+      - check-integration
+      - frontend-vitest
+      - frontend-assurance
+      - frontend-e2e
+    if: always()
+    steps:
+      - name: Require every needed job to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          EXPECTED_JOBS: "9"
+        run: |
+          printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          printf '%s' "$NEEDS_JSON" | jq -e --argjson n "$EXPECTED_JOBS" \
+            'type == "object" and length == $n and all(.[]; .result == "success")' > /dev/null
+
+  # Compatibility adapters for the `main-merge-queue` ruleset, which still requires
+  # the `check`, `guards` and `frontend` contexts. Each only mirrors `alls-green`.
+  # The ruleset switch to `alls-green` alone is a separate owner act
+  # (scripts/setup_main_ruleset.sh); a follow-up then deletes these two jobs.
+  check:
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs: [alls-green]
+    if: always()
+    steps:
+      - name: Mirror alls-green
+        env:
+          RESULT: ${{ needs.alls-green.result }}
+        run: test "$RESULT" = success
+
+  frontend:
+    timeout-minutes: 3
+    runs-on: ubuntu-latest
+    needs: [alls-green]
+    if: always()
+    steps:
+      - name: Mirror alls-green
+        env:
+          RESULT: ${{ needs.alls-green.result }}
+        run: test "$RESULT" = success
