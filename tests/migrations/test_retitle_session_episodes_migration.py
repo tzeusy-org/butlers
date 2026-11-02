@@ -141,71 +141,15 @@ class TestPrePostMigrationState:
     """
 
     @pytest.fixture
-    async def migration_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with both episodes and projection_checkpoints."""
-        async with provisioned_postgres_pool() as pool:
-            # source_adapter_state must exist first (FK target).
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS source_adapter_state (
-                    source_name TEXT PRIMARY KEY,
-                    chronicler_compatibility TEXT NOT NULL DEFAULT 'supported',
-                    read_surface TEXT,
-                    boundary_semantics TEXT,
-                    optional_schema BOOLEAN NOT NULL DEFAULT false,
-                    active BOOLEAN NOT NULL DEFAULT false,
-                    inactive_reason TEXT,
-                    schema_version INTEGER NOT NULL DEFAULT 1,
-                    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await pool.execute("""
-                INSERT INTO source_adapter_state (source_name)
-                VALUES ('core.sessions')
-                ON CONFLICT DO NOTHING
-            """)
-
-            # episodes table (post-chronicler_007 shape includes tombstone_reason).
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    source_name TEXT NOT NULL
-                        REFERENCES source_adapter_state(source_name),
-                    source_ref TEXT NOT NULL,
-                    episode_type TEXT NOT NULL,
-                    start_at TIMESTAMPTZ NOT NULL,
-                    end_at TIMESTAMPTZ,
-                    precision TEXT NOT NULL DEFAULT 'exact',
-                    title TEXT,
-                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    privacy TEXT NOT NULL DEFAULT 'normal',
-                    retention_days INTEGER,
-                    tombstone_at TIMESTAMPTZ,
-                    tombstone_reason TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    UNIQUE (source_name, source_ref)
-                )
-            """)
-
-            # projection_checkpoints (post-chronicler_002/005 shape).
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS projection_checkpoints (
-                    source_name TEXT NOT NULL
-                        REFERENCES source_adapter_state(source_name) ON DELETE CASCADE,
-                    subsource TEXT NOT NULL DEFAULT '',
-                    watermark TIMESTAMPTZ,
-                    watermark_id BIGINT,
-                    last_run_at TIMESTAMPTZ,
-                    last_success_at TIMESTAMPTZ,
-                    last_error TEXT,
-                    rows_projected BIGINT NOT NULL DEFAULT 0,
-                    run_count BIGINT NOT NULL DEFAULT 0,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    PRIMARY KEY (source_name, subsource)
-                )
-            """)
-            yield pool
+    async def migration_pool(self, db):
+        """The real chronicler schema as chronicler_009's predecessor left it."""
+        pool = await db("chronicler", revisions={"chronicler": "chronicler_008"})
+        await pool.execute("""
+            INSERT INTO source_adapter_state (source_name)
+            VALUES ('core.sessions')
+            ON CONFLICT DO NOTHING
+        """)
+        return pool
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
