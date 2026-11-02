@@ -1,15 +1,14 @@
-"""Deploy-shape guard: every reader of backup facts can actually see the backups.
+"""Deploy-shape guard: only dashboard-api mounts the backups volume (bu-deqpzd).
 
-Two processes read ``butlers.core.backup_facts`` from ``BUTLERS_BACKUP_DIR``:
+The backups volume holds full all-schema ``pg_dump`` artifacts. butlers-up
+hosts every butler's runtime CLI (shell and file access), so mounting the
+volume there would let one prompt-injected session read every schema. The QA
+patrol (hosted in butlers-up) gets backup recency from dashboard-api's
+``public.state`` snapshot instead (``butlers.core.backup_facts_snapshot``).
 
-- dashboard-api, for ``GET /api/system/backups``;
-- the butler daemon hosting the QA butler, whose ``infra_state`` patrol source
-  raises ``BackupStale`` / ``BackupRunFailed`` (bu-deqpzd).
-
-``InfraStateSource`` treats an unset ``BUTLERS_BACKUP_DIR`` as "backups not
-enabled" and skips silently, so a daemon without the env var and the backups
-volume never fires those findings -- and nothing else notices. Each reader must
-get the env var pointing at a read-only mount of the backups volume.
+This pins both halves: dashboard-api keeps its read-only mount plus
+``BUTLERS_BACKUP_DIR`` (it reads the dumps and publishes the snapshot), and the
+butler daemon services get neither.
 """
 
 from __future__ import annotations
@@ -27,14 +26,13 @@ _REPO = Path(__file__).resolve().parents[2]
 _CHART = _REPO / "deploy/helm/butlers"
 _ENV = "BUTLERS_BACKUP_DIR"
 
-# The QA butler runs in butlers-up (butlers-control hosts only switchboard).
-_COMPOSE_READERS = (
-    "dashboard-api",
-    "dashboard-api-hotreload",
+_COMPOSE_READERS = ("dashboard-api", "dashboard-api-hotreload")
+_COMPOSE_DAEMONS = (
     "butlers-up",
     "butlers-up-hotreload",
+    "butlers-control",
+    "butlers-control-hotreload",
 )
-_HELM_READERS = ("dashboard-api", "butlers-up")
 
 
 @pytest.fixture(scope="module")
@@ -43,14 +41,12 @@ def compose_services() -> dict:
     return compose["services"]
 
 
-def test_qa_patrol_reads_backup_facts() -> None:
-    """Pin the premise: the QA butler (hosted by butlers-up) runs infra_state."""
-    qa = (_REPO / "roster/qa/butler.toml").read_text(encoding="utf-8")
-    assert '"infra_state"' in qa
+def _compose_mounts_backups(service: dict) -> bool:
+    return any(str(v).startswith("butlers_backups:") for v in service.get("volumes", []))
 
 
 @pytest.mark.parametrize("service_name", _COMPOSE_READERS)
-def test_compose_backup_reader_has_env_and_readonly_volume(
+def test_compose_dashboard_keeps_env_and_readonly_backups_mount(
     compose_services: dict, service_name: str
 ) -> None:
     service = compose_services[service_name]
@@ -59,9 +55,17 @@ def test_compose_backup_reader_has_env_and_readonly_volume(
     assert f"butlers_backups:{backup_dir}:ro" in service["volumes"]
 
 
-@pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
-@pytest.mark.parametrize("deployment_name", _HELM_READERS)
-def test_helm_backup_reader_has_env_and_readonly_volume(deployment_name: str) -> None:
+@pytest.mark.parametrize("service_name", _COMPOSE_DAEMONS)
+def test_compose_daemon_never_sees_backups(compose_services: dict, service_name: str) -> None:
+    service = compose_services[service_name]
+    assert not _compose_mounts_backups(service)
+    assert _ENV not in service.get("environment", {})
+
+
+@pytest.fixture(scope="module")
+def helm_pods() -> dict[str, dict]:
+    if shutil.which("helm") is None:
+        pytest.skip("helm not installed")
     rendered = subprocess.run(
         [
             "helm",
@@ -74,6 +78,8 @@ def test_helm_backup_reader_has_env_and_readonly_volume(deployment_name: str) ->
             "frontendImage.tag=test",
             "--set",
             "database.host=postgres.invalid",
+            "--set",
+            "butlersControl.enabled=true",
         ],
         capture_output=True,
         text=True,
@@ -81,20 +87,36 @@ def test_helm_backup_reader_has_env_and_readonly_volume(deployment_name: str) ->
         check=False,
     )
     assert rendered.returncode == 0, rendered.stderr
-    pod = next(
-        d["spec"]["template"]["spec"]
+    return {
+        d["metadata"]["name"]: d["spec"]["template"]["spec"]
         for d in yaml.safe_load_all(rendered.stdout)
-        if d and d.get("kind") == "Deployment" and d["metadata"]["name"] == deployment_name
-    )
+        if d and d.get("kind") == "Deployment"
+    }
+
+
+def _backup_claims(pod: dict) -> set[str]:
+    return {
+        v["name"]
+        for v in pod.get("volumes", [])
+        if v.get("persistentVolumeClaim", {}).get("claimName") == "butlers-backups"
+    }
+
+
+def test_helm_dashboard_keeps_env_and_readonly_backups_mount(helm_pods: dict) -> None:
+    pod = helm_pods["dashboard-api"]
     container = pod["containers"][0]
     backup_dir = next((e.get("value") for e in container["env"] if e["name"] == _ENV), None)
-    assert backup_dir, f"{deployment_name} must set {_ENV}"
-
-    claims = {
-        v["name"]: v["persistentVolumeClaim"]["claimName"]
-        for v in pod["volumes"]
-        if "persistentVolumeClaim" in v
-    }
+    assert backup_dir, f"dashboard-api must set {_ENV}"
     mount = next(m for m in container["volumeMounts"] if m["mountPath"] == backup_dir)
-    assert claims.get(mount["name"]) == "butlers-backups"
+    assert mount["name"] in _backup_claims(pod)
     assert mount.get("readOnly") is True
+
+
+def test_helm_only_dashboard_mounts_backups(helm_pods: dict) -> None:
+    assert "butlers-up" in helm_pods
+    mounting = {name for name, pod in helm_pods.items() if _backup_claims(pod)}
+    assert mounting == {"dashboard-api"}
+    for name, pod in helm_pods.items():
+        if name != "dashboard-api":
+            for container in pod["containers"]:
+                assert all(e["name"] != _ENV for e in container.get("env", [])), name

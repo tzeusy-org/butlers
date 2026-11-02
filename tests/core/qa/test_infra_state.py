@@ -8,8 +8,9 @@ Covers:
   within-ttl does not; quarantined always trips; freshly-registered is graced
 - backup-run-failed: a failed run is a finding even while the previous artifact
   is still fresh, and a successful/absent receipt never invents one
-- backup-stale: unconfigured is a legitimate absence (no finding); configured
-  but unreachable/empty/stale trips a finding; fresh does not
+- backup-stale: a fresh unconfigured snapshot is a legitimate absence (no
+  finding); a missing/stale/malformed snapshot trips BackupFactsUnavailable;
+  configured but unreachable/empty/stale trips a finding; fresh does not
 - external-deadman-stale: unconfigured is a legitimate absence; stale/never
   trips a finding; recent does not
 - a query error degrades (raises, caught by the QA patrol loop upstream),
@@ -25,6 +26,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
+from butlers.core.backup_facts_snapshot import build_snapshot_value
 from butlers.core.qa.sources.infra_state import (
     _DEADMAN_UNCONFIGURED_FINGERPRINT,
     SOURCE_NAME,
@@ -45,7 +47,17 @@ def test_backup_fact_reader_is_not_imported_from_the_api_router() -> None:
     ).read_text(encoding="utf-8")
 
     assert "butlers.api.routers.system" not in source
-    assert "butlers.core.backup_facts" in source
+    assert "butlers.core.backup_facts_snapshot" in source
+
+
+_UNSET = object()
+
+
+def _snapshot(backup_dir: str = "", *, age: timedelta = timedelta(0)) -> dict:
+    """The value dashboard-api would publish for *backup_dir*, aged by *age*."""
+    value = build_snapshot_value(backup_dir, interval_s=600)
+    value["observed_at"] = (datetime.fromisoformat(value["observed_at"]) - age).isoformat()
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +76,10 @@ class _FakePool:
         receiver_rows: list | None = None,
         deadman_ts: datetime | None = None,
         health_check_error: Exception | None = None,
+        backup_snapshot: object = _UNSET,
     ) -> None:
+        # Default: a fresh snapshot of a deployment without backups.
+        self._backup_snapshot = _snapshot() if backup_snapshot is _UNSET else backup_snapshot
         self._connector_rows = connector_rows or []
         self._heartbeat_rows = heartbeat_rows or []
         self._receiver_rows = receiver_rows or []
@@ -86,6 +101,11 @@ class _FakePool:
         if "v_qa_butler_receiver_state" in sql:
             return self._receiver_rows
         raise AssertionError(f"Unexpected fetch: {sql}")
+
+    async def fetchval(self, sql: str, *args):
+        if "public.state" in sql:
+            return self._backup_snapshot
+        raise AssertionError(f"Unexpected fetchval: {sql}")
 
     async def fetchrow(self, sql: str, *args):
         if "audit_log" in sql:
@@ -552,44 +572,65 @@ async def test_registry_and_infra_state_agree_quarantine_always_stale(monkeypatc
 
 
 async def test_backup_unconfigured_is_a_legitimate_absence_not_a_finding(monkeypatch):
-    monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
     findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
     assert findings == []
 
 
+@pytest.mark.parametrize(
+    ("snapshot", "state"),
+    [
+        (None, "missing"),
+        (_snapshot(age=timedelta(minutes=31)), "stale"),
+        ({"observed_at": "not-a-time", "interval_s": 600, "configured": False}, "missing"),
+    ],
+    ids=["missing", "stale", "malformed"],
+)
+async def test_unseen_backup_facts_trip_a_finding_not_a_silent_skip(monkeypatch, snapshot, state):
+    """bu-deqpzd: the patrol cannot see the dumps; not seeing the facts is a finding."""
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+
+    pool = _FakePool(backup_snapshot=snapshot)
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
+    assert [f.exception_type for f in findings] == ["BackupFactsUnavailable"]
+    assert f"is {state}" in findings[0].event_summary
+
+
 async def test_backup_dir_configured_but_missing_trips_unreachable(monkeypatch, tmp_path):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    missing = tmp_path / "does-not-exist"
-    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(missing))
+    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path / "does-not-exist")))
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].exception_type == "BackupSourceUnreachable"
 
 
 async def test_backup_dir_reachable_but_empty_trips_stale(monkeypatch, tmp_path):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
+    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].exception_type == "BackupStale"
 
 
-async def test_fresh_backup_yields_nothing(monkeypatch, tmp_path):
+def _fresh_dump(tmp_path: Path) -> None:
     import os
     import time
 
-    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
     dump = tmp_path / "butlers_20260711.sql.gz"
     dump.write_bytes(b"x")
     now = time.time()
     os.utime(dump, (now, now))
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+
+async def test_fresh_backup_yields_nothing(monkeypatch, tmp_path):
+    monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
+    _fresh_dump(tmp_path)
+
+    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert findings == []
 
 
@@ -600,44 +641,32 @@ async def test_fresh_backup_with_a_failed_run_trips_a_finding(monkeypatch, tmp_p
     proves that same directory produces no finding without the receipt, so this
     finding can only be coming from the run outcome.
     """
-    import os
-    import time
-
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
-    dump = tmp_path / "butlers_20260711.sql.gz"
-    dump.write_bytes(b"x")
-    now = time.time()
-    os.utime(dump, (now, now))
+    _fresh_dump(tmp_path)
     (tmp_path / "last_run.json").write_text(
         '{"result":"failed","reason":"pg_dump_failed","exit_code":1,'
         '"finished_at":"2026-07-12T02:00:11Z","artifact":null}',
         encoding="utf-8",
     )
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].exception_type == "BackupRunFailed"
     assert "pg_dump_failed" in findings[0].event_summary
 
 
 async def test_successful_run_receipt_yields_nothing(monkeypatch, tmp_path):
-    import os
-    import time
-
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
-    dump = tmp_path / "butlers_20260711.sql.gz"
-    dump.write_bytes(b"x")
-    now = time.time()
-    os.utime(dump, (now, now))
+    _fresh_dump(tmp_path)
     (tmp_path / "last_run.json").write_text(
         '{"result":"success","reason":"ok","exit_code":0,'
         '"finished_at":"2026-07-12T02:00:11Z","artifact":"butlers_20260711.sql.gz"}',
         encoding="utf-8",
     )
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert findings == []
 
 
@@ -646,13 +675,13 @@ async def test_stale_backup_trips_a_finding(monkeypatch, tmp_path):
     import time
 
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    monkeypatch.setenv("BUTLERS_BACKUP_DIR", str(tmp_path))
     dump = tmp_path / "butlers_old.sql.gz"
     dump.write_bytes(b"x")
     stale_ts = time.time() - timedelta(hours=48).total_seconds()
     os.utime(dump, (stale_ts, stale_ts))
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].exception_type == "BackupStale"
 

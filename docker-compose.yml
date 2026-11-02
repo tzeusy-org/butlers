@@ -699,14 +699,10 @@ services:
       # Fleet-wide concurrent LLM session cap; every butler shares this process.
       # Owner-set to 5 (bu-6y6f6m); the code default is 3.
       BUTLERS_MAX_GLOBAL_SESSIONS: ${BUTLERS_MAX_GLOBAL_SESSIONS:-5}
-      # The QA butler's infra_state patrol reads backup facts (BackupStale,
-      # BackupRunFailed); unset would silently skip those checks (bu-deqpzd).
-      BUTLERS_BACKUP_DIR: /backups
     volumes:
       - ./roster:/app/roster:ro
       - ./logs:/app/logs
       - wa_bridge_socket:/tmp/wa-bridge
-      - butlers_backups:/backups:ro
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
@@ -894,15 +890,12 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
       BUTLERS_MAX_GLOBAL_SESSIONS: ${BUTLERS_MAX_GLOBAL_SESSIONS:-5}
-      # QA infra_state backup checks; see butlers-up (bu-deqpzd).
-      BUTLERS_BACKUP_DIR: /backups
     volumes:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./logs:/app/logs
       - uv_cache:/root/.cache/uv
-      - butlers_backups:/backups:ro
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
