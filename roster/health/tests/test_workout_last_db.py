@@ -9,8 +9,6 @@ from typing import Any
 import asyncpg
 import pytest
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
@@ -26,23 +24,10 @@ class _StubEmbeddingEngine:
         return [0.0] * 384
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "memory"]
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    from butlers.db import register_jsonb_codec
-
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE public.memory_links, public.facts CASCADE")
-    yield p
-    await p.close()
+async def memory_pool(db):
+    """A private clone migrated with the core and memory chains."""
+    return await db("core", "memory")
 
 
 async def _store(
@@ -76,29 +61,29 @@ async def _store(
     return str(stored["id"])
 
 
-async def test_latest_matching_workout_from_facts(pool) -> None:
+async def test_latest_matching_workout_from_facts(memory_pool) -> None:
     from butlers.tools.health import workout_last
 
-    await _store(pool, datetime(2026, 10, 1, 6, tzinfo=UTC))
-    newest = await _store(pool, datetime(2026, 10, 12, 6, tzinfo=UTC), minutes=50)
-    await _store(pool, datetime(2026, 10, 14, 6, tzinfo=UTC), "swimming")
+    await _store(memory_pool, datetime(2026, 10, 1, 6, tzinfo=UTC))
+    newest = await _store(memory_pool, datetime(2026, 10, 12, 6, tzinfo=UTC), minutes=50)
+    await _store(memory_pool, datetime(2026, 10, 14, 6, tzinfo=UTC), "swimming")
 
-    result = await workout_last(pool, "jog", timezone="Pacific/Auckland")
+    result = await workout_last(memory_pool, "jog", timezone="Pacific/Auckland")
     assert result["found"] is True
     assert result["id"] == newest
     assert result["duration_minutes"] == 50.0
     assert result["started_at"] == "2026-10-12T19:00:00+13:00"
 
 
-async def test_retracted_and_other_scope_facts_are_ignored(pool) -> None:
+async def test_retracted_and_other_scope_facts_are_ignored(memory_pool) -> None:
     from butlers.tools.health import workout_last
 
-    kept = await _store(pool, datetime(2026, 10, 1, 6, tzinfo=UTC))
-    retracted = await _store(pool, datetime(2026, 10, 5, 6, tzinfo=UTC))
-    await _store(pool, datetime(2026, 10, 6, 6, tzinfo=UTC), scope="global")
-    await pool.execute(
+    kept = await _store(memory_pool, datetime(2026, 10, 1, 6, tzinfo=UTC))
+    retracted = await _store(memory_pool, datetime(2026, 10, 5, 6, tzinfo=UTC))
+    await _store(memory_pool, datetime(2026, 10, 6, 6, tzinfo=UTC), scope="global")
+    await memory_pool.execute(
         "UPDATE public.facts SET validity = 'retracted' WHERE id = $1::uuid", retracted
     )
 
-    result = await workout_last(pool, "running")
+    result = await workout_last(memory_pool, "running")
     assert result["id"] == kept

@@ -55,8 +55,6 @@ import asyncpg
 import pytest
 
 from butlers.core.ingestion_events import ingestion_event_reconcile_after_processing
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -64,29 +62,6 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
     pytest.mark.asyncio(loop_scope="session"),
 ]
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain — public.ingestion_events."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.ingestion_events CASCADE")
-    yield p
-    await p.close()
 
 
 async def _seed_email_event(
@@ -116,7 +91,7 @@ async def _seed_email_event(
     return event_id
 
 
-async def test_email_replay_reconciles_to_ingested_on_success(pool: asyncpg.Pool) -> None:
+async def test_email_replay_reconciles_to_ingested_on_success(db_pool: asyncpg.Pool) -> None:
     """A successful email re-process flips replay_pending -> ingested.
 
     This is the exact transition bu-g4oiu found missing: DurableBuffer's
@@ -124,54 +99,60 @@ async def test_email_replay_reconciles_to_ingested_on_success(pool: asyncpg.Pool
     email-sourced row and see it land, using the real CHECK constraint and
     schema — not a mocked pool that can't catch a rejected status value.
     """
-    event_id = await _seed_email_event(pool, status="replay_pending")
+    event_id = await _seed_email_event(db_pool, status="replay_pending")
 
-    result = await ingestion_event_reconcile_after_processing(pool, event_id, routing_failed=False)
+    result = await ingestion_event_reconcile_after_processing(
+        db_pool, event_id, routing_failed=False
+    )
     assert result is True
 
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         "SELECT status, error_detail FROM public.ingestion_events WHERE id = $1", event_id
     )
     assert row["status"] == "ingested"
     assert row["error_detail"] is None
 
 
-async def test_email_replay_failure_marks_replay_failed(pool: asyncpg.Pool) -> None:
+async def test_email_replay_failure_marks_replay_failed(db_pool: asyncpg.Pool) -> None:
     """A failed re-process transitions replay_pending -> replay_failed with detail.
 
     Exercises the real CHECK constraint (core_057) that widened the allowed
     status values to include 'replay_failed' — a mocked pool cannot verify
     the constraint accepts it.
     """
-    event_id = await _seed_email_event(pool, status="replay_pending")
+    event_id = await _seed_email_event(db_pool, status="replay_pending")
 
     result = await ingestion_event_reconcile_after_processing(
-        pool,
+        db_pool,
         event_id,
         routing_failed=True,
         error_detail="failed_targets: ['general']",
     )
     assert result is True
 
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         "SELECT status, error_detail FROM public.ingestion_events WHERE id = $1", event_id
     )
     assert row["status"] == "replay_failed"
     assert row["error_detail"] == "failed_targets: ['general']"
 
 
-async def test_email_reconcile_is_noop_for_non_replay_pending_rows(pool: asyncpg.Pool) -> None:
+async def test_email_reconcile_is_noop_for_non_replay_pending_rows(db_pool: asyncpg.Pool) -> None:
     """mark_replay_complete only matches replay_pending — a plain 'ingested'
     row (the common case: an email that never needed replay) must be left
     untouched, proving the shared reconciliation call is safe to invoke
     unconditionally after every successful routing, replayed or not.
     """
-    event_id = await _seed_email_event(pool, status="ingested")
+    event_id = await _seed_email_event(db_pool, status="ingested")
 
-    result = await ingestion_event_reconcile_after_processing(pool, event_id, routing_failed=False)
+    result = await ingestion_event_reconcile_after_processing(
+        db_pool, event_id, routing_failed=False
+    )
     assert result is False
 
-    row = await pool.fetchrow("SELECT status FROM public.ingestion_events WHERE id = $1", event_id)
+    row = await db_pool.fetchrow(
+        "SELECT status FROM public.ingestion_events WHERE id = $1", event_id
+    )
     assert row["status"] == "ingested"
 
 
@@ -196,7 +177,7 @@ class _DelayedExecutePool:
         return await self._real_pool.execute(sql, *args)
 
 
-async def test_email_reconcile_write_survives_caller_cancellation(pool: asyncpg.Pool) -> None:
+async def test_email_reconcile_write_survives_caller_cancellation(db_pool: asyncpg.Pool) -> None:
     """The bu-nqkha bug, proven against a real connection pool.
 
     Cancelling the task awaiting ingestion_event_reconcile_after_processing
@@ -205,8 +186,8 @@ async def test_email_reconcile_write_survives_caller_cancellation(pool: asyncpg.
     still land against the real database shortly after, even though the
     cancellation itself propagates to the caller immediately.
     """
-    event_id = await _seed_email_event(pool, status="replay_pending")
-    delayed_pool = _DelayedExecutePool(pool, delay_s=0.1)
+    event_id = await _seed_email_event(db_pool, status="replay_pending")
+    delayed_pool = _DelayedExecutePool(db_pool, delay_s=0.1)
 
     task = asyncio.ensure_future(
         ingestion_event_reconcile_after_processing(delayed_pool, event_id, routing_failed=False)
@@ -220,13 +201,15 @@ async def test_email_reconcile_write_survives_caller_cancellation(pool: asyncpg.
 
     # Cancellation must propagate to the caller promptly, without waiting for
     # the shielded write to land.
-    row = await pool.fetchrow("SELECT status FROM public.ingestion_events WHERE id = $1", event_id)
+    row = await db_pool.fetchrow(
+        "SELECT status FROM public.ingestion_events WHERE id = $1", event_id
+    )
     assert row["status"] == "replay_pending"
 
     # ...but the write itself must still complete shortly after, against the
     # real database, unblocked by the caller's cancellation.
     for _ in range(50):
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT status FROM public.ingestion_events WHERE id = $1", event_id
         )
         if row["status"] == "ingested":
