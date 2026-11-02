@@ -263,10 +263,18 @@ notification policy. While `isPaused=true`, Grafana performs no evaluation and
 creates no alert instances, so this rule cannot diagnose a missing series or
 evaluation error. Its configured `NoData` and `Error` policies take effect only
 after an owner explicitly enables evaluation.
-Because a route's series is created by its first failure, `increase()` has no
-prior sample to compare against; the rule therefore also reads a series that
-did not exist 15 minutes earlier (`unless ... offset 15m`), so the first-ever
-failure on a route still alerts.
+A route's series is created by its first failure, so `increase()` has no prior
+sample to compare against. For 15 minutes the rule also counts a series that
+had no sample in the hour before that
+(`m unless max_over_time(m[1h] offset 15m)`), so the first-ever failure on a
+route still alerts. The 1h probe keeps an ingest gap (collector or remote-write
+outage) shorter than an hour from replaying every route's lifetime count. The
+trade-off: after a daemon restart, `increase()` misses the first failure on a route
+whose last sample was 20 to 75 minutes earlier. The series is not pre-created at
+zero. The metric carries no per-process label, and two daemons (`butlers up` and a
+separately deployed Switchboard running the reconciliation sweep) can emit the
+same route labels. One daemon's zeros would interleave with the other's count, and
+`increase()` would read each alternation as a new failure.
 Enabling evaluation or notification delivery, changing a route, or exercising
 an alert requires a separate owner-approved operational change.
 
