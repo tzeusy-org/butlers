@@ -33,16 +33,26 @@ export function hourlySlotStarts(nowMs: number, count = 24): number[] {
  * timestamp, are dropped. A slot no row matches is `null`, so a caller can draw
  * "not reported" distinctly from a measured zero.
  */
-export function buildBucketSeries<T>(
+export function buildBucketSeries<T, V = number>(
   rows: readonly T[],
   bucketStart: (row: T) => string,
-  value: (row: T) => number,
+  value: (row: T) => V,
   slotStarts: readonly number[],
-): (number | null)[] {
-  const byStart = new Map<number, number>();
+): (V | null)[] {
+  const byStart = new Map<number, V>();
   for (const row of rows) {
     const ms = Date.parse(bucketStart(row));
     if (!Number.isNaN(ms)) byStart.set(ms, value(row));
   }
   return slotStarts.map((start) => byStart.get(start) ?? null);
+}
+
+/**
+ * Accessible summary of a strip's listening states (bu-s11n0s.5): the number
+ * of deaf hourly slots as "not listening Nh", or "" when none are deaf. Only
+ * `deaf` counts: `unknown` and unreported slots make no liveness claim.
+ */
+export function describeNotListening(listening: readonly (string | null)[] | undefined): string {
+  const deaf = listening?.filter((state) => state === "deaf").length ?? 0;
+  return deaf > 0 ? `not listening ${deaf}h` : "";
 }

@@ -336,6 +336,7 @@ export function ConnectorsRoster() {
                   connector={c}
                   spark24h={c.hourly_events}
                   spark24hFiltered={c.hourly_filtered_events}
+                  listening24h={c.hourly_listening}
                   catalogChannel={catalogChannelByType.get(c.connector_type)}
                   rosterSparkMax={rosterSparkMax}
                 />

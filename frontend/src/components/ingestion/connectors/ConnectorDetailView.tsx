@@ -203,6 +203,10 @@ export function ConnectorDetailView({
     (b) => b.messages_filtered ?? 0,
     slotStarts,
   )
+  // Heartbeat-derived listening state per slot (bu-s11n0s.5); a slot with no
+  // row is null and draws no listening mark.
+  const listening24h = buildBucketSeries(timeseries, (b) => b.bucket, (b) => b.listening, slotStarts)
+  const listeningAvailable = stats?.listening_available !== false
   // hourly_events_available is false only on a genuine backend DB-query failure;
   // in that case both series fall back to all-zero and the histogram would read
   // as an honest quiet window — surface the degraded source inline instead.
@@ -358,7 +362,12 @@ export function ConnectorDetailView({
               </p>
             ) : (
               <>
-                <ConnectorHistogram data={spark24h} secondaryData={spark24hFiltered} height={96} />
+                <ConnectorHistogram
+                  data={spark24h}
+                  secondaryData={spark24hFiltered}
+                  listening={listening24h}
+                  height={96}
+                />
                 {/* Never let a failed hourly query hide behind a quiet histogram (bu-c48im). */}
                 {!hourlyEventsAvailable && (
                   <SourceDegradedNote
@@ -367,6 +376,16 @@ export function ConnectorDetailView({
                     onRetry={statsReader?.onRetry}
                     className="mt-3"
                     testId="histogram-degraded-note"
+                  />
+                )}
+                {/* A failed heartbeat read must not pass for "listening" (bu-s11n0s.5). */}
+                {hourlyEventsAvailable && !listeningAvailable && (
+                  <SourceDegradedNote
+                    label="listening state"
+                    detail="heartbeat history unavailable, not-listening hours cannot be shown"
+                    onRetry={statsReader?.onRetry}
+                    className="mt-3"
+                    testId="histogram-listening-degraded-note"
                   />
                 )}
               </>

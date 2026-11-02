@@ -95,6 +95,49 @@ _DB_TRUNC: dict[PeriodLiteral, str] = {"24h": "hour", "7d": "day", "30d": "day"}
 # and every bucket in it is returned, so a quiet bucket is a measured zero at
 # its real time instead of an absent row a client must guess the position of.
 _DB_BUCKETS: dict[PeriodLiteral, int] = {"24h": 24, "7d": 7, "30d": 30}
+_DB_STEP: dict[PeriodLiteral, _dt.timedelta] = {
+    "24h": _dt.timedelta(hours=1),
+    "7d": _dt.timedelta(days=1),
+    "30d": _dt.timedelta(days=1),
+}
+
+# Per-bucket listening state, derived from switchboard.connector_heartbeat_log
+# for the exact (connector_type, endpoint_identity) [bu-s11n0s.5 S2]:
+#
+# - ``live``: at least one heartbeat from this endpoint was recorded in the bucket.
+# - ``deaf``: no heartbeat recorded in a closed bucket, after this endpoint's
+#   heartbeat history began, and with no traffic in the bucket. Rendered as
+#   "not listening".
+# - ``unknown``: the history cannot say. That covers buckets before the
+#   endpoint's oldest recorded heartbeat (never heartbeated, history pruned or
+#   not yet registered), the still-open newest bucket, a bucket with traffic
+#   but no heartbeat (traffic contradicts deafness), and a failed history read.
+#
+# "deaf" means "no heartbeat recorded", not a proven outage: the history append
+# is best effort, so a lost append also reads as deaf. A sibling endpoint's
+# heartbeat never stands in for this one's.
+ListeningState = Literal["live", "deaf", "unknown"]
+
+
+def _listening_states(
+    bucket_starts: list[_dt.datetime],
+    step: _dt.timedelta,
+    *,
+    heartbeat_buckets: set[_dt.datetime],
+    recording_since: _dt.datetime | None,
+    as_of: _dt.datetime,
+    has_traffic: list[bool],
+) -> list[ListeningState]:
+    """Classify each bucket as live, deaf or unknown (see ``ListeningState``)."""
+    states: list[ListeningState] = []
+    for start, traffic in zip(bucket_starts, has_traffic, strict=True):
+        if start in heartbeat_buckets:
+            states.append("live")
+        elif recording_since is None or start < recording_since or start + step > as_of or traffic:
+            states.append("unknown")
+        else:
+            states.append("deaf")
+    return states
 
 
 class ConnectorSummaryToday(BaseModel):
@@ -144,6 +187,7 @@ class ConnectorSummary(BaseModel):
     today: ConnectorSummaryToday | None = None
     hourly_events: list[int]
     hourly_filtered_events: list[int]
+    hourly_listening: list[ListeningState]
     devices: list[ConnectorDeviceLiveness] | None
     checkpoints: list[ConnectorCheckpointRecord]
 
@@ -161,6 +205,7 @@ class ConnectorSummaryResponse(BaseModel):
     unclassified_count: int = 0
     device_liveness_available: bool = True
     hourly_events_available: bool = True
+    listening_available: bool = True
     owntracks_cadence_available: bool = True
 
 
@@ -238,10 +283,7 @@ class ConnectorStatsHourly(BaseModel):
     messages_ingested: int = 0
     messages_failed: int = 0
     messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
+    listening: ListeningState = "unknown"
 
 
 class ConnectorStatsDaily(BaseModel):
@@ -253,10 +295,7 @@ class ConnectorStatsDaily(BaseModel):
     messages_ingested: int = 0
     messages_failed: int = 0
     messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
+    listening: ListeningState = "unknown"
     uptime_pct: float | None = None
 
 
@@ -610,6 +649,11 @@ async def _connector_stats_from_db(
     window the roster summary's ``hourly_events`` uses — so the detail histogram
     and the roster sparkline place one event in the same bucket. A bucket with
     no events is a measured zero; it says nothing about connector liveness.
+
+    Liveness comes separately, as each bucket's ``listening`` state read from
+    the endpoint's heartbeat history (see ``ListeningState``). If that read
+    fails, every bucket is ``unknown``, ``meta.listening_available`` is false,
+    and the counts still return.
     """
     executor = connection if connection is not None else _pool(db)
     trunc = _DB_TRUNC[period]
@@ -668,6 +712,28 @@ async def _connector_stats_from_db(
         logger.warning("connector stats DB query failed", exc_info=True)
         return ApiResponse(data=[], meta=ApiMeta(hourly_events_available=False))
 
+    bucket_starts = [row["bucket"] for row in rows]
+    listening_available = True
+    listening: list[ListeningState]
+    try:
+        listening = await _bucket_listening_from_db(
+            executor,
+            connector_type,
+            endpoint_identity,
+            trunc=trunc,
+            bucket_starts=bucket_starts,
+            step=_DB_STEP[period],
+            has_traffic=[
+                bool(row["messages_ingested"] or row["messages_failed"] or row["messages_filtered"])
+                for row in rows
+            ],
+            savepoint=connection is not None,
+        )
+    except Exception:
+        logger.warning("connector stats heartbeat history read failed", exc_info=True)
+        listening_available = False
+        listening = ["unknown"] * len(rows)
+
     if period == "24h":
         data: list[ConnectorStatsHourly] | list[ConnectorStatsDaily] = [
             ConnectorStatsHourly(
@@ -677,8 +743,9 @@ async def _connector_stats_from_db(
                 messages_ingested=int(row["messages_ingested"]),
                 messages_failed=int(row["messages_failed"]),
                 messages_filtered=int(row["messages_filtered"]),
+                listening=state,
             )
-            for row in rows
+            for row, state in zip(rows, listening, strict=True)
         ]
     else:
         data = [
@@ -689,10 +756,67 @@ async def _connector_stats_from_db(
                 messages_ingested=int(row["messages_ingested"]),
                 messages_failed=int(row["messages_failed"]),
                 messages_filtered=int(row["messages_filtered"]),
+                listening=state,
             )
-            for row in rows
+            for row, state in zip(rows, listening, strict=True)
         ]
-    return ApiResponse(data=data, meta=ApiMeta(hourly_events_available=True))
+    return ApiResponse(
+        data=data,
+        # ApiMeta is an extra="allow" bag; ** keeps the type checker from
+        # reading the extra fields as unknown parameters.
+        meta=ApiMeta(
+            **{"hourly_events_available": True, "listening_available": listening_available}
+        ),
+    )
+
+
+async def _bucket_listening_from_db(
+    executor: Any,
+    connector_type: str,
+    endpoint_identity: str,
+    *,
+    trunc: str,
+    bucket_starts: list[_dt.datetime],
+    step: _dt.timedelta,
+    has_traffic: list[bool],
+    savepoint: bool,
+) -> list[ListeningState]:
+    """Read one endpoint's heartbeat history and classify each stats bucket.
+
+    ``as_of`` is the database ``NOW()``, the same instant the count query used
+    to place its newest bucket, so "is this bucket still open" agrees with it.
+    On a held connection the read runs in a savepoint, so a failure here
+    leaves the caller's transaction usable.
+    """
+    if not bucket_starts:
+        return []
+    query = f"""
+        SELECT NOW() AS as_of,
+               (SELECT received_at FROM connector_heartbeat_log
+                 WHERE connector_type = $1 AND endpoint_identity = $2
+                 ORDER BY received_at ASC LIMIT 1) AS recording_since,
+               ARRAY(
+                   SELECT DISTINCT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
+                                       AT TIME ZONE 'UTC'
+                   FROM connector_heartbeat_log
+                   WHERE connector_type = $1 AND endpoint_identity = $2
+                     AND received_at >= $3
+               ) AS heartbeat_buckets
+    """
+    args = (connector_type, endpoint_identity, bucket_starts[0])
+    if savepoint:
+        async with executor.transaction():
+            row = await executor.fetchrow(query, *args)
+    else:
+        row = await executor.fetchrow(query, *args)
+    return _listening_states(
+        bucket_starts,
+        step,
+        heartbeat_buckets=set(row["heartbeat_buckets"] or ()),
+        recording_since=row["recording_since"],
+        as_of=row["as_of"],
+        has_traffic=has_traffic,
+    )
 
 
 def _build_dashboard_approval_push_runtime(db: DatabaseManager) -> Any | None:
@@ -977,14 +1101,12 @@ async def list_connector_summaries_with_aggregates(
     hourly_map: dict[tuple[str, str], list[int]] = {}
     hourly_filtered_map: dict[tuple[str, str], list[int]] = {}
     hourly_events_available = True
+    now_utc = _dt.datetime.now(_dt.UTC)
+    # Truncate to the start of the current hour so bucket 23 is the most recent
+    # complete-or-in-progress hour. hourly_listening (below) shares this window.
+    window_start = now_utc.replace(minute=0, second=0, microsecond=0) - _dt.timedelta(hours=23)
     if rows:
         try:
-            now_utc = _dt.datetime.now(_dt.UTC)
-            # Truncate to the start of the current hour so bucket 23 is the most recent
-            # complete-or-in-progress hour.
-            window_start = now_utc.replace(minute=0, second=0, microsecond=0) - _dt.timedelta(
-                hours=23
-            )
             # Single UNION ALL query, bounded to the same 24h window on both
             # sides. filtered_events is monthly-partitioned (core_007); a 24h
             # window touches at most 2 partitions and is covered by
@@ -1160,6 +1282,49 @@ async def list_connector_summaries_with_aggregates(
             )
             owntracks_cadence_available = False
 
+    # Per-hour listening history for every roster row, over the same 24 hourly
+    # slots as hourly_events (bu-s11n0s.5 S2). One query: per endpoint, its
+    # oldest recorded heartbeat and the distinct hours it heartbeated in the
+    # window. A failed read leaves every slot ``unknown`` and flips
+    # listening_available, so it never renders as deaf hours.
+    listening_history: dict[tuple[str, str], tuple[_dt.datetime | None, set[_dt.datetime]]] = {}
+    listening_available = True
+    if rows:
+        try:
+            listening_rows = await pool.fetch(
+                """
+                SELECT k.connector_type, k.endpoint_identity,
+                       (SELECT h.received_at FROM connector_heartbeat_log h
+                         WHERE h.connector_type = k.connector_type
+                           AND h.endpoint_identity = k.endpoint_identity
+                         ORDER BY h.received_at ASC LIMIT 1) AS recording_since,
+                       ARRAY(
+                           SELECT DISTINCT
+                                  date_trunc('hour', h.received_at AT TIME ZONE 'UTC')
+                                      AT TIME ZONE 'UTC'
+                           FROM connector_heartbeat_log h
+                           WHERE h.connector_type = k.connector_type
+                             AND h.endpoint_identity = k.endpoint_identity
+                             AND h.received_at >= $1
+                       ) AS heartbeat_buckets
+                FROM unnest($2::text[], $3::text[]) AS k(connector_type, endpoint_identity)
+                """,
+                window_start,
+                [r["connector_type"] for r in rows],
+                [r["endpoint_identity"] for r in rows],
+            )
+            listening_history = {
+                (lr["connector_type"], lr["endpoint_identity"]): (
+                    lr["recording_since"],
+                    set(lr["heartbeat_buckets"] or ()),
+                )
+                for lr in listening_rows
+            }
+        except Exception:
+            logger.warning("connector summaries: failed to read heartbeat history", exc_info=True)
+            listening_available = False
+    hour_starts = [window_start + _dt.timedelta(hours=i) for i in range(24)]
+
     # Precompute the "newer online sibling" lookup once for the archive review
     # queue (bu-u19yv), then evaluate each row against it below. Read-only and
     # derived entirely from the rows already fetched — no extra query, no
@@ -1177,6 +1342,18 @@ async def list_connector_summaries_with_aggregates(
         key = (r["connector_type"], r["endpoint_identity"])
         hourly = hourly_map.get(key, [0] * 24)
         hourly_filtered = hourly_filtered_map.get(key, [0] * 24)
+        recording_since, heartbeat_hours = listening_history.get(key, (None, set()))
+        hourly_listening = _listening_states(
+            hour_starts,
+            _dt.timedelta(hours=1),
+            heartbeat_buckets=heartbeat_hours,
+            recording_since=recording_since,
+            as_of=now_utc,
+            has_traffic=[
+                bool(ingested or filtered)
+                for ingested, filtered in zip(hourly, hourly_filtered, strict=True)
+            ],
+        )
         # Sum the hourly timeseries (already a real 24h window from public.ingestion_events)
         # to produce a true last-24h ingestion count.  The raw counter_messages_ingested is
         # cumulative since process start and must NOT be used as a "today" figure.
@@ -1249,6 +1426,9 @@ async def list_connector_summaries_with_aggregates(
                 # would fabricate ingestion volume that never happened). Render as a
                 # visually-quiet second series alongside hourly_events.
                 "hourly_filtered_events": hourly_filtered,
+                # Per-slot live/deaf/unknown from this endpoint's own heartbeat
+                # history, aligned with hourly_events (bu-s11n0s.5 S2).
+                "hourly_listening": hourly_listening,
                 # Only suppress the ingestion_events-derived `devices` badge
                 # list once connector_registry has a row for *every* device the
                 # fallback knows about for this connector_type (registry_row_counts
@@ -1295,6 +1475,9 @@ async def list_connector_summaries_with_aggregates(
             # raised — mirrors device_liveness_available
             # (genuine-failure-only degraded flag; never fabricated zeros).
             "hourly_events_available": hourly_events_available,
+            # False only if the heartbeat-history read raised; every
+            # hourly_listening slot is then "unknown", never "deaf".
+            "listening_available": listening_available,
             # False only if the OwnTracks durable-point cadence query itself
             # raised. The connector warnings stay empty in that case and the
             # frontend names the degraded source explicitly.

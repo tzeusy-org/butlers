@@ -4045,6 +4045,14 @@ export interface ConnectorCheckpointRecord {
 }
 
 /** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
+/**
+ * Per-bucket listening state, derived from the endpoint's own heartbeat
+ * history (bu-s11n0s.5). `live`: a heartbeat was recorded in the bucket.
+ * `deaf`: none was, in a closed bucket after recording began and with no
+ * traffic; rendered "not listening". `unknown`: the history cannot say.
+ */
+export type ListeningState = "live" | "deaf" | "unknown";
+
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
@@ -4078,6 +4086,12 @@ export interface ConnectorSummary {
    * responses — treat as all-zero when missing.
    */
   hourly_filtered_events?: number[];
+  /**
+   * Listening state per slot of `hourly_events`, same window and order
+   * (bu-s11n0s.5). Optional/additive: absent on older responses, which draw
+   * no listening marks.
+   */
+  hourly_listening?: ListeningState[];
   /**
    * Per-device liveness rows, most-recent-device first. Null for single-device
    * connector_types (the roster row's own liveness already covers them); present
@@ -4207,9 +4221,8 @@ export interface ConnectorStatsBucket {
    * on the detail histogram. 0 when the connector self-persists no skips.
    */
   messages_filtered: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+  /** Whether the endpoint was heard in this bucket (see `ListeningState`). */
+  listening: ListeningState;
 }
 
 export interface ConnectorStatsSummary {
@@ -4235,6 +4248,11 @@ export interface ConnectorStats {
    * honest quiet window. Absent/`true` means the series is trustworthy.
    */
   hourly_events_available: boolean;
+  /**
+   * From `meta.listening_available`: `false` only when the heartbeat-history
+   * read failed, leaving every bucket's `listening` as `unknown`.
+   */
+  listening_available: boolean;
 }
 
 /**
@@ -4330,6 +4348,11 @@ export interface ConnectorSummariesResponse {
    * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
    */
   hourly_events_available?: boolean;
+  /**
+   * False only if the heartbeat-history read failed (bu-s11n0s.5); every
+   * `hourly_listening` slot is then `unknown`. Optional/additive.
+   */
+  listening_available?: boolean;
   /**
    * False only if the OwnTracks durable-point cadence query itself failed.
    * Optional/additive; absent on older cached responses is treated as available.

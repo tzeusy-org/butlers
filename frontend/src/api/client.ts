@@ -4334,6 +4334,7 @@ import type {
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
+  ListeningState,
   PipelineStats,
 } from "./types.ts";
 
@@ -4357,6 +4358,7 @@ export type {
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
+  ListeningState,
   PipelineStats,
 };
 
@@ -4406,10 +4408,8 @@ export interface _BackendStatsRow {
   messages_failed: number;
   /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
   messages_filtered: number;
-  heartbeat_count: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+  /** Heartbeat-derived listening state (bu-s11n0s.5); absent on older responses. */
+  listening?: ListeningState;
   uptime_pct?: number | null;
 }
 
@@ -4494,6 +4494,7 @@ function _toConnectorStats(
   endpointIdentity: string,
   period: IngestionPeriod,
   hourlyEventsAvailable: boolean,
+  listeningAvailable: boolean,
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
     bucket: (r.hour ?? r.day ?? ""),
@@ -4501,9 +4502,8 @@ function _toConnectorStats(
     messages_failed: r.messages_failed,
     // ?? 0 guards older cached backend rows that predate the filtered series.
     messages_filtered: r.messages_filtered ?? 0,
-    healthy_count: r.healthy_count,
-    degraded_count: r.degraded_count,
-    error_count: r.error_count,
+    // Absent (older backend) is "cannot say", never "listening".
+    listening: r.listening ?? "unknown",
   }));
 
   const totalIngested = timeseries.reduce((s, r) => s + r.messages_ingested, 0);
@@ -4529,6 +4529,7 @@ function _toConnectorStats(
     summary,
     timeseries,
     hourly_events_available: hourlyEventsAvailable,
+    listening_available: listeningAvailable,
   };
 }
 
@@ -4562,6 +4563,7 @@ export async function getConnectorStats(
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
   const hourlyEventsAvailable = resp.meta?.hourly_events_available !== false;
+  const listeningAvailable = resp.meta?.listening_available !== false;
   return {
     ...resp,
     data: _toConnectorStats(
@@ -4570,6 +4572,7 @@ export async function getConnectorStats(
       endpointIdentity,
       period,
       hourlyEventsAvailable,
+      listeningAvailable,
     ),
   };
 }

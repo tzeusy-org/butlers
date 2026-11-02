@@ -18,10 +18,18 @@ count strip that misplaces its buckets misleads the owner about when their sense
   measured zero. The positional `deriveSparkline` and `deriveFilteredSparkline` are deleted.
 - The histogram labels its columns relatively (`-24h` … `now`).
 
+## Listening state (S2)
+
+- Each stats bucket and roster slot carries `listening: live | deaf | unknown`, read from the
+  Switchboard heartbeat log for the exact endpoint. `deaf` needs a closed bucket inside recorded
+  heartbeat history with no heartbeat and no traffic; otherwise the state is `unknown`. A failed
+  read sets `listening_available: false` and leaves the counts intact.
+- The default-0 liveness fields (`heartbeat_count`, `healthy_count`, `degraded_count`,
+  `error_count`) are gone from the stats contract and the frontend.
+- `deaf` means "no heartbeat recorded". The history append is best effort, so a lost append also
+  reads as deaf; making the append durable is a separate, unadopted proposal on the bead.
+
 ## Deferred (still bu-s11n0s.5)
 
-- S2: per-bucket listening state from the switchboard heartbeat log (`live | deaf | unknown`), and
-  removal of the default-0 liveness fields (`heartbeat_count`, `healthy_count`, `degraded_count`,
-  `error_count`) from the stats contract.
 - S3: the ESLint ban on positional zero-fill in chart derivations, and migration of the
   session/activity strips.

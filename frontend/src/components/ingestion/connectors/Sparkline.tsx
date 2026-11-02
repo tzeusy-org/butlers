@@ -24,8 +24,17 @@
  * row's own peak (not comparable across rows); pass the roster-wide peak as
  * `maxValue` to make bar heights comparable across connectors.
  *
+ * An optional `listening` series (bu-s11n0s.5) hatches each `deaf` slot (no
+ * heartbeat recorded) so "not listening" differs in shape from a measured
+ * zero, and the aria-label names the deaf hours ("not listening 3h").
+ *
  * Spec: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §Sparkline
  */
+
+import type { ListeningState } from '@/api/types'
+import { describeNotListening } from '@/lib/bucket-series'
+import { useHatchPatternId } from '@/hooks/use-hatch-pattern-id'
+import { NotListeningCell, NotListeningPattern } from './NotListeningHatch'
 
 interface SparklineProps {
   /** Array of 24 hourly counts (oldest first, most recent last). */
@@ -36,6 +45,8 @@ interface SparklineProps {
    * into `data`. Absent or all-zero renders no overlay at all.
    */
   secondaryData?: number[]
+  /** Optional per-slot listening state aligned with `data`; `deaf` slots are hatched. */
+  listening?: ListeningState[]
   /**
    * Override the normalization peak. Defaults to this row's own
    * `Math.max(...data, 1)` — pass a shared value (e.g. the roster-wide peak)
@@ -49,15 +60,21 @@ interface SparklineProps {
 }
 
 /** Build the aria-label numeric fallback: 24h total + peak hour (+ filtered total). */
-function describeSpark(bars: number[], secondaryBars?: number[]): string {
+function describeSpark(
+  bars: number[],
+  secondaryBars?: number[],
+  listening?: ListeningState[],
+): string {
   const total = bars.reduce((sum, v) => sum + v, 0)
   const filteredTotal = secondaryBars?.reduce((sum, v) => sum + v, 0) ?? 0
   const filteredSuffix = filteredTotal > 0 ? ` (${filteredTotal} filtered)` : ''
-  if (total === 0) return `24h activity: no events${filteredSuffix}`
+  const notListening = describeNotListening(listening)
+  const listeningSuffix = notListening ? `, ${notListening}` : ''
+  if (total === 0) return `24h activity: no events${filteredSuffix}${listeningSuffix}`
   const peakIndex = bars.reduce((best, v, i) => (v > bars[best] ? i : best), 0)
   const hoursAgo = bars.length - 1 - peakIndex
   const peakWhen = hoursAgo === 0 ? 'in the last hour' : `${hoursAgo}h ago`
-  return `24h activity: ${total} events total, peak ${peakWhen}${filteredSuffix}`
+  return `24h activity: ${total} events total, peak ${peakWhen}${filteredSuffix}${listeningSuffix}`
 }
 
 /**
@@ -70,10 +87,13 @@ function describeSpark(bars: number[], secondaryBars?: number[]): string {
 export function Sparkline({
   data,
   secondaryData,
+  listening,
   maxValue,
   height = 28,
   className,
 }: SparklineProps) {
+  const patternId = useHatchPatternId()
+  const hasDeaf = listening?.includes('deaf') ?? false
   const bars = data.length > 0 ? data : Array(24).fill(0)
   const peak = maxValue ?? Math.max(...bars, 1)
   const secondaryBars = secondaryData && secondaryData.length > 0 ? secondaryData : undefined
@@ -91,10 +111,11 @@ export function Sparkline({
       viewBox={`0 0 ${totalWidth} ${height}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={describeSpark(bars, secondaryBars)}
+      aria-label={describeSpark(bars, secondaryBars, listening)}
       className={className}
       style={{ width: '100%', height }}
     >
+      {hasDeaf && <NotListeningPattern id={patternId} />}
       {bars.map((v, i) => {
         const barH = Math.max(1, (v / peak) * height)
         const x = i * (barWidth + barGap)
@@ -102,16 +123,22 @@ export function Sparkline({
         const isEmpty = v === 0
         const secondaryV = secondaryBars?.[i] ?? 0
         const secondaryH = secondaryV > 0 ? Math.max(1, (secondaryV / secondaryPeak) * secondaryMaxHeight) : 0
+        const isDeaf = listening?.[i] === 'deaf'
         return (
-          <g key={i}>
-            <rect
-              x={x}
-              y={y}
-              width={barWidth}
-              height={barH}
-              rx={0.5}
-              className={isEmpty ? 'fill-border' : 'fill-foreground/60'}
-            />
+          <g key={i} data-slot={isDeaf ? 'deaf' : undefined}>
+            {isDeaf && (
+              <NotListeningCell x={x} width={barWidth} height={height} patternId={patternId} />
+            )}
+            {(!isDeaf || !isEmpty) && (
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barH}
+                rx={0.5}
+                className={isEmpty ? 'fill-border' : 'fill-foreground/60'}
+              />
+            )}
             {secondaryH > 0 && (
               <rect
                 aria-hidden="true"

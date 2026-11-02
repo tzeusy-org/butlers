@@ -4,7 +4,12 @@
 - [x] 1.2 `lib/bucket-series.ts` places rows by bucket start; unmatched slots are `null`, never zero.
 - [x] 1.3 Connector detail histogram uses keyed series, draws no bar for unreported slots, and labels relatively.
 
-## 2. Deferred
+## 2. Listening state (S2)
 
-- [ ] 2.1 S2: heartbeat-derived per-bucket listening state on detail and roster; drop the default-0 liveness fields.
-- [ ] 2.2 S3: ESLint rule banning positional zero-fill in chart derivations; migrate session/activity strips.
+- [x] 2.1 Stats buckets and roster slots carry heartbeat-derived `live | deaf | unknown`, with a separate availability flag.
+- [x] 2.2 Drop the default-0 `heartbeat_count` / `healthy_count` / `degraded_count` / `error_count` fields from the stats DTOs and frontend.
+- [x] 2.3 Detail histogram and roster sparkline hatch deaf slots and describe them as `not listening <N>h`.
+
+## 3. Deferred
+
+- [ ] 3.1 S3: ESLint rule banning positional zero-fill in chart derivations; migrate session/activity strips.

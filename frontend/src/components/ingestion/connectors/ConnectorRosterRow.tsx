@@ -29,7 +29,7 @@ import { Link } from 'react-router'
 import { Time } from '@/components/ui/time'
 import { StateDot } from '@/components/ui/StateDot'
 import { stateTextColorVar } from '@/lib/visual-token-roles'
-import type { ConnectorSummary } from '@/api/types'
+import type { ConnectorSummary, ListeningState } from '@/api/types'
 import { ConnectorCheckpoints } from './ConnectorCheckpoints'
 import { ConnectorDeviceBadges } from './ConnectorDeviceBadges'
 import { Sparkline } from './Sparkline'
@@ -51,6 +51,11 @@ interface ConnectorRosterRowProps {
    * visually-quiet second series on the same sparkline. Absent → no overlay.
    */
   spark24hFiltered?: number[]
+  /**
+   * Heartbeat-derived listening state per spark slot (bu-s11n0s.5). Deaf
+   * slots are hatched. Absent → no listening marks.
+   */
+  listening24h?: ListeningState[]
   /** Pre-computed 24h event count. Falls back to sum of hourly_events. */
   events24h?: number
   /**
@@ -83,6 +88,7 @@ export function ConnectorRosterRow({
   connector,
   spark24h,
   spark24hFiltered,
+  listening24h,
   events24h,
   catalogChannel,
   rosterSparkMax,
@@ -186,13 +192,15 @@ export function ConnectorRosterRow({
         <Sparkline
           data={bars}
           secondaryData={spark24hFiltered}
+          listening={listening24h}
           maxValue={rosterSparkMax}
           height={24}
         />
         <div className="flex justify-between font-mono text-[9px] text-muted-foreground/40 tracking-[0.04em]">
-          <span>00</span>
-          <span>12</span>
-          <span>24</span>
+          {/* Rolling hours, matching the detail histogram; not clock hours. */}
+          <span>-24h</span>
+          <span>-12h</span>
+          <span>now</span>
         </div>
       </div>
 

@@ -128,3 +128,26 @@ describe('Sparkline secondaryData (filtered series)', () => {
     expect(html).toContain('height="30"')
   })
 })
+
+describe('Sparkline listening state (bu-s11n0s.5)', () => {
+  it('hatches deaf slots and names the not-listening hours in the aria-label', () => {
+    const data = Array(24).fill(0)
+    data[2] = 4
+    const listening = Array(24).fill('live')
+    listening[5] = listening[6] = listening[7] = 'deaf'
+    listening[23] = 'unknown'
+    const html = renderToStaticMarkup(<Sparkline data={data} listening={listening} />)
+    expect(html.match(/data-slot="deaf"/g)).toHaveLength(3)
+    expect(html).toContain(
+      'aria-label="24h activity: 4 events total, peak 21h ago, not listening 3h"',
+    )
+  })
+
+  it('adds nothing when no slot is deaf', () => {
+    const html = renderToStaticMarkup(
+      <Sparkline data={Array(24).fill(0)} listening={Array(24).fill('unknown')} />,
+    )
+    expect(html).not.toContain('data-slot="deaf"')
+    expect(html).not.toContain('not listening')
+  })
+})
