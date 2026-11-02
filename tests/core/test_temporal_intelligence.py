@@ -863,6 +863,84 @@ class TestTickIntegration:
             await document_deadline_set(tick_pool, renewal)
         assert refused.value.reason == "name_conflict"
 
+    async def test_document_deadlines_supersede_across_documents_and_cap_per_issuer(
+        self, tick_pool, monkeypatch
+    ):
+        """A later-dated notice from the same issuer and kind replaces older ones and keeps
+        an owner's disable; an earlier date never drops a reminder; caps refuse new rows."""
+        from butlers.core.temporal import document_deadlines as dd
+
+        async def put(doc: str, days: int, issuer: str | None = "AXA", kind: str = "due"):
+            plan = dd.plan_document_deadline(
+                document_id=f"s3://bucket/general/{doc}.pdf",
+                kind=kind,
+                target_date=_future_date(days).isoformat(),
+                issuer=issuer,
+            )
+            return await dd.document_deadline_set(tick_pool, plan)
+
+        async def rows() -> dict[str, tuple[bool, int]]:
+            found = await tick_pool.fetch(
+                "SELECT job_args, enabled, target_date FROM scheduled_tasks WHERE job_name = $1",
+                dd.NOTICE_JOB_NAME,
+            )
+            today = datetime.now(UTC).date()
+            return {
+                r["job_args"]["document_id"].rsplit("/", 1)[1][:-4]: (
+                    r["enabled"],
+                    (r["target_date"] - today).days,
+                )
+                for r in found
+            }
+
+        older = await put("axa-1", 30)
+        await tick_pool.execute(
+            "UPDATE scheduled_tasks SET enabled = false WHERE id = $1::uuid", older["id"]
+        )
+        # Same issuer (case-insensitive) and kind, later date: the older row goes and the
+        # owner's disable carries over to the newer one.
+        newer = await put("axa-2", 40, issuer="axa")
+        assert (newer["status"], newer["replaced"]) == ("created", [older["id"]])
+        # An earlier date from the same issuer never drops a reminder: both are kept.
+        assert (await put("axa-3", 20))["replaced"] == []
+        # Another kind, and documents without an issuer, never supersede.
+        assert (await put("axa-4", 50, kind="renewal"))["replaced"] == []
+        await put("anon-1", 10, issuer=None)
+        assert (await put("anon-2", 20, issuer=None))["replaced"] == []
+        assert await rows() == {
+            "axa-2": (False, 40),
+            "axa-3": (True, 20),
+            "axa-4": (True, 50),
+            "anon-1": (True, 10),
+            "anon-2": (True, 20),
+        }
+
+        # A completed predecessor is finished business, not an owner's disable.
+        sp = await put("sp-1", 10, issuer="SP Group")
+        await tick_pool.execute(
+            "UPDATE scheduled_tasks SET deadline_status = 'completed', enabled = false "
+            "WHERE id = $1::uuid",
+            sp["id"],
+        )
+        assert (await put("sp-2", 20, issuer="SP Group"))["replaced"] == [sp["id"]]
+        assert (await rows())["sp-2"] == (True, 20)
+
+        # Caps count active rows after supersession; a refusal writes nothing.
+        monkeypatch.setattr(dd, "MAX_ACTIVE_PER_ISSUER", 2)
+        before = await rows()
+        with pytest.raises(dd.DocumentDeadlineRefused) as refused:
+            await put("axa-5", 15)
+        assert refused.value.reason == "issuer_cap_reached"
+        assert await rows() == before
+        # Re-setting an existing document adds no row, so the cap does not apply.
+        assert (await put("axa-3", 25))["status"] == "superseded"
+        # A later date that replaces both active AXA due rows fits under the cap.
+        assert len((await put("axa-6", 60))["replaced"]) == 2
+        monkeypatch.setattr(dd, "MAX_ACTIVE_DOCUMENT_DEADLINES", len(await rows()))
+        with pytest.raises(dd.DocumentDeadlineRefused) as refused:
+            await put("new-issuer", 15, issuer="Acme")
+        assert refused.value.reason == "total_cap_reached"
+
     async def test_tick_deferred_notification_delivery_and_expiry(self, tick_pool):
         """tick() delivers pending notifications via notify_fn; failure/missing → pending;
         expired (>24h) → expired; deferred_flushed span set."""

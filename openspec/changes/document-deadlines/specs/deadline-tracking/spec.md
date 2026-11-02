@@ -26,6 +26,30 @@ Butlers SHALL register a date read from a document through a `paperwork_deadline
 - **WHEN** the deadline name for a document and kind is already held by a prompt-mode deadline
 - **THEN** the call returns `status = "refused"` with reason `name_conflict` and the existing task is unchanged
 
+### Requirement: Document deadline supersession across documents and caps
+
+ID: REQ-deadline-tracking-003
+Source: bu-jv1moa.52; RFC 0038 D6; Finance MANIFESTO
+Scope: v1-mandatory
+
+When `paperwork_deadline_set` creates a document deadline or supersedes one in place, it SHALL delete every other document's job-mode document deadline with the same `kind`, the same issuer (sanitized text compared case-insensitively) and a target date on or before the new one, and SHALL return their ids as `replaced`. A deadline without an issuer SHALL neither replace nor be replaced by another document's. A deadline with a later target date SHALL be kept, so a newer document never drops a reminder for a date still ahead of it. If any replaced deadline was disabled by the owner, that is, disabled while its status was neither `expired` nor `completed`, the new or superseded deadline SHALL be disabled too, so supersession never re-enables a reminder the owner turned off; an `expired` or `completed` predecessor carries no disable. A call that would add a row SHALL be refused with reason `issuer_cap_reached` when the issuer already holds 10 active document deadlines (status not `expired` or `completed`, counted after replacement, documents without an issuer sharing one bucket), and with reason `total_cap_reached` when the butler holds 200; a superseding or unchanged call adds no row and is not capped. Every refusal SHALL write nothing, and concurrent calls SHALL be serialized so the caps hold.
+
+#### Scenario: A renewed notice replaces the older one and keeps the owner's disable
+
+- **WHEN** the owner disabled the `due` deadline from AXA's first bill and AXA's next bill sets a later `due` date
+- **THEN** the first bill's deadline is deleted and listed in `replaced`
+- **AND** the new deadline is created disabled
+
+#### Scenario: An earlier date keeps both reminders
+
+- **WHEN** a second AXA document sets a `due` date before the existing AXA `due` deadline
+- **THEN** both deadlines exist and `replaced` is empty
+
+#### Scenario: The issuer cap refuses
+
+- **WHEN** an issuer already holds 10 active document deadlines and an eleventh document from it is set with an earlier date
+- **THEN** the call returns `status = "refused"` with reason `issuer_cap_reached` and nothing is written
+
 ### Requirement: Job-mode deadline dispatch and fixed-template notice
 
 ID: REQ-deadline-tracking-002

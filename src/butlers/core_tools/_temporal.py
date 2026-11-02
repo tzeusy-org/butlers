@@ -292,8 +292,10 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             Creates or updates one reminder-only deadline for this document and
             kind. When a reminder threshold is reached, the owner receives a
             fixed-template notice naming the issuer and date. Setting the same
-            date again changes nothing; a new date replaces the old one. A past
-            or unreadable date returns ``{"status": "refused", "reason": ...}``.
+            date again changes nothing; a new date replaces the old one, and a
+            later date from the same issuer and kind replaces other documents'
+            earlier deadlines. A past or unreadable date, or more than 10 active
+            deadlines for one issuer, returns ``{"status": "refused", "reason": ...}``.
             """
             try:
                 plan = plan_document_deadline(
