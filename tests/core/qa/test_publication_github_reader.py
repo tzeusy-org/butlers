@@ -18,6 +18,7 @@ from butlers.core.qa.publication.github_reader import (
     GithubPublicationReader,
     PublicationReadError,
 )
+from butlers.core.qa.publication.reconcile import PullRequestView
 
 pytestmark = pytest.mark.unit
 
@@ -161,6 +162,60 @@ async def test_any_pull_request_outside_the_bound_pair_raises(item: dict) -> Non
 
     with pytest.raises(PublicationReadError) as exc:
         await github.reader().find_pull_requests(head=_BRANCH, base="main")
+
+    assert exc.value.code == "unexpected_pull_request"
+
+
+_PR_PATH = f"{_PULLS_PATH}/7"
+
+
+def _pr_detail(**overrides) -> dict:
+    labels = [{"name": "self-healing"}, {"name": "automated"}]
+    return {**_pr(7), "title": "fix(qa): t", "body": None, "labels": labels, **overrides}
+
+
+async def test_read_pull_request_reports_the_bound_pair_text_and_labels() -> None:
+    github = _GitHub({_PR_PATH: httpx.Response(200, json=_pr_detail())})
+
+    pr = await github.reader().read_pull_request(number=7)
+
+    assert pr == PullRequestView(
+        7, _BRANCH, "main", "fix(qa): t", "", ("self-healing", "automated")
+    )
+    assert [r.method for r in github.requests] == ["GET"]
+
+
+async def test_missing_pull_request_is_none_only_once_the_repository_is_confirmed() -> None:
+    github = _GitHub(
+        {
+            _PR_PATH: httpx.Response(404, json={"message": "Not Found"}),
+            _REPO_PATH: httpx.Response(200, json={"full_name": _REPO}),
+        }
+    )
+    assert await github.reader().read_pull_request(number=7) is None
+
+    hidden = _GitHub({_PR_PATH: httpx.Response(404), _REPO_PATH: httpx.Response(404)})
+    with pytest.raises(PublicationReadError) as exc:
+        await hidden.reader().read_pull_request(number=7)
+    assert exc.value.code == "repository_unconfirmed"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        _pr_detail(number=8),
+        {**_pr_detail(), "head": {"ref": _BRANCH, "repo": {"full_name": "evil/fork"}}},
+        _pr_detail(title=None),
+        _pr_detail(labels=[{"name": 3}]),
+        _pr_detail(labels="self-healing"),
+    ],
+    ids=["other-number", "fork-head", "no-title", "bad-label", "labels-not-list"],
+)
+async def test_unprovable_pull_request_answer_raises(item: dict) -> None:
+    github = _GitHub({_PR_PATH: httpx.Response(200, json=item)})
+
+    with pytest.raises(PublicationReadError) as exc:
+        await github.reader().read_pull_request(number=7)
 
     assert exc.value.code == "unexpected_pull_request"
 

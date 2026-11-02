@@ -13,6 +13,11 @@ Credentials never pass through argv, the report or logs:
   injected by the operator's secret plumbing (``bws run -- ...`` or a pod
   ``secretKeyRef``).  There is no credential-file discovery.
 
+``pr_labels`` holds are observed against the dispatcher's PR labels: the QA
+dispatch defaults unless ``--label`` is repeated to name the configured set.  The
+ledger's stored request digest decides, so a wrong set only keeps the hold
+(``payload_mismatch``).
+
 Exit status: 0 when nothing stays held, 2 when any operation stays held or the
 run was refused, 1 on an unexpected failure.
 """
@@ -27,7 +32,7 @@ import sys
 
 import asyncpg
 
-from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
+from butlers.core.qa.dispatch import DEFAULT_PR_LABELS, QA_GH_TOKEN_KEY
 from butlers.core.qa.publication.github_reader import GithubPublicationReader
 from butlers.core.qa.publication.reconcile import sweep_held_operations
 from butlers.core.qa.publication.state import PublicationRefused
@@ -44,11 +49,17 @@ async def _assume_qa_role(connection: asyncpg.Connection) -> None:
     await connection.execute(f"SET ROLE {_QA_ROLE}")
 
 
-async def run(*, dsn: str, reader: GithubPublicationReader, limit: int) -> int:
+async def run(
+    *,
+    dsn: str,
+    reader: GithubPublicationReader,
+    limit: int,
+    labels: tuple[str, ...] = DEFAULT_PR_LABELS,
+) -> int:
     async with asyncpg.create_pool(
         dsn=dsn, min_size=1, max_size=1, command_timeout=30, setup=_assume_qa_role
     ) as pool:
-        entries = await sweep_held_operations(pool, reader, limit=limit)
+        entries = await sweep_held_operations(pool, reader, limit=limit, labels=labels)
     report = [
         {
             "operation_id": str(e.operation_id),
@@ -74,6 +85,12 @@ def main() -> int:
     parser = _Parser(description=__doc__)
     parser.add_argument("--repository", required=True, help="fixed origin, owner/name")
     parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument(
+        "--label",
+        action="append",
+        dest="labels",
+        help="a configured QA PR label (repeat for each); defaults to the dispatch labels",
+    )
     args = parser.parse_args()
     try:
         token = os.environ.get(QA_GH_TOKEN_KEY, "")
@@ -88,7 +105,8 @@ def main() -> int:
         dsn = sys.stdin.readline().strip()
         if not dsn:
             raise _Refused("connection_input_missing")
-        return asyncio.run(run(dsn=dsn, reader=reader, limit=args.limit))
+        labels = tuple(args.labels) if args.labels else DEFAULT_PR_LABELS
+        return asyncio.run(run(dsn=dsn, reader=reader, limit=args.limit, labels=labels))
     except (_Refused, PublicationRefused) as exc:
         print(json.dumps({"error": str(exc)}))
         return 2

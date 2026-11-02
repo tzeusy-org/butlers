@@ -178,7 +178,8 @@ def _flagged_event_detail(finding: QaFinding) -> str:
 
 
 #: PR labels applied to QA-originated investigation PRs.
-_DEFAULT_PR_LABELS = ["self-healing", "automated"]
+#: The default QA PR labels; the reconciliation script binds ``pr_labels`` holds with them.
+DEFAULT_PR_LABELS = ("self-healing", "automated")
 
 #: CredentialStore key for the GitHub token used by QA investigations.
 QA_GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN"
@@ -340,7 +341,7 @@ class QaDispatchConfig:
     max_concurrent: int = 2
     circuit_breaker_threshold: int = 5
     timeout_minutes: int = 30
-    pr_labels: list[str] = field(default_factory=lambda: list(_DEFAULT_PR_LABELS))
+    pr_labels: list[str] = field(default_factory=lambda: list(DEFAULT_PR_LABELS))
     dashboard_base_url: str | None = None
     repo_whitelist: RepoWhitelist | None = None
     """Repository whitelist the publisher enforces; ``None`` refuses publication."""
