@@ -501,9 +501,14 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
       await waitFor(() => expect(screen.getByRole("link", {name: "View service-0"}).querySelectorAll("dd")[0]?.textContent).toBe("healthy"));
       const indexVisibleRows = () => {
         const links = new Map<string, HTMLElement[]>();
-        for (const link of screen.getAllByRole("link")) {
-          const label = link.getAttribute("aria-label");
-          if (label !== null) links.set(label, [...(links.get(label) ?? []), link]);
+        const names = new Map<Element, string>();
+        const visible = screen.getAllByRole("link", {name: (name, element) => {
+          if (element) names.set(element, name);
+          return true;
+        }});
+        for (const link of visible) {
+          const name = names.get(link)!;
+          links.set(name, [...(links.get(name) ?? []), link]);
         }
         return links;
       };
@@ -515,6 +520,21 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
         expect(item, `list item for ${name}`).not.toBeNull();
         return within(item!).getByRole("link", {name: `View ${name}`});
       };
+      const duplicate = document.createElement("a");
+      duplicate.href = "/butlers/service-1";
+      duplicate.setAttribute("aria-label", "View   service-1");
+      duplicate.hidden = true;
+      document.body.append(duplicate);
+      try {
+        visibleRows = indexVisibleRows();
+        expect(() => rowFor("service-1")).not.toThrow();
+        duplicate.hidden = false;
+        visibleRows = indexVisibleRows();
+        expect(() => rowFor("service-1")).toThrow();
+      } finally {
+        duplicate.remove();
+        visibleRows = indexVisibleRows();
+      }
       for (const entry of facts) {
         const row = rowFor(entry.name);
         const values = [...row.querySelectorAll("dd")].map((value) => value.textContent);
