@@ -28,14 +28,30 @@ the complete compatible mutator inventory
 ## Rollout
 
 The rollout costs whole-assistant downtime: stopping every database client stops every butler.
+On k3s the chart's `suspend` value scales every Deployment to 0 and suspends every CronJob, and
+because it is the chart's desired state, Helm keeps it that way until it is turned off.
 
-1. Confirm the release carrying G passed its required checks.
-2. Stop every client of the target database: every butler, connector, the dashboard API, cron
-   jobs, exporters and stray shells.
-3. Run the migration once, alone. On k3s, migrations run in the `dashboard-api` initContainer
-   (see [Kubernetes Deployment](kubernetes-deployment.md#deploy)).
-4. Start the release that carries G. Never start an image older than G afterward: that is
-   unsupported and outside what G can prove.
+1. **Check the release.** The release carrying G passed its required checks, and the migration
+   login role (the database user of the migration connection, never a `butler_*_rw` role) has
+   `pg_read_all_stats`. Without it G refuses `db_activity_unverifiable`.
+2. **Take and verify a backup.** After G, recovery is roll-forward only. Take a fresh backup of the
+   target database and prove it restores, per [Backup and Restore](backup-restore.md) (the
+   [managed restore drill](backup-restore.md#managed-restore-drill) or an equivalent scratch
+   restore). Do not continue on an unverified backup.
+3. **Stop every client and keep it stopped.** Deploy the release carrying G with `suspend=true`
+   (for example `helm upgrade` with `--set suspend=true` at the new image tag). This scales
+   `butlers-up`, `butlers-control`, `dashboard-api`, the frontend and every connector to 0 and
+   suspends the backup and other CronJobs. Pause any automation that would re-apply the chart
+   without `suspend=true` (a scheduled deploy, a GitOps controller). Wait until no pod and no
+   running Job is left in the namespace, and stop any exporter, shell or tool connected from
+   outside it.
+4. **Run the migration once, alone.** Nothing in the chart runs while suspended, including the
+   `dashboard-api` `migrations` initContainer. Run `butlers db migrate` once as a one-shot pod or
+   Job using the same image, environment and Secrets as that initContainer. If G refuses, read
+   the code in the table below, fix the cause and rerun; nothing has changed.
+5. **Start the release.** Deploy the same release with `suspend=false` and resume what step 3
+   paused. The `dashboard-api` initContainer's `butlers db migrate` is now a no-op at head. Never
+   start an image older than G afterward: that is unsupported and outside what G can prove.
 
 Until the rollout runs, any automatic migration path that reaches G while clients are connected
 refuses and leaves the database at G's predecessor. That is expected, not a fault to work around.
@@ -46,7 +62,7 @@ refuses and leaves the database at G's predecessor. That is expected, not a faul
 | --- | --- | --- |
 | Another session holds a lock on `relationship.entity_facts` | `lock_unavailable` | No DDL; stop the holder and retry. |
 | Any other client connected to the database | `active_writer` | No DDL; stop the client and retry. |
-| Migration role cannot read session activity | `db_activity_unverifiable` | No DDL. |
+| Migrating role lacks `pg_read_all_stats`, or a session row is masked | `db_activity_unverifiable` | No DDL; grant the privilege and retry. |
 | Legacy or occurrence index missing, changed or invalid | `cutover_index_state_invalid` | No DDL. |
 | Offline SQL generation reaches G | refusal | No SQL emitted. |
 
@@ -67,3 +83,4 @@ Every refusal leaves indexes, data and the applied revision unchanged.
 
 - [Relationship Butler](../butlers/relationship.md#effective-time-on-structural-facts)
 - [Kubernetes Deployment](kubernetes-deployment.md)
+- [Backup and Restore](backup-restore.md)

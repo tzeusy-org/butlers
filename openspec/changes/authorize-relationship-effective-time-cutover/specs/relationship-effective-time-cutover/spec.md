@@ -69,24 +69,37 @@ Scope: v1-mandatory
 - **THEN** the commit carrying G MUST NOT be treated as satisfying the inventory requirement
 
 ### Requirement: Lock-and-refuse proves no old writer during G
+G SHALL run as the migration login role: the database user of the migration connection, which
+runs `butlers db migrate` and owns the butler schemas, never a `butler_*_rw` runtime role assumed by
+`SET ROLE`. That role SHALL be a superuser or a member of the predefined role `pg_read_all_stats`,
+so that `pg_stat_activity` shows it the database, user and backend type of every other role's
+sessions. Without that privilege, PostgreSQL masks other roles' session details, and a naive count
+could report zero clients beside live writers.
 The G upgrade SHALL, in one transaction and before any DDL: acquire
-`LOCK TABLE relationship.entity_facts IN ACCESS EXCLUSIVE MODE NOWAIT`; then prove that no client
-backend other than its own session is connected to `current_database()`; then verify that
+`LOCK TABLE relationship.entity_facts IN ACCESS EXCLUSIVE MODE NOWAIT`; then verify that the
+session's current role is a superuser or has the privileges of `pg_read_all_stats`; then read every
+`pg_stat_activity` row other than its own `pg_backend_pid()`; then verify that
 `uq_ef_spo_active` exists with its original definition and that the occurrence index exists and is
 valid. It SHALL hold the lock through the DDL and the commit. Lock contention SHALL refuse
-`lock_unavailable`; any other connected client, whatever its role or purpose, SHALL refuse
-`active_writer`; session activity the migration role cannot read SHALL refuse
-`db_activity_unverifiable`; an unexpected index state SHALL refuse `cutover_index_state_invalid`.
+`lock_unavailable`. A missing `pg_read_all_stats` privilege SHALL refuse `db_activity_unverifiable`.
+Any row whose database, user or backend type is NULL or otherwise unreadable SHALL refuse
+`db_activity_unverifiable`, whatever database it might belong to. Any readable client backend on
+`current_database()`, whatever its role or purpose, SHALL refuse `active_writer`. An unexpected
+index state SHALL refuse `cutover_index_state_invalid`.
 Every refusal SHALL leave indexes, data and the applied Relationship revision unchanged. Refusal
 error output SHALL carry the stable code and counts only, never fact content or SQL text.
 Before G runs on a database with existing clients, the rollout SHALL stop every database client of
 the target database, which stops every butler and accepts whole-assistant downtime for the
 migration, and SHALL afterward start only the release that carries G. Starting an image older than
 G after G commits is unsupported; this residual operator risk SHALL be stated in the rollout notes.
-The implementation SHALL include real-PostgreSQL tests proving that G refuses `active_writer` with
-the legacy index and revision unchanged while another client is connected to the target database,
-that G refuses `lock_unavailable` while another session holds a lock on `relationship.entity_facts`,
-and that G applies when no other client is connected.
+Granting `pg_read_all_stats` to the migration login role, where it lacks it, is part of the owner's
+rollout, not of any migration.
+The implementation SHALL include real-PostgreSQL tests proving that: G refuses `active_writer`, with
+the legacy index and revision unchanged, while a second client connected as a different login role
+from the migrating role is connected to the target database; G refuses `db_activity_unverifiable`
+when the migrating role lacks `pg_read_all_stats` while that second client is connected; G refuses
+`lock_unavailable` while another session holds a lock on `relationship.entity_facts`; and G applies
+when no other client is connected.
 
 ID: REQ-relationship-effective-time-cutover-003
 Source: bu-4awqyt owner answer B (lock-and-refuse plus stop of every database client, with a test that G refuses while another client is connected); relationship-fact-effective-time migration plan steps 3-4
@@ -111,14 +124,19 @@ Scope: v1-mandatory
 
 #### Scenario: Unreadable session activity fails closed
 
-- **WHEN** the migration role cannot determine whether other client backends are connected
+- **WHEN** the migrating role is neither a superuser nor has the privileges of `pg_read_all_stats`,
+  or any other `pg_stat_activity` row has a NULL or unreadable database, user or backend type
 - **THEN** the upgrade MUST refuse `db_activity_unverifiable` with no change
+- **AND** it MUST NOT treat a masked row as belonging to another database
 
 #### Scenario: The refusal test is required
 
 - **WHEN** the change carrying G is reviewed
 - **THEN** it MUST include a real-PostgreSQL test that holds a second client connection to the
-  target database and asserts G refuses `active_writer` with the legacy index and revision unchanged
+  target database, logged in as a different role from the migrating role, and asserts G refuses
+  `active_writer` with the legacy index and revision unchanged
+- **AND** a companion test MUST assert that a migrating role without `pg_read_all_stats` refuses
+  `db_activity_unverifiable` under the same second connection
 
 ### Requirement: G is an ordinary Relationship revision
 G SHALL be a then-free revision in the ordinary Relationship migration chain after the actual

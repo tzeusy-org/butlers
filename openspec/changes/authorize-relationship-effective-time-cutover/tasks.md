@@ -20,7 +20,9 @@
       stays untouched. Implement the lock-and-refuse check and index-state checks before DDL, and
       the offline refusal.
 - [ ] 3.2 Add real-PostgreSQL tests: G refuses `active_writer` with index and revision unchanged
-      while a second client is connected; G refuses `lock_unavailable` under lock contention; G
+      while a second client, logged in as a different role, is connected; G refuses
+      `db_activity_unverifiable` when the migrating role lacks `pg_read_all_stats`; G refuses
+      `lock_unavailable` under lock contention; G
       applies with no other client; the downgrade recreates the index before the first temporal
       write and refuses after it.
 - [ ] 3.3 Keep `tests/contracts/test_entity_facts_mutator_inventory.py` clean and the named
