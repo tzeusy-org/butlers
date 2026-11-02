@@ -42,6 +42,10 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   a terminal attempt closes with no held lineage, the bytes are emptied and the row stays as a
   binding tombstone. Only `butler_qa_rw` writes (forced RLS);
   every runtime role reads. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.qa_publication_refusals`** -- QA publisher refusal receipts (core_302): one immutable,
+  content-free row (status, category) per attempt the publisher refused before retaining an export,
+  so the case API can prove such an attempt `unpublished`. Fenced like the exports table. See
+  [QA Publication Boundary](../operations/qa-publication-boundary.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

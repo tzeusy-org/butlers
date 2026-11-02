@@ -485,7 +485,16 @@ async def test_case_detail_failed_state_quotes_error_detail() -> None:
     assert body["error_detail"] == "RuntimeError: Codex CLI exited with code 1: connection reset"
 
 
-async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -> None:
+@pytest.mark.parametrize(
+    ("export_retained", "refusal_recorded"),
+    [(True, None), (False, True)],
+    ids=["retained-export", "refusal-receipt"],
+)
+async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal(
+    export_retained: bool, refusal_recorded: bool | None
+) -> None:
+    """Either trusted publisher trace proves it handled the attempt: a retained export,
+    or a receipt for a refusal before retention (bu-mc01y5.28)."""
     attempt_id = _uuid7_with_timestamp(1_771_234_567_899)
     row = _make_case_row(
         id=attempt_id,
@@ -495,7 +504,8 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
         pr_number=None,
         finding_structured_evidence={"investigation_notes": _notes_payload()},
         pr_absence_proven=True,
-        export_retained=True,
+        export_retained=export_retained,
+        refusal_recorded=refusal_recorded,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 
@@ -511,19 +521,27 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
 
 
 @pytest.mark.parametrize(
-    ("pr_absence_proven", "export_retained"),
-    [(False, True), (None, True), (True, False), (True, None)],
+    ("pr_absence_proven", "export_retained", "refusal_recorded"),
+    [
+        (False, True, None),
+        (None, True, None),
+        (True, False, None),
+        (True, None, None),
+        (True, False, False),
+        (False, False, True),
+    ],
 )
 async def test_case_detail_never_claims_unpublished_without_proof_of_no_pr(
     pr_absence_proven: bool | None,
     export_retained: bool | None,
+    refusal_recorded: bool | None,
 ) -> None:
     """A retained diff plus missing PR metadata is not proof that no PR exists.
 
     A lost ``pr_create`` response leaves no local PR metadata while a PR may
     exist, so without ledger proof of absence the state stays ambiguous.  An
-    empty ledger is proof only for an attempt whose export the publisher
-    retained: an attempt from before the ledger existed has no rows either.
+    empty ledger is proof only for an attempt the publisher handled (a retained
+    export or a refusal receipt): a pre-ledger attempt has no rows either.
     """
     attempt_id = _uuid7_with_timestamp(1_771_234_567_901)
     row = _make_case_row(
@@ -533,6 +551,7 @@ async def test_case_detail_never_claims_unpublished_without_proof_of_no_pr(
         finding_structured_evidence={"investigation_notes": _notes_payload()},
         pr_absence_proven=pr_absence_proven,
         export_retained=export_retained,
+        refusal_recorded=refusal_recorded,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 

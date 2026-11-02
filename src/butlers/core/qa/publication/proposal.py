@@ -191,10 +191,16 @@ async def publish_investigation(
     whitelist: RepoWhitelist | None,
     dashboard_base_url: str | None,
 ) -> PublicationResult:
-    """Seal the branch, bind it, and hand it to the publisher.  Never raises."""
+    """Seal the branch, bind it, and hand it to the publisher.  Never raises.
+
+    A refusal before the publisher is reached is receipted through it as well
+    (:meth:`QaPublisher.record_refusal`): nothing was retained or sent for the attempt.
+    """
     if base_sha is None or identity is None:
         # Without a trusted base or a bound author identity the export cannot be proven.
-        return PublicationResult(PublicationStatus.REFUSED, "unbound_export")
+        return await publisher.record_refusal(
+            attempt_id, PublicationResult(PublicationStatus.REFUSED, "unbound_export")
+        )
     try:
         objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
         export = await build_sealed_export(
@@ -212,10 +218,12 @@ async def publish_investigation(
             if exc.code in _LEAK_CODES
             else PublicationStatus.REFUSED
         )
-        return PublicationResult(status, exc.code)
+        return await publisher.record_refusal(attempt_id, PublicationResult(status, exc.code))
     except (InvalidBinding, OSError, TimeoutError):
         logger.warning("QA publication could not bind attempt=%s", attempt_id, exc_info=True)
-        return PublicationResult(PublicationStatus.REFUSED, "unbound_export")
+        return await publisher.record_refusal(
+            attempt_id, PublicationResult(PublicationStatus.REFUSED, "unbound_export")
+        )
 
     title, body = compose_pr_text(
         finding, attempt_id, load_pr_notes(worktree_path), dashboard_base_url
