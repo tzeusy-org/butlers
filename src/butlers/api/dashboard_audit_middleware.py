@@ -63,9 +63,14 @@ _MAX_BODY_BYTES: int = 16_384  # 16 KiB — generous but bounded
 # Path prefixes that are NOT interesting to audit (health probes, static files).
 _SKIP_PREFIXES: tuple[str, ...] = ("/health", "/api/health")
 
-# This route carries private household identity values.  Its handler emits an
-# explicit field-by-field audit row inside the mapping transaction.
-_EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset({("POST", "/api/home/person-mappings")})
+# These routes carry private household identity values.  Each handler emits an
+# explicit field-by-field audit row inside its own write transaction.
+_EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/home/person-mappings"),
+        ("PUT", "/api/home/settings/presence/owner-entities"),
+    }
+)
 
 # The owner place registry editor carries coordinates and Wi-Fi SSIDs.  Its handlers write
 # one explicit allowlisted audit row per write, so the generic middleware never reads these

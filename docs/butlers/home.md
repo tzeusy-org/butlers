@@ -86,6 +86,23 @@ imports those once and moves the readers to the registry. Routes: `roster/home/a
 (`/api/home/places`); requirement: `butler-home` spec, "Owner place registry and dashboard
 editor".
 
+## Owner presence entities
+
+The **Devices → Who counts as you** panel, behind dashboard owner-auth, edits
+`home:presence:owner_entities`: the Home Assistant entity ids (any domain, including room sensors)
+that the presence producer treats as the owner. `GET/PUT /api/home/settings/presence/owner-entities`
+implement the adopted `home-presence-configuration` contract
+(`openspec/changes/specify-home-presence-owner-entity-configuration/`): exact ids only (no trimming,
+case-folding or name lookup), at most 50, each already present in `ha_entity_snapshot` (unseen ids are
+one count-only `422 INVALID_REFERENCE`); writes serialize on a fixed advisory lock and compare-and-swap
+the state row's version (identical list is a no-op at any version, a stale changed list is `409`); a
+malformed stored value is a blind `503`, never an empty success. The generic audit middleware never
+reads the PUT body; one allowlisted audit event records counts, versions and outcome. A PUT is a
+settings receipt only: the next scheduled `run_home_presence_context_producer` run reads the list.
+
+These guarantees cover only these two routes. The generic state API and the `state_*` MCP tools can
+still read and overwrite the same key without this validation or lock.
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
