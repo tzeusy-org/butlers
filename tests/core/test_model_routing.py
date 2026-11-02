@@ -375,11 +375,6 @@ async def test_fetch_resolve_rows_bounded_lru_eviction() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _jsonb_as_text(conn: asyncpg.Connection) -> None:
-    # These tests write JSON text into jsonb parameters; keep asyncpg's text codec.
-    await conn.reset_type_codec("jsonb", schema="pg_catalog")
-
-
 @pytest.fixture
 async def routing_pool(db) -> asyncpg.Pool:
     """Core pool with the seeded model catalog emptied.
@@ -389,7 +384,7 @@ async def routing_pool(db) -> asyncpg.Pool:
     could observe another test's cached rows for the same key within the TTL window.
     """
     clear_routing_decision_cache()
-    pool = await db("core", init=_jsonb_as_text)
+    pool = await db("core")
     await pool.execute(
         "TRUNCATE public.model_round_robin_counters, "
         "public.butler_model_overrides, public.model_catalog CASCADE"
@@ -410,9 +405,7 @@ async def _insert_catalog_entry(
     extra_args: list[str] | None = None,
     last_verified_ok: bool | None = None,
 ) -> str:
-    import json
-
-    extra_json = json.dumps(extra_args or [])
+    extra_json = extra_args or []
     row = await pool.fetchrow(
         """
         INSERT INTO public.model_catalog
@@ -902,8 +895,6 @@ async def test_resolve_extra_args_and_string_tier(routing_pool: asyncpg.Pool) ->
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_specialty_tier(routing_pool: asyncpg.Pool) -> None:
     """specialty tier resolves correctly and is isolated from workhorse."""
-    import json
-
     await routing_pool.execute(
         """
         INSERT INTO public.model_catalog
@@ -913,7 +904,7 @@ async def test_resolve_specialty_tier(routing_pool: asyncpg.Pool) -> None:
         "specialty-model",
         "opencode",
         "ollama/qwen3.5:9b",
-        json.dumps([]),
+        [],
         "specialty",
         True,
         10,
@@ -927,7 +918,7 @@ async def test_resolve_specialty_tier(routing_pool: asyncpg.Pool) -> None:
         "local-model",
         "claude",
         "claude-sonnet-4-6",
-        json.dumps([]),
+        [],
         "local",
         True,
         10,
@@ -1564,16 +1555,14 @@ async def _insert_spend_rule(
     condition: dict,
     action: dict,
 ) -> None:
-    import json
-
     await pool.execute(
         """
         INSERT INTO public.spend_rules (position, condition, action)
         VALUES ($1, $2::jsonb, $3::jsonb)
         """,
         position,
-        json.dumps(condition),
-        json.dumps(action),
+        condition,
+        action,
     )
 
 
