@@ -879,6 +879,7 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
         else:
             with monkeypatch.context() as context:
                 context.setenv("FACT_CAPTURE_PREPARE_CONFIG", str(config))
+                context.setattr(sys, "path", list(sys.path))
                 context.setattr(sys, "argv", ["control", "--prepare-child"])
                 if mode == "preloaded":
                     context.setitem(sys.modules, "ci_environment", ModuleType("ci_environment"))
