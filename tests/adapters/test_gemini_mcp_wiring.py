@@ -14,6 +14,7 @@ import pytest
 
 from butlers.core.fact_authority import INVOCATION_HEADER
 from butlers.core.runtimes import GeminiAdapter
+from butlers.core.runtimes.gemini import _AT_ESCAPE_NOTE
 
 pytestmark = pytest.mark.unit
 
@@ -33,7 +34,9 @@ async def _invoke(mcp_servers: dict, env: dict[str, str] | None = None, prompt: 
     async def fake_exec(*cmd, **kwargs):
         child_env = kwargs["env"] or {}
         settings = child_env.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH")
+        system_md = child_env.get("GEMINI_SYSTEM_MD")
         seen.update(
+            system_md=await asyncio.to_thread(Path(system_md).read_text) if system_md else None,
             cmd=list(cmd),
             env=child_env,
             settings_path=settings,
@@ -144,8 +147,12 @@ async def test_invoke_switches_off_the_cwd_skill_and_subagent_registries() -> No
 async def test_a_command_prompt_reaches_the_model_as_text_not_a_command(
     prompt: str, sent: str
 ) -> None:
-    cmd = (await _invoke(_SERVERS, prompt=prompt))["cmd"]
-    assert cmd[cmd.index("--prompt") + 1] == sent
+    seen = await _invoke(_SERVERS, prompt=prompt)
+    assert seen["cmd"][seen["cmd"].index("--prompt") + 1] == sent
+    # An escaped ``\@`` reaches the model verbatim, so the system prompt says to drop the
+    # backslash from quotes and tool arguments; it is staged even with no butler prompt.
+    escaped = "@" in prompt.replace("\\@", "")
+    assert (seen["system_md"] or "").endswith(_AT_ESCAPE_NOTE) is escaped
 
 
 def test_no_gemini_context_file_or_project_dir_ships_where_the_cli_would_load_it() -> None:

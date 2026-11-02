@@ -81,6 +81,13 @@ def _escape_at_commands(prompt: str) -> str:
     return _AT_COMMAND.sub(r"\\@", prompt)
 
 
+# The CLI hands an unresolved ``\@`` to the model verbatim. Without this system-prompt line
+# the model copies the backslash into email recipients, handles, and other tool arguments.
+_AT_ESCAPE_NOTE = (
+    "`\\@` in the input is an escaped `@`; write a plain `@` in quotes and tool arguments."
+)
+
+
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
 # butler prompt's literal text from being replaced by the CLI's tool or skill listings.
@@ -510,7 +517,10 @@ class GeminiAdapter(RuntimeAdapter):
             cmd.extend(["-m", model])
         if prompt.lstrip().startswith("/"):
             prompt = _SLASH_COMMAND_GUARD + prompt
-        cmd.extend(["--prompt", _escape_at_commands(prompt)])
+        sent_prompt = _escape_at_commands(prompt)
+        if sent_prompt != prompt:
+            system_prompt = "\n\n".join(filter(None, [system_prompt, _AT_ESCAPE_NOTE]))
+        cmd.extend(["--prompt", sent_prompt])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
         proc = None
