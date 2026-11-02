@@ -61,77 +61,36 @@ def _downgrade_statements() -> list[str]:
     return fake.statements
 
 
-_PRE_MIGRATION_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS travel;
-
-CREATE TABLE IF NOT EXISTS public.entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    roles TEXT[] NOT NULL DEFAULT '{}'
-);
-
-CREATE TABLE IF NOT EXISTS travel.trips (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    start_date  DATE NOT NULL,
-    end_date    DATE NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'planned',
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS travel.legs (
-    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    trip_id                   UUID NOT NULL REFERENCES travel.trips(id) ON DELETE CASCADE,
-    type                      TEXT NOT NULL DEFAULT 'flight',
-    carrier                   TEXT,
-    departure_airport_station TEXT,
-    departure_city            TEXT,
-    departure_at              TIMESTAMPTZ NOT NULL,
-    arrival_airport_station   TEXT,
-    arrival_city              TEXT,
-    arrival_at                TIMESTAMPTZ NOT NULL,
-    confirmation_number       TEXT,
-    pnr                       TEXT,
-    seat                      TEXT,
-    metadata                  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
-
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as p:
-        await p.execute(_PRE_MIGRATION_SCHEMA)
-        trip_id = await p.fetchval(
-            """
-            INSERT INTO travel.trips (name, destination, start_date, end_date, status)
-            VALUES ('Trip', 'Tokyo', '2026-06-01', '2026-06-10', 'planned')
-            RETURNING id
-            """
-        )
-        # A leg referencing SFO/ORD (neither in the curated hub list) proves
-        # the dynamic airport_minimum_connect backfill.
-        await p.execute(
-            """
-            INSERT INTO travel.legs (trip_id, type, departure_airport_station,
-                                      arrival_airport_station, departure_at, arrival_at)
-            VALUES ($1::uuid, 'flight', 'SFO', 'ORD',
-                    '2026-06-01T10:00:00+00:00', '2026-06-01T20:00:00+00:00')
-            """,
-            trip_id,
-        )
-        yield p, trip_id
+async def pre_migration(db):
+    """The real core + travel schema at travel_002, with one SFO -> ORD leg."""
+    p = await db("core", "travel", schemas={"travel": "travel"}, revisions={"travel": "travel_002"})
+    trip_id = await p.fetchval(
+        """
+        INSERT INTO travel.trips (name, destination, start_date, end_date, status)
+        VALUES ('Trip', 'Tokyo', '2026-06-01', '2026-06-10', 'planned')
+        RETURNING id
+        """
+    )
+    # A leg referencing SFO/ORD (neither in the curated hub list) proves
+    # the dynamic airport_minimum_connect backfill.
+    await p.execute(
+        """
+        INSERT INTO travel.legs (trip_id, type, departure_airport_station,
+                                  arrival_airport_station, departure_at, arrival_at)
+        VALUES ($1::uuid, 'flight', 'SFO', 'ORD',
+                '2026-06-01T10:00:00+00:00', '2026-06-01T20:00:00+00:00')
+        """,
+        trip_id,
+    )
+    return p, trip_id
 
 
 @_docker
 @_session_loop
 class TestMigrationRunsAgainstPostgres:
-    async def test_upgrade_creates_every_new_table(self, pool) -> None:
-        p, trip_id = pool
+    async def test_upgrade_creates_every_new_table(self, pre_migration) -> None:
+        p, trip_id = pre_migration
         second_trip_id = await p.fetchval(
             "INSERT INTO travel.trips (name, destination, start_date, end_date, status) "
             "VALUES ('Return fragment', 'Singapore', '2026-06-10', '2026-06-10', 'planned') "
@@ -233,13 +192,14 @@ class TestMigrationRunsAgainstPostgres:
         )
         assert count == 1
 
-    async def test_downgrade_drops_new_tables_and_columns(self, pool) -> None:
-        p, trip_id = pool
+    async def test_downgrade_drops_new_tables_and_columns(self, pre_migration) -> None:
+        p, trip_id = pre_migration
         async with p.acquire() as conn:
             for statement in _upgrade_statements():
                 await conn.execute(statement)
             owner_id = await conn.fetchval(
-                "INSERT INTO public.entities (roles) VALUES (ARRAY['owner']) RETURNING id"
+                "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+                "VALUES ('Owner', 'person', ARRAY['owner']) RETURNING id"
             )
             traveller_id = await conn.fetchval(
                 "INSERT INTO travel.travellers "
