@@ -95,15 +95,10 @@ meals.py precedent:
     deployment sample) and permanently growing; re-computing
     ``ROW_NUMBER()`` over the *entire* filtered set on every 15–30 minute
     cron tick would mean an ever-more-expensive full sort with no bound.
-    This adapter instead follows the *other* established precedent for
-    exactly this situation — ``HomeAssistantHistoryAdapter`` and
-    ``OwnTracksPointAdapter``, both of which read a UUID-keyed,
-    unbounded-growth connector evidence table and use a single-column
-    ``WHERE received_at > $1`` watermark, leaving ``watermark_id`` unset.
-    Rows sharing one ``received_at`` instant are never split across batches:
-    the page is completed through its last timestamp
-    (``timestamp_complete_page_sql``), so the strict ``received_at > $1``
-    watermark loses nothing.
+    This adapter instead pages by ``(received_at, id) > cursor`` with a
+    hard ``LIMIT`` and keeps the UUID tiebreaker in the checkpoint carryover
+    (``watermark_key``), leaving ``watermark_id`` unset. Rows sharing one
+    ``received_at`` are never split across batches or skipped.
 
 Retention-window awareness (design §5 / §2 principle 6 — the first
 Chronicler adapter to read a table with a rolling TTL instead of a
@@ -148,7 +143,8 @@ from butlers.chronicler.adapters._owner_entity import (
 from butlers.chronicler.adapters.base import (
     AdapterResult,
     ProjectionAdapter,
-    timestamp_complete_page_sql,
+    cursor_key,
+    keyset_page,
 )
 from butlers.chronicler.confidence import evidence_refs_from_event_ids
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent, Precision, Privacy
@@ -226,6 +222,8 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
     domain/device_class is left untouched (bead-1 scope).
     """
 
+    keyset_cols = (("id", "uuid"),)
+
     def __init__(
         self,
         *,
@@ -245,11 +243,12 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
-        del since_id  # UUID PK; single-column watermark only — see module docstring [decision].
+        del since_id  # UUID PK: the tiebreaker is ``since_key`` — see module docstring.
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_rows(pool, since)
+        rows = await self._fetch_rows(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -333,6 +332,7 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
             logger.warning("%s", lag_warning)
 
         result.watermark = latest_watermark
+        result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     # ------------------------------------------------------------------
@@ -343,8 +343,9 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch ``connectors.filtered_events`` rows for the HA connector.
+        """Fetch the next page of ``connectors.filtered_events`` rows for the HA connector.
 
         Domain filtering (``binary_sensor`` vs. everything else) cannot be
         pushed into SQL — ``domain`` lives inside ``full_payload`` JSONB, not
@@ -370,26 +371,18 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                if since is None:
-                    sql = timestamp_complete_page_sql(
-                        columns="id, received_at, full_payload",
-                        table=_EVIDENCE_TABLE,
-                        ts_col="received_at",
-                        order_by="received_at ASC, id ASC",
-                        where="connector_type = $1",
-                        limit_param=2,
-                    )
-                    rows = await conn.fetch(sql, _CONNECTOR_TYPE, self.batch_limit)
-                else:
-                    sql = timestamp_complete_page_sql(
-                        columns="id, received_at, full_payload",
-                        table=_EVIDENCE_TABLE,
-                        ts_col="received_at",
-                        order_by="received_at ASC, id ASC",
-                        where="connector_type = $1 AND received_at > $2",
-                        limit_param=3,
-                    )
-                    rows = await conn.fetch(sql, _CONNECTOR_TYPE, since, self.batch_limit)
+                sql, args = keyset_page(
+                    columns="id, received_at, full_payload",
+                    table=_EVIDENCE_TABLE,
+                    ts_col="received_at",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
+                    where="connector_type = $1",
+                    where_args=[_CONNECTOR_TYPE],
+                )
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

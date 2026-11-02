@@ -48,9 +48,9 @@ Semantics:
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
 - Missing evidence table degrades gracefully (connector not deployed /
   migration not run on this deployment).
-- Watermark on ``ts`` only. ``connectors.activitywatch_events.id`` is a
-  UUID, not an integer serial, so this adapter must not use the integer
-  ``watermark_id`` tuple-watermark path (mirrors the OwnTracks adapter).
+- Pages by ``(ts, id)``. ``connectors.activitywatch_events.id`` is a UUID,
+  not an integer serial, so the tiebreaker is stored in the checkpoint
+  carryover (``watermark_key``) rather than the BIGINT ``watermark_id``.
 """
 
 from __future__ import annotations
@@ -71,7 +71,8 @@ from butlers.chronicler.adapters._owner_entity import (
 from butlers.chronicler.adapters.base import (
     AdapterResult,
     ProjectionAdapter,
-    timestamp_complete_page_sql,
+    cursor_key,
+    keyset_page,
 )
 from butlers.chronicler.confidence import (
     EvidenceKind,
@@ -144,6 +145,8 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
     ``screen_episode`` spans with a per-app-class duration breakdown.
     """
 
+    keyset_cols = (("id", "uuid"),)
+
     def __init__(
         self,
         *,
@@ -163,10 +166,12 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
+        del since_id  # UUID PK: the tiebreaker is ``since_key``.
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_events(pool, since)
+        rows = await self._fetch_events(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -221,6 +226,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
+        result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     def _normalize_row(
@@ -297,15 +303,12 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
-        since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        """Fetch the next page of evidence rows after ``(since, since_key)``.
 
-        ``since_id`` is intentionally ignored (see module docstring — the
-        evidence table primary key is UUID). Returns ``None`` if the
-        evidence table is missing — degrade gracefully.
+        Returns ``None`` if the evidence table is missing — degrade gracefully.
         """
-        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -320,29 +323,19 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                columns = (
-                    "id, idempotency_key, ts, duration_seconds, app_class, "
-                    "browser_domain, is_afk, endpoint_identity"
+                sql, args = keyset_page(
+                    columns=(
+                        "id, idempotency_key, ts, duration_seconds, app_class, "
+                        "browser_domain, is_afk, endpoint_identity"
+                    ),
+                    table=_EVIDENCE_TABLE,
+                    ts_col="ts",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
                 )
-                if since is None:
-                    sql = timestamp_complete_page_sql(
-                        columns=columns,
-                        table=_EVIDENCE_TABLE,
-                        ts_col="ts",
-                        order_by="ts ASC, id ASC",
-                        limit_param=1,
-                    )
-                    rows = await conn.fetch(sql, self.batch_limit)
-                else:
-                    sql = timestamp_complete_page_sql(
-                        columns=columns,
-                        table=_EVIDENCE_TABLE,
-                        ts_col="ts",
-                        order_by="ts ASC, id ASC",
-                        where="ts > $1",
-                        limit_param=2,
-                    )
-                    rows = await conn.fetch(sql, since, self.batch_limit)
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

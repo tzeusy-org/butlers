@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import abc
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 import asyncpg
 
 from butlers.chronicler.models import Compatibility
 from butlers.chronicler.storage import (
     get_checkpoint,
+    get_cursor,
     mark_source_active,
+    set_cursor,
     upsert_checkpoint,
 )
 
@@ -36,6 +40,8 @@ class AdapterResult:
     error: str | None = None
     watermark: datetime | None = None
     watermark_id: int | None = None
+    # Tiebreaker of the last row read, for adapters with ``keyset_cols``.
+    watermark_key: list[str] | None = None
     episodes_opened: int = 0
     episodes_closed: int = 0
     # Episodes flipped layer=evidence -> layer=activity by a retroactive
@@ -63,6 +69,10 @@ class ProjectionAdapter(abc.ABC):
     """
 
     source_name: str
+    # Set by UUID/composite-keyed adapters that page by ``(ts, key)``: the
+    # ordered ``(column, sql_type)`` tiebreaker. ``run`` then loads the stored
+    # tiebreaker, passes it as ``since_key`` and saves ``result.watermark_key``.
+    keyset_cols: KeyCols | None = None
 
     def __init__(self, source_name: str) -> None:
         self.source_name = source_name
@@ -114,12 +124,18 @@ class ProjectionAdapter(abc.ABC):
         # that patch _llm_probe to raise if called.
         self._llm_probe()
 
+        extra: dict[str, Any] = {}
+        if self.keyset_cols is not None:
+            cursor = await get_cursor(chronicler_pool, self.source_name)
+            extra["since_key"] = key_for_watermark(cursor, since)
+
         try:
             result = await self.project(
                 pool,
                 chronicler_pool=chronicler_pool,
                 since=since,
                 since_id=since_id,
+                **extra,
             )
         except Exception as exc:  # pragma: no cover — exercised in tests
             logger.exception("Adapter %s failed", self.source_name)
@@ -150,6 +166,10 @@ class ProjectionAdapter(abc.ABC):
             rows_projected=result.rows_projected,
             error=result.error,
         )
+        if result.success and result.watermark is not None and result.watermark_key:
+            await set_cursor(
+                chronicler_pool, self.source_name, result.watermark, result.watermark_key
+            )
         return result
 
     def _llm_probe(self) -> None:
@@ -162,47 +182,69 @@ class ProjectionAdapter(abc.ABC):
         return None
 
 
-def timestamp_complete_page_sql(
+KeyCols = Sequence[tuple[str, str]]
+
+
+def keyset_page(
     *,
     columns: str,
     table: str,
     ts_col: str,
-    order_by: str,
-    limit_param: int,
+    key_cols: KeyCols,
+    since: datetime | None,
+    since_key: Sequence[str] | None,
+    batch_limit: int,
     where: str = "TRUE",
-) -> str:
-    """Build a ``ts > watermark`` page query that never splits a timestamp.
+    where_args: Sequence[Any] = (),
+) -> tuple[str, list[Any]]:
+    """Build a ``(ts, key) > cursor`` page query and its arguments.
 
-    Adapters whose source primary key is UUID (or composite) cannot use the
-    integer ``watermark_id`` tuple cursor, so they page on the timestamp
-    alone. A plain ``WHERE ts > $1 ... LIMIT n`` then loses every row that
-    shares the batch's last timestamp but fell past the limit, because the
-    next run starts strictly after that timestamp.
+    ``key_cols`` is the ordered ``(column, sql_type)`` tiebreaker, unique per
+    row. With a ``since_key`` the page resumes strictly after
+    ``(since, *since_key)``; without one (first run, or a pre-cursor
+    checkpoint) it falls back to ``ts > since``, exactly as before. The page
+    is always capped at ``batch_limit`` rows and ordered by ``(ts, *key)``.
 
-    This page takes the first ``n`` distinct-ordered rows to find the last
-    timestamp ``max_ts`` in the page, then returns *every* row up to and
-    including ``max_ts``. The batch may exceed ``n`` by the size of one
-    same-timestamp run, and the watermark (max ts) always lies past a fully
-    drained timestamp, so ``ts > watermark`` loses nothing and repeats
-    nothing. Stored checkpoints are unchanged, so no migration is needed.
-
-    ``where`` is the full filter (including any ``ts > $k`` clause) and is
-    evaluated twice with the same parameters; ``limit_param`` is the ``$``
-    index of the batch size.
+    ``where`` is a filter using ``$1..$len(where_args)``.
     """
-    return f"""
-        WITH page AS (
-            SELECT {ts_col} FROM {table}
-            WHERE {where}
-            ORDER BY {ts_col} ASC
-            LIMIT ${limit_param}
-        )
+    args: list[Any] = list(where_args)
+    seek = "TRUE"
+    if since is not None:
+        n = len(args) + 1
+        if since_key is not None and len(since_key) == len(key_cols):
+            names = ", ".join([ts_col, *(c for c, _ in key_cols)])
+            values = ", ".join(
+                [f"${n}", *(f"${n + 1 + i}::text::{t}" for i, (_, t) in enumerate(key_cols))]
+            )
+            seek = f"({names}) > ({values})"
+            args += [since, *since_key]
+        else:
+            seek = f"{ts_col} > ${n}"
+            args.append(since)
+    args.append(batch_limit)
+    order = ", ".join(f"{c} ASC" for c in [ts_col, *(c for c, _ in key_cols)])
+    sql = f"""
         SELECT {columns}
         FROM {table}
-        WHERE ({where})
-          AND {ts_col} <= (SELECT max({ts_col}) FROM page)
-        ORDER BY {order_by}
+        WHERE ({where}) AND {seek}
+        ORDER BY {order}
+        LIMIT ${len(args)}
     """
+    return sql, args
+
+
+def cursor_key(row: Any, key_cols: KeyCols) -> list[str]:
+    """Tiebreaker parts of ``row``, in ``key_cols`` order."""
+    return [str(row[c]) for c, _ in key_cols]
+
+
+def key_for_watermark(
+    cursor: tuple[datetime, list[str]] | None, since: datetime | None
+) -> list[str] | None:
+    """The stored tiebreaker, only if it belongs to the ``since`` watermark."""
+    if cursor is None or since is None or cursor[0] != since:
+        return None
+    return cursor[1]
 
 
 def compatibility_guard(compat: Compatibility) -> AdapterResult | None:
@@ -224,5 +266,7 @@ __all__ = [
     "AdapterResult",
     "ProjectionAdapter",
     "compatibility_guard",
-    "timestamp_complete_page_sql",
+    "cursor_key",
+    "key_for_watermark",
+    "keyset_page",
 ]

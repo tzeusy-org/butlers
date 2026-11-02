@@ -45,7 +45,8 @@ from butlers.chronicler.adapters._owner_entity import (
 from butlers.chronicler.adapters.base import (
     AdapterResult,
     ProjectionAdapter,
-    timestamp_complete_page_sql,
+    cursor_key,
+    keyset_page,
 )
 from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
@@ -66,6 +67,8 @@ class SteamPlayAdapter(ProjectionAdapter):
     The episode spans ``[date midnight UTC, date midnight UTC + playtime_minutes)``.
     """
 
+    keyset_cols = (("steam_id", "bigint"), ("app_id", "bigint"), ("date", "date"))
+
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
@@ -77,10 +80,12 @@ class SteamPlayAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
+        del since_id  # No integer PK: the tiebreaker is ``since_key``.
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_rows(pool, since, since_id)
+        rows = await self._fetch_rows(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -109,10 +114,10 @@ class SteamPlayAdapter(ProjectionAdapter):
             result.episodes_closed += 1
 
         result.watermark = latest_watermark
-        # ``projection_checkpoints.watermark_id`` is BIGINT, but the Steam
-        # evidence table primary key is UUID. Keep timestamp-only semantics for
-        # this adapter, matching other UUID-backed sources.
-        result.watermark_id = None
+        # ``watermark_id`` is BIGINT; the ``(recorded_at, steam_id, app_id,
+        # date)`` tiebreaker travels as ``watermark_key``.
+        if rows:
+            result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     def _row_skip_reason(self, row: asyncpg.Record) -> str | None:
@@ -141,18 +146,17 @@ class SteamPlayAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
-        since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        """Fetch the next page of evidence rows after ``(since, since_key)``.
 
-        Always uses single-column ``recorded_at`` semantics. The evidence
-        table's ``id`` column is a UUID, while the shared checkpoint
-        ``watermark_id`` column is BIGINT for integer-backed sources.
+        Pages by ``(recorded_at, steam_id, app_id, date)``; the stored
+        tiebreaker keeps rows sharing one ``recorded_at`` from being skipped at
+        a batch edge.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
         """
-        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -167,30 +171,19 @@ class SteamPlayAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                columns = (
-                    "steam_id, steam_account_id, app_id, app_name, date, "
-                    "playtime_minutes, recorded_at"
+                sql, args = keyset_page(
+                    columns=(
+                        "steam_id, steam_account_id, app_id, app_name, date, "
+                        "playtime_minutes, recorded_at"
+                    ),
+                    table=_EVIDENCE_TABLE,
+                    ts_col="recorded_at",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
                 )
-                order_by = "recorded_at ASC, steam_id ASC, app_id ASC, date ASC"
-                if since is None:
-                    sql = timestamp_complete_page_sql(
-                        columns=columns,
-                        table=_EVIDENCE_TABLE,
-                        ts_col="recorded_at",
-                        order_by=order_by,
-                        limit_param=1,
-                    )
-                    rows = await conn.fetch(sql, self.batch_limit)
-                else:
-                    sql = timestamp_complete_page_sql(
-                        columns=columns,
-                        table=_EVIDENCE_TABLE,
-                        ts_col="recorded_at",
-                        order_by=order_by,
-                        where="recorded_at > $1",
-                        limit_param=2,
-                    )
-                    rows = await conn.fetch(sql, since, self.batch_limit)
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

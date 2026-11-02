@@ -137,7 +137,7 @@ async def get_owntracks_carryover(
     )
     if isinstance(raw, str):
         raw = json.loads(raw)
-    return raw if isinstance(raw, dict) else {}
+    return _without_cursor(raw) if isinstance(raw, dict) else {}
 
 
 async def save_owntracks_carryover(
@@ -148,9 +148,77 @@ async def save_owntracks_carryover(
     """Never acknowledge a lost bootstrap decision as successful projection."""
     await conn.execute(
         "INSERT INTO projection_checkpoints (source_name, subsource, carryover) VALUES ($1,'',$2) "
-        "ON CONFLICT (source_name,subsource) DO UPDATE SET carryover=EXCLUDED.carryover",
+        "ON CONFLICT (source_name,subsource) DO UPDATE SET "
+        f"carryover=EXCLUDED.carryover || {_KEEP_CURSOR_SQL}",
         source_name,
         carryover,
+    )
+
+
+# ── Keyset cursor tiebreaker (bu-f9ob67) ──────────────────────────────────
+#
+# Adapters over UUID/composite-keyed evidence tables cannot use the BIGINT
+# ``watermark_id``. Their ``(ts, key)`` cursor tiebreaker lives in the
+# ``carryover`` JSONB under a reserved key — no schema change. It records the
+# ``ts`` it belongs to, and is honoured only while that equals the checkpoint
+# watermark, so a cursor and watermark that ever disagree degrade to the old
+# ``ts > watermark`` read instead of skipping rows. Carryover getters hide the
+# key and carryover writers keep it, so adapter carryover logic never sees it.
+
+CURSOR_CARRYOVER_KEY = "__cursor"
+_KEEP_CURSOR_SQL = (
+    "(CASE WHEN projection_checkpoints.carryover ? '__cursor' THEN "
+    "jsonb_build_object('__cursor', projection_checkpoints.carryover -> '__cursor') "
+    "ELSE '{}'::jsonb END)"
+)
+
+
+def _without_cursor(carryover: dict) -> dict:
+    return {k: v for k, v in carryover.items() if k != CURSOR_CARRYOVER_KEY}
+
+
+async def get_cursor(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_name: str,
+) -> tuple[datetime, list[str]] | None:
+    """Return the stored ``(ts, key parts)`` tiebreaker, or ``None`` if absent or malformed."""
+    try:
+        raw = await conn.fetchval(
+            "SELECT carryover ->> '__cursor' FROM projection_checkpoints "
+            "WHERE source_name = $1 AND subsource = ''",
+            source_name,
+        )
+    except asyncpg.PostgresError:
+        return None
+    if not raw:
+        return None
+    try:
+        loaded = json.loads(raw)
+        ts = datetime.fromisoformat(loaded["ts"])
+        key = [str(part) for part in loaded["key"]]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return (ts, key) if ts.tzinfo is not None and key else None
+
+
+async def set_cursor(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy | asyncpg.Pool,
+    source_name: str,
+    ts: datetime,
+    key: Sequence[str],
+) -> None:
+    """Store the tiebreaker for the row at ``ts``, leaving other carryover untouched."""
+    payload = json.dumps({"ts": ts.isoformat(), "key": [str(part) for part in key]})
+    await conn.execute(
+        """
+        INSERT INTO projection_checkpoints (source_name, subsource, carryover)
+        VALUES ($1, '', jsonb_build_object('__cursor', $2::text::jsonb))
+        ON CONFLICT (source_name, subsource) DO UPDATE
+        SET carryover = COALESCE(projection_checkpoints.carryover, '{}'::jsonb)
+                        || jsonb_build_object('__cursor', $2::text::jsonb)
+        """,
+        source_name,
+        payload,
     )
 
 
@@ -1165,9 +1233,9 @@ async def get_carryover(
             loaded = json.loads(raw)
         except json.JSONDecodeError:
             return {}
-        return loaded if isinstance(loaded, dict) else {}
+        return _without_cursor(loaded) if isinstance(loaded, dict) else {}
     if isinstance(raw, dict):
-        return raw
+        return _without_cursor(raw)
     return {}
 
 
@@ -1184,11 +1252,11 @@ async def save_carryover(
     """
     try:
         await conn.execute(
-            """
+            f"""
             INSERT INTO projection_checkpoints (source_name, subsource, carryover)
             VALUES ($1, '', $2)
             ON CONFLICT (source_name, subsource) DO UPDATE
-            SET carryover = EXCLUDED.carryover
+            SET carryover = EXCLUDED.carryover || {_KEEP_CURSOR_SQL}
             """,
             source_name,
             carryover,
@@ -1816,6 +1884,7 @@ __all__: Sequence[str] = (
     "delete_daily_rollup_flag",
     "delete_routine",
     "get_carryover",
+    "get_cursor",
     "get_checkpoint",
     "get_checkpoint_subsource",
     "get_episode",
@@ -1837,6 +1906,7 @@ __all__: Sequence[str] = (
     "record_idempotency",
     "register_source",
     "save_carryover",
+    "set_cursor",
     "set_daily_rollup_day_narrative",
     "set_daily_rollup_flag_narrative",
     "update_routine",

@@ -42,7 +42,8 @@ import asyncpg
 from butlers.chronicler.adapters.base import (
     AdapterResult,
     ProjectionAdapter,
-    timestamp_complete_page_sql,
+    cursor_key,
+    keyset_page,
 )
 from butlers.chronicler.models import Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import upsert_point_event
@@ -71,6 +72,8 @@ class OwnerOutboundMessageAdapter(ProjectionAdapter):
     rollup (see module docstring).
     """
 
+    keyset_cols = (("id", "uuid"),)
+
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
@@ -82,17 +85,18 @@ class OwnerOutboundMessageAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
         """Fetch new owner-outbound evidence rows; emit one point event each.
 
         ``since_id`` is ignored: ``connectors.owner_outbound_events.id`` is a
-        UUID, not an integer serial (mirrors ``ActivityWatchWindowAdapter``
-        / ``OwnTracksPointAdapter``).
+        UUID, not an integer serial; the ``(occurred_at, id)`` tiebreaker
+        travels as ``since_key`` / ``watermark_key`` instead.
         """
         del since_id
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_events(pool, since)
+        rows = await self._fetch_events(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -134,14 +138,16 @@ class OwnerOutboundMessageAdapter(ProjectionAdapter):
             result.point_events += 1
 
         result.watermark = latest_watermark
+        result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     async def _fetch_events(
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        """Fetch the next page of evidence rows after ``(since, since_key)``.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully (connector not deployed / migration not run on this
@@ -161,25 +167,16 @@ class OwnerOutboundMessageAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                if since is None:
-                    sql = timestamp_complete_page_sql(
-                        columns="id, channel, occurred_at",
-                        table=_EVIDENCE_TABLE,
-                        ts_col="occurred_at",
-                        order_by="occurred_at ASC, id ASC",
-                        limit_param=1,
-                    )
-                    rows = await conn.fetch(sql, self.batch_limit)
-                else:
-                    sql = timestamp_complete_page_sql(
-                        columns="id, channel, occurred_at",
-                        table=_EVIDENCE_TABLE,
-                        ts_col="occurred_at",
-                        order_by="occurred_at ASC, id ASC",
-                        where="occurred_at > $1",
-                        limit_param=2,
-                    )
-                    rows = await conn.fetch(sql, since, self.batch_limit)
+                sql, args = keyset_page(
+                    columns="id, channel, occurred_at",
+                    table=_EVIDENCE_TABLE,
+                    ts_col="occurred_at",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
+                )
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

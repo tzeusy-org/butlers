@@ -80,7 +80,9 @@ from butlers.chronicler.adapters._owner_entity import (
 from butlers.chronicler.adapters.base import (
     AdapterResult,
     ProjectionAdapter,
-    timestamp_complete_page_sql,
+    cursor_key,
+    key_for_watermark,
+    keyset_page,
 )
 from butlers.chronicler.adapters.owntracks_trail import (
     TRAIL_ANCHORS_CARRYOVER_KEY,
@@ -99,14 +101,16 @@ from butlers.chronicler.confidence import (
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import (
-    get_owntracks_carryover as get_carryover,
-)
-from butlers.chronicler.storage import (
+    get_cursor,
     owntracks_connection,
     owntracks_transaction,
     retained_owntracks_rows,
     run_owntracks_projection,
+    set_cursor,
     upsert_episode,
+)
+from butlers.chronicler.storage import (
+    get_owntracks_carryover as get_carryover,
 )
 from butlers.chronicler.storage import (
     save_owntracks_carryover as save_carryover,
@@ -647,6 +651,8 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
     project different signal shapes (movement vs. stationary dwell).
     """
 
+    keyset_cols = (("id", "uuid"),)
+
     def __init__(
         self,
         *,
@@ -731,12 +737,15 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         since_id: int | None = None,
         entity_id: UUID | None,
     ) -> AdapterResult:
-        # owntracks_points.id is a UUID, not an integer serial — same
-        # rationale as owntracks.py: watermark on ts only.
+        # owntracks_points.id is a UUID, not an integer serial, so the
+        # ``(ts, id)`` tiebreaker lives in the checkpoint carryover. This
+        # adapter runs inside the OwnTracks transaction, so the cursor is read
+        # and written on the same connection as the rest of its state.
         del since_id
         result = AdapterResult(source_name=self.source_name)
+        since_key = key_for_watermark(await get_cursor(chronicler_pool, self.source_name), since)
 
-        rows = await self._fetch_points(pool, since)
+        rows = await self._fetch_points(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -867,6 +876,11 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
+        result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
+        if latest_watermark is not None:
+            await set_cursor(
+                chronicler_pool, self.source_name, latest_watermark, result.watermark_key
+            )
         return result
 
     def _normalize_row(
@@ -970,8 +984,9 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark; ``None`` if table missing."""
+        """Fetch the next page of rows after ``(since, since_key)``; ``None`` if table missing."""
         try:
             async with owntracks_connection(pool) as conn:
                 # Roll back a caught read error before updating projection status.
@@ -988,26 +1003,16 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                     if not exists:
                         return None
 
-                    columns = "id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload"
-                    if since is None:
-                        sql = timestamp_complete_page_sql(
-                            columns=columns,
-                            table=_EVIDENCE_TABLE,
-                            ts_col="ts",
-                            order_by="ts ASC, id ASC",
-                            limit_param=1,
-                        )
-                        rows = await conn.fetch(sql, self.batch_limit)
-                    else:
-                        sql = timestamp_complete_page_sql(
-                            columns=columns,
-                            table=_EVIDENCE_TABLE,
-                            ts_col="ts",
-                            order_by="ts ASC, id ASC",
-                            where="ts > $1",
-                            limit_param=2,
-                        )
-                        rows = await conn.fetch(sql, since, self.batch_limit)
+                    sql, args = keyset_page(
+                        columns="id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload",
+                        table=_EVIDENCE_TABLE,
+                        ts_col="ts",
+                        key_cols=self.keyset_cols,
+                        since=since,
+                        since_key=since_key,
+                        batch_limit=self.batch_limit,
+                    )
+                    rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None
