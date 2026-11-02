@@ -24,7 +24,7 @@ Scope: v1-mandatory
 
 #### Scenario: Skill inventory
 - **WHEN** the finance butler's guidance is indexed
-- **THEN** it SHALL include `bill-reminder` (bill review, urgency triage, and payment reminder workflow), `spending-review` (spending analysis by category, time period, anomaly detection, and trend analysis), `transaction-csv-extraction` (adaptive CSV import through the `import_transactions` capability with a dry-run preview and an explicit column map, also used for a historical backfill of several statements with one import per stored statement), `budget-review` (interactive budget setting, status checking, and forecast review), `anomaly-triage` (interactive anomaly review and resolution workflow), plus shared skills `butler-memory` and `butler-notifications`
+- **THEN** it SHALL include `bill-reminder` (bill review, urgency triage, and payment reminder workflow), `spending-review` (spending analysis by category, time period, anomaly detection, and trend analysis), `transaction-csv-extraction` (adaptive CSV import through the `import_transactions` capability with a dry-run preview and an explicit column map, also used for a historical backfill of several statements with one import per stored statement), which also replaces the retired `historical-data-import` (multi-format bank CSV import with format detection, deduplication, and baseline computation), `budget-review` (interactive budget setting, status checking, and forecast review), `anomaly-triage` (interactive anomaly review and resolution workflow), plus shared skills `butler-memory` and `butler-notifications`
 
 #### Scenario: No finance skill depends on a shell
 - **WHEN** a finance skill describes an import or analysis workflow
