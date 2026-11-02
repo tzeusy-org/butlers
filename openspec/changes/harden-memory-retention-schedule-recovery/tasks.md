@@ -28,8 +28,9 @@
 
 ## 2. Complete-or-unknown expired-retention API observation
 
-- [ ] 2.1 Centralize or otherwise prove exact reuse of the ordinary cleanup
-  predicate (`expires_at < now()`) for the per-source expired-retained count and
+- [ ] 2.1 Centralize or otherwise prove exact reuse of the cleanup sweep's
+  reapable-expired predicate (expired and either non-pending or pending beyond
+  the grace window) for the per-source expired-retained count and the
   `expires_at IS NOT NULL` denominator; do not read episode content or IDs.
 - [ ] 2.2 Extend the memory-stats fan-out, Pydantic
   `RetentionSourceObservation` model, API envelope, and frontend API types
@@ -41,8 +42,8 @@
   retention-only query fails, while returning null fleet retention aggregate and
   ratio plus named unknown coverage.
 - [ ] 2.4 Add focused real-PostgreSQL/API tests for complete healthy,
-  complete-degraded, zero-denominator, absent-memory-schema, and
-  retention-only-failure cases.
+complete-degraded, grace-protected-pending, zero-denominator,
+  absent-memory-schema, and retention-only-failure cases.
 - [ ] 2.5 Extend the degraded-envelope contract so a failed retention source
   cannot silently become a zero or healthy fleet result.
 

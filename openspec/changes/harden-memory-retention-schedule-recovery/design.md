@@ -14,8 +14,11 @@ rows that are still TOML-sourced. The resulting sequence cannot distinguish an
 active TOML override from a removed one at the recovery boundary, and it leaves
 the removed row disabled after a previous TOML-removal pass.
 
-The active memory cleanup handler deletes an episode with the predicate
-`expires_at < now()`. `/api/memory/stats` already fans out per butler memory
+The bounded, consolidation-aware memory cleanup sweep (PR #3565) deletes an
+episode only when it is expired (`expires_at < now()`) and either `consolidation_status <> 'pending'`
+or expired beyond the cleanup grace window; canonical
+`REQ-memory-retention-policy-009` already makes that the observation population
+for graph health. `/api/memory/stats` already fans out per butler memory
 pool and names ordinary pool failures in `meta.pools_failed`; catalog drift has
 the analogous separate `meta.catalog_pools_failed` tracker. Neither surface
 currently reports retained rows that the cleanup handler would delete.
@@ -147,8 +150,10 @@ defines this atomicity boundary.
 ### D3 — Treat expiry observation as a tri-state, not a zero-filled aggregate
 
 `GET /api/memory/stats` SHALL compute expired-retained episode counts from the
-same cleanup predicate, currently `expires_at < now()`, and shall use
-`expires_at IS NOT NULL` as the per-source eligible denominator. Its observation
+same reapable-expired predicate as the cleanup sweep (expired (`expires_at < now()`) and either `consolidation_status <> 'pending'`
+or expired beyond the cleanup grace window),
+and shall use `expires_at IS NOT NULL` as the per-source eligible denominator,
+so a grace-protected pending episode is eligible but not lagging. Its observation
 contains aggregate count and ratio plus one exact `RetentionSourceObservation`
 per completed source: `source_butler: str`, `source_schema: str | None`,
 `expired_retained_episodes: int`, `retention_eligible_episodes: int`, and
@@ -176,9 +181,10 @@ precedent.
 
 **Alternatives considered:**
 
-- Count `expires_at <= now()` or use a new deadline expression: rejected
-  because it would diverge from the cleanup handler and make the deadman report
-  a different population from the data action it observes.
+- Count every row with `expires_at < now()`, or use a new deadline
+  expression: rejected because it would diverge from the cleanup sweep, flag
+  grace-protected pending episodes the sweep deliberately holds, and make the
+  deadman report a different population from the data action it observes.
 - Return partial aggregate totals without a state marker: rejected because an
   undercount can read as a healthy all-clear.
 - Automatically invoke cleanup when the threshold is exceeded: rejected
@@ -318,6 +324,7 @@ as a substitute for the complete-or-unknown `/api/memory/stats` observation.
   specs, tasks, and review gates explicitly state that it is observation-only;
   the owner-gated drain remains a separately blocked operational procedure.
 - **[Trade-off] Zero is a strict v1 threshold.** → It treats every row matching
-  the cleanup predicate as a violation. Any future grace window or threshold
-  tuning must be an explicit policy/spec change rather than an invisible UI
+  the reapable-expired predicate as a violation. The only slack is the cleanup
+  sweep's own grace window for pending episodes; any further threshold tuning
+  must be an explicit policy/spec change rather than an invisible UI
   relaxation.

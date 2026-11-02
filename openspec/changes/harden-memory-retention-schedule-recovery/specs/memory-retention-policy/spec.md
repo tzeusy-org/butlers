@@ -163,16 +163,15 @@ expiry, delete a row, send a notification, mutate provenance/evidence, or
 admit a goal. Ordinary episode cleanup remains a deterministic job under the
 goal runtime; it gains no model judgment and no goal-granted authority.
 
-ID: REQ-memory-retention-policy-011
-Source: bu-kqnum.13 expired-retention deadman; RFC 0038 D2
-Scope: v1-mandatory
-
-The retention observation SHALL use the exact eligibility predicate of ordinary
-episode cleanup, currently `expires_at < now()`, rather than a separate expiry
-definition. A row with `expires_at IS NULL` is not eligible for this
-observation's denominator or numerator. The approved v1 threshold is zero
-rows matching the cleanup predicate: a complete source with one or more such
-rows is retention-degraded.
+The retention observation SHALL use the exact reapable-expired predicate of
+the bounded, consolidation-aware episode cleanup sweep: expired (`expires_at < now()`) and either `consolidation_status <> 'pending'`
+or expired beyond the cleanup grace window.
+It SHALL NOT invent a separate expiry definition. Its eligible denominator is
+every row with `expires_at IS NOT NULL`, so a grace-protected pending episode
+is counted in the denominator but not the numerator. A row with
+`expires_at IS NULL` is in neither. The approved v1 threshold is zero rows
+matching the reapable-expired predicate: a complete source with one or more
+such rows is retention-degraded.
 
 Any historical episode operation remains outside this capability until the
 separate provenance contract establishes durable-evidence or truthful
@@ -182,12 +181,26 @@ verified backup/restore evidence, a fixed-cutoff dry run, bounded atomic
 batches, and the applicable retention-disposition decision. The ordinary
 cleanup handler SHALL NOT be repurposed as an unbounded historical backfill.
 
+ID: REQ-memory-retention-policy-011
+Source: bu-kqnum.13 expired-retention deadman; REQ-memory-retention-policy-009; RFC 0038 D2
+Scope: v1-mandatory
+
 #### Scenario: Expired-retention observation uses the cleanup population
 
 - **WHEN** a memory source reports its expired-retained episode statistics
-- **THEN** its numerator SHALL count exactly rows matching `expires_at < now()`
+- **THEN** its numerator SHALL count exactly the episodes the cleanup sweep may
+  delete at that instant: expired (`expires_at < now()`) and either `consolidation_status <> 'pending'`
+  or expired beyond the cleanup grace window
 - **AND** its eligible denominator SHALL count rows with `expires_at IS NOT NULL`
 - **AND** the observation SHALL not inspect or return episode content or IDs
+
+#### Scenario: Grace-protected pending episode is not retention lag
+
+- **WHEN** an episode is expired but still `consolidation_status = 'pending'`
+  and inside the cleanup grace window
+- **THEN** it SHALL be counted in the eligible denominator
+- **AND** it SHALL be excluded from the expired-retained numerator, so it alone
+  cannot make a source retention-degraded
 
 #### Scenario: Observation does not trigger cleanup
 
@@ -200,7 +213,7 @@ cleanup handler SHALL NOT be repurposed as an unbounded historical backfill.
 #### Scenario: Historical drain remains fenced by provenance and owner authorization
 
 - **WHEN** a retained historical episode is selected only because it matches
-  the cleanup predicate
+  the reapable-expired predicate
 - **THEN** this retention-recovery capability SHALL not delete, quarantine, or
   otherwise mutate that episode
 - **AND** no historical drain SHALL begin until the separate provenance

@@ -257,7 +257,6 @@
   "generation-fenced-codex-auth-rotation-provenance/core-credentials/Codex Owner Replacement and Revocation Precedence": "e5c651f36f2819396686c54ec495596a9e41c855fbd8171d086b0cc5f2eb2bb2",
   "generation-fenced-codex-auth-rotation-provenance/database-security/Provenance Expiry and Retention Security": "d9c4e9c5bff7d5ac3f34d07b68cc626e9713b936c55d88d72fb5db0ea024f5e3",
   "harden-memory-retention-schedule-recovery/core-scheduler/Module-default recovery and audit are atomic and idempotent": "8a2bd555ca205524fc0e971b0b16a8ef5e45d288f7db5db948ccf03d92da44a0",
-  "harden-memory-retention-schedule-recovery/dashboard-api/Memory stats expose complete-or-unknown expired-retention observation": "abe03f7ae5f75fa44c074a1f0d681c1a75eb24b45ddb2bd1e41b362a95725319",
   "harden-memory-retention-schedule-recovery/dashboard-domain-pages/Memory Overture renders expired-retention state and coverage honestly": "e1656787017b9522800205cd5e73f028bd2a0ef9d244847ff09bd55e0227c37f",
   "harden-runtime-auth-and-breaker-attention/core-notify/Attention Ledger Recording at the notify() Boundary": "a81b80c62447afa0ab4622e5133cf8fd6ab7a7aeb11d0bc91622be29862e3069",
   "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Hourly Automated Verification Sweep": "0529be2f570adfeecdda4ff909c60116acca43392e3b4bf4eb38e97f94ab790a",
