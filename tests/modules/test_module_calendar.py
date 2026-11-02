@@ -5188,6 +5188,48 @@ class TestQueuedCalendarForceSync:
         assert requeue_args[3] == {"calendar_ids": ["primary", "work"], "full": True}
 
 
+class TestSettleOrphanedOverlapRows:
+    """Pre-#5397 parked overlap rows (random key) are closed once their approval is terminal."""
+
+    @staticmethod
+    def _module(rows):
+        mod = CalendarModule()
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=rows)
+        pool.execute = AsyncMock(return_value="UPDATE 1")
+        mod._db = SimpleNamespace(pool=pool)
+        mod._projection_tables_available = AsyncMock(return_value=True)
+        return mod, pool
+
+    async def test_settles_each_terminal_approval_with_matching_status(self):
+        key = "workspace_user_create:generated:"
+        mod, pool = self._module(
+            [
+                {"idempotency_key": key + "a", "approval_status": "executed"},
+                {"idempotency_key": key + "b", "approval_status": "rejected"},
+                {"idempotency_key": key + "c", "approval_status": "expired"},
+            ]
+        )
+
+        assert await mod._settle_orphaned_overlap_rows() == 3
+
+        by_key = {c.args[1]: c.args for c in pool.execute.await_args_list}
+        # The replay wrote its own applied row, so the parked row is superseded.
+        assert by_key[key + "a"][2] == "noop"
+        assert by_key[key + "b"][2] == "failed"
+        assert by_key[key + "c"][2] == "failed"
+        assert by_key[key + "b"][4] == "Overlap approval rejected"
+        assert by_key[key + "a"][3] == {"settled_approval_status": "executed"}
+        # Only still-pending rows may be closed.
+        assert "action_status = 'pending'" in pool.execute.await_args_list[0].args[0]
+
+    async def test_noop_when_nothing_orphaned(self):
+        mod, pool = self._module([])
+
+        assert await mod._settle_orphaned_overlap_rows() == 0
+        pool.execute.assert_not_awaited()
+
+
 class TestProjectionFreshnessErrorKind:
     """``_projection_freshness_metadata`` surfaces a per-source ``error_kind``."""
 
