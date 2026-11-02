@@ -156,8 +156,12 @@ The trusted dispatcher drives `butlers.core.qa.publication.state`:
 4. `record_reconciliation` releases a hold only for an exact, read-only observation: `resource_found`
    must name the bound `expected_object_id`, or `resource_absent` confirms nothing exists. A
    `pr_create` binds no PR number before egress, so its `resource_found` adopts the observed PR
-   number instead (core_298). It also takes the stage the caller observed (`expected_stage`): an
-   outcome recorded between the read and the write moves the row off that stage, and the outcome wins.
+   number instead (core_298). The same statement names the adopted PR on its attempt: it fills
+   `healing_attempts.pr_number` and `pr_url` when the attempt names no PR yet, so the case API
+   shows the PR the dispatcher never heard back about. An `INTEGER` overflow, or a URL that is not
+   `https://github.com/.../pull/<number>`, skips that fill, never the reconciliation. It also takes
+   the stage the caller observed (`expected_stage`): an outcome recorded between the read and the
+   write moves the row off that stage, and the outcome wins.
 
 `butlers.core.qa.publication.reconcile.reconcile_operation` is the read-only reconciler. It takes the
 dispatcher-held binding (refused with `binding_mismatch` unless its digest matches the stored one) and
