@@ -21,6 +21,7 @@ from butlers.core.qa.publication.retention import (
     decode_objects,
     encode_objects,
     load_retained_export,
+    prune_retained_exports,
     retain_export,
 )
 from butlers.core.qa.publication.state import PublicationRefused
@@ -39,24 +40,29 @@ async def _real_export(tmp_path: Path):
     )
 
 
-def _row(export, objects: bytes) -> dict:
+def _row(export, objects: bytes, *, pruned: bool = False) -> dict:
     return {
         "base_sha": export.base_sha,
         "head_sha": export.head_sha,
         "commits": list(export.commits),
         "objects": objects,
         "digest": export.digest,
+        "pruned": pruned,
     }
+
+
+def _stored(digest: str, *, pruned: bool = False) -> dict:
+    return {"digest": digest, "pruned": pruned}
 
 
 async def test_retained_bytes_round_trip_to_the_verified_export(tmp_path: Path) -> None:
     export = await _real_export(tmp_path)
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=export.digest)
+    pool.fetchrow = AsyncMock(return_value=_stored(export.digest))
     attempt_id = uuid.uuid4()
 
     await retain_export(pool, attempt_id, export)
-    stored = pool.fetchval.await_args.args
+    stored = pool.fetchrow.await_args.args
     pool.fetchrow = AsyncMock(return_value=_row(export, stored[5]))
 
     assert stored[1:5] == (attempt_id, export.base_sha, export.head_sha, list(export.commits))
@@ -77,12 +83,22 @@ async def test_altered_retained_bytes_refuse_on_load(tmp_path: Path) -> None:
         decode_objects(encode_objects(export.objects)[:-3])
 
 
-async def test_a_different_export_for_the_same_attempt_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("stored", "code"),
+    [
+        (_stored("f" * 64), "export_changed"),
+        # The same digest whose bytes were pruned cannot stand in for a retained export.
+        (None, "export_pruned"),
+    ],
+)
+async def test_a_changed_or_pruned_export_for_the_same_attempt_is_refused(
+    tmp_path: Path, stored: dict | None, code: str
+) -> None:
     export = await _real_export(tmp_path)
     pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value="f" * 64)
+    pool.fetchrow = AsyncMock(return_value=stored or _stored(export.digest, pruned=True))
 
-    with pytest.raises(PublicationRefused, match="export_changed"):
+    with pytest.raises(PublicationRefused, match=code):
         await retain_export(pool, uuid.uuid4(), export)
 
 
@@ -96,7 +112,7 @@ async def test_a_different_export_for_the_same_attempt_is_refused(tmp_path: Path
 async def test_store_failures_refuse_closed(tmp_path: Path, error, code: str) -> None:
     export = await _real_export(tmp_path)
     pool = MagicMock()
-    pool.fetchval = AsyncMock(side_effect=error)
+    pool.fetchrow = AsyncMock(side_effect=error)
 
     with pytest.raises(PublicationRefused, match=code):
         await retain_export(pool, uuid.uuid4(), export)
@@ -107,3 +123,20 @@ async def test_no_retained_export_loads_as_none() -> None:
     pool.fetchrow = AsyncMock(return_value=None)
 
     assert await load_retained_export(pool, uuid.uuid4()) is None
+
+
+async def test_a_pruned_export_refuses_on_load_instead_of_reading_as_none(tmp_path: Path) -> None:
+    export = await _real_export(tmp_path)
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value=_row(export, b"", pruned=True))
+
+    with pytest.raises(PublicationRefused, match="export_pruned"):
+        await load_retained_export(pool, uuid.uuid4())
+
+
+async def test_prune_reports_the_rows_the_database_pruned() -> None:
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 3")
+
+    assert await prune_retained_exports(pool, limit=7) == 3
+    assert pool.execute.await_args.args[1:] == (7,)
