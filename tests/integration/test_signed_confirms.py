@@ -103,6 +103,39 @@ async def test_recipient_expiry_race_and_restart_application(confirms):
     assert (await service.create("chronicler", "day", prompt, sink="test", sink_ref="day"))[
         "id"
     ] == card["id"]
+    # Prompt copy outlives settlement by the retention horizon only (bu-jv1moa.46).
+    assert await restarted.redact_settled() == 0
+    async with admin.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "ALTER TABLE public.pending_confirms DISABLE TRIGGER confirm_identity_guard"
+        )
+        await conn.execute(
+            "UPDATE public.pending_confirms SET answered_at=now()-interval '15 days' WHERE id=$1",
+            card["id"],
+        )
+        await conn.execute(
+            "ALTER TABLE public.pending_confirms ENABLE TRIGGER confirm_identity_guard"
+        )
+    assert await restarted.redact_settled() == 1
+    redacted = await restarted.get(card["id"])
+    assert set(redacted["prompt"]) == {"redacted", "digest"} and "Work" not in str(redacted)
+    assert (redacted["answer_index"], redacted["application_status"]) == (1, "applied")
+    # The tombstone digest still binds the producer key to its original question.
+    assert (await service.create("chronicler", "day", prompt, sink="test", sink_ref="day"))[
+        "id"
+    ] == card["id"]
+    other = ConfirmPrompt("Rest?", prompt.options, prompt.recipient)
+    with pytest.raises(ValueError, match="different immutable prompt"):
+        await service.create("chronicler", "day", other, sink="test", sink_ref="day")
+    assert (await service.answer_callback(token, sender_id="42", chat_id="42"))[
+        "status"
+    ] == "already_handled"
+    with pytest.raises(Exception, match="re-enter application"):
+        async with role_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE public.pending_confirms SET application_status='pending' WHERE id=$1",
+                card["id"],
+            )
     async with admin.acquire() as conn:
         # Replay bootstrap's deliberately broad GRANT; forced RLS still denies connector writes.
         await conn.execute("GRANT ALL ON public.pending_confirms TO connector_writer")
