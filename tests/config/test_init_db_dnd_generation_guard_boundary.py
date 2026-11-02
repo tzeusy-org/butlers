@@ -548,8 +548,7 @@ def test_context_bus_fixture_resets_only_non_dnd_rows_without_truncate() -> None
     assert "UPDATE public.user_context" in source
     assert "SET superseded_at = now()" in source
     assert "WHERE signal_type <> 'dnd'" in source
-    assert "await _clear_non_dnd_context(p)" in source
-    assert "await _clear_non_dnd_context(pool)" in source
+    assert "await _clear_non_dnd_context(db_pool)" in source
     assert "REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE public.user_context FROM %I" in finalizer
 
 

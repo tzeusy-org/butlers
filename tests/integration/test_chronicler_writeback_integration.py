@@ -34,8 +34,6 @@ from butlers.chronicler.writeback import (
     fetch_companion_copresence,
     run_day_close_writeback,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -44,29 +42,15 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-_DAY = date(2026, 7, 9)
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE episode_entities, episodes CASCADE")
-    await p.execute("TRUNCATE TABLE daily_rollups, daily_rollup_flags CASCADE")
-    await p.execute("TRUNCATE TABLE source_adapter_state, projection_checkpoints CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
+async def chronicler_pool(db) -> asyncpg.Pool:
+    pool = await db("chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
+_DAY = date(2026, 7, 9)
 
 
 class _StoreSpy:
@@ -114,19 +98,19 @@ async def _seed_social_episode(pool, *, source_ref, start_at, end_at, entity_id)
     )
 
 
-async def test_fetch_companion_copresence_counts_distinct_days(pool):
+async def test_fetch_companion_copresence_counts_distinct_days(chronicler_pool):
     companion = uuid4()
     # Same companion on three distinct UTC days within the window.
     for day in (1, 3, 5):
         await _seed_social_episode(
-            pool,
+            chronicler_pool,
             source_ref=f"c-{day}",
             start_at=datetime(2026, 7, day, 10, 0, tzinfo=UTC),
             end_at=datetime(2026, 7, day, 11, 0, tzinfo=UTC),
             entity_id=companion,
         )
     rows = await fetch_companion_copresence(
-        pool, start_date=date(2026, 6, 12), end_date=_DAY, timezone="UTC"
+        chronicler_pool, start_date=date(2026, 6, 12), end_date=_DAY, timezone="UTC"
     )
     assert len(rows) == 1
     assert rows[0].entity_id == str(companion)
@@ -134,11 +118,11 @@ async def test_fetch_companion_copresence_counts_distinct_days(pool):
     assert rows[0].episode_count == 3
 
 
-async def test_run_day_close_writeback_end_to_end(pool):
+async def test_run_day_close_writeback_end_to_end(chronicler_pool):
     # Baseline: 10 days of an 8h work usual → an anomaly bar the closed day can clear.
     for d in range(29, 31):  # 2026-06-29, 06-30
         await upsert_daily_rollup(
-            pool,
+            chronicler_pool,
             local_date=date(2026, 6, d),
             lane="work",
             seconds=8 * 3600,
@@ -147,7 +131,7 @@ async def test_run_day_close_writeback_end_to_end(pool):
         )
     for d in range(1, 9):  # 2026-07-01 .. 07-08
         await upsert_daily_rollup(
-            pool,
+            chronicler_pool,
             local_date=date(2026, 7, d),
             lane="work",
             seconds=8 * 3600,
@@ -156,20 +140,29 @@ async def test_run_day_close_writeback_end_to_end(pool):
         )
     # Closed day 07-09: supported explicit zero work, not absent material.
     await upsert_daily_rollup(
-        pool, local_date=_DAY, lane="work", seconds=0, episode_count=1, timezone="UTC"
+        chronicler_pool, local_date=_DAY, lane="work", seconds=0, episode_count=1, timezone="UTC"
     )
     await upsert_daily_rollup(
-        pool, local_date=_DAY, lane="sleep", seconds=7 * 3600, episode_count=1, timezone="UTC"
+        chronicler_pool,
+        local_date=_DAY,
+        lane="sleep",
+        seconds=7 * 3600,
+        episode_count=1,
+        timezone="UTC",
     )
     # A pending-backfill flag → one self-reminder.
     await upsert_daily_rollup_flag(
-        pool, local_date=_DAY, flag_type="feeder_dark", severity="warning", detail={"src": ["x"]}
+        chronicler_pool,
+        local_date=_DAY,
+        flag_type="feeder_dark",
+        severity="warning",
+        detail={"src": ["x"]},
     )
     # A recurring companion across three distinct days → one MCP proposal.
     companion = uuid4()
     for day in (1, 3, 5):
         await _seed_social_episode(
-            pool,
+            chronicler_pool,
             source_ref=f"wb-{day}",
             start_at=datetime(2026, 7, day, 10, 0, tzinfo=UTC),
             end_at=datetime(2026, 7, day, 11, 0, tzinfo=UTC),
@@ -179,7 +172,7 @@ async def test_run_day_close_writeback_end_to_end(pool):
     store = _StoreSpy()
     propose = _ProposeSpy()
     result = await run_day_close_writeback(
-        pool,
+        chronicler_pool,
         day_date=_DAY,
         timezone="UTC",
         store_fact_fn=store,
@@ -197,10 +190,10 @@ async def test_run_day_close_writeback_end_to_end(pool):
     assert PREDICATE_RECURRING_COMPANION not in [c["predicate"] for c in store.calls]
 
 
-async def test_real_absent_and_zero_filled_target_do_not_persist_skew(pool):
+async def test_real_absent_and_zero_filled_target_do_not_persist_skew(chronicler_pool):
     for prior in range(1, 9):
         await upsert_daily_rollup(
-            pool,
+            chronicler_pool,
             local_date=date(2026, 7, prior),
             lane="work",
             seconds=8 * 3600,
@@ -208,15 +201,21 @@ async def test_real_absent_and_zero_filled_target_do_not_persist_skew(pool):
             timezone="UTC",
         )
     store = _StoreSpy()
-    await run_day_close_writeback(pool, day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    await run_day_close_writeback(
+        chronicler_pool, day_date=_DAY, timezone="UTC", store_fact_fn=store
+    )
     assert store.calls == []
     await upsert_daily_rollup(
-        pool, local_date=_DAY, lane="work", seconds=0, episode_count=0, timezone="UTC"
+        chronicler_pool, local_date=_DAY, lane="work", seconds=0, episode_count=0, timezone="UTC"
     )
-    await run_day_close_writeback(pool, day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    await run_day_close_writeback(
+        chronicler_pool, day_date=_DAY, timezone="UTC", store_fact_fn=store
+    )
     assert store.calls == []
     await upsert_daily_rollup(
-        pool, local_date=_DAY, lane="work", seconds=0, episode_count=1, timezone="UTC"
+        chronicler_pool, local_date=_DAY, lane="work", seconds=0, episode_count=1, timezone="UTC"
     )
-    await run_day_close_writeback(pool, day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    await run_day_close_writeback(
+        chronicler_pool, day_date=_DAY, timezone="UTC", store_fact_fn=store
+    )
     assert store.calls

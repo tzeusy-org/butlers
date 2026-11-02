@@ -23,9 +23,8 @@ from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as routes
-from butlers.db import register_jsonb_codec
 from butlers.modules.memory import tools as memory_tools
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db import open_pool
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -88,30 +87,19 @@ def admitted_standing_rule_boundary(monkeypatch):
     admit_rule_boundary_for_non_auth_owner(monkeypatch)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "approvals"],
-        schemas={"memory": "home_mem"},
-    )
-
-
 async def _close_pool(pool: asyncpg.Pool) -> None:
     await asyncio.wait_for(pool.close(), timeout=10)
 
 
 @pytest.fixture
-async def database(migrated_db_url: str):
+async def database(fresh_db):
+    url = await asyncio.to_thread(
+        fresh_db, "core", "memory", "approvals", schemas={"memory": "home_mem"}
+    )
     async with AsyncExitStack() as cleanup:
-        owner = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-        )
+        owner = await open_pool(url, max_size=3)
         cleanup.push_async_callback(_close_pool, owner)
-        observer = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
-        )
+        observer = await open_pool(url, max_size=1)
         cleanup.push_async_callback(_close_pool, observer)
         try:
             await clear_audit_log_for_test(owner)

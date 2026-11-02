@@ -8,7 +8,6 @@ the state writer's idempotence rules, and honest rendering of unknown state.
 
 from __future__ import annotations
 
-import json
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -33,7 +32,6 @@ from butlers.core.model_routing import (
     resolve_dispatch,
     resolve_model,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 db_only = [
@@ -104,23 +102,17 @@ async def test_deferral_ignores_non_datetime_rows() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
+async def allowance_pool(db):
+    """Core pool with the seeded model catalog emptied."""
     clear_routing_decision_cache()
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    await p.execute(
+    pool = await db("core")
+    await pool.execute(
         "TRUNCATE public.model_round_robin_counters, public.butler_model_overrides, "
         "public.token_limits, public.token_usage_ledger, public.model_catalog, "
         "public.provider_allowance_states CASCADE"
     )
-    yield p
-    await p.execute("TRUNCATE public.provider_allowance_states")
-    await p.close()
+    return pool
 
 
 async def _entry(
@@ -143,7 +135,7 @@ async def _entry(
         alias,
         runtime_type,
         f"{alias}-model",
-        json.dumps([]),
+        [],
         tier,
         priority,
         allowance_account,
@@ -169,29 +161,31 @@ def _later() -> datetime:
 class TestAccountScopedExclusion:
     pytestmark = db_only
 
-    async def test_exhausted_account_excludes_every_entry_on_it(self, pool) -> None:
-        dead_hi = await _entry(pool, "codex-hi", runtime_type="codex", priority=90)
-        dead_lo = await _entry(pool, "codex-lo", runtime_type="codex", priority=80)
-        live = await _entry(pool, "opencode", runtime_type="opencode", priority=10)
-        await _exhaust(pool, "codex", _later())
+    async def test_exhausted_account_excludes_every_entry_on_it(self, allowance_pool) -> None:
+        dead_hi = await _entry(allowance_pool, "codex-hi", runtime_type="codex", priority=90)
+        dead_lo = await _entry(allowance_pool, "codex-lo", runtime_type="codex", priority=80)
+        live = await _entry(allowance_pool, "opencode", runtime_type="opencode", priority=10)
+        await _exhaust(allowance_pool, "codex", _later())
 
-        nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
+        nxt = await next_same_tier_candidate(allowance_pool, "general", "workhorse", [])
         assert nxt is not None and nxt[3] == live
-        resolved = await resolve_model(pool, "general", Complexity.WORKHORSE)
+        resolved = await resolve_model(allowance_pool, "general", Complexity.WORKHORSE)
         assert resolved is not None and resolved[3] == live
         # The sibling on the dead account is excluded even though it was never attempted.
-        after_live = await next_same_tier_candidate(pool, "general", "workhorse", [live])
+        after_live = await next_same_tier_candidate(allowance_pool, "general", "workhorse", [live])
         assert after_live is None, (dead_hi, dead_lo)
 
     async def test_allowance_account_column_groups_entries_across_runtime_types(
-        self, pool, migrated_db_url
+        self, allowance_pool, db
     ) -> None:
-        a = await _entry(pool, "a", runtime_type="codex", allowance_account="shared-plan")
-        b = await _entry(pool, "b", runtime_type="opencode", allowance_account="shared-plan")
-        c = await _entry(pool, "c", runtime_type="claude")
-        await _exhaust(pool, "shared-plan", _later())
+        a = await _entry(allowance_pool, "a", runtime_type="codex", allowance_account="shared-plan")
+        b = await _entry(
+            allowance_pool, "b", runtime_type="opencode", allowance_account="shared-plan"
+        )
+        c = await _entry(allowance_pool, "c", runtime_type="claude")
+        await _exhaust(allowance_pool, "shared-plan", _later())
 
-        nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
+        nxt = await next_same_tier_candidate(allowance_pool, "general", "workhorse", [])
         assert nxt is not None and nxt[3] == c, (a, b)
 
         # Preserve the cross-runtime grouping proof above, then exercise the
@@ -201,19 +195,16 @@ class TestAccountScopedExclusion:
         import httpx
 
         from butlers.api.routers import model_settings
-        from butlers.db import register_jsonb_codec
         from tests.api.auth_helpers import create_authenticated_domain_app
         from tests.three_seams_helpers import baseline_function
 
-        # This dedicated codec-aware pool does not change the old string-JSON fixture.
-        api_pool = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-        )
+        # A second, empty database for the API seam; nothing above carries over.
+        api_pool = await db("core")
         try:
             await api_pool.execute(
                 "TRUNCATE public.provider_allowance_states, public.model_catalog CASCADE"
             )
-            db = SimpleNamespace(credential_shared_pool=lambda: api_pool)
+            api_db = SimpleNamespace(credential_shared_pool=lambda: api_pool)
             old_writer = baseline_function("create_catalog_entry", vars(model_settings))
             # Historical writer executes its real INSERT but drops the requested label.
             for alias, account, priority in [("old-a", "acct-a", 90), ("old-b", "acct-b", 80)]:
@@ -225,7 +216,7 @@ class TestAccountScopedExclusion:
                         allowance_account=account,
                         priority=priority,
                     ),
-                    db,
+                    api_db,
                 )
             old_rows = await api_pool.fetch(
                 "SELECT id,allowance_account FROM public.model_catalog ORDER BY alias"
@@ -252,7 +243,7 @@ class TestAccountScopedExclusion:
                 "TRUNCATE public.provider_allowance_states, public.model_catalog CASCADE"
             )
             app = create_authenticated_domain_app()
-            app.dependency_overrides[get_db] = lambda: db
+            app.dependency_overrides[get_db] = lambda: api_db
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:
@@ -339,33 +330,32 @@ class TestAccountScopedExclusion:
                 assert listed.status_code == 200 and len(listed.json()["data"]) == 4
         finally:
             clear_routing_decision_cache()
-            await api_pool.close()
 
-    async def test_exclusion_lifts_at_reset_at(self, pool) -> None:
-        only = await _entry(pool, "codex-only", runtime_type="codex")
-        await _exhaust(pool, "codex", datetime.now(UTC) + timedelta(seconds=1))
-        assert await next_same_tier_candidate(pool, "general", "workhorse", []) is None
+    async def test_exclusion_lifts_at_reset_at(self, allowance_pool) -> None:
+        only = await _entry(allowance_pool, "codex-only", runtime_type="codex")
+        await _exhaust(allowance_pool, "codex", datetime.now(UTC) + timedelta(seconds=1))
+        assert await next_same_tier_candidate(allowance_pool, "general", "workhorse", []) is None
 
-        await pool.execute(
+        await allowance_pool.execute(
             "UPDATE public.provider_allowance_states SET reset_at = now() - interval '1 second'"
         )
-        nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
+        nxt = await next_same_tier_candidate(allowance_pool, "general", "workhorse", [])
         assert nxt is not None and nxt[3] == only
 
-    async def test_unknown_state_does_not_exclude(self, pool) -> None:
-        only = await _entry(pool, "codex-only", runtime_type="codex")
-        await _exhaust(pool, "codex", _later(), state="unknown")
+    async def test_unknown_state_does_not_exclude(self, allowance_pool) -> None:
+        only = await _entry(allowance_pool, "codex-only", runtime_type="codex")
+        await _exhaust(allowance_pool, "codex", _later(), state="unknown")
 
-        nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
+        nxt = await next_same_tier_candidate(allowance_pool, "general", "workhorse", [])
         assert nxt is not None and nxt[3] == only
 
-    async def test_receipt_resolution_names_the_allowance_exclusion(self, pool) -> None:
-        dead = await _entry(pool, "codex", runtime_type="codex", priority=50)
-        live = await _entry(pool, "opencode", runtime_type="opencode", priority=10)
-        await _exhaust(pool, "codex", _later())
+    async def test_receipt_resolution_names_the_allowance_exclusion(self, allowance_pool) -> None:
+        dead = await _entry(allowance_pool, "codex", runtime_type="codex", priority=50)
+        live = await _entry(allowance_pool, "opencode", runtime_type="opencode", priority=10)
+        await _exhaust(allowance_pool, "codex", _later())
 
         resolution = await resolve_dispatch(
-            pool,
+            allowance_pool,
             "general",
             derive_dispatch_intent("external", Complexity.WORKHORSE),
             allow_tier_fallthrough=False,
@@ -376,12 +366,12 @@ class TestAccountScopedExclusion:
         assert outcomes[dead].outcome is CandidateOutcome.EXCLUDED_ALLOWANCE
         assert outcomes[dead].describe()["exclusion"] == "allowance_exhausted"
 
-    async def test_all_candidates_exhausted_is_not_hard_fit(self, pool) -> None:
-        await _entry(pool, "codex", runtime_type="codex")
-        await _exhaust(pool, "codex", _later())
+    async def test_all_candidates_exhausted_is_not_hard_fit(self, allowance_pool) -> None:
+        await _entry(allowance_pool, "codex", runtime_type="codex")
+        await _exhaust(allowance_pool, "codex", _later())
 
         resolution = await resolve_dispatch(
-            pool,
+            allowance_pool,
             "general",
             derive_dispatch_intent("external", Complexity.WORKHORSE),
             allow_tier_fallthrough=False,
@@ -394,79 +384,84 @@ class TestAccountScopedExclusion:
 class TestAllowanceStateWriter:
     pytestmark = db_only
 
-    async def test_repeat_rejection_keeps_latest_reset_and_first_seen(self, pool) -> None:
-        entry = await _entry(pool, "codex", runtime_type="codex")
+    async def test_repeat_rejection_keeps_latest_reset_and_first_seen(self, allowance_pool) -> None:
+        entry = await _entry(allowance_pool, "codex", runtime_type="codex")
         later = datetime.now(UTC) + timedelta(hours=5)
         sooner = datetime.now(UTC) + timedelta(hours=1)
 
-        await mark_allowance_exhausted(pool, entry, reset_at=later, attempt_id=None)
-        first = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
-        await mark_allowance_exhausted(pool, entry, reset_at=sooner, attempt_id=None)
-        row = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
+        await mark_allowance_exhausted(allowance_pool, entry, reset_at=later, attempt_id=None)
+        first = await allowance_pool.fetchrow("SELECT * FROM public.provider_allowance_states")
+        await mark_allowance_exhausted(allowance_pool, entry, reset_at=sooner, attempt_id=None)
+        row = await allowance_pool.fetchrow("SELECT * FROM public.provider_allowance_states")
 
         assert row["reset_at"] == later
         assert row["reset_source"] == "parsed"
         assert row["first_seen_at"] == first["first_seen_at"]
-        assert await pool.fetchval("SELECT count(*) FROM public.provider_allowance_states") == 1
+        assert (
+            await allowance_pool.fetchval("SELECT count(*) FROM public.provider_allowance_states")
+            == 1
+        )
 
-    async def test_default_window_never_shortens_a_parsed_reset(self, pool) -> None:
-        entry = await _entry(pool, "codex", runtime_type="codex")
+    async def test_default_window_never_shortens_a_parsed_reset(self, allowance_pool) -> None:
+        entry = await _entry(allowance_pool, "codex", runtime_type="codex")
         parsed = datetime.now(UTC) + timedelta(hours=5)
 
-        await mark_allowance_exhausted(pool, entry, reset_at=parsed, attempt_id=None)
-        await mark_allowance_exhausted(pool, entry, reset_at=None, attempt_id=None)
-        row = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
+        await mark_allowance_exhausted(allowance_pool, entry, reset_at=parsed, attempt_id=None)
+        await mark_allowance_exhausted(allowance_pool, entry, reset_at=None, attempt_id=None)
+        row = await allowance_pool.fetchrow("SELECT * FROM public.provider_allowance_states")
 
         assert row["reset_at"] == parsed and row["reset_source"] == "parsed"
 
-    async def test_success_clears_only_an_exhausted_account(self, pool) -> None:
-        entry = await _entry(pool, "codex", runtime_type="codex")
-        other = await _entry(pool, "opencode", runtime_type="opencode")
-        await mark_allowance_exhausted(pool, entry, reset_at=_later(), attempt_id=None)
+    async def test_success_clears_only_an_exhausted_account(self, allowance_pool) -> None:
+        entry = await _entry(allowance_pool, "codex", runtime_type="codex")
+        other = await _entry(allowance_pool, "opencode", runtime_type="opencode")
+        await mark_allowance_exhausted(allowance_pool, entry, reset_at=_later(), attempt_id=None)
 
-        await clear_allowance_exhaustion(pool, other)  # different account: untouched
-        assert await pool.fetchval("SELECT state FROM public.provider_allowance_states") == (
-            "exhausted"
-        )
-        await clear_allowance_exhaustion(pool, entry)
-        row = await pool.fetchrow("SELECT * FROM public.provider_allowance_states")
+        await clear_allowance_exhaustion(allowance_pool, other)  # different account: untouched
+        assert await allowance_pool.fetchval(
+            "SELECT state FROM public.provider_allowance_states"
+        ) == ("exhausted")
+        await clear_allowance_exhaustion(allowance_pool, entry)
+        row = await allowance_pool.fetchrow("SELECT * FROM public.provider_allowance_states")
         assert row["state"] == "available" and row["reset_at"] is None
-        nxt = await next_same_tier_candidate(pool, "general", "workhorse", [])
+        nxt = await next_same_tier_candidate(allowance_pool, "general", "workhorse", [])
         assert nxt is not None
 
-    async def test_allowance_outcome_never_trips_the_breaker(self, pool) -> None:
-        entry = await _entry(pool, "codex", runtime_type="codex")
+    async def test_allowance_outcome_never_trips_the_breaker(self, allowance_pool) -> None:
+        entry = await _entry(allowance_pool, "codex", runtime_type="codex")
         for _i in range(10):
-            await pool.execute(
+            await allowance_pool.execute(
                 "INSERT INTO public.model_dispatch_attempts "
                 "(catalog_entry_id, butler, outcome, attempt_index) VALUES ($1, 'general', $2, 0)",
                 entry,
                 ALLOWANCE_OUTCOME,
             )
 
-        state = await get_breaker_state(pool, entry)
+        state = await get_breaker_state(allowance_pool, entry)
         assert state.open is False
 
 
 class TestAllowanceDeferral:
     pytestmark = db_only
 
-    async def test_defers_to_earliest_reset_only_when_every_entry_is_blocked(self, pool) -> None:
-        await _entry(pool, "codex", runtime_type="codex")
-        await _entry(pool, "opencode", runtime_type="opencode")
+    async def test_defers_to_earliest_reset_only_when_every_entry_is_blocked(
+        self, allowance_pool
+    ) -> None:
+        await _entry(allowance_pool, "codex", runtime_type="codex")
+        await _entry(allowance_pool, "opencode", runtime_type="opencode")
         soon, later = datetime.now(UTC) + timedelta(hours=1), _later()
-        await _exhaust(pool, "codex", later)
-        assert await allowance_deferral(pool, "general", Complexity.WORKHORSE) is None
+        await _exhaust(allowance_pool, "codex", later)
+        assert await allowance_deferral(allowance_pool, "general", Complexity.WORKHORSE) is None
 
-        await _exhaust(pool, "opencode", soon)
-        assert await allowance_deferral(pool, "general", Complexity.WORKHORSE) == soon
+        await _exhaust(allowance_pool, "opencode", soon)
+        assert await allowance_deferral(allowance_pool, "general", Complexity.WORKHORSE) == soon
 
-    async def test_an_available_lower_tier_entry_prevents_deferral(self, pool) -> None:
-        await _entry(pool, "codex", runtime_type="codex", tier="workhorse")
-        await _entry(pool, "local", runtime_type="opencode", tier="cheap")
-        await _exhaust(pool, "codex", _later())
+    async def test_an_available_lower_tier_entry_prevents_deferral(self, allowance_pool) -> None:
+        await _entry(allowance_pool, "codex", runtime_type="codex", tier="workhorse")
+        await _entry(allowance_pool, "local", runtime_type="opencode", tier="cheap")
+        await _exhaust(allowance_pool, "codex", _later())
 
-        assert await allowance_deferral(pool, "general", Complexity.WORKHORSE) is None
+        assert await allowance_deferral(allowance_pool, "general", Complexity.WORKHORSE) is None
 
-    async def test_empty_catalog_does_not_defer(self, pool) -> None:
-        assert await allowance_deferral(pool, "general", Complexity.WORKHORSE) is None
+    async def test_empty_catalog_does_not_defer(self, allowance_pool) -> None:
+        assert await allowance_deferral(allowance_pool, "general", Complexity.WORKHORSE) is None

@@ -33,8 +33,6 @@ from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Episode, Layer
 from butlers.chronicler.rollups import materialize_daily_rollups
 from butlers.chronicler.storage import list_daily_rollups, upsert_episode
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -44,34 +42,20 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
+
+@pytest.fixture
+async def chronicler_pool(db) -> asyncpg.Pool:
+    pool = await db("chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
 _TZ = ZoneInfo("Asia/Singapore")
 _LOCAL_DATE = date(2026, 7, 1)
 
 
 def _local(d: date, hour: int, minute: int = 0) -> datetime:
     return datetime(d.year, d.month, d.day, hour, minute, tzinfo=_TZ).astimezone(UTC)
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the chronicler migration chain (public schema, unscoped)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE daily_rollup_flags, daily_rollups CASCADE")
-    await p.execute("TRUNCATE TABLE episodes, point_events CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
 
 
 def _build_chronicler_api(pool) -> httpx.ASGITransport:
@@ -183,8 +167,8 @@ async def _fetch_live_endpoint_buckets(pool, *, day_start_utc, day_end_utc) -> d
 # ── Bit-for-bit regression against the live endpoint ───────────────────────
 
 
-async def test_rollup_matches_live_aggregate_by_category_bit_for_bit(pool) -> None:
-    await _seed_representative_day(pool)
+async def test_rollup_matches_live_aggregate_by_category_bit_for_bit(chronicler_pool) -> None:
+    await _seed_representative_day(chronicler_pool)
 
     day_start_utc = _local(_LOCAL_DATE, 0, 0)
     day_end_utc = _local(_LOCAL_DATE + timedelta(days=1), 0, 0)
@@ -192,15 +176,15 @@ async def test_rollup_matches_live_aggregate_by_category_bit_for_bit(pool) -> No
     # "Now" is the next morning, so 2026-07-01 is fully elapsed.
     now = _local(_LOCAL_DATE + timedelta(days=1), 8, 0)
     result = await materialize_daily_rollups(
-        pool, timezone="Asia/Singapore", lookback_days=3, now=now
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
     )
     assert _LOCAL_DATE.isoformat() in result["days_processed"]
 
-    rollup_rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
+    rollup_rows = await list_daily_rollups(chronicler_pool, local_date=_LOCAL_DATE)
     rollup_by_lane = {r.lane: r for r in rollup_rows}
 
     live_buckets = await _fetch_live_endpoint_buckets(
-        pool, day_start_utc=day_start_utc, day_end_utc=day_end_utc
+        chronicler_pool, day_start_utc=day_start_utc, day_end_utc=day_end_utc
     )
 
     # Every lane the live endpoint reports must match the rollup exactly.
@@ -237,20 +221,22 @@ async def test_rollup_matches_live_aggregate_by_category_bit_for_bit(pool) -> No
     assert rollup_by_lane["rest"].episode_count == 0
 
 
-async def test_rollup_upsert_is_idempotent_across_reruns(pool) -> None:
+async def test_rollup_upsert_is_idempotent_across_reruns(chronicler_pool) -> None:
     """Re-running the materializer for an already-rolled-up day recomputes in
     place — no duplicate rows — proving the (local_date, lane) unique
     constraint actually works against real Postgres."""
-    await _seed_representative_day(pool)
+    await _seed_representative_day(chronicler_pool)
     now = _local(_LOCAL_DATE + timedelta(days=1), 8, 0)
 
-    await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
-    first_rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
+    await materialize_daily_rollups(
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
+    )
+    first_rows = await list_daily_rollups(chronicler_pool, local_date=_LOCAL_DATE)
     assert len(first_rows) == 9  # one row per LANES entry, zero-filled (bu-whhll.14: +butler_ops)
 
     # Add a late-arriving episode and re-run.
     await upsert_episode(
-        pool,
+        chronicler_pool,
         Episode(
             source_name="google_health.measurements",
             source_ref="rollup-it-workout-late",
@@ -260,26 +246,28 @@ async def test_rollup_upsert_is_idempotent_across_reruns(pool) -> None:
             layer=Layer.ACTIVITY,
         ),
     )
-    await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
+    await materialize_daily_rollups(
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
+    )
 
-    second_rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
+    second_rows = await list_daily_rollups(chronicler_pool, local_date=_LOCAL_DATE)
     assert len(second_rows) == 9, "re-run must upsert in place, not duplicate rows"
     exercise_row = next(r for r in second_rows if r.lane == "exercise")
     assert exercise_row.seconds == 3600
     assert exercise_row.episode_count == 1
 
 
-async def test_materialize_skips_still_partial_local_day(pool) -> None:
+async def test_materialize_skips_still_partial_local_day(chronicler_pool) -> None:
     """The current, still-partial local day must never be materialized —
     real-Postgres regression for the fully-elapsed-window guard."""
-    await _seed_representative_day(pool)
+    await _seed_representative_day(chronicler_pool)
     # "Now" is still within 2026-07-01 local time.
     now = _local(_LOCAL_DATE, 12, 0)
 
     result = await materialize_daily_rollups(
-        pool, timezone="Asia/Singapore", lookback_days=3, now=now
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
     )
     assert _LOCAL_DATE.isoformat() not in result["days_processed"]
 
-    rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
+    rows = await list_daily_rollups(chronicler_pool, local_date=_LOCAL_DATE)
     assert rows == []
