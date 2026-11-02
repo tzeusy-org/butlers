@@ -49,6 +49,25 @@ logger = logging.getLogger(__name__)
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+# ``--allowed-mcp-server-names`` value for a session with no butler MCP server. Without an
+# allowlist the CLI starts every user- and project-level MCP server it finds, and the CLI
+# rejects an empty name ("mcpName is required"), so a name no server uses admits none.
+_NO_MCP_SERVERS_ALLOWLIST = "butlers-no-mcp-servers"
+
+# ``--skip-trust`` trusts the working directory (the butler's roster dir). gemini-cli 0.66.0
+# then registers skills from ``<cwd>/.gemini/skills`` and ``<cwd>/.agents/skills`` and reads
+# subagents from ``<cwd>/.gemini/agents``. Butler skills reach the model as files the
+# prompt points at, not through the CLI's registry, so the registries are switched off.
+_CWD_CONFINEMENT_SETTINGS: dict[str, Any] = {
+    "skills": {"enabled": False},
+    "experimental": {"enableAgents": False},
+}
+
+# A headless prompt starting with ``/`` runs as a slash command, including a custom command
+# from ``<cwd>/.gemini/commands``. The CLI trims whitespace before that check, but not a
+# zero-width space, so one in front keeps the prompt text going to the model as text.
+_SLASH_COMMAND_GUARD = "​"
+
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
 # butler prompt's literal text from being replaced by the CLI's tool or skill listings.
@@ -415,10 +434,14 @@ class GeminiAdapter(RuntimeAdapter):
         are written through :meth:`build_config_file` into that directory, which the
         CLI is pointed at as its system settings file
         (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini ranks above user and
-        project settings). When ``mcp_servers`` is non-empty,
-        ``--allowed-mcp-server-names`` limits the session to the configured servers
-        so user- or project-level MCP servers are not reachable. That confinement
-        covers MCP servers only: Gemini's built-in shell, file and web tools are not confined
+        project settings). ``--allowed-mcp-server-names`` limits the session to the
+        configured servers, or to none when ``mcp_servers`` is empty, so user- or
+        project-level MCP servers are not reachable even though ``--skip-trust``
+        trusts the working directory. The same settings switch off the CLI's skill and
+        subagent registries, and a prompt starting with ``/`` is sent as text, so the
+        working directory's ``.gemini/`` skills, agents and commands never load. The CLI
+        has no setting to stop it loading ``<cwd>/GEMINI.md``, so the roster ships none.
+        That confinement does not reach Gemini's built-in shell, file and web tools
         (``--sandbox=false``). The user home is left alone so the CLI's
         OAuth credentials keep working.
 
@@ -472,6 +495,8 @@ class GeminiAdapter(RuntimeAdapter):
         cmd = [binary, "--sandbox=false", "--skip-trust", "-o", "stream-json"]
         if model:
             cmd.extend(["-m", model])
+        if prompt.lstrip().startswith("/"):
+            prompt = _SLASH_COMMAND_GUARD + prompt
         cmd.extend(["--prompt", prompt])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
@@ -496,8 +521,8 @@ class GeminiAdapter(RuntimeAdapter):
                 gemini_servers, Path(config_dir.name), max_session_turns=max_turns
             )
             staged_env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(config_path)
-            if gemini_servers:
-                cmd.extend(["--allowed-mcp-server-names", ",".join(gemini_servers)])
+            allowed_servers = ",".join(gemini_servers) or _NO_MCP_SERVERS_ALLOWLIST
+            cmd.extend(["--allowed-mcp-server-names", allowed_servers])
             child_env = {
                 **(filtered_env if filtered_env is not None else os.environ),
                 **staged_env,
@@ -641,7 +666,7 @@ class GeminiAdapter(RuntimeAdapter):
         Path
             Path to the generated gemini_mcp.json file.
         """
-        config: dict[str, Any] = {"mcpServers": mcp_servers}
+        config: dict[str, Any] = {"mcpServers": mcp_servers, **_CWD_CONFINEMENT_SETTINGS}
         if max_session_turns is not None and max_session_turns > 0:
             config["model"] = {"maxSessionTurns": max_session_turns}
         config_path = tmp_dir / "gemini_mcp.json"

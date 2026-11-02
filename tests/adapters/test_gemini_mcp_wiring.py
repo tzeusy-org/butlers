@@ -26,7 +26,7 @@ _SERVERS = {
 }
 
 
-async def _invoke(mcp_servers: dict, env: dict[str, str] | None = None) -> dict:
+async def _invoke(mcp_servers: dict, env: dict[str, str] | None = None, prompt: str = "p") -> dict:
     """Run invoke() and capture what the CLI would have seen at spawn time."""
     seen: dict = {}
 
@@ -53,7 +53,10 @@ async def _invoke(mcp_servers: dict, env: dict[str, str] | None = None) -> dict:
         patch(_EXEC, side_effect=fake_exec),
     ):
         await GeminiAdapter().invoke(
-            prompt="p", system_prompt="", mcp_servers=mcp_servers, env=env or {"PATH": "/bin"}
+            prompt=prompt,
+            system_prompt="",
+            mcp_servers=mcp_servers,
+            env=env or {"PATH": "/bin"},
         )
     return seen
 
@@ -94,13 +97,54 @@ async def test_each_invocation_gets_its_own_config_path_and_cleans_up() -> None:
     assert not await asyncio.to_thread(Path(first["settings_path"]).exists)
 
 
-async def test_no_servers_adds_no_mcp_wiring() -> None:
+async def test_no_servers_admits_no_user_or_project_mcp_server() -> None:
     seen = await _invoke({})
     # Settings are still staged (they carry the turn limit) but name no MCP server.
     assert seen["settings"]["mcpServers"] == {}
-    assert "--allowed-mcp-server-names" not in seen["cmd"]
+    # --skip-trust trusts the cwd; without an allowlist the CLI would start every user- or
+    # project-level server. The CLI rejects an empty name, so a name no server uses admits none.
+    cmd = seen["cmd"]
+    assert "--skip-trust" in cmd
+    allowed = cmd[cmd.index("--allowed-mcp-server-names") + 1]
+    assert allowed == "butlers-no-mcp-servers"
 
 
 async def test_invoke_trusts_the_butler_server_so_headless_tool_calls_are_not_denied() -> None:
     seen = await _invoke(_SERVERS)
     assert seen["settings"]["mcpServers"]["my-butler"]["trust"] is True
+
+
+# --skip-trust trusts the cwd (the roster dir). Probed against gemini-cli 0.66.0 with a mock
+# API [bu-q521f5]: it registers <cwd>/.gemini/skills and <cwd>/.agents/skills, reads
+# <cwd>/.gemini/agents, expands a "/name" prompt from <cwd>/.gemini/commands, and loads
+# <cwd>/GEMINI.md (plus GEMINI.md files up to the git root) as project context.
+
+
+async def test_invoke_switches_off_the_cwd_skill_and_subagent_registries() -> None:
+    settings = (await _invoke(_SERVERS))["settings"]
+    assert settings["skills"] == {"enabled": False}
+    assert settings["experimental"] == {"enableAgents": False}
+
+
+@pytest.mark.parametrize(
+    ("prompt", "sent"),
+    [("/canary run", "\u200b/canary run"), ("  /x", "\u200b  /x"), ("a /b", "a /b")],
+)
+async def test_a_slash_prompt_reaches_the_model_as_text_not_a_command(
+    prompt: str, sent: str
+) -> None:
+    cmd = (await _invoke(_SERVERS, prompt=prompt))["cmd"]
+    assert cmd[cmd.index("--prompt") + 1] == sent
+
+
+def test_no_gemini_context_file_or_project_dir_ships_where_the_cli_would_load_it() -> None:
+    # The CLI has no setting that stops it loading GEMINI.md from a trusted cwd or its
+    # ancestors (context.fileName only adds names), so none may exist on that path.
+    root = Path(__file__).parents[2]
+    found = [
+        p.relative_to(root).as_posix()
+        for p in [root / "GEMINI.md", root / ".gemini", *(root / "roster").rglob("GEMINI.md")]
+        + list((root / "roster").rglob(".gemini"))
+        if p.exists()
+    ]
+    assert found == []

@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals.autonomy_suggestions import confirm_suggestion
 from butlers.modules.approvals.autonomy_tracker import (
     check_promotion_threshold,
@@ -18,7 +17,6 @@ from butlers.modules.approvals.autonomy_tracker import (
     record_approval,
 )
 from butlers.modules.base import ToolMeta
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -40,25 +38,9 @@ def admitted_standing_rule_boundary(monkeypatch):
     admit_rule_boundary_for_non_auth_owner(monkeypatch)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["approvals"])
-
-
 @pytest.fixture
-async def approvals_pool(migrated_db_url: str) -> asyncpg.Pool:
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE autonomy_suggestions, autonomy_approval_history, approval_events, "
-        "pending_actions, approval_rules CASCADE"
-    )
-    yield pool
-    await pool.close()
+async def approvals_pool(db) -> asyncpg.Pool:
+    return await db("approvals")
 
 
 class _Action:

@@ -68,16 +68,6 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the production tables the park path writes and reads."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
-@pytest.fixture(scope="module")
 def review_door_db_url(postgres_container) -> str:
     """Current actual owning chains; bootstrap supplies existing runtime roles."""
     from butlers.migrations import run_migrations
@@ -98,20 +88,9 @@ def review_door_db_url(postgres_container) -> str:
 
 
 @pytest.fixture
-async def approval_push_pool(migrated_db_url: str):
-    """Return a clean JSONB-aware pool with approval pushes enabled."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-        "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_push_emissions, approval_events, "
-        "pending_actions, deferred_notifications CASCADE"
-    )
+async def approval_push_pool(db):
+    """Return a fresh JSONB-aware pool with approval pushes enabled."""
+    pool = await db("core", "approvals")
     await pool.execute(
         "UPDATE public.approvals_policy "
         "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' "
@@ -121,32 +100,19 @@ async def approval_push_pool(migrated_db_url: str):
         "UPDATE approval_delivery_rollout "
         "SET admission_enabled = true, worker_enabled = false WHERE singleton"
     )
-    yield pool
-    await pool.close()
+    return pool
 
 
 @pytest.fixture
-async def disabled_rollout_pool(migrated_db_url: str):
-    """Return a clean pool with the new writer and worker kept default-off."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-        "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_push_emissions, approval_events, "
-        "pending_actions, deferred_notifications CASCADE"
-    )
+async def disabled_rollout_pool(db):
+    """Return a fresh pool with the new writer and worker kept default-off."""
+    pool = await db("core", "approvals")
     await pool.execute(
         "INSERT INTO approval_delivery_rollout (singleton) VALUES (true) "
         "ON CONFLICT (singleton) DO UPDATE "
         "SET admission_enabled = false, worker_enabled = false"
     )
-    yield pool
-    await pool.close()
+    return pool
 
 
 @pytest.fixture(scope="module")

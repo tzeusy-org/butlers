@@ -2442,6 +2442,70 @@ export interface GeneralStats {
 }
 
 // ---------------------------------------------------------------------------
+// General butler — owner projects (bu-jv1moa.12)
+// ---------------------------------------------------------------------------
+
+export type GeneralProjectKind = "project" | "responsibility" | "decision";
+/** Effective state: a draft past its horizon reads as expired. */
+export type GeneralProjectState = "draft" | "closed" | "expired";
+export type GeneralProjectLinkKind =
+  | "deadline"
+  | "owner_condition"
+  | "trip"
+  | "drive_file"
+  | "calendar_event";
+
+export interface GeneralProjectConstraints {
+  /** Descriptive only: a stated budget authorises no spend. */
+  budget: { amount: string; currency: string } | null;
+  must_keep: string[];
+}
+
+export interface GeneralProjectCharterInput {
+  title: string;
+  horizon_end: string;
+  objective: string;
+  done_condition: string;
+  constraints: GeneralProjectConstraints;
+}
+
+export interface GeneralProjectCharter extends GeneralProjectCharterInput {
+  version: number;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GeneralProjectLink {
+  id: string;
+  ref_kind: GeneralProjectLinkKind;
+  ref_id: string;
+  created_at: string;
+}
+
+export interface GeneralProjectSummary {
+  id: string;
+  kind: GeneralProjectKind;
+  title: string;
+  state: GeneralProjectState;
+  current_charter_version: number;
+  horizon_end: string;
+  closed_at: string | null;
+  link_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GeneralProjectDetail extends GeneralProjectSummary {
+  charter: GeneralProjectCharter;
+  links: GeneralProjectLink[];
+}
+
+export interface GeneralProjectCreateRequest extends GeneralProjectCharterInput {
+  kind: GeneralProjectKind;
+  idempotency_key: string;
+}
+
+// ---------------------------------------------------------------------------
 // Health — new endpoints (bu-iuol4.24)
 // ---------------------------------------------------------------------------
 

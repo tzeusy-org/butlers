@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -19,18 +20,6 @@ def _messenger_migration_dir() -> Path:
     return chain_dir
 
 
-def _load_migration(filename: str):
-    """Load a migration module by filename from the messenger chain."""
-    migration_path = _messenger_migration_dir() / filename
-    assert migration_path.exists(), f"Missing migration file: {filename}"
-
-    spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), migration_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _get_migration_files() -> list[Path]:
     """Return a sorted list of all messenger migration files."""
     migration_dir = _messenger_migration_dir()
@@ -40,7 +29,7 @@ def _get_migration_files() -> list[Path]:
 @pytest.mark.parametrize("migration_file", _get_migration_files(), ids=lambda p: p.name)
 def test_migration_branch_label(migration_file: Path) -> None:
     """Only the branch root should have branch_labels=('messenger',)."""
-    module = _load_migration(migration_file.name)
+    module = load_migration(migration_file)
     if module.revision == "msg_001":
         assert module.branch_labels == ("messenger",), (
             f"{migration_file.name} should have branch_labels=('messenger',)"
@@ -53,7 +42,7 @@ def test_msg_001_is_branch_root():
     """msg_001 must be the branch root with no down_revision."""
     root_module = None
     for migration_file in _get_migration_files():
-        module = _load_migration(migration_file.name)
+        module = load_migration(migration_file)
         if module.revision == "msg_001":
             root_module = module
             break

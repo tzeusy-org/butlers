@@ -47,7 +47,24 @@ MAX_ATTACHMENT_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
 MAX_INLINE_BASE64_BYTES = 64 * 1024  # 64KB
 
 
-async def get_attachment(blob_store: BlobStore | None, storage_ref: str) -> dict[str, Any]:
+def _scope_refusal(
+    storage_ref: str, blob_store: BlobStore, origin_butler: str
+) -> AttachmentError | None:
+    """Return the RFC 0016 scoping error for ``storage_ref``, or ``None`` if in scope.
+
+    A butler may read only blobs under its own prefix ``{bucket}/{origin_butler}/``
+    or the connector prefix ``{bucket}/connectors/``.
+    """
+    try:
+        check_storage_ref(storage_ref, blob_store, origin_butler=origin_butler)
+    except AttachmentError as exc:
+        return exc
+    return None
+
+
+async def get_attachment(
+    blob_store: BlobStore | None, storage_ref: str, *, origin_butler: str
+) -> dict[str, Any]:
     """Retrieve a small, non-image ingested attachment as inline base64 JSON.
 
     Returns base64-encoded data for PDFs/text attachments small enough to
@@ -55,9 +72,15 @@ async def get_attachment(blob_store: BlobStore | None, storage_ref: str) -> dict
     instead, which returns a real MCP image content block with no inline-size
     cap (only the absolute ``MAX_ATTACHMENT_SIZE_BYTES`` ceiling).
 
+    The blob must sit under the caller's RFC 0016 prefix
+    ``{bucket}/{origin_butler}/`` or the connector prefix
+    ``{bucket}/connectors/``; any other ref returns an
+    ``attachment_forbidden`` refusal without being fetched.
+
     Args:
         blob_store: The BlobStore instance to retrieve from
         storage_ref: Storage reference string (e.g., 's3://bucket/general/2026/02/16/abc123.jpg')
+        origin_butler: Name of the calling butler (its blob key prefix)
 
     Returns:
         Dictionary with:
@@ -82,6 +105,13 @@ async def get_attachment(blob_store: BlobStore | None, storage_ref: str) -> dict
     except ValueError as e:
         logger.warning("Invalid storage_ref format: %s", storage_ref)
         raise ValueError(f"Invalid storage_ref format: {e}") from e
+
+    scope_error = _scope_refusal(storage_ref, blob_store, origin_butler)
+    if scope_error is not None:
+        if scope_error.code != "attachment_forbidden":
+            raise ValueError(f"Invalid storage_ref format: {scope_error}") from scope_error
+        logger.warning("Refusing out-of-scope storage_ref for %s: %s", origin_butler, storage_ref)
+        return _refusal("attachment_forbidden", storage_ref, hint=str(scope_error))
 
     # Retrieve blob
     try:
@@ -148,7 +178,9 @@ async def get_attachment(blob_store: BlobStore | None, storage_ref: str) -> dict
     }
 
 
-async def attachment_view(blob_store: BlobStore | None, storage_ref: str) -> Image | dict[str, Any]:
+async def attachment_view(
+    blob_store: BlobStore | None, storage_ref: str, *, origin_butler: str
+) -> Image | dict[str, Any]:
     """Retrieve an image attachment as a real MCP image content block.
 
     Unlike ``get_attachment()``, the image bytes never pass through this
@@ -159,12 +191,16 @@ async def attachment_view(blob_store: BlobStore | None, storage_ref: str) -> Ima
     Args:
         blob_store: The BlobStore instance to retrieve from.
         storage_ref: Storage reference string (e.g. 's3://bucket/general/2026/02/16/abc123.jpg').
+        origin_butler: Name of the calling butler (its blob key prefix).
 
     Returns:
-        An ``Image`` for a fetchable, in-cap, image/* blob. A typed refusal
-        dict (``status: "refused"``) for anything over the size cap or not an
-        image media type. Never raises for an ordinary not-found/oversized
-        case — see the ``status`` field of the returned dict.
+        An ``Image`` for a fetchable, in-cap, image/* blob under the caller's
+        RFC 0016 prefix ``{bucket}/{origin_butler}/`` or the connector prefix
+        ``{bucket}/connectors/``. A typed refusal dict (``status: "refused"``)
+        for a ref outside those prefixes (``attachment_forbidden``), anything
+        over the size cap, or a non-image media type. Never raises for an
+        ordinary not-found/oversized case — see the ``status`` field of the
+        returned dict.
     """
     if blob_store is None:
         return {
@@ -184,6 +220,15 @@ async def attachment_view(blob_store: BlobStore | None, storage_ref: str) -> Ima
             "storage_ref": storage_ref,
             "hint": str(exc),
         }
+
+    scope_error = _scope_refusal(storage_ref, blob_store, origin_butler)
+    if scope_error is not None:
+        reason = (
+            "attachment_forbidden"
+            if scope_error.code == "attachment_forbidden"
+            else "invalid_storage_ref"
+        )
+        return _refusal(reason, storage_ref, hint=str(scope_error))
 
     media_type = _infer_media_type(blob_ref.key)
     if not media_type.startswith("image/"):
