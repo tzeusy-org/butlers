@@ -16,7 +16,7 @@
 
 - [ ] 4.1 Narrowed filtered list and replay verb. (Attention episode: done, `bu-q7vx1q.88.2`, REQ-ingestion-policy-003.)
 - [x] 4.2 Opt-in "except known contacts" rule-editor option (bu-q7vx1q.88.3, REQ-ingestion-policy-004).
-- [x] 4.3 WhatsApp and Drive drop sites (bu-q7vx1q.42, REQ-ingestion-policy-006, REQ-connector-base-spec-014, REQ-dashboard-ingestion-dispatch-console-005).
+- [x] 4.3 WhatsApp and Drive drop sites (bu-q7vx1q.42, REQ-ingestion-policy-006, REQ-connector-base-spec-014, REQ-dashboard-ingestion-dispatch-console-012).
 
 
 # q43 bounded amendment tasks

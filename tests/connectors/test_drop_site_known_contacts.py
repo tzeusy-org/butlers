@@ -308,3 +308,39 @@ async def test_current_availability_requires_evidence_from_every_marking_runtime
     assert (
         await ingestion_current_classification_available(pool, now=datetime.now(UTC)) is available
     )
+
+
+async def test_whatsapp_unresolved_peer_records_no_classification_and_counts_uncertain(
+    wa: WhatsAppUserClientConnector,
+) -> None:
+    """A 1:1 chat whose peer is an unmapped LID cannot be classified: no marker, and the
+    missing classification reads as uncertain even though the snapshot is loaded."""
+    lid_chat = "164772343488740@lid"
+    await _flush_wa(wa, lid_chat, _rule("chat_id", {"chat_id": lid_chat}), loaded=True)
+
+    (row,) = wa._filtered_event_buffer._rows
+    context = row[9].get("drop_context", {})
+    assert "classification" not in context
+    assert "important_dropped" not in context
+    assert not classification_certain(context.get("classification"))
+
+
+async def test_whatsapp_stored_classification_is_the_one_that_decided_the_drop(
+    wa: WhatsAppUserClientConnector,
+) -> None:
+    """The snapshot may change after policy evaluation; the row keeps the deciding one."""
+    chat = _KNOWN_JID
+    original = wa._ingestion_policy.evaluate
+
+    def evaluate_then_unload(envelope: Any) -> Any:
+        decision = original(envelope)
+        wa._known_contacts._cache = frozenset()
+        wa._known_contacts._transition("failed", "refresh_failed")
+        return decision
+
+    with patch.object(wa._ingestion_policy, "evaluate", side_effect=evaluate_then_unload):
+        await _flush_wa(wa, chat, _rule("chat_id", {"chat_id": chat}), loaded=True)
+
+    context = _only_row(wa)
+    assert context["important_dropped"] is True
+    assert context["classification"]["state"] == "loaded"

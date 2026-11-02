@@ -73,7 +73,7 @@ Scope: v1-mandatory
 
 The dropped-known count, episode list and uncertainty count SHALL include WhatsApp and Drive rows marked under REQ-ingestion-policy-006. Rows of those connectors without a loaded classification SHALL count as uncertain and never as zero; rows classified `not_applicable` SHALL count as neither dropped nor uncertain.
 
-ID: REQ-dashboard-ingestion-dispatch-console-005
+ID: REQ-dashboard-ingestion-dispatch-console-012
 Source: bu-q7vx1q.42
 Scope: v1-mandatory
 

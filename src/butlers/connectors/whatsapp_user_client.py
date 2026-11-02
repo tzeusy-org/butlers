@@ -1527,6 +1527,8 @@ class WhatsAppUserClientConnector:
         min_id = min((i for i in event_ids if i), default="0")
         max_id = max((i for i in event_ids if i), default="0")
         batch_event_id = f"batch:{chat_jid}:{min_id}-{max_id}"
+        # The classification that decided the drop; every record site stores this one.
+        drop_class: tuple[bool | None, dict[str, Any] | None] | None = None
 
         try:
             # a2. Translate any opaque "@lid" senders to phone JIDs so the
@@ -1540,7 +1542,8 @@ class WhatsAppUserClientConnector:
 
             # c. Evaluate ingestion policy (connector scope)
             await self._refresh_known_contacts()
-            _known_contact, _ = self._batch_known_contact(chat_jid)
+            drop_class = self._batch_known_contact(chat_jid)
+            _known_contact = drop_class[0]
             _ip_envelope = IngestionEnvelope(
                 source_channel=_DESCRIPTOR.channel,
                 raw_key=chat_jid,
@@ -1563,6 +1566,7 @@ class WhatsAppUserClientConnector:
                         _ip_decision.matched_rule_type or "unknown",
                     ),
                     events=buffered_events,
+                    drop_class=drop_class,
                 )
                 await self._flush_and_drain()
                 return
@@ -1584,6 +1588,7 @@ class WhatsAppUserClientConnector:
                         _gp_decision.matched_rule_type or "unknown",
                     ),
                     events=buffered_events,
+                    drop_class=drop_class,
                 )
                 await self._flush_and_drain()
                 return
@@ -1630,6 +1635,7 @@ class WhatsAppUserClientConnector:
                         filter_reason=FilteredEventBuffer.reason_discretion_ignore(ignore_kind),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
                         events=buffered_events,
+                        drop_class=drop_class,
                     )
                     await self._flush_and_drain()
                     return
@@ -1663,6 +1669,7 @@ class WhatsAppUserClientConnector:
                 status="error",
                 error_detail=failure_class,
                 events=buffered_events,
+                drop_class=drop_class,
             )
             await self._flush_and_drain()
 
@@ -1676,9 +1683,14 @@ class WhatsAppUserClientConnector:
         status: str = "filtered",
         error_detail: str | None = None,
         events: list[dict[str, Any]] | None = None,
+        drop_class: tuple[bool | None, dict[str, Any] | None] | None = None,
     ) -> None:
-        """Record a filtered or errored batch event."""
-        known_contact, classification = self._batch_known_contact(chat_jid)
+        """Record a filtered or errored batch event.
+
+        ``drop_class`` is the ``(known_contact, classification)`` pair that decided the drop;
+        when the drop happened before evaluation it is derived here.
+        """
+        known_contact, classification = drop_class or self._batch_known_contact(chat_jid)
         self._filtered_event_buffer.record(
             external_message_id=batch_event_id,
             source_channel=self._config.channel,
