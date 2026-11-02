@@ -32,6 +32,10 @@ from butlers.modules.approvals.execution_context import (
     set_approval_execution_context,
 )
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.calendar_approval import (
+    CALENDAR_APPROVAL_TOOLS,
+    retire_legacy_calendar_approval_args,
+)
 
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
@@ -244,6 +248,7 @@ async def execute_approved_action(
                     )
 
                 dispatch_args = tool_args
+                context_args = tool_args
                 if tool_name == "relationship_assert_fact":
                     stored_args = existing_row.get("tool_args")
                     if isinstance(stored_args, str):
@@ -263,6 +268,30 @@ async def execute_approved_action(
                     dispatch_args = {
                         key: value for key, value in stored_args.items() if key != "verified"
                     }
+                elif tool_name in CALENDAR_APPROVAL_TOOLS:
+                    stored_args = existing_row.get("tool_args")
+                    if isinstance(stored_args, str):
+                        stored_args = json.loads(stored_args)
+                    if (
+                        existing_row.get("tool_name") != tool_name
+                        or not isinstance(stored_args, dict)
+                        or approval_tool_args_digest(stored_args)
+                        != approval_tool_args_digest(tool_args)
+                    ):
+                        return ExecutionResult(
+                            success=False, error="approved original argument binding mismatch"
+                        )
+                    # Calendar tools open their gates only for this context, so
+                    # bind it to the canonical public call derived from the
+                    # exact locked stored row (legacy markers retired there,
+                    # never forwarded). No caller-supplied value carries authority.
+                    try:
+                        dispatch_args = retire_legacy_calendar_approval_args(tool_name, stored_args)
+                    except (TypeError, ValueError) as exc:
+                        return ExecutionResult(
+                            success=False, error=f"invalid approved calendar arguments: {exc}"
+                        )
+                    context_args = dispatch_args
 
                 try:
                     authorized_task = asyncio.current_task()
@@ -273,7 +302,7 @@ async def execute_approved_action(
                         session_id=existing_row.get("session_id"),
                         actor=existing_row.get("decided_by") or "system:approval_executor",
                         tool_name=tool_name,
-                        tool_args_digest=approval_tool_args_digest(tool_args),
+                        tool_args_digest=approval_tool_args_digest(context_args),
                         authorized_task=authorized_task,
                     )
                     context_token = set_approval_execution_context(execution_context)

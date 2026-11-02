@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.modules.calendar_approval import calendar_approval_args, calendar_approval_datetime
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -313,7 +314,6 @@ def register_event_tools(
         entity_ids: list[uuid.UUID] | None = None,
         clear_entity_ids: bool = False,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Update an event and preserve Butler tags for Butler-generated entries.
 
@@ -331,6 +331,31 @@ def register_event_tools(
         Fail-closed: provider errors return a structured error dict rather than
         silently dropping the mutation (spec section 4.4 / 15.2).
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_event",
+            event_id=event_id,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            all_day=all_day,
+            timezone=timezone,
+            description=description,
+            body=body,
+            location=location,
+            attendees=attendees,
+            recurrence_rule=recurrence_rule,
+            recurrence_scope=recurrence_scope,
+            instance_start_at=instance_start_at,
+            color_id=color_id,
+            calendar_id=calendar_id,
+            conflict_policy=conflict_policy,
+            entity_ids=entity_ids,
+            clear_entity_ids=clear_entity_ids,
+            request_id=request_id,
+        )
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         if clear_entity_ids and entity_ids != []:
             raise ValueError("clear_entity_ids requires entity_ids=[]")
         if recurrence_scope != "series":
@@ -354,7 +379,7 @@ def register_event_tools(
                 clear_entity_ids=clear_entity_ids,
                 request_id=request_id,
                 tool_name="calendar_update_event",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
         await module._require_calendar_write_permission()
         normalized_event_id = event_id.strip()
@@ -716,7 +741,6 @@ def register_event_tools(
         instance_start_at: datetime | None = None,
         send_updates: str | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete or cancel a calendar event.
 
@@ -734,6 +758,16 @@ def register_event_tools(
         Returns status="deleted" on success, or status="not_found" when
         the event did not exist (already deleted — treated as success).
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_event",
+            event_id=event_id,
+            calendar_id=calendar_id,
+            recurrence_scope=recurrence_scope,
+            instance_start_at=instance_start_at,
+            send_updates=send_updates,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         if recurrence_scope != "series":
             return await module._apply_occurrence_delete(
                 event_id=event_id,
@@ -743,7 +777,7 @@ def register_event_tools(
                 send_updates=send_updates,
                 request_id=request_id,
                 tool_name="calendar_delete_event",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
         await module._require_calendar_write_permission()
         normalized_event_id = event_id.strip()
@@ -911,7 +945,6 @@ def register_event_tools(
         calendar_id: str | None = None,
         entity_ids: list[uuid.UUID] | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Edit a single occurrence (or this-and-following) of a recurring event.
 
@@ -922,6 +955,25 @@ def register_event_tools(
         series at the boundary and applies the edit to the remainder.  The
         matching ``calendar_event_instances`` row is marked ``is_exception``.
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_event_instance",
+            event_id=event_id,
+            instance_start_at=instance_start_at,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            timezone=timezone,
+            description=description,
+            body=body,
+            location=location,
+            recurrence_scope=recurrence_scope,
+            calendar_id=calendar_id,
+            entity_ids=entity_ids,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
         return await module._apply_occurrence_update(
             event_id=event_id,
             instance_start_at=instance_start_at,
@@ -939,7 +991,7 @@ def register_event_tools(
             entity_ids=entity_ids,
             request_id=request_id,
             tool_name="calendar_update_event_instance",
-            approval_bypass=_approval_bypass,
+            approval_args=approval_args,
         )
 
     @_tool("core")
@@ -950,7 +1002,6 @@ def register_event_tools(
         send_updates: str | None = None,
         calendar_id: str | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete a single occurrence (or this-and-following) of a recurring event.
 
@@ -962,6 +1013,16 @@ def register_event_tools(
         ``is_exception`` (status cancelled).  A non-existent base event surfaces
         a fail-open not-found response.
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_event_instance",
+            event_id=event_id,
+            instance_start_at=instance_start_at,
+            recurrence_scope=recurrence_scope,
+            send_updates=send_updates,
+            calendar_id=calendar_id,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         return await module._apply_occurrence_delete(
             event_id=event_id,
             instance_start_at=instance_start_at,
@@ -970,5 +1031,5 @@ def register_event_tools(
             send_updates=send_updates,
             request_id=request_id,
             tool_name="calendar_delete_event_instance",
-            approval_bypass=_approval_bypass,
+            approval_args=approval_args,
         )

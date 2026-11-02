@@ -210,10 +210,16 @@ owners, without keeping a second engine. Every Calendar package Python file is l
 - Workspace mutations (`POST /api/calendar/workspace/user-events` with `action: "create"` and
   `/butler-events`, envelope `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
   (from the tool, else `calendar_sync_status`). A repeat `request_id` replays the stored
-  `calendar_action_log` result instead of re-executing; approval-queued replays of butler-event
-  delete/toggle call `calendar_delete_butler_event(..., _approval_bypass=True)` /
-  `calendar_toggle_butler_event(..., _approval_bypass=True)`
-  (`src/butlers/modules/calendar/butler_events.py`).
+  `calendar_action_log` result instead of re-executing.
+- Approval gates (high-impact butler-event delete/toggle, large `series`/`following` recurrence
+  edits) cannot be skipped by any tool argument. A gated tool runs without parking only while the
+  approvals executor replays the exact stored call: it checks `get_approval_execution_context`
+  for its own tool name and the digest of its canonical public arguments. That canonical form
+  comes from `calendar_approval_args` (`src/butlers/modules/calendar_approval.py`), which both
+  the gates (to build the parked `tool_args`) and the tools (to check the context) use. It
+  includes every public parameter with its default and stores datetimes as ISO strings; the
+  tools parse them back at entry. The same context lets a replay resume its own pending
+  `calendar_action_log` row; any other caller is told the mutation is still queued.
 - `POST /api/calendar/workspace/sync` keeps the raw `query_calendar_sources` fan-out, picks one
   canonical owner per calendar (enabled, `core` capability, freshest) and sends it a single
   `calendar_force_sync(queue=true)`, answering `202`. The module persists and serialises the command

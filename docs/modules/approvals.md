@@ -193,6 +193,14 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
+- Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
+  `src/butlers/modules/calendar_approval.py`) first checks the requested tool name and argument
+  digest against the locked approved row; a mismatch refuses before dispatch. The executor then
+  dispatches, and binds the execution context to, the canonical public call built from the stored
+  row. Rows parked before bu-svqpzo.1 carry a literal `_approval_bypass: true` marker (and, for
+  `calendar_update_event_instance`, `clear_entity_ids: false`); only those exact values are dropped.
+  Any other value or unknown key refuses before effect. The marker is never forwarded and grants
+  nothing; delete this retirement once no pending calendar row carries it.
 - `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
   tool handlers when an approved action's
   `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
