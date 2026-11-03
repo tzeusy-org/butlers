@@ -11,9 +11,9 @@ each lane covered by a test:
 | Existing episode type / source | Lane |
 |---|---|
 | `google_health` sleep, `chronicler.situation_inferred` `inferred_sleep_block` | `sleep` |
-| `chronicler.situation_inferred` `exercise_block` (effortful workout outside a trip), inferred exercise (HR+GPS+cadence) | `exercise` |
-| `chronicler.situation_inferred` `work_presence_block` (at the work place); owner occupation, focus, screen, never while the owner is at home | `work` |
-| `chronicler.situation_inferred` `play_block` (Steam in-game, owner not away); Steam daily play total on a date with no in-game session | `play` |
+| `chronicler.situation_inferred` `exercise_block` (an effortful workout or inferred HR+GPS+cadence exercise, outside a trip) | `exercise` |
+| `chronicler.situation_inferred` `work_presence_block` (at the work place) | `work` |
+| `chronicler.situation_inferred` `play_block` (a Steam in-game session, or the daily total on a date with no session, while the owner is neither away nor on a trip) | `play` |
 | comms bursts (gmail/telegram/whatsapp/discord), co-presence, `chronicler.situation_inferred` `outing_block` (at an unregistered place) | `social` |
 | `owntracks` movement, `chronicler.situation_inferred` `airport_block` and `trip_block` | `travel` |
 | meals | `eat` |
@@ -22,12 +22,21 @@ each lane covered by a test:
 
 `owntracks.place_cluster` `place_episode` rows are `evidence`: they say where
 the owner was and are counted only through the situational blocks derived from
-them. Spotify listening, Steam `play_session` rows and `google_health`
-`workout_episode` rows are also `evidence`. Spotify counts toward no lane (owner
-decision 2026-11-03: only Steam means Play). Steam sessions and workouts count
-only through the `play_block` and `exercise_block` rows derived from them.
+them. These are also `evidence`:
 
-Existing projected source episodes (sleep, work, movement, meal) ARE the
+- Spotify listening
+- Steam `play_session` rows and Steam daily totals
+- `google_health` `workout_episode` rows
+- inferred exercise
+- owner occupation, focus and screen rows
+
+Spotify counts toward no lane (owner decision 2026-11-03: only Steam means
+Play). Occupation, focus and screen may raise a work block's confidence but
+never count Work (owner decision 2026-11-03: Work is inferred only at the
+registered work place). Steam and exercise count only through the
+`play_block` and `exercise_block` rows derived from them.
+
+Existing projected source episodes (sleep, movement, meal) ARE the
 `activity`-layer rows for their lane; Tier-1 projectors
 do not re-emit duplicates of them — they add `confidence`/`evidence_refs` and
 emit only genuinely *new* inferred activities (e.g. an exercise block inferred
@@ -47,10 +56,10 @@ The title is kept for archive continuity. Since owner decision 2026-11-03, only 
 - **AND** the Spotify listening adds nothing to any lane
 - **AND** neither `music` nor `gaming` appears as a top-level lane
 
-#### Scenario: Home is never Work
+#### Scenario: Work only at the work place
 
-- **WHEN** an occupation, focus or screen episode overlaps a span where the owner is at home
-- **THEN** that overlap adds nothing to the `work` lane
+- **WHEN** an occupation, focus or screen episode covers time at home, at a café or with unknown location
+- **THEN** it adds nothing to the `work` lane
 
 #### Scenario: Every lane has a covering mapping
 

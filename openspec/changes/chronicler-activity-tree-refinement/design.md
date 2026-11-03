@@ -11,14 +11,14 @@
 
 It also applies the owner's three decisions end to end. The proposal records the evidence and the decisions.
 
-`chronicler.situation_inferred` becomes the single fusion point for every lane that depends on place. Lane totals sum overlapping activity rows; they do not resolve overlaps. So a lane that place must be able to displace cannot also be counted from a separate activity row. Those inputs are projected as evidence instead:
+`chronicler.situation_inferred` becomes the single fusion point for every lane that depends on place. Day-close reconciliation merges overlapping activity rows in the same lane (`reconciliation.py`, duplicate merge), and tracked time is a union. Overlapping rows in different lanes, however, count in both. So a lane that place must be able to displace cannot also be counted from a separate activity row. These inputs are therefore projected as evidence:
 
-- Steam in-game sessions
-- workouts
-- trip time
+- Steam in-game sessions and Steam daily totals
+- Google Health workouts and inferred (HR+GPS) exercise
+- owner occupation, focus and screen episodes
 - Spotify
 
-The adapter turns them into blocks itself.
+The adapter turns the qualifying ones into blocks itself. OwnTracks movement stays an activity row: inside a trip it is in the same Travel lane, so the merge absorbs it.
 
 ## The refined tree
 
@@ -49,8 +49,9 @@ Some signals never decide any lane:
 
 - Spotify, now evidence (owner decision 2)
 - PC power, home presence sensors and media players (owner decisions 1 and 2)
+- owner occupation, focus and screen episodes, which corroborate work blocks only (owner decision 1)
 
-**Home is never Work.** Owner occupation, focus and screen episodes add nothing to the Work lane where they overlap a span at home. The occupation and focus adapters drop the at-home part, and the ActivityWatch screen projection does too.
+**Work only at the work place.** Work comes only from `work_presence_block` and owner answers. Owner occupation, focus and screen episodes become evidence, at home, at a café or with unknown location alike. Inside a work-place stay they may raise the block's confidence as corroborators.
 
 ## Computation order inside `chronicler.situation_inferred`
 
@@ -58,10 +59,10 @@ The adapter excludes its own rows from the activity spans it reads. So it derive
 
 1. Owner answers, then watch sleep and inferred sleep.
 2. Trip spans.
-3. Effortful workouts outside trips.
+3. Effortful workouts and inferred exercise outside trips.
 4. Movement and airport time.
 5. Work-place stays.
-6. Steam sessions not away from home.
+6. Steam sessions (or the daily-total fallback) not away from home.
 7. Other stays, then home stays.
 
 It then emits the blocks in that order. No two of its blocks overlap. A `play_block` and a `home_block`, for example, never cover the same minute.
@@ -107,7 +108,7 @@ Example: Nov 1. There is no watch sleep for Oct 31 → Nov 1. The phone sat at h
 
 `payload.effort` records the result as `high` or `low`.
 
-**Blocks.** The situation adapter emits an `exercise_block` (category `workout`, `layer = activity`) for each effortful workout outside a trip span. A low-effort walk produces no block, so the surrounding block decides its time:
+**Blocks.** The situation adapter emits an `exercise_block` (category `workout`, `layer = activity`) for each effortful workout outside a trip span. It does the same for each `chronicler.exercise_inferred` episode (HR+GPS) outside a trip span; that adapter now projects at `layer = evidence`. A low-effort walk produces no block, so the surrounding block decides its time:
 
 - movement → Travel
 - an outing → Social
@@ -134,7 +135,7 @@ Example: Nov 1. There is no watch sleep for Oct 31 → Nov 1. The phone sat at h
 - The part that overlaps a where-segment away from home gets no block. Someone else may be using the account, or the client may be idle.
 - Unknown location does not block Play.
 
-**Daily totals.** `steam.play_history` keeps projecting the daily total. A date with any status session gets its daily `play_episode` at `layer = evidence`. A date without one keeps the current activity row, which is the only source for the time before the status table existed.
+**Daily totals.** `steam.play_history` keeps projecting the daily total, now at `layer = evidence`. On a date with no status session, the adapter treats the daily total's placed window as the session. This is the only Play source for the time before the status table existed. It is subject to the same away-from-home and trip rules.
 
 **Spotify.** `spotify.session_summary` listening episodes become `layer = evidence`, by migration for history and by the adapter from now on. They keep their role as quiet-run breakers (§1).
 

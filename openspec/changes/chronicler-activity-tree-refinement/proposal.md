@@ -39,7 +39,7 @@ Text that conforms to these decisions is approved by them. An independent review
 - **Exercise needs effort.** A workout is Exercise when the owner recorded or started it, when it is not a walk, or when it averages at least 4 km/h for at least 10 minutes. The Google Health connector stops folding owner-started workouts into `auto`. A slow walk adds nothing itself; the movement, outing or home block around it decides its time.
 - **Steam in-game status becomes timed Play.** The Steam connector stores each in-game change. Chronicler projects minute-precision `play_session` evidence and a `play_block` for the part not away from home. A date that has sessions has its daily-total guess suppressed.
 - **Trip days are Travel.** A trip span runs from the departure fix before the owner goes more than 50 km from home to the first fix back within 50 km. A `trip_block` covers it, minus sleep and owner answers. The gap interview asks nothing for a day spent mostly on a trip.
-- **Home is never Work, end to end.** Occupation, focus and screen episodes add nothing to Work while the owner is at home.
+- **Work only at the work place, end to end.** Occupation, focus and screen episodes become evidence that can corroborate a work block; they never count Work on their own.
 - **Amends `chronicler-situational-inference`.** That change's lane taxonomy gains the new block types and drops Spotify from Play. Its "no block beyond 50 km" clause now defers to the trip rule.
 
 ## Non-goals

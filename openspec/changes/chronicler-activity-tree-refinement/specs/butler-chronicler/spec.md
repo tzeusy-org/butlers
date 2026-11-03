@@ -47,6 +47,15 @@ Scope: v1-mandatory
 - **WHEN** a workout was recorded manually or started by the owner on a device (`detection` is `manual` or `active`), or is not a walk, or averages at least 4 km/h over at least 10 minutes
 - **THEN** outside a trip span, an `exercise_block` SHALL count it in the Exercise lane
 
+#### Scenario: Inferred exercise follows the same rules
+- **WHEN** `chronicler.exercise_inferred` infers an exercise span from heart rate and GPS
+- **THEN** its episode SHALL be `layer = evidence`
+- **AND** an `exercise_block` SHALL count it as Exercise only outside a trip span
+
+#### Scenario: A workout on a trip is Travel
+- **WHEN** an effortful workout lies inside a trip span
+- **THEN** no `exercise_block` SHALL be emitted for it, and the `trip_block` SHALL count that time as Travel
+
 #### Scenario: History agrees with new rows
 - **WHEN** the change is deployed
 - **THEN** existing `workout_episode` rows SHALL be re-layered to evidence with `effort` computed by the speed and type rules
@@ -76,10 +85,11 @@ Scope: v1-mandatory
 - **WHEN** part of a `play_session` overlaps a where-segment away from home
 - **THEN** that part SHALL produce no `play_block`
 
-#### Scenario: Daily totals step aside for timed sessions
-- **WHEN** a date has at least one `play_session`
-- **THEN** the date's `steam.play_history` `play_episode` SHALL be `layer = evidence`
-- **AND** a date with no session SHALL keep its daily-total `play_episode` at `layer = activity`
+#### Scenario: Daily totals are a fallback under the same rules
+- **WHEN** a date has no `play_session`
+- **THEN** a `play_block` SHALL cover the window of that date's daily-total `play_episode`, minus any part away from home or inside a trip span
+- **AND** on a date with at least one `play_session`, the daily total SHALL produce no `play_block`
+- **AND** every `steam.play_history` `play_episode` SHALL be `layer = evidence`
 
 #### Scenario: Neither PC power nor music makes Play
 - **WHEN** a PC draws over 300 W at home, or Spotify is playing, with no Steam in-game status
@@ -114,15 +124,19 @@ Scope: v1-mandatory
 
 ### Requirement: Home Is Never Work
 
-Chronicler SHALL count Work only at the registered work place. Occupation, focus and screen episodes SHALL add nothing to the Work lane where they overlap a span when the owner is at home. PC power and home presence sensors SHALL NOT be Work sources.
+Chronicler SHALL count Work only at the registered work place, through `work_presence_block`, or where the owner answered Work. Occupation, focus and screen episodes SHALL be evidence: they may raise a work block's confidence, but they SHALL NOT count Work anywhere, including at home, at another place or with unknown location. PC power and home presence sensors SHALL NOT be Work sources.
 
 ID: REQ-butler-chronicler-022
 Source: bu-r3fmja.9; owner decision 2026-11-03 ("keep office-only": home is never Work)
 Scope: v1-mandatory
 
-#### Scenario: An inferred occupation block at home
-- **WHEN** an `occupation_block` overlaps a home stay
-- **THEN** the overlapping part SHALL add nothing to the Work lane, and the home stay's other rules SHALL decide that time
+#### Scenario: An inferred occupation block away from the work place
+- **WHEN** an `occupation_block` covers time at home, at a café or with unknown location
+- **THEN** it SHALL be `layer = evidence` and add nothing to the Work lane, and the tree's other rules SHALL decide that time
+
+#### Scenario: Occupation corroborates the work place
+- **WHEN** an `occupation_block` overlaps a `work_presence_block`
+- **THEN** the work block's confidence MAY rise, and the Work time SHALL be counted once
 
 #### Scenario: Study PC on during the workday
 - **WHEN** the owner is at home on a weekday from 09:00 to 18:00 and a home PC draws steady power
