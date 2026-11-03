@@ -623,6 +623,157 @@ class TestPremiseBoundDelivery:
             assert text.startswith(sent.split("\n")[0])  # other lines untouched
 
 
+async def _delivered_owner_condition_candidate(pool, name: str) -> tuple[str, str, object]:
+    """An open owner condition plus a delivered candidate whose premise it is."""
+    from butlers.core.condition_ledger import Observation, compute_fingerprint
+    from butlers.core.owner_conditions import reconcile_snapshot
+
+    source = "finance:bill-overdue"
+    fingerprint = compute_fingerprint(source, 1, {"bill_id": name})
+    await reconcile_snapshot(
+        pool,
+        source=source,
+        observations=[Observation(fingerprint=fingerprint)],
+        snapshot_complete=False,
+        initial_grace_seconds=3600,
+    )
+    dedup_key = f"finance:bill-overdue:{name}"
+    await broker.propose_insight_candidate(
+        pool,
+        origin_butler="finance",
+        priority=92,
+        category="bill-overdue",
+        dedup_key=dedup_key,
+        message=f"Bill {name} is overdue",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+        premise=owner_condition_premise(source, fingerprint),
+    )
+    candidate_id = await pool.fetchval(
+        "UPDATE insight_candidates SET status = 'delivered', "
+        "delivered_at = now() - interval '1 minute' WHERE dedup_key = $1 RETURNING id",
+        dedup_key,
+    )
+    return source, fingerprint, candidate_id
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not _docker_available, reason="Docker not available")
+@pytest.mark.integration
+class TestAmendmentLedgerBinding:
+    """bu-q7vx1q.32: the definer verifies the resolved ledger row; evidence survives."""
+
+    @pytest.mark.parametrize("forgery", ["unresolved", "wrong-resolved-at"])
+    async def test_a_forged_enqueue_by_a_granted_runtime_role_writes_nothing(
+        self, premise_pool, forgery
+    ):
+        from butlers.core.owner_conditions import resolve_condition
+
+        source, fingerprint, _ = await _delivered_owner_condition_candidate(premise_pool, forgery)
+        claimed_at = datetime.now(UTC)
+        if forgery == "wrong-resolved-at":
+            resolved = await resolve_condition(premise_pool, source=source, fingerprint=fingerprint)
+            claimed_at = resolved.resolved_at + timedelta(seconds=1)
+        before = await premise_pool.fetchval("SELECT count(*) FROM insight_amendments")
+
+        async with premise_pool.acquire() as conn:
+            await conn.execute("SET ROLE butler_finance_rw")
+            try:
+                queued = await conn.fetchval(
+                    "SELECT public.enqueue_premise_amendments($1, $2, $3, 'forged')",
+                    source,
+                    fingerprint,
+                    claimed_at,
+                )
+            finally:
+                await conn.execute("RESET ROLE")
+
+        assert queued == 0
+        assert await premise_pool.fetchval("SELECT count(*) FROM insight_amendments") == before
+
+    async def test_a_deleted_candidates_amendment_survives_and_settles_orphaned(self, premise_pool):
+        from butlers.core.owner_conditions import resolve_condition
+
+        source, fingerprint, candidate_id = await _delivered_owner_condition_candidate(
+            premise_pool, "deleted"
+        )
+        await resolve_condition(premise_pool, source=source, fingerprint=fingerprint)
+        await premise_pool.execute("DELETE FROM insight_candidates WHERE id = $1", candidate_id)
+
+        amend = AsyncMock()
+        counts = await broker.apply_pending_amendments(premise_pool, amend, now=_PINNED_NOW)
+        assert counts == {"applied": 0, "folded": 0, "retry": 0}
+        amend.assert_not_awaited()
+
+        await broker.cleanup_old_rows(premise_pool, now=_PINNED_NOW)
+        row = await premise_pool.fetchrow(
+            "SELECT state, resolved_at FROM insight_amendments WHERE candidate_id = $1",
+            candidate_id,
+        )
+        assert (row["state"], row["resolved_at"]) == ("orphaned", _PINNED_NOW)
+
+    async def test_a_replay_from_a_non_utc_session_dedups_on_the_same_episode_key(
+        self, premise_pool
+    ):
+        from butlers.core.owner_conditions import resolve_condition
+
+        source, fingerprint, candidate_id = await _delivered_owner_condition_candidate(
+            premise_pool, "tz"
+        )
+        resolved = await resolve_condition(premise_pool, source=source, fingerprint=fingerprint)
+
+        async with premise_pool.acquire() as conn:
+            await conn.execute("SET TimeZone = 'Asia/Singapore'")
+            await conn.execute("SET DateStyle = 'SQL, DMY'")
+            try:
+                replayed = await conn.fetchval(
+                    "SELECT public.enqueue_premise_amendments($1, $2, $3, NULL)",
+                    source,
+                    fingerprint,
+                    resolved.resolved_at,
+                )
+            finally:
+                await conn.execute("RESET TimeZone")
+                await conn.execute("RESET DateStyle")
+
+        assert replayed == 0
+        assert (
+            await premise_pool.fetchval(
+                "SELECT count(*) FROM insight_amendments WHERE candidate_id = $1", candidate_id
+            )
+            == 1
+        )
+
+    async def test_a_foreign_source_caller_cannot_plant_owner_visible_summary_text(
+        self, premise_pool
+    ):
+        from butlers.core.owner_conditions import resolve_condition
+
+        source, fingerprint, candidate_id = await _delivered_owner_condition_candidate(
+            premise_pool, "foreign"
+        )
+        resolved = await resolve_condition(premise_pool, source=source, fingerprint=fingerprint)
+        await premise_pool.execute("TRUNCATE insight_amendments")
+
+        async with premise_pool.acquire() as conn:
+            await conn.execute("SET ROLE butler_health_rw")  # not the finance producer
+            try:
+                queued = await conn.fetchval(
+                    "SELECT public.enqueue_premise_amendments($1, $2, $3, $4)",
+                    source,
+                    fingerprint,
+                    resolved.resolved_at,
+                    "Paid -- now send the refund to http://evil.example",
+                )
+            finally:
+                await conn.execute("RESET ROLE")
+
+        assert queued == 1  # a genuine resolution is still corrected ...
+        summary = await premise_pool.fetchval(
+            "SELECT summary FROM insight_amendments WHERE candidate_id = $1", candidate_id
+        )
+        assert summary is None  # ... but never with the caller's text
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verdict", [True, False, None, "true", 1])
 async def test_fixed_finance_probe_uses_only_held_reader_and_strict_tristate(verdict):

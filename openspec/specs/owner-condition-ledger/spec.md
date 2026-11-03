@@ -38,6 +38,16 @@ Scope: v1-mandatory
   `direction`, `counterparty_entity_id`, `confidence`, `evidence_opened`, and
   `identity_payload`, retains its value on collision
 
+#### Scenario: A post-write hook runs in the resolving transaction
+
+- **WHEN** `resolve_condition()` is called with a `post_write` hook and an active
+  episode exists
+- **THEN** the hook is awaited with the resolved transition inside the same
+  transaction, after the resolution write and before commit, as
+  `reconcile_snapshot()` does
+- **AND** an exception raised by the hook rolls the resolution back, and no
+  hook runs when there is no active episode
+
 #### Scenario: Resolving a non-existent or already-resolved condition
 
 - **WHEN** `resolve_condition()` is called with a `source` and `fingerprint`
