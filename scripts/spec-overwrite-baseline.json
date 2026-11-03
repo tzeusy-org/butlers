@@ -275,8 +275,8 @@
   ],
   "fail-closed-ci-assurance/testing/Smoke Tests Run In CI As A Fast Gate": [
     {
-      "digest": "c1fd2f8a7755",
-      "excerpt": "Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated boun...",
+      "digest": "2fe365504aba",
+      "excerpt": "Fresh full pytest inventory and the exact attempt assignment SHALL be produced by a dedicated bounded job after route...",
       "kind": "prose",
       "scenario": null
     },
@@ -4503,7 +4503,7 @@
   ],
   "shard-lanes-with-pytest-split/ci-shard-assurance/Fresh collected membership and one inventory": [
     {
-      "digest": "3b5fff55fe87",
+      "digest": "1ba4bd78cbfb",
       "excerpt": "The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and p...",
       "kind": "prose",
       "scenario": null
