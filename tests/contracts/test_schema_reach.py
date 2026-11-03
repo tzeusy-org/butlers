@@ -643,6 +643,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "relationship.entity_facts",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
     (
+        "src/butlers/chronicler/anchors.py",
+        "relationship.address_geocodes",
+    ): "sanctioned:REQ-butler-chronicler-015: read-only owner anchor geocodes Relationship publishes to butler_chronicler_rw (REQ-butler-relationship-006)",
+    (
+        "src/butlers/chronicler/anchors.py",
+        "relationship.entity_facts",
+    ): "sanctioned:REQ-butler-chronicler-015: read-only owner works-at / has-address / residence facts for anchor places",
+    (
         "src/butlers/connectors/cursor_store.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
