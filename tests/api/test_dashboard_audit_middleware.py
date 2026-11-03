@@ -318,6 +318,51 @@ class TestDashboardAuditMiddleware:
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
 
+    async def test_counter_action_is_route_template_not_raw_path(self):
+        """Distinct ids share one series; unmatched paths share the unmatched bucket."""
+        from opentelemetry import metrics
+        from opentelemetry.metrics import _internal as metrics_internal
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+        from opentelemetry.util._once import Once
+
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+        mock_pool.fetchval = AsyncMock(return_value=1)  # a positive row id is the append receipt
+        reader = InMemoryMetricReader()
+        previous = metrics_internal._METER_PROVIDER
+        metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+        metrics_internal._METER_PROVIDER = None
+        metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+        try:
+            with patch(
+                "butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db
+            ):
+
+                @app.delete("/api/test-counter/{item_id}")
+                async def _item_endpoint(item_id: str):
+                    return {}
+
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    await client.delete("/api/test-counter/aaa")
+                    await client.delete("/api/test-counter/bbb")
+                    await client.delete("/api/no-such-route-1")
+                    await client.delete("/api/no-such-route-2")
+            points = {
+                dp.attributes["action"]: dp.value
+                for rm in reader.get_metrics_data().resource_metrics
+                for sm in rm.scope_metrics
+                for m in sm.metrics
+                if m.name == "butlers.audit.log.appended"
+                for dp in m.data.data_points
+            }
+        finally:
+            metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+            metrics_internal._METER_PROVIDER = previous
+
+        assert points == {"DELETE /api/test-counter/{item_id}": 2, "DELETE unmatched": 2}
+
     async def test_middleware_populates_user_context(self):
         """Middleware emits a user_context with owner principal + request metadata.
 

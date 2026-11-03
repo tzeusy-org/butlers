@@ -91,6 +91,44 @@ Matching precedence is deterministic: constraint specificity (descending) -> bou
 
 Sensitive args get `{"type": "exact", "value": ...}`; non-sensitive args get `{"type": "any"}`.
 
+### Standing-reply template drafts (inactive)
+
+The owner can save, edit, inspect and revoke typed standing-reply template drafts
+(`src/butlers/modules/approvals/reply_templates.py`, routes under
+`/api/approvals/reply-templates`). A draft has no approval authority:
+
+- **Drafted** -- saved in `standing_reply_template_drafts`, never in `approval_rules`.
+  The gate reads only `approval_rules`, so a draft is never matched, claimed or executed.
+- **Previewed** -- `POST /api/approvals/reply-templates/{id}/preview` reports whether a
+  hypothetical call matches (`matched`, `eligible`, `reasons`) and always returns
+  `authority: "none"`. An unresolved or unpinned recipient, a missing content argument or
+  an unknown parameter makes it ineligible. The recipient resolves through the gate's own
+  target resolution.
+- **Activated** -- not implemented. There is no activation endpoint, no promotion into
+  `approval_rules` and no `active` field (requests carrying one are refused with 422).
+  Activation, broker enforcement, per-window limits and receipts belong to bu-jv1moa.28.
+
+The dashboard's `/approvals` page carries the editor (the "Standing-reply drafts" section,
+`frontend/src/components/approvals/reply-template-drafts-panel.tsx`): author, edit, inspect,
+revoke (explicit confirm) and preview. Every preview shows `authority: none`, and the
+section has no activation control.
+
+Every route requires the owner's verified dashboard session; API-key, connector-callback and
+runtime callers get 403 `owner_dashboard_session_required`, and no MCP tool exposes drafts.
+Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); edits have no
+idempotency key, so retrying a committed edit returns 409. A create replayed with the same
+`idempotency_key` and request returns the draft that key created, in its current state (also
+after an edit or revoke): replays compare against the immutable `create_request_digest`, and the
+same key with a different request returns 409 `idempotency_key_reused`.
+
+Grammar: one template per content-bearing argument of the send tool (`text` for
+`telegram_send_message`; `subject` and `body` for `email_send_message`), matched against the
+whole value. Templates are fixed text plus `{name:type}` slots of type `date`, `time`,
+`datetime`, `duration`, `amount` or `count`; adjacent slots and slot-only templates are
+refused, as are free-text, identifier, URL and recipient slots. Each draft pins one or more
+live `public.entities` recipients. WhatsApp and Telegram user-client send tools are refused
+permanently (owner decision bu-bup68v); other tools are refused as unsupported.
+
 ## Action Lifecycle
 
 Valid status transitions:
@@ -119,6 +157,7 @@ The module owns tables in the hosting butler's schema (Alembic branch: `approval
 
 - `pending_actions` -- durable queue and audit log for gated invocations. Ordinary terminal actions are retained for 90 days; rejected or abandoned ordered `memory_entity_merge` / legacy `entity_merge` actions remain as durable owner decisions so curation cannot reopen the same pair.
 - `approval_rules` -- standing rules for auto-approval. Its optional `created_from` action ID is historical provenance, so a retained rule does not block deletion of its terminal source action after that action's 90-day window.
+- `standing_reply_template_drafts` -- inactive owner-authored reply templates (see above); revoked drafts are retained, and downgrading `approvals_019` refuses while any draft exists.
 - `approval_events` -- append-only immutable audit log. Its `action_id` and `rule_id` are historical provenance, so deleting a terminal action after its 90-day window or an inactive rule after its 180-day window neither mutates nor deletes the event; events retain their separate 365-day audit window. New non-null action and rule references are still validated when an event is written.
 
 ## Dependencies

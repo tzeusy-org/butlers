@@ -14,8 +14,7 @@ from butlers.testing.scoped_runner import (
     ScopedTestPlan,
     plan_worktree_tests,
 )
-from butlers.testing.source_test_map import FULL_SUITE
-from scripts import ci_test_plan
+from butlers.testing.source_test_map import FULL_SUITE, configured_testpaths
 
 pytestmark = pytest.mark.unit
 
@@ -86,7 +85,8 @@ def test_deleted_test_file_widens_to_existing_parent_for_collection(tmp_path: Pa
     widened = plan_worktree_tests(deleted_base, repo_dir=repo)
     assert widened.changed_files == ["tests/test_root.py"]
     assert widened.test_paths == ["tests/"]
-    assert ci_test_plan.decide_mode(widened) == "full"
+    # The widened selector is a whole configured root: a broad suite, never an exact scope.
+    assert widened.test_paths[0] in configured_testpaths(repo)
 
 
 def test_renamed_test_deduplicates_the_parent_scope_and_collects(tmp_path: Path) -> None:

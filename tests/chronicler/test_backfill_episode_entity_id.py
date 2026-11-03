@@ -21,6 +21,8 @@ import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
+from butlers.testing.fake_pool import AsyncCtx, fake_pool
+from butlers.testing.records import row
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -29,60 +31,6 @@ from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 _ENTITY_ID = uuid4()
 _ACCOUNT_EMAIL = "owner@example.com"
 _SCHEMA = "test_butler"
-
-
-class _AsyncCtx:
-    """Minimal async context manager for pool.acquire()."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-
-def _make_pool(
-    *,
-    email_row: dict | None,
-    entity_row: dict | None,
-    raise_error: bool = False,
-) -> AsyncMock:
-    """Build a mock asyncpg.Pool for entity-id resolution tests.
-
-    ``email_row`` is the row returned for the calendar_sources query.
-    ``entity_row`` is the row returned for the google_accounts query.
-    When ``raise_error`` is True, all queries raise asyncpg.PostgresError.
-    """
-    conn = AsyncMock()
-
-    if raise_error:
-        conn.fetchrow = AsyncMock(side_effect=asyncpg.PostgresError("test error"))
-    else:
-        # fetchrow is called twice: first for calendar_sources, then for google_accounts.
-        # Use side_effect list for sequential responses.
-        responses: list = []
-        if email_row is not None:
-            mock_email_row = MagicMock()
-            mock_email_row.__getitem__ = MagicMock(side_effect=lambda k: email_row[k])
-            responses.append(mock_email_row)
-        else:
-            responses.append(None)
-
-        if entity_row is not None:
-            mock_entity_row = MagicMock()
-            mock_entity_row.__getitem__ = MagicMock(side_effect=lambda k: entity_row[k])
-            responses.append(mock_entity_row)
-        else:
-            responses.append(None)
-
-        conn.fetchrow = AsyncMock(side_effect=responses)
-
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
-    return pool
 
 
 # ---------------------------------------------------------------------------
@@ -95,9 +43,10 @@ def _make_pool(
 @pytest.mark.unit
 async def test_resolve_schema_entity_id_happy_path() -> None:
     """Happy path: account_email found → entity_id resolved."""
-    pool = _make_pool(
-        email_row={"account_email": _ACCOUNT_EMAIL},
-        entity_row={"entity_id": _ENTITY_ID},
+    pool = fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[row(account_email=_ACCOUNT_EMAIL), row(entity_id=_ENTITY_ID)]
+        )
     )
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     result = await adapter._resolve_schema_entity_id(pool, _SCHEMA)
@@ -107,10 +56,7 @@ async def test_resolve_schema_entity_id_happy_path() -> None:
 @pytest.mark.unit
 async def test_resolve_schema_entity_id_no_calendar_source() -> None:
     """No user-lane calendar source with account_email → None."""
-    pool = _make_pool(
-        email_row=None,
-        entity_row=None,
-    )
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[None, None]))
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     result = await adapter._resolve_schema_entity_id(pool, _SCHEMA)
     assert result is None
@@ -119,10 +65,7 @@ async def test_resolve_schema_entity_id_no_calendar_source() -> None:
 @pytest.mark.unit
 async def test_resolve_schema_entity_id_no_google_account_row() -> None:
     """account_email resolved but not in google_accounts → None."""
-    pool = _make_pool(
-        email_row={"account_email": _ACCOUNT_EMAIL},
-        entity_row=None,
-    )
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=[row(account_email=_ACCOUNT_EMAIL), None]))
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     result = await adapter._resolve_schema_entity_id(pool, _SCHEMA)
     assert result is None
@@ -131,9 +74,8 @@ async def test_resolve_schema_entity_id_no_google_account_row() -> None:
 @pytest.mark.unit
 async def test_resolve_schema_entity_id_null_on_account_row() -> None:
     """google_accounts row exists but entity_id IS NULL → None."""
-    pool = _make_pool(
-        email_row={"account_email": _ACCOUNT_EMAIL},
-        entity_row={"entity_id": None},
+    pool = fake_pool(
+        fetchrow=AsyncMock(side_effect=[row(account_email=_ACCOUNT_EMAIL), row(entity_id=None)])
     )
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     result = await adapter._resolve_schema_entity_id(pool, _SCHEMA)
@@ -143,7 +85,7 @@ async def test_resolve_schema_entity_id_null_on_account_row() -> None:
 @pytest.mark.unit
 async def test_resolve_schema_entity_id_postgres_error_returns_none() -> None:
     """PostgresError on any query → returns None without raising."""
-    pool = _make_pool(email_row=None, entity_row=None, raise_error=True)
+    pool = fake_pool(fetchrow=AsyncMock(side_effect=asyncpg.PostgresError("test error")))
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     result = await adapter._resolve_schema_entity_id(pool, _SCHEMA)
     assert result is None
@@ -152,9 +94,10 @@ async def test_resolve_schema_entity_id_postgres_error_returns_none() -> None:
 @pytest.mark.unit
 async def test_resolve_schema_entity_id_string_uuid_is_coerced() -> None:
     """entity_id returned as str (not UUID) is coerced to UUID."""
-    pool = _make_pool(
-        email_row={"account_email": _ACCOUNT_EMAIL},
-        entity_row={"entity_id": str(_ENTITY_ID)},
+    pool = fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[row(account_email=_ACCOUNT_EMAIL), row(entity_id=str(_ENTITY_ID))]
+        )
     )
     adapter = CalendarCompletedAdapter(butler_schemas=(_SCHEMA,))
     result = await adapter._resolve_schema_entity_id(pool, _SCHEMA)
@@ -230,10 +173,10 @@ async def test_adapter_project_writes_resolved_entity_to_episode_entities() -> N
     # Mock pool returns one row and entity_id
     def _make_project_pool() -> AsyncMock:
         conn = AsyncMock()
-        conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+        conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
         conn.fetchrow = AsyncMock(return_value=None)
         p = AsyncMock()
-        p.acquire = MagicMock(return_value=_AsyncCtx(conn))
+        p.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
         return p
 
     with (
@@ -317,10 +260,10 @@ async def test_adapter_project_owner_none_when_unresolved() -> None:
 
     def _make_project_pool() -> AsyncMock:
         conn = AsyncMock()
-        conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+        conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
         conn.fetchrow = AsyncMock(return_value=None)
         p = AsyncMock()
-        p.acquire = MagicMock(return_value=_AsyncCtx(conn))
+        p.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
         return p
 
     with (

@@ -38,7 +38,6 @@ from butlers.jobs.calendar_sync_deadman import (
     _condition_fingerprint,
     reconcile_calendar_conditions,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -46,18 +45,6 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=10)
-    yield p
-    await p.close()
 
 
 def _stale(source_key: str, db_butler: str = "general") -> StaleCalendarSource:
@@ -104,25 +91,25 @@ async def _audit_actions(pool: asyncpg.Pool, fingerprint: str) -> list[tuple[str
 
 class TestLifecycleProgressionAndAuditAttribution:
     async def test_l0_opens_l1_escalates_l2_reescalates_without_new_attempt(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         stale = _stale("provider:google:l0l1l2")
         fp = _condition_fingerprint(stale)
 
-        opened = await reconcile_calendar_conditions(pool, _report((stale,)))
+        opened = await reconcile_calendar_conditions(db_pool, _report((stale,)))
         assert opened == [{"fingerprint": fp, "transition": "opened"}]
-        assert await _healing_attempt_count(pool, fp) == 0
+        assert await _healing_attempt_count(db_pool, fp) == 0
 
-        await _force_due(pool, fp)
-        l1 = await reconcile_calendar_conditions(pool, _report((stale,)))
+        await _force_due(db_pool, fp)
+        l1 = await reconcile_calendar_conditions(db_pool, _report((stale,)))
         assert len(l1) == 1
         assert l1[0]["transition"] == "escalation_due"
         assert l1[0]["escalated"] is True
         assert "healing_attempt_id" in l1[0]
-        assert await _healing_attempt_count(pool, fp) == 1
+        assert await _healing_attempt_count(db_pool, fp) == 1
 
-        await _force_due(pool, fp)
-        l2 = await reconcile_calendar_conditions(pool, _report((stale,)))
+        await _force_due(db_pool, fp)
+        l2 = await reconcile_calendar_conditions(db_pool, _report((stale,)))
         assert len(l2) == 1
         assert l2[0] == {
             "fingerprint": fp,
@@ -130,9 +117,9 @@ class TestLifecycleProgressionAndAuditAttribution:
             "escalation_level": "L2",
         }
         # AC4: L2 re-escalation must NOT create another healing_attempts row.
-        assert await _healing_attempt_count(pool, fp) == 1
+        assert await _healing_attempt_count(db_pool, fp) == 1
 
-        actions = await _audit_actions(pool, fp)
+        actions = await _audit_actions(db_pool, fp)
         assert actions == [
             ("calendar_sync_deadman_first_detected", "detected"),
             ("calendar_sync_deadman_escalated", "escalated"),
@@ -142,19 +129,21 @@ class TestLifecycleProgressionAndAuditAttribution:
 
 class TestPartialFailureCannotResolve:
     async def test_partial_fan_out_failure_leaves_active_condition_untouched(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         stale = _stale("provider:google:partial")
         fp = _condition_fingerprint(stale)
 
-        await reconcile_calendar_conditions(pool, _report((stale,)))
+        await reconcile_calendar_conditions(db_pool, _report((stale,)))
 
         # A partial-failure tick that doesn't even mention this fingerprint
         # (its butler's fan-out failed) must leave it exactly as-is.
-        result = await reconcile_calendar_conditions(pool, _report((), failed_butlers=("general",)))
+        result = await reconcile_calendar_conditions(
+            db_pool, _report((), failed_butlers=("general",))
+        )
         assert result == []
 
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT state FROM public.infra_conditions "
             "WHERE source = 'calendar_sync_deadman' AND fingerprint = $1",
             fp,
@@ -165,18 +154,18 @@ class TestPartialFailureCannotResolve:
 
 class TestCompleteRecoveryAndRecurrence:
     async def test_resolves_once_then_recurrence_opens_new_episode(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         stale = _stale("provider:google:recur")
         fp = _condition_fingerprint(stale)
 
-        opened = await reconcile_calendar_conditions(pool, _report((stale,)))
+        opened = await reconcile_calendar_conditions(db_pool, _report((stale,)))
         assert opened[0]["transition"] == "opened"
 
-        resolved = await reconcile_calendar_conditions(pool, _report(()))
+        resolved = await reconcile_calendar_conditions(db_pool, _report(()))
         assert resolved == [{"fingerprint": fp, "transition": "resolved"}]
 
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT state FROM public.infra_conditions "
             "WHERE source = 'calendar_sync_deadman' AND fingerprint = $1 "
             "ORDER BY episode DESC LIMIT 1",
@@ -184,10 +173,10 @@ class TestCompleteRecoveryAndRecurrence:
         )
         assert row["state"] == "resolved"
 
-        reopened = await reconcile_calendar_conditions(pool, _report((stale,)))
+        reopened = await reconcile_calendar_conditions(db_pool, _report((stale,)))
         assert reopened == [{"fingerprint": fp, "transition": "reopened"}]
 
-        episodes = await pool.fetch(
+        episodes = await db_pool.fetch(
             "SELECT episode, state FROM public.infra_conditions "
             "WHERE source = 'calendar_sync_deadman' AND fingerprint = $1 ORDER BY episode",
             fp,
@@ -197,22 +186,22 @@ class TestCompleteRecoveryAndRecurrence:
 
 class TestOneProviderDoesNotMaskAnother:
     async def test_provider_recovery_resolves_only_its_own_condition(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         a = _stale("provider:google:a-independent")
         b = _stale("provider:google:b-independent")
         fp_a = _condition_fingerprint(a)
         fp_b = _condition_fingerprint(b)
 
-        await reconcile_calendar_conditions(pool, _report((a, b)))
+        await reconcile_calendar_conditions(db_pool, _report((a, b)))
 
         # b recovers (absent from a complete snapshot); a is still stale.
-        result = await reconcile_calendar_conditions(pool, _report((a,)))
+        result = await reconcile_calendar_conditions(db_pool, _report((a,)))
         by_fp = {r["fingerprint"]: r for r in result}
         assert by_fp[fp_b]["transition"] == "resolved"
         assert by_fp[fp_a]["transition"] == "confirmed"
 
-        a_row = await pool.fetchrow(
+        a_row = await db_pool.fetchrow(
             "SELECT state FROM public.infra_conditions "
             "WHERE source = 'calendar_sync_deadman' AND fingerprint = $1 "
             "ORDER BY episode DESC LIMIT 1",
@@ -222,21 +211,20 @@ class TestOneProviderDoesNotMaskAnother:
 
 
 class TestConcurrentReconciliationRace:
-    async def test_concurrent_ticks_claim_exactly_one_l1_escalation(
-        self, pool: asyncpg.Pool
-    ) -> None:
+    async def test_concurrent_ticks_claim_exactly_one_l1_escalation(self, db) -> None:
+        db_pool = await db("core", min_size=2, max_size=10)  # all 8 ticks run at once
         stale = _stale("provider:google:race")
         fp = _condition_fingerprint(stale)
 
-        await reconcile_calendar_conditions(pool, _report((stale,)))
-        await _force_due(pool, fp)
+        await reconcile_calendar_conditions(db_pool, _report((stale,)))
+        await _force_due(db_pool, fp)
 
         batches = await asyncio.gather(
-            *[reconcile_calendar_conditions(pool, _report((stale,))) for _ in range(8)]
+            *[reconcile_calendar_conditions(db_pool, _report((stale,))) for _ in range(8)]
         )
         flattened = [r for batch in batches for r in batch]
         escalations = [r for r in flattened if r.get("transition") == "escalation_due"]
 
         assert len(escalations) == 1
         assert escalations[0]["escalated"] is True
-        assert await _healing_attempt_count(pool, fp) == 1
+        assert await _healing_attempt_count(db_pool, fp) == 1

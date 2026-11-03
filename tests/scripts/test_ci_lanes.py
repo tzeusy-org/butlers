@@ -115,6 +115,15 @@ def test_group_command_selects_its_lane_group_over_the_committed_durations() -> 
         ci_lanes.pytest_command("integration", 7, output=Path("/out"), coverage=False)
 
 
+def test_only_the_integration_lane_requires_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The root conftest fails a "Docker not available" skip under this flag.
+    monkeypatch.delenv(ci_lanes.REQUIRE_DOCKER_ENV, raising=False)
+    paths = {"output": Path("/out"), "count_path": Path("/out/collected.json")}
+
+    assert ci_lanes.lane_environment("integration", **paths)[ci_lanes.REQUIRE_DOCKER_ENV] == "1"
+    assert ci_lanes.REQUIRE_DOCKER_ENV not in ci_lanes.lane_environment("unit", **paths)
+
+
 def test_the_count_plugin_records_each_real_pytest_split_group(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

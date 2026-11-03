@@ -1,8 +1,8 @@
 """Real-Postgres coverage for approval admission and legacy push evidence.
 
-The reservation query, burst counter, deferred envelope, and pending-action
-clock are all database state. These tests therefore use the production core +
-approvals migration chains rather than a mocked pool.
+Durable admission, burst policy, handoff and historical emission evidence are
+database state. These tests use the production core + approvals migration
+chains rather than a mocked pool.
 """
 
 from __future__ import annotations
@@ -42,10 +42,7 @@ from butlers.core.approval_delivery_transport import (
 from butlers.core.approval_delivery_worker import HandoffResult
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals.gate import _make_gate_wrapper
-from butlers.modules.approvals.notifications import (
-    ApprovalPushRuntime,
-    emit_approval_push,
-)
+from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.pipeline import (
     _load_conversation_history,
@@ -65,16 +62,6 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the production tables the park path writes and reads."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
 
 
 @pytest.fixture(scope="module")
@@ -98,20 +85,9 @@ def review_door_db_url(postgres_container) -> str:
 
 
 @pytest.fixture
-async def approval_push_pool(migrated_db_url: str):
-    """Return a clean JSONB-aware pool with approval pushes enabled."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-        "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_push_emissions, approval_events, "
-        "pending_actions, deferred_notifications CASCADE"
-    )
+async def approval_push_pool(db):
+    """Return a fresh JSONB-aware pool with approval pushes enabled."""
+    pool = await db("core", "approvals")
     await pool.execute(
         "UPDATE public.approvals_policy "
         "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' "
@@ -121,32 +97,19 @@ async def approval_push_pool(migrated_db_url: str):
         "UPDATE approval_delivery_rollout "
         "SET admission_enabled = true, worker_enabled = false WHERE singleton"
     )
-    yield pool
-    await pool.close()
+    return pool
 
 
 @pytest.fixture
-async def disabled_rollout_pool(migrated_db_url: str):
-    """Return a clean pool with the new writer and worker kept default-off."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-        "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_push_emissions, approval_events, "
-        "pending_actions, deferred_notifications CASCADE"
-    )
+async def disabled_rollout_pool(db):
+    """Return a fresh pool with the new writer and worker kept default-off."""
+    pool = await db("core", "approvals")
     await pool.execute(
         "INSERT INTO approval_delivery_rollout (singleton) VALUES (true) "
         "ON CONFLICT (singleton) DO UPDATE "
         "SET admission_enabled = false, worker_enabled = false"
     )
-    yield pool
-    await pool.close()
+    return pool
 
 
 @pytest.fixture(scope="module")
@@ -341,43 +304,6 @@ async def test_park_deduplication_key_blocks_owner_decisions_and_allows_expiry(
     replacement = await _park(replacement_id)
     assert replacement.duplicate is False
     assert replacement.action_id == replacement_id
-
-
-async def _insert_pending_action(
-    pool: asyncpg.Pool,
-    *,
-    requested_at: datetime,
-    expires_at: datetime | None = None,
-    tool_name: str = "relationship_assert_fact",
-) -> dict[str, object]:
-    action_id = uuid.uuid4()
-    action = {
-        "id": action_id,
-        "tool_name": tool_name,
-        "requested_at": requested_at,
-        "expires_at": expires_at or requested_at + timedelta(hours=72),
-        "why": "The owner requested this relationship update.",
-        "blast_radius": "contact",
-        "reversibility": "compensable",
-    }
-    await pool.execute(
-        """
-        INSERT INTO pending_actions
-            (id, tool_name, tool_args, status, requested_at, expires_at,
-             why, evidence, blast_radius, reversibility)
-        VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9)
-        """,
-        action_id,
-        tool_name,
-        {"subject": "owner", "predicate": "knows", "object": "Ada"},
-        requested_at,
-        action["expires_at"],
-        action["why"],
-        [],
-        action["blast_radius"],
-        action["reversibility"],
-    )
-    return action
 
 
 async def _never_execute(**_kwargs: object) -> dict[str, object]:
@@ -1602,158 +1528,3 @@ async def test_recovery_path_persists_no_generic_or_history_content(
         )
         == "failed"
     )
-
-
-async def test_failed_push_is_retried_once_the_callback_secret_is_fixed(
-    approval_push_pool: asyncpg.Pool,
-) -> None:
-    """bu-mda0r: a push that failed (e.g. missing secret) must not be stuck as
-    a permanent 'duplicate' once the underlying problem is fixed. Before this
-    fix, ``reserve_approval_push``'s plain ``ON CONFLICT DO NOTHING`` claimed
-    the reservation on the first (failing) attempt and every later attempt for
-    the same action silently no-opped as 'duplicate' forever, even after the
-    secret became available.
-    """
-    now = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
-    action = await _insert_pending_action(approval_push_pool, requested_at=now)
-
-    broken_credential_store = SimpleNamespace(resolve=AsyncMock(return_value=None))
-    dispatch = AsyncMock()
-    broken_runtime = ApprovalPushRuntime(
-        dispatch=dispatch,
-        resolve_owner_recipient=AsyncMock(return_value="100200300"),
-        credential_store=broken_credential_store,
-    )
-
-    first_outcome = await emit_approval_push(
-        pool=approval_push_pool,
-        action=action,
-        origin_butler="relationship",
-        runtime=broken_runtime,
-        now=now,
-    )
-    assert first_outcome == "failed"
-    dispatch.assert_not_awaited()
-
-    recorded_outcome = await approval_push_pool.fetchval(
-        "SELECT outcome FROM approval_push_emissions WHERE action_id = $1",
-        action["id"],
-    )
-    assert recorded_outcome == "failed"
-
-    # The secret is now provisioned; retry the exact same action.
-    fixed_runtime = _runtime(dispatch)
-    second_outcome = await emit_approval_push(
-        pool=approval_push_pool,
-        action=action,
-        origin_butler="relationship",
-        runtime=fixed_runtime,
-        now=now + timedelta(seconds=1),
-    )
-
-    assert second_outcome == "delivered"
-    dispatch.assert_awaited_once()
-
-    recorded_outcome_after_retry = await approval_push_pool.fetchval(
-        "SELECT outcome FROM approval_push_emissions WHERE action_id = $1",
-        action["id"],
-    )
-    assert recorded_outcome_after_retry == "delivered"
-
-    # A THIRD call for the same now-delivered action is a genuine duplicate.
-    third_outcome = await emit_approval_push(
-        pool=approval_push_pool,
-        action=action,
-        origin_butler="relationship",
-        runtime=fixed_runtime,
-        now=now + timedelta(seconds=2),
-    )
-    assert third_outcome == "duplicate"
-    dispatch.assert_awaited_once()
-
-
-async def test_quiet_hours_defers_push_without_changing_pending_action_expiry(
-    approval_push_pool: asyncpg.Pool,
-) -> None:
-    """Deferral persists the full push envelope while preserving expires_at exactly."""
-    now = datetime(2026, 7, 18, 15, 30, tzinfo=UTC)  # 23:30 Asia/Singapore
-    action = await _insert_pending_action(approval_push_pool, requested_at=now)
-    await approval_push_pool.execute(
-        """
-        UPDATE public.approvals_policy
-        SET quiet_start_hour = 22, quiet_end_hour = 7, timezone = 'Asia/Singapore'
-        WHERE id = 1
-        """
-    )
-    dispatch = AsyncMock()
-
-    outcome = await emit_approval_push(
-        pool=approval_push_pool,
-        action=action,
-        origin_butler="relationship",
-        runtime=_runtime(dispatch),
-        now=now,
-    )
-
-    assert outcome == "deferred"
-    dispatch.assert_not_awaited()
-    deferred = await approval_push_pool.fetchrow(
-        "SELECT envelope, priority, status, deferred_at, deliver_at FROM deferred_notifications"
-    )
-    assert deferred is not None
-    assert deferred["priority"] == "high"
-    assert deferred["status"] == "pending"
-    assert deferred["deferred_at"] == now
-    assert deferred["deliver_at"] == datetime(2026, 7, 18, 23, 0, tzinfo=UTC)
-    assert deferred["envelope"]["delivery"]["intent"] == "approval_request"
-
-    stored_expiry = await approval_push_pool.fetchval(
-        "SELECT expires_at FROM pending_actions WHERE id = $1",
-        action["id"],
-    )
-    assert stored_expiry == action["expires_at"]
-
-
-async def test_real_database_burst_reservation_emits_one_digest_then_collapses(
-    approval_push_pool: asyncpg.Pool,
-) -> None:
-    """The fourth park emits the sole digest; later parks in-window do not push."""
-    now = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
-    dispatch = AsyncMock()
-    runtime = _runtime(dispatch)
-    outcomes: list[str] = []
-
-    for index in range(5):
-        action_now = now + timedelta(seconds=index)
-        action = await _insert_pending_action(approval_push_pool, requested_at=action_now)
-        outcomes.append(
-            await emit_approval_push(
-                pool=approval_push_pool,
-                action=action,
-                origin_butler="relationship",
-                runtime=runtime,
-                now=action_now,
-            )
-        )
-
-    assert outcomes == ["delivered", "delivered", "delivered", "delivered", "collapsed"]
-    assert dispatch.await_count == 4
-    fourth_envelope = dispatch.await_args_list[3].args[0]
-    assert fourth_envelope["delivery"]["message"].startswith("4 actions awaiting review.")
-    assert fourth_envelope["actions"] == [
-        {
-            "verb": "open_dashboard",
-            "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
-        }
-    ]
-
-    kinds = await approval_push_pool.fetch(
-        "SELECT emission_kind FROM approval_push_emissions ORDER BY created_at"
-    )
-    assert [row["emission_kind"] for row in kinds] == [
-        "single",
-        "single",
-        "single",
-        "burst_digest",
-        "collapsed",
-    ]

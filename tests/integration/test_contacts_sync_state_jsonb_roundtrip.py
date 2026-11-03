@@ -35,9 +35,7 @@ import shutil
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.modules.contacts.sync import ContactsSyncState, ContactsSyncStateStore
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -47,35 +45,18 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the contacts chain — contacts_sync_state (public schema)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["contacts"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE contacts_sync_state")
-    yield p
-    await p.close()
+async def contacts_pool(db) -> asyncpg.Pool:
+    """The contacts chain: contacts_sync_state (public schema)."""
+    return await db("contacts")
 
 
 async def test_save_then_load_round_trips_contact_versions_as_object(
-    pool: asyncpg.Pool,
+    contacts_pool: asyncpg.Pool,
 ) -> None:
     """save() + load() round-trip contact_versions as a jsonb OBJECT, not a
     jsonb-typed string."""
-    store = ContactsSyncStateStore(pool)
+    store = ContactsSyncStateStore(contacts_pool)
     state = ContactsSyncState(
         sync_cursor="cursor-1",
         contact_versions={"contact-a": "etag:abc", "contact-b": "hash:def"},
@@ -83,7 +64,7 @@ async def test_save_then_load_round_trips_contact_versions_as_object(
 
     await store.save(provider="google", account_id="alice@example.com", state=state)
 
-    row = await pool.fetchrow(
+    row = await contacts_pool.fetchrow(
         "SELECT contact_versions FROM contacts_sync_state WHERE provider = $1 AND account_id = $2",
         "google",
         "alice@example.com",
@@ -100,13 +81,15 @@ async def test_save_then_load_round_trips_contact_versions_as_object(
     assert loaded.sync_cursor == "cursor-1"
 
 
-async def test_load_reconstructs_and_heals_legacy_corrupted_row(pool: asyncpg.Pool) -> None:
+async def test_load_reconstructs_and_heals_legacy_corrupted_row(
+    contacts_pool: asyncpg.Pool,
+) -> None:
     """A pre-existing corrupted row (contact_versions stored as a jsonb-typed
     STRING, matching every row found in the live-data audit) is transparently
     reconstructed into a dict on read, and the guarded repair UPDATE heals it
     back into a proper jsonb object, idempotently."""
     corrupted_json_string = json.dumps({"contact-a": "etag:abc"})
-    await pool.execute(
+    await contacts_pool.execute(
         """
         INSERT INTO contacts_sync_state (provider, account_id, contact_versions)
         VALUES ($1, $2, $3::jsonb)
@@ -116,7 +99,7 @@ async def test_load_reconstructs_and_heals_legacy_corrupted_row(pool: asyncpg.Po
         corrupted_json_string,
     )
 
-    row = await pool.fetchrow(
+    row = await contacts_pool.fetchrow(
         "SELECT contact_versions FROM contacts_sync_state WHERE provider = $1 AND account_id = $2",
         "google",
         "legacy@example.com",
@@ -126,11 +109,11 @@ async def test_load_reconstructs_and_heals_legacy_corrupted_row(pool: asyncpg.Po
         "the corrupted (string-typed) shape found in the live-data audit."
     )
 
-    store = ContactsSyncStateStore(pool)
+    store = ContactsSyncStateStore(contacts_pool)
     state = await store.load(provider="google", account_id="legacy@example.com")
     assert state.contact_versions == {"contact-a": "etag:abc"}
 
-    healed_row = await pool.fetchrow(
+    healed_row = await contacts_pool.fetchrow(
         "SELECT contact_versions FROM contacts_sync_state WHERE provider = $1 AND account_id = $2",
         "google",
         "legacy@example.com",
@@ -147,7 +130,7 @@ async def test_load_reconstructs_and_heals_legacy_corrupted_row(pool: asyncpg.Po
     # clobber the healed value.
     state_again = await store.load(provider="google", account_id="legacy@example.com")
     assert state_again.contact_versions == {"contact-a": "etag:abc"}
-    unchanged_row = await pool.fetchrow(
+    unchanged_row = await contacts_pool.fetchrow(
         "SELECT contact_versions FROM contacts_sync_state WHERE provider = $1 AND account_id = $2",
         "google",
         "legacy@example.com",

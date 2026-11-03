@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
@@ -27,47 +28,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers: mock asyncpg pool builder
 # ---------------------------------------------------------------------------
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool.
-
-    Each ``*_returns`` parameter is a list consumed sequentially (FIFO).
-    """
-    pool = AsyncMock()
-    acquisition = MagicMock()
-    acquisition.__aenter__ = AsyncMock(return_value=pool)
-    acquisition.__aexit__ = AsyncMock(return_value=False)
-    pool.acquire = MagicMock(return_value=acquisition)
-    pool.transaction = MagicMock(return_value=acquisition)
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    return pool
 
 
 def _node_row(
@@ -126,7 +86,7 @@ class TestMindMapCreate:
         from butlers.tools.education import mind_map_create
 
         new_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": new_id})])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row({"id": new_id})]))
         result = await mind_map_create(pool, title="Python")
         assert result == new_id
 
@@ -134,7 +94,7 @@ class TestMindMapCreate:
         from butlers.tools.education import mind_map_create
 
         new_id = str(uuid.uuid4())
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": new_id})])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row({"id": new_id})]))
         await mind_map_create(pool, title="Calculus")
         # Verify the SQL was called with the title
         call_args = pool.fetchrow.call_args
@@ -159,9 +119,9 @@ class TestMindMapGet:
         row = _map_row(map_id=map_id, title="Physics")
         node_row = _node_row(node_id=node_id, mind_map_id=map_id, label="Kinematics")
         edge_row = {"parent_node_id": node_id, "child_node_id": node_id, "edge_type": "related"}
-        pool = _make_pool(
-            fetchrow_returns=[_make_row(row)],
-            fetch_returns=[[_make_row(node_row)], [_make_row(edge_row)]],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row(row)]),
+            fetch=AsyncMock(side_effect=[[_make_row(node_row)], [_make_row(edge_row)]]),
         )
         result = await mind_map_get(pool, map_id)
         assert result is not None
@@ -178,9 +138,9 @@ class TestMindMapGet:
 
         map_id = str(uuid.uuid4())
         row = _map_row(map_id=map_id, title="Empty Map")
-        pool = _make_pool(
-            fetchrow_returns=[_make_row(row)],
-            fetch_returns=[[], []],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row(row)]),
+            fetch=AsyncMock(side_effect=[[], []]),
         )
         result = await mind_map_get(pool, map_id)
         assert result is not None
@@ -190,7 +150,7 @@ class TestMindMapGet:
     async def test_returns_none_when_not_found(self) -> None:
         from butlers.tools.education import mind_map_get
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         result = await mind_map_get(pool, str(uuid.uuid4()))
         assert result is None
 
@@ -210,7 +170,7 @@ class TestMindMapList:
             _make_row(_map_row(title="A", status="active")),
             _make_row(_map_row(title="B", status="completed")),
         ]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mind_map_list(pool)
         assert len(result) == 2
 
@@ -218,7 +178,7 @@ class TestMindMapList:
         from butlers.tools.education import mind_map_list
 
         rows = [_make_row(_map_row(title="Active Map", status="active"))]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mind_map_list(pool, status="active")
         assert len(result) == 1
         # Verify status param was passed in the SQL call
@@ -228,7 +188,7 @@ class TestMindMapList:
     async def test_returns_empty_list_when_no_maps(self) -> None:
         from butlers.tools.education import mind_map_list
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await mind_map_list(pool)
         assert result == []
 
@@ -244,8 +204,9 @@ class TestMindMapUpdateStatus:
     async def test_succeeds_when_map_exists(self) -> None:
         from butlers.tools.education import mind_map_update_status
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_row({"status": "active"})], execute_returns=["UPDATE 1"]
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"status": "active"})]),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
         await mind_map_update_status(pool, str(uuid.uuid4()), "completed")
         assert pool.execute.called
@@ -253,7 +214,7 @@ class TestMindMapUpdateStatus:
     async def test_raises_when_not_found(self) -> None:
         from butlers.tools.education import mind_map_update_status
 
-        pool = _make_pool(execute_returns=["UPDATE 0"])
+        pool = fake_pool(execute=AsyncMock(side_effect=["UPDATE 0"]), fetchrow=None)
         with pytest.raises(ValueError, match="Mind map not found"):
             await mind_map_update_status(pool, str(uuid.uuid4()), "completed")
 
@@ -269,7 +230,7 @@ def _make_node_create_pool(
     entity_id: str,
     *,
     map_title: str = "Test Map",
-) -> AsyncMock:
+) -> FakePool:
     """Build a mock pool that satisfies all calls in mind_map_node_create.
 
     Call order:
@@ -279,13 +240,15 @@ def _make_node_create_pool(
       4. fetchval → SELECT id FROM public.entities
       5. execute  → UPDATE education.mind_map_nodes SET entity_id
     """
-    return _make_pool(
-        fetchrow_returns=[
-            _make_row({"id": node_id}),
-            _make_row({"title": map_title, "id": map_id}),
-        ],
-        fetchval_returns=[entity_id],
-        execute_returns=["INSERT 0 1", "UPDATE 1"],
+    return fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[
+                _make_row({"id": node_id}),
+                _make_row({"title": map_title, "id": map_id}),
+            ]
+        ),
+        fetchval=AsyncMock(side_effect=[entity_id]),
+        execute=AsyncMock(side_effect=["INSERT 0 1", "UPDATE 1"]),
     )
 
 
@@ -359,13 +322,15 @@ class TestMindMapNodeCreate:
         map_id = str(uuid.uuid4())
         existing_entity_id = str(uuid.uuid4())
         # INSERT … ON CONFLICT DO NOTHING succeeds (no rows inserted) — still "INSERT 0 0"
-        pool = _make_pool(
-            fetchrow_returns=[
-                _make_row({"id": node_id}),
-                _make_row({"title": "Python", "id": map_id}),
-            ],
-            fetchval_returns=[existing_entity_id],
-            execute_returns=["INSERT 0 0", "UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _make_row({"id": node_id}),
+                    _make_row({"title": "Python", "id": map_id}),
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[existing_entity_id]),
+            execute=AsyncMock(side_effect=["INSERT 0 0", "UPDATE 1"]),
         )
         result = await mind_map_node_create(pool, mind_map_id=map_id, label="Functions")
         assert result == {"node_id": node_id, "entity_id": existing_entity_id}
@@ -446,7 +411,7 @@ class TestMindMapNodeGet:
 
         node_id = str(uuid.uuid4())
         row = _node_row(node_id=node_id, label="Recursion")
-        pool = _make_pool(fetchrow_returns=[_make_row(row)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row(row)]))
         result = await mind_map_node_get(pool, node_id)
         assert result is not None
         assert result["id"] == node_id
@@ -455,7 +420,7 @@ class TestMindMapNodeGet:
     async def test_returns_none_when_not_found(self) -> None:
         from butlers.tools.education import mind_map_node_get
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         result = await mind_map_node_get(pool, str(uuid.uuid4()))
         assert result is None
 
@@ -476,7 +441,7 @@ class TestMindMapNodeList:
             _make_row(_node_row(mind_map_id=map_id, label="A", mastery_status="unseen")),
             _make_row(_node_row(mind_map_id=map_id, label="B", mastery_status="mastered")),
         ]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mind_map_node_list(pool, map_id)
         assert len(result) == 2
 
@@ -485,7 +450,7 @@ class TestMindMapNodeList:
 
         map_id = str(uuid.uuid4())
         rows = [_make_row(_node_row(mind_map_id=map_id, label="A", mastery_status="learning"))]
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
         result = await mind_map_node_list(pool, map_id, mastery_status="learning")
         assert len(result) == 1
         assert "learning" in str(pool.fetch.call_args)
@@ -493,7 +458,7 @@ class TestMindMapNodeList:
     async def test_returns_empty_list(self) -> None:
         from butlers.tools.education import mind_map_node_list
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await mind_map_node_list(pool, str(uuid.uuid4()))
         assert result == []
 
@@ -511,16 +476,16 @@ class TestMasteryStateMachine:
         current_status: str,
         map_id: str | None = None,
         node_id: str | None = None,
-    ) -> tuple[AsyncMock, str, str]:
+    ) -> tuple[FakePool, str, str]:
         """Return (pool, node_id, map_id) wired for a node with given mastery_status."""
         nid = node_id or str(uuid.uuid4())
         mid = map_id or str(uuid.uuid4())
         # fetchrow for current_row (mastery_status + mind_map_id)
         current_row = _make_row({"mastery_status": current_status, "mind_map_id": mid})
-        pool = _make_pool(
-            fetchrow_returns=[current_row, _make_row({"status": "active"})],
-            execute_returns=["UPDATE 1"],
-            fetchval_returns=[1, 1],  # unmastered_count, node_count
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[current_row, _make_row({"status": "active"})]),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
+            fetchval=AsyncMock(side_effect=[1, 1]),  # unmastered_count, node_count
         )
         return pool, nid, mid
 
@@ -650,7 +615,7 @@ class TestMasteryStateMachine:
     async def test_node_not_found_raises_error(self) -> None:
         from butlers.tools.education import mind_map_node_update
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         with pytest.raises(ValueError, match="Node not found"):
             await mind_map_node_update(pool, str(uuid.uuid4()), mastery_status="learning")
 
@@ -661,10 +626,10 @@ class TestMasteryStateMachine:
         nid = str(uuid.uuid4())
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "unseen", "mind_map_id": mid})
-        pool = _make_pool(
-            fetchrow_returns=[current_row, _make_row({"status": "active"})],
-            execute_returns=["UPDATE 1"],
-            fetchval_returns=[1],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[current_row, _make_row({"status": "active"})]),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
+            fetchval=AsyncMock(side_effect=[1]),
         )
         # label is not writable; mastery_score is writable
         await mind_map_node_update(pool, nid, label="Should be ignored", mastery_score=0.5)
@@ -681,10 +646,10 @@ class TestMasteryStateMachine:
         nid = str(uuid.uuid4())
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "learning", "mind_map_id": mid})
-        pool = _make_pool(
-            fetchrow_returns=[current_row, _make_row({"status": "active"})],
-            execute_returns=["UPDATE 1"],
-            fetchval_returns=[1],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[current_row, _make_row({"status": "active"})]),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
+            fetchval=AsyncMock(side_effect=[1]),
         )
         meta = {"custom_field": "some_value", "level": 3}
         await mind_map_node_update(pool, nid, metadata=meta)
@@ -714,16 +679,15 @@ class TestEdgeCreateCycleDetection:
         parent_id: str,
         child_id: str,
         map_id: str,
-    ) -> AsyncMock:
+    ) -> FakePool:
         """Pool returning two nodes in the same map."""
         node_rows = [
             _make_row({"id": parent_id, "mind_map_id": map_id}),
             _make_row({"id": child_id, "mind_map_id": map_id}),
         ]
-        pool = _make_pool(
-            fetch_returns=[node_rows],
-            fetchrow_returns=None,
-            execute_returns=["INSERT 0 1", "UPDATE 2"],
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[node_rows]),
+            execute=AsyncMock(side_effect=["INSERT 0 1", "UPDATE 2"]),
         )
         return pool
 
@@ -791,7 +755,7 @@ class TestEdgeCreateCycleDetection:
             _make_row({"id": parent_id, "mind_map_id": map_a}),
             _make_row({"id": child_id, "mind_map_id": map_b}),
         ]
-        pool = _make_pool(fetch_returns=[node_rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[node_rows]))
         with pytest.raises(ValueError, match="different mind maps"):
             await mind_map_edge_create(pool, parent_id, child_id)
 
@@ -802,7 +766,7 @@ class TestEdgeCreateCycleDetection:
         map_id = str(uuid.uuid4())
         # Only child found
         node_rows = [_make_row({"id": child_id, "mind_map_id": map_id})]
-        pool = _make_pool(fetch_returns=[node_rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[node_rows]))
         with pytest.raises(ValueError, match="Parent node not found"):
             await mind_map_edge_create(pool, str(uuid.uuid4()), child_id)
 
@@ -813,7 +777,7 @@ class TestEdgeCreateCycleDetection:
         map_id = str(uuid.uuid4())
         # Only parent found
         node_rows = [_make_row({"id": parent_id, "mind_map_id": map_id})]
-        pool = _make_pool(fetch_returns=[node_rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[node_rows]))
         with pytest.raises(ValueError, match="Child node not found"):
             await mind_map_edge_create(pool, parent_id, str(uuid.uuid4()))
 
@@ -836,9 +800,9 @@ class TestEdgeCreateCycleDetection:
             _make_row({"id": parent_id, "mind_map_id": map_id}),
             _make_row({"id": child_id, "mind_map_id": map_id}),
         ]
-        pool = _make_pool(
-            fetch_returns=[node_rows],
-            execute_returns=["INSERT 0 1", "UPDATE 2"],
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[node_rows]),
+            execute=AsyncMock(side_effect=["INSERT 0 1", "UPDATE 2"]),
         )
         # Should not raise even for same-ID nodes (related edges skip cycle check)
         # Here parent != child so should succeed
@@ -859,10 +823,10 @@ class TestEdgeCreateCycleDetection:
         ]
         # _check_cycle returns no cycle
         no_cycle_row = _make_row({"has_cycle": False})
-        pool = _make_pool(
-            fetch_returns=[node_rows],
-            fetchrow_returns=[no_cycle_row],
-            execute_returns=["INSERT 0 1", "UPDATE 2"],
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[node_rows]),
+            fetchrow=AsyncMock(side_effect=[no_cycle_row]),
+            execute=AsyncMock(side_effect=["INSERT 0 1", "UPDATE 2"]),
         )
         await mind_map_edge_create(pool, parent_id, child_id, "prerequisite")
         # Verify ON CONFLICT DO UPDATE (not DO NOTHING) in the SQL
@@ -883,7 +847,7 @@ class TestEdgeDelete:
 
         parent_id = str(uuid.uuid4())
         child_id = str(uuid.uuid4())
-        pool = _make_pool(execute_returns=["DELETE 1", "UPDATE 1"])
+        pool = fake_pool(execute=AsyncMock(side_effect=["DELETE 1", "UPDATE 1"]))
         await mind_map_edge_delete(pool, parent_id, child_id)
         assert pool.execute.call_count >= 2
 
@@ -893,7 +857,7 @@ class TestEdgeDelete:
         parent_id = str(uuid.uuid4())
         child_id = str(uuid.uuid4())
         # DELETE 0 means no rows deleted — should still succeed
-        pool = _make_pool(execute_returns=["DELETE 0", "UPDATE 0"])
+        pool = fake_pool(execute=AsyncMock(side_effect=["DELETE 0", "UPDATE 0"]))
         await mind_map_edge_delete(pool, parent_id, child_id)
         assert pool.execute.call_count >= 1
 
@@ -914,7 +878,7 @@ class TestMindMapFrontier:
             _make_row(_node_row(mind_map_id=map_id, label="A", mastery_status="unseen", depth=0)),
             _make_row(_node_row(mind_map_id=map_id, label="B", mastery_status="learning", depth=1)),
         ]
-        pool = _make_pool(fetch_returns=[node_rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[node_rows]))
         result = await mind_map_frontier(pool, map_id)
         assert len(result) == 2
         assert result[0]["label"] == "A"
@@ -945,7 +909,7 @@ class TestMindMapFrontier:
                 )
             ),
         ]
-        pool = _make_pool(fetch_returns=[node_rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[node_rows]))
         await mind_map_frontier(pool, map_id)
         # SQL ORDER BY depth ASC, effort_minutes ASC NULLS LAST
         # We trust the SQL; just verify fetch was called with map_id
@@ -954,14 +918,14 @@ class TestMindMapFrontier:
     async def test_returns_empty_when_all_mastered(self) -> None:
         from butlers.tools.education import mind_map_frontier
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await mind_map_frontier(pool, str(uuid.uuid4()))
         assert result == []
 
     async def test_sql_filters_unmastered_statuses(self) -> None:
         from butlers.tools.education import mind_map_frontier
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mind_map_frontier(pool, str(uuid.uuid4()))
         sql = pool.fetch.call_args.args[0]
         assert "unseen" in sql
@@ -971,7 +935,7 @@ class TestMindMapFrontier:
     async def test_sql_checks_prerequisite_parents(self) -> None:
         from butlers.tools.education import mind_map_frontier
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mind_map_frontier(pool, str(uuid.uuid4()))
         sql = pool.fetch.call_args.args[0]
         assert "prerequisite" in sql
@@ -992,14 +956,14 @@ class TestMindMapSubtree:
         node_id = str(uuid.uuid4())
         child1 = _node_row(label="Child 1", depth=1)
         child2 = _node_row(label="Child 2", depth=2)
-        pool = _make_pool(fetch_returns=[[_make_row(child1), _make_row(child2)]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row(child1), _make_row(child2)]]))
         result = await mind_map_subtree(pool, node_id)
         assert len(result) == 2
 
     async def test_returns_empty_for_leaf_node(self) -> None:
         from butlers.tools.education import mind_map_subtree
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await mind_map_subtree(pool, str(uuid.uuid4()))
         assert result == []
 
@@ -1007,7 +971,7 @@ class TestMindMapSubtree:
         from butlers.tools.education import mind_map_subtree
 
         node_id = str(uuid.uuid4())
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mind_map_subtree(pool, node_id)
         sql = pool.fetch.call_args.args[0]
         assert "RECURSIVE" in sql.upper()
@@ -1016,7 +980,7 @@ class TestMindMapSubtree:
         from butlers.tools.education import mind_map_subtree
 
         node_id = str(uuid.uuid4())
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mind_map_subtree(pool, node_id)
         sql = pool.fetch.call_args.args[0]
         assert "DISTINCT" in sql.upper()
@@ -1026,7 +990,7 @@ class TestMindMapSubtree:
         from butlers.tools.education import mind_map_subtree
 
         node_id = str(uuid.uuid4())
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         await mind_map_subtree(pool, node_id)
         sql = pool.fetch.call_args.args[0]
         # No edge_type filter in the CTE — all edges traversed
@@ -1050,11 +1014,12 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "reviewing", "mind_map_id": mid})
 
-        pool = _make_pool()
-        pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-        # fetchval calls: unmastered_count=0 (all mastered), node_count=3
-        pool.fetchval = AsyncMock(side_effect=[0, 3, "active"])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[current_row, _make_row({"status": "active"})]),
+            execute="UPDATE 1",
+            # fetchval calls: unmastered_count=0 (all mastered), node_count=3
+            fetchval=AsyncMock(side_effect=[0, 3, "active"]),
+        )
 
         await mind_map_node_update(pool, nid, mastery_status="mastered")
 
@@ -1066,7 +1031,11 @@ class TestAutoCompletion:
 
         # Diagnostic drafts and already terminal maps keep their lifecycle status.
         for status in ("draft", "completed", "abandoned"):
-            pool = _make_pool(fetchrow_returns=[current_row], fetchval_returns=[0, 3, status])
+            pool = fake_pool(
+                fetchrow=AsyncMock(side_effect=[current_row]),
+                fetchval=AsyncMock(side_effect=[0, 3, status]),
+                execute="UPDATE 1",
+            )
             await mind_map_node_update(pool, nid, mastery_status="mastered")
             assert pool.execute.await_count == 1
             assert "mind_map_nodes" in pool.execute.call_args.args[0]
@@ -1079,7 +1048,7 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "reviewing", "mind_map_id": mid})
 
-        pool = _make_pool()
+        pool = fake_pool()
         pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         # unmastered_count=2 → not all mastered
@@ -1098,7 +1067,7 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "unseen", "mind_map_id": mid})
 
-        pool = _make_pool()
+        pool = fake_pool()
         pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         pool.fetchval = AsyncMock(return_value=0)  # Would trigger if checked
@@ -1117,7 +1086,7 @@ class TestAutoCompletion:
         mid = str(uuid.uuid4())
         current_row = _make_row({"mastery_status": "reviewing", "mind_map_id": mid})
 
-        pool = _make_pool()
+        pool = fake_pool()
         pool.fetchrow = AsyncMock(side_effect=[current_row, _make_row({"status": "active"})])
         pool.execute = AsyncMock(return_value="UPDATE 1")
         # unmastered_count=0 but node_count=0 (edge case: empty map)
@@ -1193,8 +1162,10 @@ async def test_lifecycle_transition_matrix_preserves_refused_rows():
     for before in ("draft", "active", "completed", "abandoned"):
         for after in ("draft", "active", "completed", "abandoned", "paused"):
             for has_nodes in (False, True):
-                pool = _make_pool(
-                    fetchrow_returns=[_make_row({"status": before})], fetchval_returns=[has_nodes]
+                pool = fake_pool(
+                    fetchrow=AsyncMock(side_effect=[_make_row({"status": before})]),
+                    fetchval=AsyncMock(side_effect=[has_nodes]),
+                    execute="UPDATE 1",
                 )
                 accepted = (before, after) in allowed and (after != "active" or has_nodes)
                 if accepted:

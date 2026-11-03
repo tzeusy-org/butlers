@@ -531,7 +531,10 @@ async def test_persist_activity_event_rejects_raw_url_as_browser_domain() -> Non
 
     assert inserted is True
     assert pool.fetchval.await_args.args[10] is None
-    assert pool.fetchval.await_args.args[12]["web_event"]["data"]["url"] == raw_url
+    # bu-506glj: the tokenised URL is bearer material, so raw_payload keeps a placeholder.
+    stored_url = pool.fetchval.await_args.args[12]["web_event"]["data"]["url"]
+    assert "secret" not in stored_url
+    assert "[magic-link withheld" in stored_url
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +765,70 @@ async def test_persist_activity_event_skips_write_when_detector_fails(caplog) ->
     pool.fetchval.assert_not_awaited()
     assert "bearer scrub failed" in caplog.text
     assert "482913" not in caplog.text and "verification code" not in caplog.text
+
+
+async def _persist_web_event(pool: AsyncMock, web_data: dict[str, str]) -> bool:
+    return await persist_activity_event(
+        pool,
+        machine_id=_MACHINE_ID,
+        endpoint_identity=_ENDPOINT,
+        bucket_id=_BUCKET_ID,
+        ts=_TS,
+        duration_seconds=42,
+        app="Google Chrome",
+        window_title="Mail",
+        app_class="browser",
+        browser_domain="mail.example.test",
+        is_afk=False,
+        raw_payload={"window_event": {"id": 7}, "web_event": {"data": web_data}},
+    )
+
+
+async def test_persist_activity_event_withholds_bearer_url_and_tab_title_in_raw_payload() -> None:
+    """Reset-link URLs and code-bearing tab titles never reach raw_payload."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+    reset_url = "https://mail.example.test/password/reset?token=fake-reset-needle-7731"
+
+    inserted = await _persist_web_event(
+        pool, {"url": reset_url, "title": "Your verification code is 482913 - Mail"}
+    )
+
+    assert inserted is True
+    args = pool.fetchval.await_args.args
+    stored = json.dumps(args[12])
+    assert "fake-reset-needle-7731" not in stored and "482913" not in stored
+    assert "[reset-link withheld" in stored and "[auth-code withheld" in stored
+    assert args[12]["window_event"] == {"id": 7}
+    assert args[10] == "mail.example.test"
+
+
+async def test_persist_activity_event_keeps_ordinary_raw_payload_unchanged() -> None:
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+    web_data = {"url": "https://docs.example.test/q3/roadmap", "title": "Q3 roadmap 482913 draft"}
+
+    await _persist_web_event(pool, web_data)
+
+    args = pool.fetchval.await_args.args
+    assert args[12]["web_event"]["data"] == web_data
+    assert args[10] == "mail.example.test"
+
+
+async def test_persist_activity_event_skips_write_when_raw_payload_scrub_fails(caplog) -> None:
+    pool = AsyncMock()
+    with patch(
+        "butlers.connectors.activitywatch.scrub_evidence_json",
+        side_effect=RuntimeError("fake-reset-needle-7731"),
+    ):
+        inserted = await _persist_web_event(
+            pool, {"url": "https://mail.example.test/reset?token=fake-reset-needle-7731"}
+        )
+
+    assert inserted is False
+    pool.fetchval.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "fake-reset-needle-7731" not in caplog.text
 
 
 def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1814,6 +1814,17 @@ class GmailConnectorRuntime:
                 returned_status,
             )
             return str(returned_status)
+        except RuntimeError as exc:
+            # CachedMCPClient raises RuntimeError only when the tool ran and
+            # rejected the report (transport faults surface as ConnectionError):
+            # a protocol break such as an identity mismatch. Stay non-fatal, but
+            # loudly, so a contract break cannot hide as a silent "ack".
+            logger.error(
+                "backfill.progress rejected for job %s (application error): %s",
+                job_id,
+                exc,
+            )
+            return "ack"
         except Exception as exc:
             logger.warning(
                 "backfill.progress call failed for job %s (non-fatal): %s",
