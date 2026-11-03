@@ -10,9 +10,10 @@ Refresh after an intentional route/schema change (one command)::
 
     BUTLERS_UPDATE_ROUTE_SNAPSHOT=1 uv run pytest tests/api/test_router_registry.py -n 0 -q
 
-then commit the snapshot diff. Merge conflicts in the snapshot: take both sides
-or rerun the refresh; never hand-edit hashes. Route table *order* is not pinned
-(sorted snapshot); only that the frontend mount is last.
+then commit the snapshot diff. On a merge conflict in the snapshot, rerun the refresh;
+never hand-edit hashes. Route table *order* is not pinned by the (sorted) snapshot;
+instead the test asserts the frontend mount is last and that no API route is shadowed
+by an earlier route with a different path.
 """
 
 from __future__ import annotations
@@ -21,12 +22,14 @@ import difflib
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from fastapi.routing import APIRoute
+from starlette.routing import Match
 
 from butlers.api import deps
 from butlers.api.app import create_app
@@ -43,6 +46,24 @@ UPDATE_ENV = "BUTLERS_UPDATE_ROUTE_SNAPSHOT"
 def _digest(value) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:12]
+
+
+def _shadowed_routes(routes) -> list[str]:
+    """API routes fully matched by an earlier route with a different path."""
+    shadowed = []
+    seen: list[APIRoute] = []
+    for route in routes:
+        if not isinstance(route, APIRoute):
+            continue
+        sample = re.sub(r"\{[^}]+\}", "x", route.path)
+        for method in route.methods or ():
+            scope = {"type": "http", "path": sample, "method": method}
+            for earlier in seen:
+                if earlier.path != route.path and earlier.matches(scope)[0] == Match.FULL:
+                    shadowed.append(f"{method} {route.path} shadowed by {earlier.path}")
+                    break
+        seen.append(route)
+    return shadowed
 
 
 def _snapshot_lines(routes, openapi, middleware) -> list[str]:
@@ -75,12 +96,16 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     (tmp_path / "index.html").write_text("baseline")
     app = create_app(static_dir=str(tmp_path))
 
-    def walk(routes):
-        rows = []
+    def flatten(routes):
         for route in routes:
             if hasattr(route, "original_router"):
-                rows.extend(walk(route.original_router.routes))
-                continue
+                yield from flatten(route.original_router.routes)
+            else:
+                yield route
+
+    def walk(routes):
+        rows = []
+        for route in flatten(routes):
             row = {"path": route.path, "name": route.name, "type": type(route).__name__}
             if hasattr(route, "methods"):
                 row["methods"] = sorted(route.methods or [])
@@ -98,6 +123,7 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
         "openapi": app.openapi(),
         "middleware": [middleware.cls.__name__ for middleware in app.user_middleware],
     }
+    assert _shadowed_routes(flatten(app.routes)) == []
     lines = _snapshot_lines(snapshot["routes"], snapshot["openapi"], snapshot["middleware"])
     rendered = "\n".join(lines) + "\n"
     if os.environ.get(UPDATE_ENV):

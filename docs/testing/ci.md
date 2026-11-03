@@ -340,7 +340,8 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
 `tests/api/route_snapshot.txt`: one sorted line per route, OpenAPI operation and component
 schema (short content hash), plus the middleware stack. Adding a route adds lines, so
 independent PRs merge cleanly; unintended drift fails with a line diff. Route table order is
-not pinned beyond the frontend mount being last.
+not pinned; instead the test asserts the frontend mount is last and that no API route is
+shadowed by an earlier route with a different path.
 
 Refresh after an intentional route or schema change, then commit the snapshot:
 
