@@ -162,6 +162,36 @@ def native_stage(tmp_path):
     return root
 
 
+async def _wait_for_peer_output(peer, peer_task, *, timeout_s=5):
+    ready = asyncio.create_task(peer.output_ready.wait())
+    try:
+        await asyncio.wait(
+            {ready, peer_task}, timeout=timeout_s, return_when=asyncio.FIRST_COMPLETED
+        )
+        process = peer._process
+        state = (
+            f"ready={peer.output_ready.is_set()}, released={peer._released}, "
+            f"execution_failure={getattr(peer, 'execution_failure', None)}, "
+            f"output_bytes={peer.output_bytes_received}, "
+            f"exit={None if process is None else process.returncode}, "
+            f"namespace_dead={peer.namespace_dead}, child_reaped={peer.direct_child_reaped}"
+        )
+        # A ready marker cannot establish a live peer if its invocation also ended.
+        if peer_task.done():
+            try:
+                peer_task.result()
+            except BaseException as error:
+                raise AssertionError(
+                    f"synthetic peer failed before isolation read: {state}"
+                ) from error
+            raise AssertionError(f"synthetic peer exited before isolation read: {state}")
+        assert ready.done(), f"synthetic peer readiness deadline expired: {state}"
+        assert ready.result() is True
+    finally:
+        ready.cancel()
+        await asyncio.gather(ready, return_exceptions=True)
+
+
 async def test_native_cross_invocation_read_denied_and_own_material_readable(
     native_image, native_stage
 ):
@@ -169,19 +199,26 @@ async def test_native_cross_invocation_read_denied_and_own_material_readable(
     owner = InvocationOwner(native_stage)
 
     class RecordingDomain(BubblewrapDomain):
+        execution_failure = None
+
         async def execute(self, material):
             self.material = material
-            return await super().execute(material)
+            try:
+                return await super().execute(material)
+            except BaseException as error:
+                # Class names distinguish owner-deadline cancellation from domain refusal;
+                # never retain staged material, runtime output or arbitrary exception text.
+                self.execution_failure = type(error).__name__
+                raise
 
     peer = RecordingDomain(image=native_image, command=("/runtime/program", "resist"))
     peer_task = asyncio.create_task(owner.run(replace(request(), timeout_s=5), lambda: peer))
-    async with asyncio.timeout(5):
-        await peer.output_ready.wait()
-    domain = BubblewrapDomain(
-        image=native_image,
-        command=("/runtime/program", "read", str(peer.material.directory / "model-credential")),
-    )
     try:
+        await _wait_for_peer_output(peer, peer_task)
+        domain = BubblewrapDomain(
+            image=native_image,
+            command=("/runtime/program", "read", str(peer.material.directory / "model-credential")),
+        )
         output = await owner.run(req, lambda: domain)
         assert output == b"OWN_READ_PEER_DENIED_READONLY\n"
         assert domain.namespace_dead and domain.direct_child_reaped
@@ -191,6 +228,67 @@ async def test_native_cross_invocation_read_denied_and_own_material_readable(
         await asyncio.gather(peer_task, return_exceptions=True)
     assert peer.namespace_dead and peer.direct_child_reaped
     assert owner.healthy and not list(native_stage.iterdir())
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["ready", "refused", "returned", "cancelled", "ready_and_refused", "stalled", "cancel_wait"],
+)
+async def test_peer_readiness_observes_completion_and_always_reaps_its_waiter(outcome):
+    # An inert domain supplies fixed diagnostic state; no native process is launched.
+    peer = BubblewrapDomain(
+        image=(ImageFile(Path("/not-opened"), "/runtime/init", "0" * 64),),
+        command=("/runtime/init",),
+    )
+    started, finished = asyncio.Event(), asyncio.Event()
+
+    class ObservedEvent(asyncio.Event):
+        async def wait(self):
+            started.set()
+            try:
+                return await super().wait()
+            finally:
+                finished.set()
+
+    peer.output_ready = ObservedEvent()
+
+    async def invoke():
+        if outcome in {"ready", "ready_and_refused"}:
+            peer.output_ready.set()
+        if outcome in {"refused", "ready_and_refused"}:
+            raise Refused("runtime_failed")
+        if outcome == "returned":
+            return b"synthetic early result"
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        await asyncio.Event().wait()
+
+    peer_task = asyncio.create_task(invoke())
+    waiting = asyncio.create_task(_wait_for_peer_output(peer, peer_task, timeout_s=0.05))
+    try:
+        if outcome == "cancel_wait":
+            await asyncio.wait_for(started.wait(), timeout=1)
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+        elif outcome == "ready":
+            await waiting
+            assert not peer_task.done()  # readiness is useful only while the peer is live
+        else:
+            reason = "deadline expired" if outcome == "stalled" else "before isolation read"
+            with pytest.raises(AssertionError, match=reason) as failure:
+                await waiting
+            assert "released=False" in str(failure.value)
+            assert "output_bytes=0" in str(failure.value)
+            assert "exit=None" in str(failure.value)
+            if outcome in {"refused", "ready_and_refused", "cancelled"}:
+                expected = asyncio.CancelledError if outcome == "cancelled" else Refused
+                assert type(failure.value.__cause__) is expected
+    finally:
+        waiting.cancel()
+        peer_task.cancel()
+        await asyncio.gather(waiting, peer_task, return_exceptions=True)
+    assert finished.is_set()  # the helper also owns its event waiter on every exit
 
 
 async def test_native_resistant_detached_descendant_dies_before_material_removed(
