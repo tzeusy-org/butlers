@@ -45,7 +45,7 @@ from butlers.core.runtime_probe_control.receipts import (
     nonce_digest,
 )
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db import open_pool
 from butlers.testing.runtime_probe_control import (
     current_entry,
     keyring_document,
@@ -71,43 +71,29 @@ async def _as_switchboard(connection: asyncpg.Connection) -> None:
     await connection.execute(f'SET ROLE "{_SWITCHBOARD}"')
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
+@pytest.fixture
+def probe_db_url(fresh_db) -> str:
+    """One private core + switchboard clone shared by this test's pools."""
+    return fresh_db("core", "switchboard")
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """The migration/owner identity: fixture data setup and cleanup only.
+async def owner_pool(probe_db_url: str):
+    """The migration/owner identity: fixture data setup only.
 
     core_212 (bu-jcym4) FORCEs row security on the receipts table, so the
     owner is no longer an effective stand-in for Switchboard there -- see the
     ``switchboard_pool`` fixture below, which is what every receipts-table
     read, write, and coordinator run in this file actually goes through.
+    Each test gets a fresh clone, so the receipts table starts empty.
     """
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=2, max_size=6, init=register_jsonb_codec
-    )
-    # core_212 also blocks TRUNCATE on this table outright, owner included, so
-    # per-test isolation has to step around that guard explicitly rather than
-    # rely on TRUNCATE being unguarded -- the table owner can still disable its
-    # own trigger, which is the same "not an unforgeable principal" caveat
-    # REQ-database-security-007 already records for this shared-login topology.
-    async with p.acquire() as connection:
-        async with connection.transaction():
-            await connection.execute(f"ALTER TABLE {RECEIPTS_TABLE} DISABLE TRIGGER USER")
-            await connection.execute(f"TRUNCATE TABLE {RECEIPTS_TABLE}")
-            await connection.execute(f"ALTER TABLE {RECEIPTS_TABLE} ENABLE TRIGGER USER")
+    p = await open_pool(probe_db_url, min_size=2, max_size=6)
     yield p
     await p.close()
 
 
 @pytest.fixture
-async def switchboard_pool(migrated_db_url: str):
+async def switchboard_pool(probe_db_url: str):
     """The identity every receipts-table operation in production runs as.
 
     core_212 fenced the table owner out of this table's RLS policy, so the
@@ -116,7 +102,7 @@ async def switchboard_pool(migrated_db_url: str):
     (SELECT/DELETE) instead of exercising the real boundary.
     """
     p = await asyncpg.create_pool(
-        migrated_db_url, min_size=2, max_size=6, init=register_jsonb_codec, setup=_as_switchboard
+        probe_db_url, min_size=2, max_size=6, init=register_jsonb_codec, setup=_as_switchboard
     )
     yield p
     await p.close()
@@ -229,11 +215,11 @@ async def _verification(pool: asyncpg.Pool, entry_id: UUID) -> asyncpg.Record:
 
 
 async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(
-    pool, switchboard_pool, keys
+    owner_pool, switchboard_pool, keys
 ):
     """Criterion 2: one receipt, one lookup-launch-persist path, one loser."""
     signer, keyring = keys
-    entry_id = await _seed_entry(pool)
+    entry_id = await _seed_entry(owner_pool)
     persistence = _CountingPersistence(switchboard_pool)
     launches: list[str] = []
     coordinator = _coordinator(switchboard_pool, keyring, persistence, launches=launches)
@@ -250,15 +236,15 @@ async def test_two_uses_of_one_capability_commit_one_receipt_and_run_one_probe(
     receipts = await switchboard_pool.fetchval(f"SELECT count(*) FROM {RECEIPTS_TABLE}")
     assert receipts == 1
 
-    row = await _verification(pool, entry_id)
+    row = await _verification(owner_pool, entry_id)
     assert row["last_verified_ok"] is True
     assert row["last_verified_error"] is None
 
 
-async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, switchboard_pool, keys):
+async def test_the_receipt_stores_a_digest_and_never_the_nonce(owner_pool, switchboard_pool, keys):
     """A leaked receipt table must not be reconstructible into a capability."""
     signer, keyring = keys
-    entry_id = await _seed_entry(pool)
+    entry_id = await _seed_entry(owner_pool)
     coordinator = _coordinator(
         switchboard_pool, keyring, _CountingPersistence(switchboard_pool), launches=[]
     )
@@ -282,7 +268,7 @@ async def test_the_receipt_stores_a_digest_and_never_the_nonce(pool, switchboard
 
 
 async def test_a_replay_is_still_denied_after_a_restart(
-    pool, switchboard_pool, keys, migrated_db_url
+    owner_pool, switchboard_pool, keys, probe_db_url
 ):
     """Criterion 2: the receipt is durable, not process state.
 
@@ -290,7 +276,7 @@ async def test_a_replay_is_still_denied_after_a_restart(
     the same situation Switchboard is in after a restart.
     """
     signer, keyring = keys
-    entry_id = await _seed_entry(pool)
+    entry_id = await _seed_entry(owner_pool)
     launches: list[str] = []
     first = _coordinator(
         switchboard_pool, keyring, _CountingPersistence(switchboard_pool), launches=launches
@@ -300,7 +286,7 @@ async def test_a_replay_is_still_denied_after_a_restart(
     assert (await first.run(compact)).status is ProbeStatus.COMPLETED
 
     restarted_pool = await asyncpg.create_pool(
-        migrated_db_url,
+        probe_db_url,
         min_size=1,
         max_size=2,
         init=register_jsonb_codec,
@@ -319,23 +305,23 @@ async def test_a_replay_is_still_denied_after_a_restart(
 
 
 async def test_a_replay_leaves_existing_verification_history_unchanged(
-    pool, switchboard_pool, keys
+    owner_pool, switchboard_pool, keys
 ):
     """Criterion 7: a rejected request writes no failure and no success."""
     signer, keyring = keys
-    entry_id = await _seed_entry(pool)
+    entry_id = await _seed_entry(owner_pool)
     coordinator = _coordinator(
         switchboard_pool, keyring, _CountingPersistence(switchboard_pool), launches=[]
     )
 
     compact = _sign_dashboard_capability(signer, entry_id)
     await coordinator.run(compact)
-    before = dict(await _verification(pool, entry_id))
+    before = dict(await _verification(owner_pool, entry_id))
 
     replay = await coordinator.run(compact)
 
     assert replay.status is ProbeStatus.REPLAY
-    assert dict(await _verification(pool, entry_id)) == before
+    assert dict(await _verification(owner_pool, entry_id)) == before
 
 
 # ---------------------------------------------------------------------------

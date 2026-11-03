@@ -29,7 +29,7 @@ from butlers.testing.records import Record
 pytestmark = pytest.mark.unit
 
 
-def _make_row(
+def _config_columns(
     butler_name: str = "test",
     core_groups: list[str] | None = None,
     catalog_read_sensitivity: str = "normal",
@@ -40,7 +40,7 @@ def _make_row(
     seeded_at: str = "2026-01-01T00:00:00+00:00",
     updated_at: str = "2026-01-01T00:00:00+00:00",
 ) -> dict:
-    """Create a mock DB row dict."""
+    """Create the column dict for one runtime_config row."""
     return {
         "butler_name": butler_name,
         "core_groups": core_groups,
@@ -69,10 +69,6 @@ def _transaction_pool():
     return pool
 
 
-def _mock_record(row_dict: dict) -> Record:
-    return Record(row_dict)
-
-
 def _make_seed(
     core_groups: tuple[str, ...] | None = None,
     tool_exposure_policy: str = "eager_filtered",
@@ -88,7 +84,7 @@ def _make_seed(
 async def test_cache_hit_within_ttl():
     """Second get() within TTL returns cached result without DB query."""
     pool = AsyncMock()
-    row = _mock_record(_make_row())
+    row = Record(_config_columns())
     pool.fetchrow = AsyncMock(return_value=row)
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=30.0)
@@ -104,8 +100,8 @@ async def test_cache_hit_within_ttl():
 async def test_cache_miss_after_ttl():
     """get() after TTL expiry queries the DB again."""
     pool = AsyncMock()
-    row1 = _mock_record(_make_row(max_concurrent=3))
-    row2 = _mock_record(_make_row(max_concurrent=5))
+    row1 = Record(_config_columns(max_concurrent=3))
+    row2 = Record(_config_columns(max_concurrent=5))
     pool.fetchrow = AsyncMock(side_effect=[row1, row2])
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=0.01)
@@ -123,8 +119,8 @@ async def test_seed_on_empty_table():
     """seed_if_empty() inserts a row when the table is empty, including the hot policy."""
     pool = _transaction_pool()
     seed = _make_seed(core_groups=("infra", "state"), tool_exposure_policy="auto")
-    seeded_row = _mock_record(
-        _make_row(core_groups=["infra", "state"], tool_exposure_policy="auto")
+    seeded_row = Record(
+        _config_columns(core_groups=["infra", "state"], tool_exposure_policy="auto")
     )
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(
@@ -144,7 +140,7 @@ async def test_seed_on_empty_table():
 async def test_db_failure_with_stale_cache():
     """get() returns stale cache on DB failure when cache exists."""
     pool = AsyncMock()
-    row = _mock_record(_make_row())
+    row = Record(_config_columns())
     pool.fetchrow = AsyncMock(side_effect=[row, Exception("DB unavailable")])
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=0.01)
@@ -173,7 +169,7 @@ async def test_concurrent_seed_race():
     """Two concurrent seed_if_empty() calls don't fail (ON CONFLICT DO NOTHING)."""
     pool = _transaction_pool()
     seed = _make_seed()
-    seeded_row = _mock_record(_make_row())
+    seeded_row = Record(_config_columns())
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(
         side_effect=lambda sql, *_args: None if "WITH candidate" in sql else seeded_row
@@ -234,8 +230,8 @@ def test_reason_cannot_authorize_runtime_broadening():
 
 async def test_seed_reconciles_and_audits_stale_groups_once():
     pool = _transaction_pool()
-    stale = _mock_record(_make_row(core_groups=["infra"]))
-    reconciled = _mock_record(_make_row(core_groups=["infra", "delegation"]))
+    stale = Record(_config_columns(core_groups=["infra"]))
+    reconciled = Record(_config_columns(core_groups=["infra", "delegation"]))
     pool.execute = AsyncMock()
     pool.fetchrow = AsyncMock(side_effect=[stale, {"previous_core_groups": ["infra"]}, reconciled])
 
@@ -253,8 +249,8 @@ async def test_seed_reconciles_and_audits_stale_groups_once():
 
 async def test_seed_keeps_explicit_narrowing_without_audit():
     pool = _transaction_pool()
-    narrowed = _mock_record(
-        _make_row(
+    narrowed = Record(
+        _config_columns(
             core_groups=["infra"],
             core_groups_narrowing_reason="Temporary incident containment",
         )
@@ -272,8 +268,8 @@ async def test_seed_keeps_explicit_narrowing_without_audit():
 async def test_invalidate_cache():
     """invalidate_cache() forces next get() to query the DB."""
     pool = AsyncMock()
-    row1 = _mock_record(_make_row(max_concurrent=3))
-    row2 = _mock_record(_make_row(max_concurrent=7))
+    row1 = Record(_config_columns(max_concurrent=3))
+    row2 = Record(_config_columns(max_concurrent=7))
     pool.fetchrow = AsyncMock(side_effect=[row1, row2])
 
     accessor = RuntimeConfigAccessor(pool, "test", ttl_s=300.0)  # long TTL
@@ -288,7 +284,7 @@ async def test_invalidate_cache():
 
 def test_row_to_config_with_null_core_groups():
     """NULL core_groups in DB maps to None in RuntimeConfig."""
-    row = _mock_record(_make_row(core_groups=None))
+    row = Record(_config_columns(core_groups=None))
     config = _row_to_config(row)
     assert config.core_groups is None
     assert not hasattr(config, "model")
@@ -299,13 +295,13 @@ def test_row_to_config_with_null_core_groups():
 
 def test_row_to_config_with_core_groups():
     """Array core_groups in DB maps to tuple in RuntimeConfig."""
-    row = _mock_record(_make_row(core_groups=["infra", "state"]))
+    row = Record(_config_columns(core_groups=["infra", "state"]))
     config = _row_to_config(row)
     assert config.core_groups == ("infra", "state")
 
 
 def test_row_to_config_preserves_catalog_read_sensitivity():
-    row = _mock_record(_make_row(catalog_read_sensitivity="internal"))
+    row = Record(_config_columns(catalog_read_sensitivity="internal"))
 
     config = _row_to_config(row)
 
@@ -313,16 +309,16 @@ def test_row_to_config_preserves_catalog_read_sensitivity():
 
 
 def test_row_to_config_missing_catalog_authority_fails_closed_normal():
-    row_data = _make_row()
+    row_data = _config_columns()
     del row_data["catalog_read_sensitivity"]
 
-    config = _row_to_config(_mock_record(row_data))
+    config = _row_to_config(Record(row_data))
 
     assert config.catalog_read_sensitivity == "normal"
 
 
 def test_row_to_config_preserves_tool_exposure_policy():
-    row = _mock_record(_make_row(tool_exposure_policy="auto"))
+    row = Record(_config_columns(tool_exposure_policy="auto"))
 
     config = _row_to_config(row)
 
@@ -331,10 +327,10 @@ def test_row_to_config_preserves_tool_exposure_policy():
 
 def test_row_to_config_missing_tool_exposure_policy_fails_closed_eager_filtered():
     """A rolling pre-core_224 row shape must never opt a butler into native discovery."""
-    row_data = _make_row()
+    row_data = _config_columns()
     del row_data["tool_exposure_policy"]
 
-    config = _row_to_config(_mock_record(row_data))
+    config = _row_to_config(Record(row_data))
 
     assert config.tool_exposure_policy == "eager_filtered"
 
@@ -350,7 +346,7 @@ async def test_get_tool_exposure_policy_bypasses_the_ttl_cache():
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(
         side_effect=[
-            _mock_record(_make_row(tool_exposure_policy="eager_filtered")),
+            Record(_config_columns(tool_exposure_policy="eager_filtered")),
             {"tool_exposure_policy": "auto"},
         ]
     )
@@ -369,7 +365,7 @@ async def test_get_tool_exposure_policy_falls_back_to_stale_cache_on_db_failure(
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(
         side_effect=[
-            _mock_record(_make_row(tool_exposure_policy="auto")),
+            Record(_config_columns(tool_exposure_policy="auto")),
             Exception("DB unavailable"),
         ]
     )
@@ -395,8 +391,8 @@ async def test_get_tool_exposure_policy_raises_with_no_cache_and_no_row():
 async def test_reconciliation_uses_existing_core_append_in_own_transaction(monkeypatch):
     from butlers.core import audit
 
-    stale = _mock_record(_make_row(core_groups=["infra"]))
-    reconciled = _mock_record(_make_row(core_groups=["infra", "delegation"]))
+    stale = Record(_config_columns(core_groups=["infra"]))
+    reconciled = Record(_config_columns(core_groups=["infra", "delegation"]))
     pool = _transaction_pool()
     pool.fetchrow = AsyncMock(side_effect=[stale, reconciled, reconciled])
     connection = AsyncMock()
@@ -427,7 +423,7 @@ async def test_reconciliation_audit_failure_exits_the_owned_transaction(monkeypa
     from butlers.core import audit
 
     pool = _transaction_pool()
-    stale = _mock_record(_make_row(core_groups=["infra"]))
+    stale = Record(_config_columns(core_groups=["infra"]))
     pool.fetchrow = AsyncMock(side_effect=[stale, {"previous_core_groups": ["infra"]}])
     failure = RuntimeError("controlled audit failure")
     monkeypatch.setattr(audit, "append", AsyncMock(side_effect=failure))

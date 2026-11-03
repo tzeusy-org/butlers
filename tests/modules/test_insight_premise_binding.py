@@ -17,7 +17,6 @@ import shutil
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 
 from butlers.core.condition_ledger import ConditionTransition
@@ -27,8 +26,6 @@ from butlers.core.insight_premise import (
     owner_condition_premise,
     probe_premise,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight import broker, premises
 
 _docker_available = shutil.which("docker") is not None
@@ -303,32 +300,25 @@ class TestApplyPendingAmendments:
 
 
 @pytest.fixture
-def premise_db_url(postgres_container) -> str:
-    """Migrate a fresh database before entering this case's async fixture loop."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def premise_pool(premise_db_url: str):
-    """Real core policy/context/definers plus this case's Finance bill state."""
+async def premise_pool(db):
+    """Real core policy/context/definers plus the real Finance bills table."""
     from butlers.core.owner_conditions import create_owner_conditions_table
 
-    pool = await asyncpg.create_pool(
-        premise_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    pool = await db("core", "finance", schemas={"finance": "finance"})
+    await broker.create_insight_tables(pool)
+    await create_owner_conditions_table(pool)
+    await pool.execute(
+        "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
+        "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
     )
-    try:
-        await broker.create_insight_tables(pool)
-        await create_owner_conditions_table(pool)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS finance")
-        await pool.execute("CREATE TABLE finance.bills (id uuid PRIMARY KEY, status text NOT NULL)")
-        await pool.execute(
-            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
-            "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
-        )
-        yield pool
-    finally:
-        await pool.close()
+    return pool
 
+
+# The real finance.bills row needs its NOT NULL obligation columns.
+_INSERT_PENDING_BILL = (
+    "INSERT INTO finance.bills (id, payee, amount, currency, due_date, frequency, status) "
+    "VALUES ($1, 'Water', 42.00, 'SGD', CURRENT_DATE + 1, 'one_time', 'pending')"
+)
 
 _TELEGRAM_SENT = {
     "notification_id": "n-1",
@@ -343,9 +333,7 @@ _TELEGRAM_SENT = {
 class TestPremiseBoundDelivery:
     async def test_a_bill_paid_before_the_cycle_is_withdrawn_and_never_sent(self, premise_pool):
         bill_id = "8c1b3a52-6a6e-4a7e-9a52-0d5f6f1d9c01"
-        await premise_pool.execute(
-            "INSERT INTO finance.bills (id, status) VALUES ($1, 'pending')", bill_id
-        )
+        await premise_pool.execute(_INSERT_PENDING_BILL, bill_id)
         proposed = await broker.propose_insight_candidate(
             premise_pool,
             origin_butler="finance",
@@ -375,9 +363,7 @@ class TestPremiseBoundDelivery:
         self, premise_pool
     ):
         bill_id = "8c1b3a52-6a6e-4a7e-9a52-0d5f6f1d9c02"
-        await premise_pool.execute(
-            "INSERT INTO finance.bills (id, status) VALUES ($1, 'pending')", bill_id
-        )
+        await premise_pool.execute(_INSERT_PENDING_BILL, bill_id)
         for key, args in (("a", {"bill_id": bill_id}), ("b", {"bill_id": "not-a-uuid"})):
             await broker.propose_insight_candidate(
                 premise_pool,

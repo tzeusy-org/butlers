@@ -43,6 +43,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.publication.binding import OperationKind
 from butlers.core.qa.publication.publisher import QaPublisher
 from butlers.core.qa.triage import TriagedFinding
+from butlers.testing.fake_pool import fake_pool
 from tests.core.qa.publication_fakes import (
     QA_IDENTITY,
     FakeLedger,
@@ -76,13 +77,8 @@ def _make_triaged(finding: QaFinding | None = None) -> TriagedFinding:
     )
 
 
-def _make_pool():
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=uuid.uuid4())
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetch = AsyncMock(return_value=[])
-    pool.execute = AsyncMock()
-    return pool
+def _qa_pool():
+    return fake_pool(fetchval=uuid.uuid4(), fetchrow=None, fetch=[], execute=None)
 
 
 @pytest.mark.unit
@@ -162,7 +158,7 @@ async def test_dispatch_qa_gate_rejections():
 
     # Severity above threshold
     r1 = await dispatch_qa_investigation(
-        pool=_make_pool(),
+        pool=_qa_pool(),
         triaged_finding=_make_triaged(_make_finding(severity=3)),
         patrol_id=uuid.uuid4(),
         config=config,
@@ -179,7 +175,7 @@ async def test_dispatch_qa_gate_rejections():
         return_value=(uuid.uuid4(), False),
     ):
         r2 = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(_make_finding(severity=1)),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -209,7 +205,7 @@ async def test_dispatch_qa_gate_rejections():
         ),
     ):
         r3 = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(_make_finding(severity=1)),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -247,7 +243,7 @@ async def test_dispatch_qa_gate_rejections():
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
     ):
         r4 = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(_make_finding(severity=1)),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -292,7 +288,7 @@ async def test_dispatch_qa_infra_condition_open_suppresses_before_novelty_gate()
         ) as mock_dedup,
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(finding),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -333,7 +329,7 @@ async def test_dispatch_qa_infra_condition_absent_proceeds_to_novelty_gate():
         ) as mock_create_or_join,
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(finding),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -362,7 +358,7 @@ async def test_dispatch_qa_non_infra_state_finding_never_checks_condition_ledger
         ),
     ):
         await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(finding),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -428,7 +424,7 @@ async def test_dispatch_qa_success_and_never_raises():
         patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(_make_finding(severity=1)),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -447,7 +443,7 @@ async def test_dispatch_qa_success_and_never_raises():
                 mock_proc.returncode = 0
                 mock_proc.communicate.return_value = (b"not-a-commit", b"")
             refused = await dispatch_qa_investigation(
-                pool=_make_pool(),
+                pool=_qa_pool(),
                 triaged_finding=_make_triaged(_make_finding(severity=1)),
                 patrol_id=uuid.uuid4(),
                 config=QaDispatchConfig(),
@@ -476,7 +472,7 @@ async def test_dispatch_qa_success_and_never_raises():
         side_effect=RuntimeError("db down"),
     ):
         r_err = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -556,7 +552,7 @@ async def test_run_investigation_persists_commit_diff_snapshot(tmp_path: Path):
         ) as persist_and_remove,
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=tmp_path,
             attempt_id=attempt_id,
             finding_id=finding_id,
@@ -601,7 +597,7 @@ async def test_run_investigation_no_commit_persists_empty_snapshot_without_git_d
         ) as persist_and_remove,
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=tmp_path,
             attempt_id=attempt_id,
             finding_id=uuid.uuid4(),
@@ -647,7 +643,7 @@ async def test_run_investigation_reports_model_resolution_refusal_as_no_model(
         ),
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=tmp_path,
             attempt_id=attempt_id,
             finding_id=uuid.uuid4(),
@@ -688,7 +684,7 @@ async def test_persist_notes_and_remove_worktree_skips_diff_fallback_when_notes_
         patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
     ):
         await _persist_notes_and_remove_worktree(
-            _make_pool(),
+            _qa_pool(),
             uuid.uuid4(),
             tmp_path,
             "qa/finance/abcdef123456",
@@ -706,7 +702,7 @@ async def test_persist_notes_and_remove_worktree_skips_diff_fallback_when_notes_
 async def test_persist_notes_and_remove_worktree_falls_back_when_notes_absent(
     tmp_path: Path,
 ):
-    pool = _make_pool()
+    pool = _qa_pool()
     attempt_id = uuid.uuid4()
     diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
 
@@ -739,7 +735,7 @@ async def test_persist_notes_and_remove_worktree_falls_back_when_notes_absent(
 @pytest.mark.asyncio
 async def test_dispatch_novel_findings():
     """Returns all results; empty list → empty; stops at concurrency cap."""
-    pool = _make_pool()
+    pool = _qa_pool()
 
     # Returns one result per finding
     findings = [_make_triaged() for _ in range(3)]
@@ -845,7 +841,7 @@ def _make_pr_row(
 @pytest.mark.asyncio
 async def test_check_open_pr_statuses_no_token():
     """No token → empty counts, fetch not called."""
-    pool = _make_pool()
+    pool = _qa_pool()
     counts = await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token=None)
     assert counts == {"merged": 0, "closed": 0, "errors": 0, "follow_ups_dispatched": 0}
     pool.fetch.assert_not_called()
@@ -855,7 +851,7 @@ async def test_check_open_pr_statuses_no_token():
 async def test_check_open_pr_statuses_merged():
     """MERGED state → pr_merged transition."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
     pr_data = {"state": "MERGED", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
@@ -880,7 +876,7 @@ async def test_check_open_pr_statuses_merged():
 async def test_check_open_pr_statuses_closed():
     """CLOSED state → failed transition."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
     pr_data = {"state": "CLOSED", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
@@ -902,7 +898,7 @@ async def test_check_open_pr_statuses_closed():
 async def test_check_open_pr_statuses_open_no_review():
     """OPEN with no reviews → review tracking columns updated, no follow-up."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id)])
     pr_data = {"state": "OPEN", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
@@ -924,7 +920,7 @@ async def test_check_open_pr_statuses_open_no_review():
 async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
     """OPEN with changes_requested + spawner → follow-up dispatched."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id, follow_up_count=0)])
     pr_data = {
         "state": "OPEN",
@@ -968,7 +964,7 @@ async def test_check_open_pr_statuses_changes_requested_dispatches_followup():
 async def test_check_open_pr_statuses_rate_limit_respected():
     """Recent follow-up dispatches are staggered with exponential backoff."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(
         return_value=[
             _make_pr_row(
@@ -1014,7 +1010,7 @@ async def test_check_open_pr_statuses_rate_limit_respected():
 async def test_check_open_pr_statuses_followup_due_after_backoff():
     """Older follow-ups become eligible again after the exponential delay."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(
         return_value=[
             _make_pr_row(
@@ -1058,7 +1054,7 @@ async def test_check_open_pr_statuses_followup_due_after_backoff():
 async def test_check_open_pr_statuses_no_spawner_no_followup():
     """OPEN with changes_requested but no spawner → no follow-up dispatched."""
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=attempt_id, follow_up_count=0)])
     pr_data = {
         "state": "OPEN",
@@ -1195,7 +1191,7 @@ def test_extract_review_state_changes_requested_no_body():
 @pytest.mark.asyncio
 async def test_dispatch_pr_review_followup_anonymization_failure():
     """Anonymization validation failure → returns False, no task created."""
-    pool = _make_pool()
+    pool = _qa_pool()
     attempt_id = uuid.uuid4()
 
     with (
@@ -1225,7 +1221,7 @@ async def test_dispatch_pr_review_followup_anonymization_failure():
 @pytest.mark.asyncio
 async def test_dispatch_pr_review_followup_missing_branch():
     """Missing pr_branch_name → returns False immediately."""
-    pool = _make_pool()
+    pool = _qa_pool()
     attempt_id = uuid.uuid4()
 
     result = await _dispatch_pr_review_followup(
@@ -1248,7 +1244,7 @@ async def test_dispatch_pr_review_followup_missing_branch():
 @pytest.mark.asyncio
 async def test_dispatch_pr_review_followup_materializes_remote_ref_before_worktree_add():
     """A fetchable PR head is materialized as origin/<branch> before worktree add."""
-    pool = _make_pool()
+    pool = _qa_pool()
     attempt_id = uuid.uuid4()
     branch_name = "qa/general/abcdef-1234"
 
@@ -1305,7 +1301,7 @@ async def test_dispatch_pr_review_followup_materializes_remote_ref_before_worktr
 @pytest.mark.asyncio
 async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_fails():
     """A failed remote-ref materialization never reaches worktree creation."""
-    pool = _make_pool()
+    pool = _qa_pool()
     attempt_id = uuid.uuid4()
 
     # Mock git subprocess: fetch fails
@@ -1359,7 +1355,7 @@ async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_
 @pytest.mark.asyncio
 async def test_review_followup_persists_publication_unavailable(tmp_path: Path) -> None:
     """A successful follow-up agent run pushes nothing and records the fixed reason."""
-    pool = _make_pool()
+    pool = _qa_pool()
     attempt_id = uuid.uuid4()
     session_id = uuid.uuid4()
     spawner = MagicMock()
@@ -1422,7 +1418,7 @@ async def test_investigation_agent_has_no_credential_and_publication_fails_close
         ),
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=tmp_path,
             attempt_id=uuid.uuid4(),
             finding_id=uuid.uuid4(),
@@ -1461,7 +1457,7 @@ async def test_followup_agent_has_no_credential(tmp_path: Path, monkeypatch: pyt
     ):
         task_registry: list[asyncio.Task] = []
         result = await _dispatch_pr_review_followup(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=Path("/tmp/repo"),
             attempt_id=uuid.uuid4(),
             pr_number=42,
@@ -1484,7 +1480,7 @@ async def test_followup_agent_has_no_credential(tmp_path: Path, monkeypatch: pyt
 @pytest.mark.asyncio
 async def test_pr_status_polling_keeps_trusted_token():
     """Dispatcher-only PR polling still runs gh with the trusted token."""
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=uuid.uuid4())])
     pr_data = {"state": "MERGED", "reviews": [], "latestReviews": [], "reviewThreads": []}
     mock_proc = MagicMock()
@@ -1543,7 +1539,7 @@ async def _run_published_investigation(
         patch("butlers.core.qa.dispatch._persist_notes_and_remove_worktree", AsyncMock()) as td,
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=repo,
             attempt_id=attempt_id,
             finding_id=uuid.uuid4(),

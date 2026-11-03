@@ -9,7 +9,12 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.health._helpers import _row_to_dict
-from butlers.tools.health._medication_utils import expected_dose_count, frequency_to_doses_per_day
+from butlers.tools.health._medication_utils import (
+    dose_of_medication_sql,
+    expected_dose_count,
+    medication_first_seen,
+    scheduled_doses_per_day,
+)
 from butlers.tools.health.measurements import VALID_MEASUREMENT_TYPES as _LOGGABLE_MEASUREMENT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -217,7 +222,7 @@ async def trend_report(
             " WHERE predicate = 'took_dose'"
             " AND validity = 'active'"
             " AND scope = 'health'"
-            " AND metadata->>'medication_id' = $1"
+            f" AND {dose_of_medication_sql('$1')}"
             " AND valid_at >= $2",
             med_id_str,
             since,
@@ -225,10 +230,11 @@ async def trend_report(
         total = len(dose_rows)
         taken = sum(1 for d in dose_rows if d["skipped"] not in (True, "true", "True", "1"))
         expected = expected_dose_count(
-            doses_per_day=frequency_to_doses_per_day(frequency),
+            doses_per_day=scheduled_doses_per_day(frequency),
             window_start=since,
             window_end=now,
-            medication_created_at=med.get("created_at"),
+            medication_created_at=await medication_first_seen(pool, med_id_str)
+            or med.get("created_at"),
         )
         rate = round(taken / expected * 100, 1) if expected > 0 else None
         medication_adherence.append(
