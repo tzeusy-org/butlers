@@ -152,7 +152,7 @@ Beyond the core spawner, route, and buffer instruments above, the metrics module
 - Scheduler: `butlers.scheduler.tasks_dispatched` (Counter).
 - Switchboard ingest: `butlers.switchboard.ingest_result` (Counter).
 - Recovery (self-healing): `butlers.recovery.active_workflows` (UpDownCounter), `butlers.recovery.phase_duration_ms` (Histogram), `butlers.recovery.dispatch_decisions_total` (Counter), `butlers.recovery.execution_failures_total` (Counter).
-- Domain-event delivery: `butlers.domain_event.delivery_failed_permanent_total` (Counter), with only `source_butler`, `destination_butler`, and closed-set `reason` (`non_retryable` or `attempts_exhausted`) attributes. It SHALL be emitted only after `mark_delivery_failed()` successfully returns `failed_permanent`; a repeated terminal-row update emits nothing, and a metric-export failure MUST NOT alter the durable delivery outcome.
+- Domain-event delivery: `butlers.domain_event.delivery_failed_permanent_total` (Counter), with only `emitter_butler`, `source_butler`, `destination_butler`, and closed-set `reason` (`non_retryable` or `attempts_exhausted`) attributes. `emitter_butler` is the roster name of the daemon recording the transition (the publisher for fan-out, `switchboard` for the reconciliation sweep), so two daemons recording the same route never share a cumulative series. On startup each daemon SHALL create every route series it can emit at zero. It SHALL be incremented only after `mark_delivery_failed()` successfully returns `failed_permanent`; a repeated terminal-row update emits nothing, and a metric-export failure MUST NOT alter the durable delivery outcome.
 - Memory knowledge gaps: `butlers.memory.knowledge_gap_closure_failures_total` (Counter), with only a bounded `butler` attribute (the registered butler name from the logging context, or the fixed sentinel `unknown` when there is none) and a closed-set `stage` attribute (`closure` or `reservation`; an unsupported stage raises `ValueError`). It SHALL be emitted once for each knowledge-gap closure or pair-reservation failure the memory module swallows so the fact write can commit; a successful closure, or a schema without the gap table, emits nothing, and entity, predicate and fact identifiers and exception text are never attributes. The failure is logged first and the emission is best-effort: a metric-emission failure MUST NOT fail the fact write.
 
 #### Scenario: Failover suppression recorded
@@ -170,10 +170,15 @@ Beyond the core spawner, route, and buffer instruments above, the metrics module
 
 #### Scenario: Domain-event delivery becomes permanently failed
 - **WHEN** a durable domain-event delivery transitions to `failed_permanent` because its route is non-retryable or its attempts are exhausted
-- **THEN** `butlers.domain_event.delivery_failed_permanent_total` is incremented once with only its source butler, destination butler, and bounded reason
+- **THEN** `butlers.domain_event.delivery_failed_permanent_total` is incremented once with only its emitting butler, source butler, destination butler, and bounded reason
 - **AND** a repeated terminal delivery update does not increment the counter
 - **AND** an unsuccessful durable-state update does not increment the counter
 - **AND** a metric-export failure does not roll back or hide the durable terminal outcome
+
+#### Scenario: Domain-event delivery series exist before the first failure
+- **WHEN** a butler daemon starts
+- **THEN** it creates `butlers.domain_event.delivery_failed_permanent_total` at zero for each declared route it can emit: its own published routes, or every declared route for Switchboard
+- **AND** an `increase()` alert observes the first-ever failure on that route
 
 ### Requirement: Metric Namespace Convention
 
