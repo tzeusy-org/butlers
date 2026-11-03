@@ -182,7 +182,10 @@ async def test_poll_consumes_every_page_before_committing(resource) -> None:
     assert "pageToken" not in first
     assert second == {**first, "pageToken": "t1"}
     first_key, second_key = _keys(connector._submit_envelope)
-    assert first_key.endswith(f":{_SAMPLE}") and second_key.endswith(f":{_LATER}")
+    # A workout key carries a trailing content digest after the session id.
+    assert f":{_SAMPLE}" in first_key and f":{_LATER}" in second_key
+    if resource != "workout":
+        assert first_key.endswith(f":{_SAMPLE}") and second_key.endswith(f":{_LATER}")
     connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
     assert state.backfill_done and state.last_poll_at is not None
 
