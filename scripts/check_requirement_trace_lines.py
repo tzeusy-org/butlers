@@ -25,6 +25,9 @@ What it checks, per block under ``## ADDED Requirements`` / ``## MODIFIED Requir
   pending-parent sibling modifying what another change adds), but two ADDED blocks may not;
 * an ADDED ID does not already exist in the canonical ``openspec/specs/<capability>/spec.md``,
   and a MODIFIED ID that the canonical spec gives to a different requirement name fails.
+  An existing canonical current name is authoritative, including an already-synced rename.
+  Otherwise, same-delta RENAMED FROM/TO chains resolve to their canonical ancestor before
+  either ownership check; renaming cannot mint a replacement canonical ID.
   Two further MODIFIED rules reverse-map the requirement name to its ID, so a block cannot
   re-mint an identity that already exists: a MODIFIED block whose requirement already has a
   canonical ID must carry that ID, and a MODIFIED block whose requirement another active change
@@ -74,6 +77,8 @@ SECTION_HEADER = re.compile(r"^##\s+(.+?)\s*$")
 # Parity with OpenSpec's own reader (dist/core/parsers/requirement-blocks.js, code-fence.js),
 # which is what `openspec archive` applies: a block this guard cannot see could still be archived.
 REQUIREMENT_HEADER = re.compile(r"^###\s*Requirement:\s*(.+?)\s*$", re.IGNORECASE)
+RENAME_FROM = re.compile(r"^\s*-?\s*FROM:\s*`?###\s*Requirement:\s*(.+?)`?\s*$")
+RENAME_TO = re.compile(r"^\s*-?\s*TO:\s*`?###\s*Requirement:\s*(.+?)`?\s*$")
 FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})")
 FENCE_CLOSE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
 
@@ -210,6 +215,33 @@ def check_block(block: Block) -> None:
         block.problems.append("missing Scope (v1-mandatory|v1-reserved|post-v1)")
 
 
+def rename_map(text: str) -> dict[str, str]:
+    """New-to-old requirement names from this delta's unfenced RENAMED section."""
+    lines = text.splitlines()
+    mask = _fence_mask(lines)
+    renames: dict[str, str] = {}
+    in_renamed = False
+    pending: str | None = None
+    for index, line in enumerate(lines):
+        if mask[index]:
+            continue
+        header = SECTION_HEADER.match(line)
+        if header:
+            in_renamed = "RENAMED" in header.group(1).upper()
+            pending = None
+            continue
+        if not in_renamed:
+            continue
+        before = RENAME_FROM.match(line)
+        after = RENAME_TO.match(line)
+        if before:
+            pending = before.group(1).strip()
+        elif after and pending:
+            renames[after.group(1).strip()] = pending
+            pending = None
+    return renames
+
+
 def canonical_ids(root: Path, capability: str) -> dict[str, set[str]]:
     """``{ID: {requirement names}}`` for the canonical spec of one capability."""
     path = root / "openspec" / "specs" / capability / "spec.md"
@@ -230,6 +262,7 @@ def collect(root: Path) -> tuple[list[Block], int]:
     changes_dir = root / "openspec" / "changes"
     blocks: list[Block] = []
     files = 0
+    renames: dict[Path, dict[str, str]] = {}
     if not changes_dir.is_dir():
         return blocks, files
     for change_dir in sorted(p for p in changes_dir.iterdir() if p.is_dir()):
@@ -238,7 +271,9 @@ def collect(root: Path) -> tuple[list[Block], int]:
         for spec_path in sorted(change_dir.glob("specs/*/spec.md")):
             files += 1
             capability = spec_path.parent.name
-            for kind, name, line, body in parse_blocks(spec_path.read_text("utf-8")):
+            text = spec_path.read_text("utf-8")
+            renames[spec_path] = rename_map(text)
+            for kind, name, line, body in parse_blocks(text):
                 block = Block(change_dir.name, capability, name, kind, spec_path, line, body)
                 check_block(block)
                 blocks.append(block)
@@ -250,6 +285,18 @@ def collect(root: Path) -> tuple[list[Block], int]:
             continue
         existing = canonical.setdefault(block.capability, canonical_ids(root, block.capability))
         owners = existing.get(block.req_id)
+        canonical_name = block.name
+        if block.kind == "MODIFIED":
+            visited: set[str] = set()
+            while canonical_name in renames[block.path]:
+                # OpenSpec honors an already-synced current name before walking ancestors.
+                if any(canonical_name in names for names in existing.values()):
+                    break
+                if canonical_name in visited:
+                    block.problems.append("cyclic RENAMED requirement lineage")
+                    break
+                visited.add(canonical_name)
+                canonical_name = renames[block.path][canonical_name]
         if block.kind == "ADDED":
             if owners:
                 block.problems.append(
@@ -259,14 +306,14 @@ def collect(root: Path) -> tuple[list[Block], int]:
         elif owners is None:
             # A MODIFIED block with an ID the canonical spec lacks mints it, like an ADDED one.
             minted.setdefault((block.capability, block.req_id), []).append(block)
-            held = sorted(i for i, names in existing.items() if block.name in names)
+            held = sorted(i for i, names in existing.items() if canonical_name in names)
             if held:
                 block.problems.append(
                     f"requirement {block.name!r} already has canonical ID {held[0]} in "
                     f"openspec/specs/{block.capability}; a MODIFIED block must carry it, "
                     f"not {block.req_id}"
                 )
-        elif block.name not in owners:
+        elif canonical_name not in owners:
             block.problems.append(
                 f"ID {block.req_id} belongs to requirement "
                 f"{sorted(owners)[0]!r} in openspec/specs/{block.capability}"

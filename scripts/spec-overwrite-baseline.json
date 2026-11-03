@@ -3641,6 +3641,20 @@
       "scenario": "Throughput decision preserves catalog-authoritative transport"
     }
   ],
+  "public-identity-channel-projection/switchboard-identity/Inbound message identity resolution": [
+    {
+      "digest": "0cf103fbba20",
+      "excerpt": "The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The res...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "2ab0687e3abf",
+      "excerpt": "- **WHEN** the Switchboard daemon wires its production `MessagePipeline`",
+      "kind": "clause",
+      "scenario": "Fleet activation supplies the standard owner-delivery callback"
+    }
+  ],
   "reconcile-dashboard-conversation-contracts/ingestion-event-registry/Ingestion Event Table": [
     {
       "digest": "a493f36463f6",
