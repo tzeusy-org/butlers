@@ -2,7 +2,7 @@
 
 The ``healing_attempts`` row persists only ``branch_name``/``pr_url``/``pr_number``
 — it carries no CI status or diff stats. Rather than add a schema column and a
-background sync (higher-risk), this module fetches CI status + diff-stat
+background sync (higher-risk), this module fetches PR lifecycle, CI status + diff-stat
 (additions/deletions) live from the GitHub REST API on demand, behind a short
 in-process TTL cache keyed by ``(owner, repo, pr_number)``.
 
@@ -22,6 +22,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 import httpx
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Compact CI status surfaced to the dossier PR panel. Mirrors the
 # ``QaPrSummary.ci_status`` literal: passing / failing / pending / unknown.
 CiStatus = Literal["passing", "failing", "pending", "unknown"]
+PrState = Literal["drafted", "open", "merged", "closed"]
 
 # Cache entries live this long. Short enough to reflect a freshly-green PR
 # soon after CI completes, long enough that repeated dossier loads of the same
@@ -57,9 +59,31 @@ class PrMetadata:
     ci_status: CiStatus | None
     additions: int | None
     deletions: int | None
+    state: PrState | None = None
+    merged_at: datetime | None = None
 
 
 _UNAVAILABLE = PrMetadata(ci_status=None, additions=None, deletions=None)
+
+
+def _pr_lifecycle(pr: dict) -> tuple[PrState | None, datetime | None]:
+    """Project explicit GitHub lifecycle evidence without guessing from missing fields."""
+    if pr.get("merged") is True:
+        raw = pr.get("merged_at")
+        if pr.get("state") != "closed" or not isinstance(raw, str):
+            return None, None
+        try:
+            merged_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None, None
+        return ("merged", merged_at) if merged_at.tzinfo is not None else (None, None)
+    if pr.get("merged") is not False or pr.get("merged_at") is not None:
+        return None, None
+    if pr.get("state") == "closed":
+        return "closed", None
+    if pr.get("state") == "open" and type(pr.get("draft")) is bool:
+        return ("drafted" if pr["draft"] else "open"), None
+    return None, None
 
 
 def parse_pr_url(url: str | None) -> tuple[str, str, int] | None:
@@ -204,32 +228,36 @@ class GithubPrClient:
                     )
                     return _UNAVAILABLE
                 pr = pr_resp.json()
+                if not isinstance(pr, dict):
+                    return _UNAVAILABLE
                 additions = pr.get("additions")
                 deletions = pr.get("deletions")
-                head_sha = (pr.get("head") or {}).get("sha")
+                head = pr.get("head")
+                head_sha = head.get("sha") if isinstance(head, dict) else None
+                state, merged_at = _pr_lifecycle(pr)
 
                 ci_status: CiStatus | None = None
-                if head_sha:
-                    checks_resp = await client.get(
-                        f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs"
-                    )
-                    if checks_resp.status_code == 200:
-                        body = checks_resp.json()
-                        runs = body.get("check_runs") or []
-                        ci_status = _map_check_runs_to_ci_status(runs)
-                    else:
-                        logger.debug(
-                            "GitHub check-runs fetch %s/%s@%s returned %s",
-                            owner,
-                            repo,
-                            head_sha,
-                            checks_resp.status_code,
+                if isinstance(head_sha, str) and head_sha:
+                    # Checks are a separate optional observation: losing them must
+                    # not discard a successful PR lifecycle/diff-stat observation.
+                    try:
+                        checks_resp = await client.get(
+                            f"/repos/{owner}/{repo}/commits/{head_sha}/check-runs"
                         )
+                        if checks_resp.status_code == 200:
+                            body = checks_resp.json()
+                            runs = body.get("check_runs") if isinstance(body, dict) else None
+                            if isinstance(runs, list) and all(isinstance(r, dict) for r in runs):
+                                ci_status = _map_check_runs_to_ci_status(runs)
+                    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+                        logger.debug("GitHub check-runs unavailable; retaining PR metadata")
 
                 return PrMetadata(
                     ci_status=ci_status,
                     additions=additions if isinstance(additions, int) else None,
                     deletions=deletions if isinstance(deletions, int) else None,
+                    state=state,
+                    merged_at=merged_at,
                 )
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             # ValueError covers malformed JSON; never let GitHub break the dossier.
