@@ -143,10 +143,6 @@ class FakeRuntime(RuntimeAdapter):
         return path.read_text() if path.exists() else ""
 
 
-# Boot registration lives in the Switchboard chain, which owns its own schema.
-_REGISTRY_CHAIN = {"switchboard": "switchboard"}
-
-
 def _link_roster(roster: Path, config_dir: Path) -> None:
     roster.mkdir()
     (roster / config_dir.name).symlink_to(config_dir.resolve(), target_is_directory=True)
@@ -331,7 +327,9 @@ class DaemonBooter:
                 'with a runtime role (for example schema = "general")'
             )
         chains = chains or ("core",)
-        schemas = {**dict.fromkeys(chains, schema), **(_REGISTRY_CHAIN if registered else {})}
+        schemas = dict.fromkeys(chains, schema)
+        if registered:
+            schemas["switchboard"] = "switchboard"
         url = await asyncio.to_thread(migrated_url, self._container, *schemas, schemas=schemas)
         db_name = urlparse(url).path.lstrip("/")
         if registered:

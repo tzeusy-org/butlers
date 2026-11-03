@@ -138,6 +138,12 @@ Switchboard preflight, remain unchanged. The shared site is still
 This exact relocation/coalescing proves neither safe configurability nor a
 global host-policy reduction. `HOST_POLICY_LIMIT` remains zero.
 
+`bu-rvgzmf.2` S7b adds one supplementary `SCHEMA_OWNERSHIP` lookup in the test kit,
+`src/butlers/testing/daemon.py` (`DaemonBooter.boot`, `schemas['switchboard']`). With
+`registered=True` the kit migrates the Switchboard chain into the schema it owns, so boot
+registration can commit an epoch. It writes a chain-to-schema mapping; no behaviour branches on
+the butler name. It is neither a host-policy candidate nor a conversion.
+
 ## Enforcement and static limits
 
 Run `make check-host-policy-selectors` or `python3 scripts/check_host_policy_selectors.py`.
