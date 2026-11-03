@@ -205,7 +205,7 @@ OP GET /api/health/measurements/trend c8a707ec81ee
 OP GET /api/health/measurements/types 4fb84a3a5b80
 OP GET /api/health/medications 2b9fad9f1d74
 OP GET /api/health/medications/{medication_id}/adherence c9285791c3af
-OP GET /api/health/medications/{medication_id}/doses 56b14006004b
+OP GET /api/health/medications/{medication_id}/doses a2510c7949cf
 OP GET /api/health/nutrition/summary e8a2931b4914
 OP GET /api/health/research 10c8d0cf0aa3
 OP GET /api/health/symptoms 144289f6883f
