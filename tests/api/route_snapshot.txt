@@ -113,7 +113,7 @@ OP GET /api/chronicler/aggregate/by-category a08f9256d19f
 OP GET /api/chronicler/aggregate/by-day 943df6cf0a35
 OP GET /api/chronicler/aggregate/day-close 646f4656096a
 OP GET /api/chronicler/attention 9f542f160fbf
-OP GET /api/chronicler/balance ac755fc78eed
+OP GET /api/chronicler/balance 12cdd2ca33d4
 OP GET /api/chronicler/briefing 4863eab12c12
 OP GET /api/chronicler/correction-prompts 7314d783c110
 OP GET /api/chronicler/episodes bbd5e00b6bfe
@@ -129,7 +129,7 @@ OP GET /api/chronicler/projection-health aa27f1b9d533
 OP GET /api/chronicler/rollups a2a9b852b1e5
 OP GET /api/chronicler/routines d8b35d168e32
 OP GET /api/chronicler/source-state d2a0273030a8
-OP GET /api/chronicler/trends c9cefde62cb1
+OP GET /api/chronicler/trends ff0d0ba1450c
 OP GET /api/chronicler/who-you-were-with f14729ff2dd8
 OP GET /api/cli-auth/providers e17dfd583699
 OP GET /api/cli-auth/sessions/{session_id} dfd89bfb108b
@@ -496,7 +496,7 @@ OP POST /api/connectors/whatsapp/pair/start b67b234f192b
 OP POST /api/data/export ef7048daaa86
 OP POST /api/domain-events/deliveries/{delivery_id}/replay b5bac8bd9638
 OP POST /api/education/curriculum-requests 74c92c7ab429
-OP POST /api/finance/transactions/bulk 4675ebc67a2d
+OP POST /api/finance/transactions/bulk 2ff008c7eb69
 OP POST /api/general/projects df7acf3ceebc
 OP POST /api/general/projects/{project_id}/close 381059e537c3
 OP POST /api/general/projects/{project_id}/links 9667bae5c5d3
@@ -1566,7 +1566,7 @@ SCHEMA BackgroundJobTransition a3181af638c5
 SCHEMA BackupEvent 7d03e55b0d1e
 SCHEMA BackupFacts 95c4be6c1aa7
 SCHEMA BackupRunFacts 519b3012061a
-SCHEMA BalanceLaneRow e86b08b97aa6
+SCHEMA BalanceLaneRow cf8bbd4c79fd
 SCHEMA BalanceResponse 93bae3143327
 SCHEMA BaselineBand 9196c0917152
 SCHEMA BaselineResponse 8e13dda9df6b
@@ -2334,9 +2334,9 @@ SCHEMA TokenUsageResponse b7877b8dc092
 SCHEMA TopSession 965b1b197030
 SCHEMA TransactionModel cc9d6db5f5cb
 SCHEMA TravellerModel 58947c2c0fa3
-SCHEMA TrendAnomaly 97851bc53cf3
+SCHEMA TrendAnomaly 5f72f266b799
 SCHEMA TrendBucket 7f41a5896158
-SCHEMA TrendLaneDay 701501c4fc9c
+SCHEMA TrendLaneDay 81fe3a7df3a0
 SCHEMA TrendLaneSeries 533f55163e1d
 SCHEMA TrendResponse e935a5fac3eb
 SCHEMA TrendsResponse 8812eb184c03
