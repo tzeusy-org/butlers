@@ -69,7 +69,27 @@ _CWD_CONFINEMENT_SETTINGS: dict[str, Any] = {
 # A headless prompt starting with ``/`` runs as a slash command, including a custom command
 # from ``<cwd>/.gemini/commands``. The CLI trims whitespace before that check, but not a
 # zero-width space, so one in front keeps the prompt text going to the model as text.
-_SLASH_COMMAND_GUARD = "​"
+_SLASH_COMMAND_GUARD = "\u200b"
+
+# gemini-cli 0.66.0 also runs headless prompts through ``handleAtCommand``: every ``@path`` or
+# ``@server:uri`` token inlines a workspace file (falling back to the first ``**/*path*`` glob
+# match) or an MCP resource into the prompt, and a failed read aborts the run. Prompts carry
+# routed external text, so no ``@`` may reach that parser. It skips an ``@`` preceded by a
+# backslash and has no setting to switch it off; this mirrors the CLI's own ``escapeAtSymbols``.
+_AT_COMMAND = re.compile(r"(?<!\\)@")
+
+
+def _escape_at_commands(prompt: str) -> str:
+    """Keep every ``@`` in prompt text from being expanded as a gemini-cli at-command."""
+    return _AT_COMMAND.sub(r"\\@", prompt)
+
+
+# The CLI hands an unresolved ``\@`` to the model verbatim. Without this system-prompt line
+# the model copies the backslash into email recipients, handles, and other tool arguments.
+_AT_ESCAPE_NOTE = (
+    "`\\@` in the input is an escaped `@`; write a plain `@` in quotes and tool arguments."
+)
+
 
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
@@ -509,7 +529,10 @@ class GeminiAdapter(RuntimeAdapter):
             cmd.extend(["-m", model])
         if prompt.lstrip().startswith("/"):
             prompt = _SLASH_COMMAND_GUARD + prompt
-        cmd.extend(["--prompt", prompt])
+        sent_prompt = _escape_at_commands(prompt)
+        if sent_prompt != prompt:
+            system_prompt = "\n\n".join(filter(None, [system_prompt, _AT_ESCAPE_NOTE]))
+        cmd.extend(["--prompt", sent_prompt])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
         proc = None
