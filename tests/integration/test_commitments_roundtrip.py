@@ -30,7 +30,6 @@ from butlers.core.commitments import (
     resolve_commitment,
 )
 from butlers.core.owner_conditions import Observation, reconcile_snapshot
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -40,16 +39,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
-    yield p
-    await p.close()
+async def one_conn_pool(db) -> asyncpg.Pool:
+    """One connection, so a callee that ignores ``transaction_connection`` blocks."""
+    return await db("core", max_size=1)
 
 
 @pytest.fixture
@@ -74,9 +67,9 @@ def _evidence(session: str) -> dict[str, str]:
 def _metadata(row: asyncpg.Record) -> dict:
     """Decode a row's JSONB metadata regardless of whether a codec is registered.
 
-    The ``pool`` fixture registers none, so asyncpg hands back JSONB as text;
-    the guard mirrors tests/integration/test_owner_conditions_roundtrip.py so
-    this file does not silently depend on that.
+    The ``db`` factory registers one; the guard mirrors
+    tests/integration/test_owner_conditions_roundtrip.py so this file does not
+    silently depend on that.
     """
     raw = row["metadata"]
     return json.loads(raw) if isinstance(raw, str) else raw
@@ -93,7 +86,7 @@ async def _rows_for(pool: asyncpg.Pool, source: str) -> list[asyncpg.Record]:
 class TestCommitmentCreation:
     @pytest.mark.parametrize("mode", ["pool", "caller-transaction"])
     async def test_req_commitment_lifecycle_001_persists_the_metadata_convention(
-        self, pool: asyncpg.Pool, source: str, entity_id: str, mode: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str, mode: str
     ) -> None:
         creation = dict(
             source=source,
@@ -107,11 +100,11 @@ class TestCommitmentCreation:
             deadline="2026-09-01T00:00:00+00:00",
         )
         if mode == "pool":
-            transition = await create_commitment(pool, **creation)
+            transition = await create_commitment(one_conn_pool, **creation)
         else:
-            async with asyncio.timeout(15), pool.acquire() as conn:
+            async with asyncio.timeout(15), one_conn_pool.acquire() as conn:
                 with pytest.raises(ValueError, match="requires an active transaction"):
-                    await create_commitment(pool, **creation, transaction_connection=conn)
+                    await create_commitment(one_conn_pool, **creation, transaction_connection=conn)
                 assert (
                     await conn.fetchval(
                         "SELECT count(*) FROM public.owner_conditions WHERE source = $1", source
@@ -120,7 +113,7 @@ class TestCommitmentCreation:
                 )
                 async with conn.transaction():
                     transition = await create_commitment(
-                        pool, **creation, transaction_connection=conn
+                        one_conn_pool, **creation, transaction_connection=conn
                     )
                     assert conn.is_in_transaction(), "callee cannot commit the caller's transaction"
 
@@ -129,7 +122,7 @@ class TestCommitmentCreation:
         assert transition.episode == 1
         assert transition.escalation_level == "L0"
 
-        rows = await _rows_for(pool, source)
+        rows = await _rows_for(one_conn_pool, source)
         assert len(rows) == 1
         metadata = _metadata(rows[0])
         assert metadata["class"] == "commitment"
@@ -142,7 +135,7 @@ class TestCommitmentCreation:
         assert metadata["identity_payload"]["version"] == 1
 
     async def test_req_commitment_lifecycle_003_an_equivalent_restatement_confirms_in_place(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         """The two phrasings differ as strings; only normalization makes them one commitment."""
         spoken = "Send Sam the book, tomorrow!"
@@ -150,7 +143,7 @@ class TestCommitmentCreation:
         assert spoken != restated
 
         opened = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -160,10 +153,10 @@ class TestCommitmentCreation:
             evidence_opened=_evidence("session-1"),
             action_description=spoken,
         )
-        first_rows = await _rows_for(pool, source)
+        first_rows = await _rows_for(one_conn_pool, source)
 
         confirmed = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book (restated)",
             kind="promise",
@@ -179,13 +172,13 @@ class TestCommitmentCreation:
         assert confirmed.condition_id == opened.condition_id
         assert confirmed.episode == 1
 
-        rows = await _rows_for(pool, source)
+        rows = await _rows_for(one_conn_pool, source)
         assert len(rows) == 1, "an equivalent restatement must not fork the commitment"
         assert rows[0]["last_confirmed_at"] > first_rows[0]["last_confirmed_at"]
         assert rows[0]["first_detected_at"] == first_rows[0]["first_detected_at"]
 
     async def test_req_commitment_lifecycle_003_a_different_action_coexists(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         common = {
             "source": source,
@@ -196,10 +189,10 @@ class TestCommitmentCreation:
             "evidence_opened": _evidence("session-1"),
         }
         book = await create_commitment(
-            pool, summary="Send the book", action_description="send Sam the book", **common
+            one_conn_pool, summary="Send the book", action_description="send Sam the book", **common
         )
         call = await create_commitment(
-            pool,
+            one_conn_pool,
             summary="Call about the book",
             action_description="call Sam about the book",
             **common,
@@ -209,15 +202,15 @@ class TestCommitmentCreation:
         assert book.fingerprint != call.fingerprint
         assert call.transition == "opened"
 
-        rows = await _rows_for(pool, source)
+        rows = await _rows_for(one_conn_pool, source)
         assert len(rows) == 2
         assert {row["state"] for row in rows} == {"open"}
 
     async def test_req_commitment_lifecycle_004_low_confidence_writes_nothing(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         result = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Maybe call Sam",
             kind="follow_up",
@@ -229,15 +222,15 @@ class TestCommitmentCreation:
         )
 
         assert result is None
-        assert await _rows_for(pool, source) == []
+        assert await _rows_for(one_conn_pool, source) == []
 
     @pytest.mark.parametrize("confidence", [0.6, 0.7, 0.79, 0.8, 0.95])
     async def test_req_commitment_lifecycle_004_every_created_band_is_queryable(
-        self, pool: asyncpg.Pool, source: str, entity_id: str, confidence: float
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str, confidence: float
     ) -> None:
         """Medium and high confidence differ only in surfacing, which is not this module's job."""
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -248,19 +241,19 @@ class TestCommitmentCreation:
             action_description="send Sam the book",
         )
 
-        active = await list_active_commitments(pool, source=source)
+        active = await list_active_commitments(one_conn_pool, source=source)
         assert [row["metadata"]["confidence"] for row in active] == [confidence]
 
-        by_entity = await list_entity_commitments(pool, entity_id=entity_id)
+        by_entity = await list_entity_commitments(one_conn_pool, entity_id=entity_id)
         assert [row["metadata"]["confidence"] for row in by_entity] == [confidence]
 
 
 class TestCommitmentResolution:
     async def test_req_commitment_lifecycle_001_resolution_adds_evidence_without_displacing_it(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -277,7 +270,7 @@ class TestCommitmentResolution:
         )
 
         resolved = await resolve_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             fingerprint=fingerprint,
             resolution_reason="satisfied",
@@ -293,7 +286,7 @@ class TestCommitmentResolution:
         assert resolved.resolved_at is not None
         assert resolved.recovered_after_s >= 0
 
-        rows = await _rows_for(pool, source)
+        rows = await _rows_for(one_conn_pool, source)
         metadata = _metadata(rows[0])
         assert rows[0]["state"] == "resolved"
         assert metadata["evidence_opened"]["session_id"] == "session-open"
@@ -303,10 +296,10 @@ class TestCommitmentResolution:
         assert metadata["confidence"] == 0.9
 
     async def test_req_commitment_lifecycle_002_resolving_twice_is_a_no_op(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -325,7 +318,7 @@ class TestCommitmentResolution:
 
         assert (
             await resolve_commitment(
-                pool,
+                one_conn_pool,
                 source=source,
                 fingerprint=fingerprint,
                 resolution_reason="satisfied",
@@ -335,7 +328,7 @@ class TestCommitmentResolution:
         )
         assert (
             await resolve_commitment(
-                pool,
+                one_conn_pool,
                 source=source,
                 fingerprint=fingerprint,
                 resolution_reason="cancelled",
@@ -344,18 +337,18 @@ class TestCommitmentResolution:
             is None
         )
 
-        rows = await _rows_for(pool, source)
+        rows = await _rows_for(one_conn_pool, source)
         assert len(rows) == 1
         assert _metadata(rows[0])["resolution_reason"] == "satisfied"
 
 
 class TestCommitmentQuerySurface:
     async def test_req_commitment_lifecycle_002_active_list_excludes_non_commitments(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         """The same producer's ordinary owner conditions must not leak into the panel."""
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -366,7 +359,7 @@ class TestCommitmentQuerySurface:
             action_description="send Sam the book",
         )
         await reconcile_snapshot(
-            pool,
+            one_conn_pool,
             source=source,
             observations=[
                 Observation(
@@ -379,15 +372,15 @@ class TestCommitmentQuerySurface:
             initial_grace_seconds=3600,
         )
 
-        active = await list_active_commitments(pool, source=source)
+        active = await list_active_commitments(one_conn_pool, source=source)
         assert [row["summary"] for row in active] == ["Send Sam the book"]
-        assert len(await _rows_for(pool, source)) == 2
+        assert len(await _rows_for(one_conn_pool, source)) == 2
 
     async def test_req_commitment_lifecycle_002_active_list_excludes_resolved_commitments(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -398,7 +391,7 @@ class TestCommitmentQuerySurface:
             action_description="send Sam the book",
         )
         await resolve_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             fingerprint=commitment_fingerprint(
                 source=source,
@@ -409,10 +402,10 @@ class TestCommitmentQuerySurface:
             evidence_closed={"source": "owner_confirmed"},
         )
 
-        assert await list_active_commitments(pool, source=source) == []
+        assert await list_active_commitments(one_conn_pool, source=source) == []
 
     async def test_req_commitment_lifecycle_001_entity_list_spans_every_producer(
-        self, pool: asyncpg.Pool, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, entity_id: str
     ) -> None:
         """Outstanding-with-Sam is not any single butler's question."""
         relationship = f"relationship:commitment-{uuid.uuid4().hex[:12]}"
@@ -420,7 +413,7 @@ class TestCommitmentQuerySurface:
         other_entity = str(uuid.uuid4())
 
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=relationship,
             summary="Send Sam the book",
             kind="promise",
@@ -431,7 +424,7 @@ class TestCommitmentQuerySurface:
             action_description="send Sam the book",
         )
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=finance,
             summary="Repay Sam for the concert ticket",
             kind="obligation",
@@ -442,7 +435,7 @@ class TestCommitmentQuerySurface:
             action_description="repay Sam for the concert ticket",
         )
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=relationship,
             summary="Send Alex the recipe",
             kind="promise",
@@ -453,16 +446,16 @@ class TestCommitmentQuerySurface:
             action_description="send Alex the recipe",
         )
 
-        rows = await list_entity_commitments(pool, entity_id=entity_id)
+        rows = await list_entity_commitments(one_conn_pool, entity_id=entity_id)
         assert {row["source"] for row in rows} == {relationship, finance}
         assert all(row["metadata"]["counterparty_entity_id"] == entity_id for row in rows)
         assert len(rows) == 2
 
     async def test_req_commitment_lifecycle_001_entity_list_can_include_resolved_history(
-        self, pool: asyncpg.Pool, source: str, entity_id: str
+        self, one_conn_pool: asyncpg.Pool, source: str, entity_id: str
     ) -> None:
         await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -473,7 +466,7 @@ class TestCommitmentQuerySurface:
             action_description="send Sam the book",
         )
         await resolve_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             fingerprint=commitment_fingerprint(
                 source=source,
@@ -484,6 +477,8 @@ class TestCommitmentQuerySurface:
             evidence_closed={"source": "owner_confirmed"},
         )
 
-        assert await list_entity_commitments(pool, entity_id=entity_id) == []
-        history = await list_entity_commitments(pool, entity_id=entity_id, include_resolved=True)
+        assert await list_entity_commitments(one_conn_pool, entity_id=entity_id) == []
+        history = await list_entity_commitments(
+            one_conn_pool, entity_id=entity_id, include_resolved=True
+        )
         assert [row["state"] for row in history] == ["resolved"]

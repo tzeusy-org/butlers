@@ -29,7 +29,6 @@ from sqlalchemy.exc import IntegrityError
 from alembic import command
 from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.correct_route import (
     _RETENTION_WINDOW,
     correct_route,
@@ -59,23 +58,16 @@ class _CorrectionPool(asyncpg.Pool):
     migration_config: Config
 
 
-@pytest.fixture(scope="module")
-def correction_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def pool(correction_db_url):
-    """Reuse migrated structure; isolate every node's committed rows.
+async def correction_pool(fresh_db):
+    """A private migrated clone whose pool carries its Alembic configuration.
 
-    The supported factory runs bootstrap separately from the ordinary
-    NOCREATEDB migration login. No Template8 cache or copied DDL is used.
+    The shared factory runs bootstrap separately from the ordinary NOCREATEDB
+    migration login; each node gets its own clone, so revision moves stay local.
     """
+    correction_db_url = await asyncio.to_thread(
+        fresh_db, "core", "switchboard", schemas={"switchboard": "switchboard"}
+    )
     p = await _CorrectionPool(
         correction_db_url,
         min_size=2,
@@ -92,19 +84,6 @@ async def pool(correction_db_url):
         correction_db_url, ["switchboard"], target_schema="switchboard"
     )
     try:
-        # Reset only rows in this module's disposable DB. DELETE avoids
-        # TRUNCATE's privilege requirements on unrelated FK descendants.
-        for table in (
-            "switchboard.routing_log",
-            "switchboard.operator_audit_log",
-            "switchboard.message_inbox",
-            "public.ingestion_events",
-            "switchboard.butler_registry_eligibility_log",
-            "switchboard.butler_boot_registrations",
-            "switchboard.butler_registry_control_plane",
-            "switchboard.butler_registry",
-        ):
-            await p.execute(f"DELETE FROM {table}")
         yield p
     finally:
         await p.close()
@@ -291,13 +270,13 @@ async def _seed_message_inbox(
 class TestCorrectRouteNotFound:
     """Tests for missing ingestion events."""
 
-    async def test_unknown_request_id_returns_error(self, pool: asyncpg.Pool) -> None:
+    async def test_unknown_request_id_returns_error(self, correction_pool: asyncpg.Pool) -> None:
         """Returns ingestion_event_not_found when request_id doesn't exist."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -307,13 +286,13 @@ class TestCorrectRouteNotFound:
         assert result["error"] == "ingestion_event_not_found"
         assert str(request_id) in result["message"]
 
-    async def test_error_message_is_actionable(self, pool: asyncpg.Pool) -> None:
+    async def test_error_message_is_actionable(self, correction_pool: asyncpg.Pool) -> None:
         """Error message tells the LLM how to recover."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -327,16 +306,16 @@ class TestCorrectRouteNotFound:
 class TestCorrectRouteExpired:
     """Tests for ingestion events past the 1-month retention window."""
 
-    async def test_expired_event_returns_error(self, pool: asyncpg.Pool) -> None:
+    async def test_expired_event_returns_error(self, correction_pool: asyncpg.Pool) -> None:
         """Returns ingestion_event_expired when event is older than 1 month."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         old_ts = datetime.now(UTC) - _RETENTION_WINDOW - timedelta(days=1)
 
-        await _seed_ingestion_event(pool, request_id=request_id, received_at=old_ts)
+        await _seed_ingestion_event(correction_pool, request_id=request_id, received_at=old_ts)
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -345,16 +324,16 @@ class TestCorrectRouteExpired:
         assert result["success"] is False
         assert result["error"] == "ingestion_event_expired"
 
-    async def test_expired_message_includes_age(self, pool: asyncpg.Pool) -> None:
+    async def test_expired_message_includes_age(self, correction_pool: asyncpg.Pool) -> None:
         """Expired error message includes the event age and alternative."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         old_ts = datetime.now(UTC) - _RETENTION_WINDOW - timedelta(days=5)
 
-        await _seed_ingestion_event(pool, request_id=request_id, received_at=old_ts)
+        await _seed_ingestion_event(correction_pool, request_id=request_id, received_at=old_ts)
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -363,18 +342,18 @@ class TestCorrectRouteExpired:
         # Must mention data_correction alternative
         assert "data_correction" in result["message"]
 
-    async def test_recent_event_not_expired(self, pool: asyncpg.Pool) -> None:
+    async def test_recent_event_not_expired(self, correction_pool: asyncpg.Pool) -> None:
         """A recent event does NOT return expired error (continues to next stage)."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         # 1 day ago — well within retention window
         recent_ts = datetime.now(UTC) - timedelta(days=1)
 
-        await _seed_ingestion_event(pool, request_id=request_id, received_at=recent_ts)
+        await _seed_ingestion_event(correction_pool, request_id=request_id, received_at=recent_ts)
 
         # No message_inbox row — should fail with a different error, not expired
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -382,17 +361,19 @@ class TestCorrectRouteExpired:
 
         assert result["error"] != "ingestion_event_expired"
 
-    async def test_event_exactly_at_retention_boundary_is_expired(self, pool: asyncpg.Pool) -> None:
+    async def test_event_exactly_at_retention_boundary_is_expired(
+        self, correction_pool: asyncpg.Pool
+    ) -> None:
         """Event at exactly the retention boundary is considered expired."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         # Exactly at boundary
         boundary_ts = datetime.now(UTC) - _RETENTION_WINDOW - timedelta(seconds=1)
 
-        await _seed_ingestion_event(pool, request_id=request_id, received_at=boundary_ts)
+        await _seed_ingestion_event(correction_pool, request_id=request_id, received_at=boundary_ts)
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -405,16 +386,16 @@ class TestCorrectRouteExpired:
 class TestCorrectRouteMessageInboxMissing:
     """Tests for missing message_inbox rows (pruned after partition expiry)."""
 
-    async def test_missing_inbox_row_returns_error(self, pool: asyncpg.Pool) -> None:
+    async def test_missing_inbox_row_returns_error(self, correction_pool: asyncpg.Pool) -> None:
         """Returns message_inbox_not_found when inbox row is missing."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
         # Seed ingestion event but NO message_inbox row
-        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -423,15 +404,15 @@ class TestCorrectRouteMessageInboxMissing:
         assert result["success"] is False
         assert result["error"] == "message_inbox_not_found"
 
-    async def test_missing_inbox_message_is_actionable(self, pool: asyncpg.Pool) -> None:
+    async def test_missing_inbox_message_is_actionable(self, correction_pool: asyncpg.Pool) -> None:
         """Error message suggests data_correction as alternative."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -475,22 +456,22 @@ class TestCorrectRouteUnregistered:
 
     @pytest.mark.pg_clock
     async def test_unregistered_butler_returns_butler_not_registered(
-        self, pool: asyncpg.Pool
+        self, correction_pool: asyncpg.Pool
     ) -> None:
         """Returns butler_not_registered when target is not in the registry."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
         # Register some valid butlers (and a staffer, which must be excluded).
-        await _register_butler(pool, "personal_assistant")
-        await _register_butler(pool, "finance")
-        await _register_butler(pool, "messenger", agent_type="staffer")
+        await _register_butler(correction_pool, "personal_assistant")
+        await _register_butler(correction_pool, "finance")
+        await _register_butler(correction_pool, "messenger", agent_type="staffer")
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="nonexistent_butler",
             correction_id=correction_id,
@@ -507,16 +488,16 @@ class TestCorrectRouteUnregistered:
         assert "personal_assistant" in result["message"]
         assert "finance" in result["message"]
 
-    async def test_unregistered_butler_empty_registry(self, pool: asyncpg.Pool) -> None:
+    async def test_unregistered_butler_empty_registry(self, correction_pool: asyncpg.Pool) -> None:
         """Returns an empty available_butlers list when none are registered."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="ghost_butler",
             correction_id=correction_id,
@@ -531,18 +512,18 @@ class TestCorrectRouteDispatchFailure:
     """Tests for routing failures (registered butler unreachable)."""
 
     async def test_registered_butler_unreachable_returns_dispatch_failed(
-        self, pool: asyncpg.Pool
+        self, correction_pool: asyncpg.Pool
     ) -> None:
         """Returns dispatch_failed when a registered butler cannot be reached."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
-        await _register_butler(pool, "nonexistent_butler")
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
+        await _register_butler(correction_pool, "nonexistent_butler")
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="nonexistent_butler",
             correction_id=correction_id,
@@ -554,17 +535,19 @@ class TestCorrectRouteDispatchFailure:
         # Error message must say which butler failed
         assert "nonexistent_butler" in result["message"]
 
-    async def test_dispatch_failed_message_is_actionable(self, pool: asyncpg.Pool) -> None:
+    async def test_dispatch_failed_message_is_actionable(
+        self, correction_pool: asyncpg.Pool
+    ) -> None:
         """dispatch_failed error message tells LLM to check list_butlers()."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
-        await _register_butler(pool, "ghost_butler")
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
+        await _register_butler(correction_pool, "ghost_butler")
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="ghost_butler",
             correction_id=correction_id,
@@ -573,20 +556,20 @@ class TestCorrectRouteDispatchFailure:
 
         assert "list_butlers" in result["message"]
 
-    async def test_dispatch_failed_writes_audit_log(self, pool: asyncpg.Pool) -> None:
+    async def test_dispatch_failed_writes_audit_log(self, correction_pool: asyncpg.Pool) -> None:
         """dispatch_failed records a failure entry in operator_audit_log."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
-        await _register_butler(pool, "missing_butler")
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
+        await _register_butler(correction_pool, "missing_butler")
 
-        await _audit_revision(pool, legacy=True)
-        legacy_rows = await _legacy_domains(pool)
-        await _invalid_domains(pool)
+        await _audit_revision(correction_pool, legacy=True)
+        legacy_rows = await _legacy_domains(correction_pool)
+        await _invalid_domains(correction_pool)
         try:
-            async with _audit_runtime(pool) as writer:
+            async with _audit_runtime(correction_pool) as writer:
                 old_result = await correct_route(
                     writer,
                     request_id=request_id,
@@ -596,23 +579,23 @@ class TestCorrectRouteDispatchFailure:
                 )
                 assert old_result["error"] == "dispatch_failed"
                 assert (
-                    await pool.fetchval(
+                    await correction_pool.fetchval(
                         "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1",
                         request_id,
                     )
                     == 0
                 )
         finally:
-            await _audit_revision(pool, legacy=False)
+            await _audit_revision(correction_pool, legacy=False)
         assert [
             dict(row)
-            for row in await pool.fetch(
+            for row in await correction_pool.fetch(
                 "SELECT * FROM operator_audit_log WHERE operator_identity = 'legacy-domain' ORDER BY id"
             )
         ] == legacy_rows
-        await _invalid_domains(pool)
+        await _invalid_domains(correction_pool)
 
-        async with _audit_runtime(pool) as writer:
+        async with _audit_runtime(correction_pool) as writer:
             result = await correct_route(
                 writer,
                 request_id=request_id,
@@ -621,7 +604,7 @@ class TestCorrectRouteDispatchFailure:
                 call_fn=_failing_call_fn(),
             )
 
-            async with pool.acquire() as reader:
+            async with correction_pool.acquire() as reader:
                 assert await writer.fetchval("SELECT pg_backend_pid()") != await reader.fetchval(
                     "SELECT pg_backend_pid()"
                 )
@@ -636,7 +619,7 @@ class TestCorrectRouteDispatchFailure:
         assert result["success"] is False
         assert result["error"] == "dispatch_failed"
 
-        audit_row = await pool.fetchrow(
+        audit_row = await correction_pool.fetchrow(
             """
             SELECT action_type, target_request_id, outcome, outcome_details
             FROM operator_audit_log
@@ -656,20 +639,20 @@ class TestCorrectRouteDispatchFailure:
 
         # An actual downgrade refuses new-domain rows without deleting history.
         with pytest.raises(IntegrityError) as refused:
-            await _audit_revision(pool, legacy=True)
+            await _audit_revision(correction_pool, legacy=True)
         assert getattr(refused.value.orig, "pgcode", None) == "23514"
         assert (
-            await pool.fetchval(
+            await correction_pool.fetchval(
                 "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1", request_id
             )
             == 1
         )
-        await pool.execute(
+        await correction_pool.execute(
             "DELETE FROM operator_audit_log WHERE target_request_id = $1", request_id
         )
-        await _audit_revision(pool, legacy=True)
+        await _audit_revision(correction_pool, legacy=True)
         try:
-            async with _audit_runtime(pool) as writer:
+            async with _audit_runtime(correction_pool) as writer:
                 await correct_route(
                     writer,
                     request_id=request_id,
@@ -678,15 +661,15 @@ class TestCorrectRouteDispatchFailure:
                     call_fn=_failing_call_fn(),
                 )
             assert (
-                await pool.fetchval(
+                await correction_pool.fetchval(
                     "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1",
                     request_id,
                 )
                 == 0
             )
         finally:
-            await _audit_revision(pool, legacy=False)
-        async with _audit_runtime(pool) as writer:
+            await _audit_revision(correction_pool, legacy=False)
+        async with _audit_runtime(correction_pool) as writer:
             await correct_route(
                 writer,
                 request_id=request_id,
@@ -695,7 +678,7 @@ class TestCorrectRouteDispatchFailure:
                 call_fn=_failing_call_fn(),
             )
         assert (
-            await pool.fetchval(
+            await correction_pool.fetchval(
                 "SELECT outcome FROM operator_audit_log WHERE target_request_id = $1", request_id
             )
             == "failure"
@@ -713,16 +696,18 @@ class TestCorrectRouteSuccess:
         return call_fn
 
     @pytest.mark.pg_clock
-    async def test_success_registers_butler_and_dispatches(self, pool: asyncpg.Pool) -> None:
+    async def test_success_registers_butler_and_dispatches(
+        self, correction_pool: asyncpg.Pool
+    ) -> None:
         """Successful re-dispatch returns success=True with expected fields."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
         # Register the target butler (set last_seen_at to mark as active)
-        await pool.execute(
+        await correction_pool.execute(
             """
             INSERT INTO butler_registry (name, endpoint_url, last_seen_at)
             VALUES ('personal_assistant', 'http://localhost:8001/mcp/sse', now())
@@ -733,7 +718,7 @@ class TestCorrectRouteSuccess:
         call_fn = await self._make_mock_call_fn()
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -748,15 +733,15 @@ class TestCorrectRouteSuccess:
         assert result["lifecycle_state"] == "corrected"
 
     @pytest.mark.pg_clock
-    async def test_success_updates_lifecycle_state(self, pool: asyncpg.Pool) -> None:
+    async def test_success_updates_lifecycle_state(self, correction_pool: asyncpg.Pool) -> None:
         """Successful re-dispatch marks message_inbox as 'corrected'."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('correct_butler', 'http://localhost:8002/mcp/sse', now())"
             " ON CONFLICT DO NOTHING"
@@ -765,14 +750,14 @@ class TestCorrectRouteSuccess:
         call_fn = await self._make_mock_call_fn()
 
         await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="correct_butler",
             correction_id=correction_id,
             call_fn=call_fn,
         )
 
-        row = await pool.fetchrow(
+        row = await correction_pool.fetchrow(
             "SELECT lifecycle_state, processing_metadata FROM message_inbox WHERE id = $1",
             request_id,
         )
@@ -780,15 +765,17 @@ class TestCorrectRouteSuccess:
         assert row["lifecycle_state"] == "corrected"
 
     @pytest.mark.pg_clock
-    async def test_success_embeds_correction_metadata_in_inbox(self, pool: asyncpg.Pool) -> None:
+    async def test_success_embeds_correction_metadata_in_inbox(
+        self, correction_pool: asyncpg.Pool
+    ) -> None:
         """Successful re-dispatch stores correction_id in processing_metadata."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('correct_butler', 'http://localhost:8002/mcp/sse', now())"
             " ON CONFLICT DO NOTHING"
@@ -797,7 +784,7 @@ class TestCorrectRouteSuccess:
         call_fn = await self._make_mock_call_fn()
 
         await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="correct_butler",
             correction_id=correction_id,
@@ -805,7 +792,7 @@ class TestCorrectRouteSuccess:
             call_fn=call_fn,
         )
 
-        row = await pool.fetchrow(
+        row = await correction_pool.fetchrow(
             "SELECT processing_metadata FROM message_inbox WHERE id = $1",
             request_id,
         )
@@ -819,15 +806,15 @@ class TestCorrectRouteSuccess:
         assert correction_section["description"] == "Test correction"
 
     @pytest.mark.pg_clock
-    async def test_success_writes_operator_audit_log(self, pool: asyncpg.Pool) -> None:
+    async def test_success_writes_operator_audit_log(self, correction_pool: asyncpg.Pool) -> None:
         """Successful re-dispatch records an entry in operator_audit_log."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('correct_butler', 'http://localhost:8002/mcp/sse', now())"
             " ON CONFLICT DO NOTHING"
@@ -835,11 +822,11 @@ class TestCorrectRouteSuccess:
 
         call_fn = await self._make_mock_call_fn()
 
-        await _audit_revision(pool, legacy=True)
-        legacy_rows = await _legacy_domains(pool)
-        await _invalid_domains(pool)
+        await _audit_revision(correction_pool, legacy=True)
+        legacy_rows = await _legacy_domains(correction_pool)
+        await _invalid_domains(correction_pool)
         try:
-            async with _audit_runtime(pool) as writer:
+            async with _audit_runtime(correction_pool) as writer:
                 with pytest.raises(asyncpg.CheckViolationError):
                     await correct_route(
                         writer,
@@ -849,16 +836,16 @@ class TestCorrectRouteSuccess:
                         call_fn=call_fn,
                     )
         finally:
-            await _audit_revision(pool, legacy=False)
+            await _audit_revision(correction_pool, legacy=False)
         assert [
             dict(row)
-            for row in await pool.fetch(
+            for row in await correction_pool.fetch(
                 "SELECT * FROM operator_audit_log WHERE operator_identity = 'legacy-domain' ORDER BY id"
             )
         ] == legacy_rows
-        await _invalid_domains(pool)
+        await _invalid_domains(correction_pool)
 
-        async with _audit_runtime(pool) as writer:
+        async with _audit_runtime(correction_pool) as writer:
             await correct_route(
                 writer,
                 request_id=request_id,
@@ -867,7 +854,7 @@ class TestCorrectRouteSuccess:
                 call_fn=call_fn,
             )
 
-            async with pool.acquire() as reader:
+            async with correction_pool.acquire() as reader:
                 assert await writer.fetchval("SELECT pg_backend_pid()") != await reader.fetchval(
                     "SELECT pg_backend_pid()"
                 )
@@ -885,7 +872,7 @@ class TestCorrectRouteSuccess:
                     == 1
                 )
 
-        audit_row = await pool.fetchrow(
+        audit_row = await correction_pool.fetchrow(
             """
             SELECT action_type, target_request_id, operator_identity, outcome
             FROM operator_audit_log
@@ -900,20 +887,20 @@ class TestCorrectRouteSuccess:
         assert str(correction_id) in audit_row["operator_identity"]
 
         with pytest.raises(IntegrityError) as refused:
-            await _audit_revision(pool, legacy=True)
+            await _audit_revision(correction_pool, legacy=True)
         assert getattr(refused.value.orig, "pgcode", None) == "23514"
         assert (
-            await pool.fetchval(
+            await correction_pool.fetchval(
                 "SELECT count(*) FROM operator_audit_log WHERE target_request_id = $1", request_id
             )
             == 1
         )
-        await pool.execute(
+        await correction_pool.execute(
             "DELETE FROM operator_audit_log WHERE target_request_id = $1", request_id
         )
-        await _audit_revision(pool, legacy=True)
+        await _audit_revision(correction_pool, legacy=True)
         try:
-            async with _audit_runtime(pool) as writer:
+            async with _audit_runtime(correction_pool) as writer:
                 with pytest.raises(asyncpg.CheckViolationError):
                     await correct_route(
                         writer,
@@ -923,8 +910,8 @@ class TestCorrectRouteSuccess:
                         call_fn=call_fn,
                     )
         finally:
-            await _audit_revision(pool, legacy=False)
-        async with _audit_runtime(pool) as writer:
+            await _audit_revision(correction_pool, legacy=False)
+        async with _audit_runtime(correction_pool) as writer:
             await correct_route(
                 writer,
                 request_id=request_id,
@@ -933,22 +920,24 @@ class TestCorrectRouteSuccess:
                 call_fn=call_fn,
             )
         assert (
-            await pool.fetchval(
+            await correction_pool.fetchval(
                 "SELECT outcome FROM operator_audit_log WHERE target_request_id = $1", request_id
             )
             == "success"
         )
 
     @pytest.mark.pg_clock
-    async def test_success_calls_route_with_original_context(self, pool: asyncpg.Pool) -> None:
+    async def test_success_calls_route_with_original_context(
+        self, correction_pool: asyncpg.Pool
+    ) -> None:
         """The call_fn receives routing args containing the original context."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('correct_butler', 'http://localhost:8002/mcp/sse', now())"
             " ON CONFLICT DO NOTHING"
@@ -961,7 +950,7 @@ class TestCorrectRouteSuccess:
             return {"ok": True}
 
         await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="correct_butler",
             correction_id=correction_id,
@@ -981,16 +970,16 @@ class TestCorrectRouteSuccess:
         assert context["correction_type"] == "misroute"
 
     @pytest.mark.pg_clock
-    async def test_success_with_correcting_session_id(self, pool: asyncpg.Pool) -> None:
+    async def test_success_with_correcting_session_id(self, correction_pool: asyncpg.Pool) -> None:
         """correcting_session_id is included in routing args and correction metadata."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         correcting_session_id = uuid.uuid4()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('correct_butler', 'http://localhost:8002/mcp/sse', now())"
             " ON CONFLICT DO NOTHING"
@@ -1003,7 +992,7 @@ class TestCorrectRouteSuccess:
             return {"ok": True}
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="correct_butler",
             correction_id=correction_id,
@@ -1019,7 +1008,7 @@ class TestCorrectRouteSuccess:
         assert context["correcting_session_id"] == str(correcting_session_id)
 
         # Check metadata
-        row = await pool.fetchrow(
+        row = await correction_pool.fetchrow(
             "SELECT processing_metadata FROM message_inbox WHERE id = $1",
             request_id,
         )
@@ -1028,16 +1017,16 @@ class TestCorrectRouteSuccess:
         assert metadata["correction"]["correcting_session_id"] == str(correcting_session_id)
 
     @pytest.mark.pg_clock
-    async def test_string_uuids_are_accepted(self, pool: asyncpg.Pool) -> None:
+    async def test_string_uuids_are_accepted(self, correction_pool: asyncpg.Pool) -> None:
         """correct_route accepts string UUIDs for all UUID parameters."""
         request_id = str(uuid.uuid4())
         correction_id = str(uuid.uuid4())
         correcting_session_id = str(uuid.uuid4())
 
-        await _seed_ingestion_event(pool, request_id=uuid.UUID(request_id))
-        await _seed_message_inbox(pool, request_id=uuid.UUID(request_id))
+        await _seed_ingestion_event(correction_pool, request_id=uuid.UUID(request_id))
+        await _seed_message_inbox(correction_pool, request_id=uuid.UUID(request_id))
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('correct_butler', 'http://localhost:8002/mcp/sse', now())"
             " ON CONFLICT DO NOTHING"
@@ -1046,7 +1035,7 @@ class TestCorrectRouteSuccess:
         call_fn = AsyncMock(return_value={"ok": True})
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="correct_butler",
             correction_id=correction_id,
@@ -1068,17 +1057,17 @@ class TestCorrectRouteNewSessionId:
 
     @pytest.mark.pg_clock
     async def test_success_returns_new_session_id_from_re_dispatch(
-        self, pool: asyncpg.Pool
+        self, correction_pool: asyncpg.Pool
     ) -> None:
         """The real session id from the re-dispatch is surfaced as new_session_id."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         new_session_id = uuid.uuid4()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('personal_assistant', 'http://localhost:8001/mcp/sse', now())"
             " ON CONFLICT (name) DO NOTHING"
@@ -1097,7 +1086,7 @@ class TestCorrectRouteNewSessionId:
             }
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -1108,15 +1097,17 @@ class TestCorrectRouteNewSessionId:
         assert result["new_session_id"] == str(new_session_id)
 
     @pytest.mark.pg_clock
-    async def test_success_new_session_id_none_when_absent(self, pool: asyncpg.Pool) -> None:
+    async def test_success_new_session_id_none_when_absent(
+        self, correction_pool: asyncpg.Pool
+    ) -> None:
         """new_session_id is None when the re-dispatch return omits session_id."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
 
-        await _seed_ingestion_event(pool, request_id=request_id)
-        await _seed_message_inbox(pool, request_id=request_id)
+        await _seed_ingestion_event(correction_pool, request_id=request_id)
+        await _seed_message_inbox(correction_pool, request_id=request_id)
 
-        await pool.execute(
+        await correction_pool.execute(
             "INSERT INTO butler_registry (name, endpoint_url, last_seen_at)"
             " VALUES ('personal_assistant', 'http://localhost:8001/mcp/sse', now())"
             " ON CONFLICT (name) DO NOTHING"
@@ -1125,7 +1116,7 @@ class TestCorrectRouteNewSessionId:
         call_fn = AsyncMock(return_value={"output": "ok", "success": True})
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,
@@ -1143,18 +1134,18 @@ class TestCorrectRouteRetentionWindow:
         """_RETENTION_WINDOW is set to 31 days."""
         assert _RETENTION_WINDOW == timedelta(days=31)
 
-    async def test_event_just_within_window_proceeds(self, pool: asyncpg.Pool) -> None:
+    async def test_event_just_within_window_proceeds(self, correction_pool: asyncpg.Pool) -> None:
         """Event 30 days old is within the retention window."""
         request_id = _make_request_id()
         correction_id = _make_correction_id()
         # 30 days ago — within 31-day window
         recent_ts = datetime.now(UTC) - timedelta(days=30)
 
-        await _seed_ingestion_event(pool, request_id=request_id, received_at=recent_ts)
+        await _seed_ingestion_event(correction_pool, request_id=request_id, received_at=recent_ts)
         # No message_inbox — should fail with message_inbox_not_found, NOT expired
 
         result = await correct_route(
-            pool,
+            correction_pool,
             request_id=request_id,
             correct_butler="personal_assistant",
             correction_id=correction_id,

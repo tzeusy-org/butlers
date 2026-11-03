@@ -42,6 +42,8 @@ three root `conftest.py` fixtures:
   `await db("core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard")`.
 - `fresh_db`: a sync factory returning a URL, for migration-subject tests, for example
   `fresh_db("core", revisions={"core": "core_170"})`.
+- `db.open(url, schema=...)`: a pool on a `fresh_db` URL, for tests that need both the pool and
+  the URL (raw `asyncpg.connect` sessions, admin connections); it closes at teardown too.
 
 Each xdist worker migrates once per distinct chain request into a template database; every
 test then gets its own `CREATE DATABASE ... TEMPLATE` clone, so isolation stays per test while

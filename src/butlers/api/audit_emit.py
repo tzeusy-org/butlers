@@ -214,6 +214,7 @@ async def emit_dashboard_audit(
     error: str | None = None,
     request: Request | None = None,
     user_context: dict[str, Any] | None = None,
+    metric_action: str | None = None,
 ) -> None:
     """Record one dashboard API mutation into the canonical ``public.audit_log``.
 
@@ -252,6 +253,9 @@ async def emit_dashboard_audit(
         is used to derive ``user_context`` (client IP, user agent, etc.) via
         :func:`build_user_context`.  Ignored when ``user_context`` is provided
         explicitly.
+    metric_action:
+        Bounded value for the append counter's ``action`` attribute; supply it
+        when *operation* embeds request-derived text such as a raw path.
     user_context:
         Explicit ``user_context`` payload.  When ``None`` (default), the
         helper derives one from *request* if provided, otherwise records the
@@ -318,6 +322,7 @@ async def emit_dashboard_audit(
             metadata=metadata,
             result=result,
             error=error,
+            metric_action=metric_action,
         )
     except AuditTableNotAvailableError:
         logger.warning(

@@ -444,7 +444,7 @@ ID: REQ-butler-base-spec-006
 #### Scenario: Credential isolation in runtime sessions
 - **WHEN** the goal runner builds a goal invocation's environment
 - **THEN** it holds only `PATH`, its staged model credential, its MCP config and adapter-owned non-secret pointers to files staged inside its sandbox — no module, connector or database credential and no credential-store access
-- **AND** an engineering executor launched by the Spawner receives only the credentials its contract declares (for example `GH_TOKEN`)
+- **AND** an engineering executor launched by the Spawner receives only the credentials its contract declares, and a QA investigation executor declares no GitHub credential such as `GH_TOKEN`
 - **AND** no host environment variables leak, so no session can use a credential to act outside the broker
 
 ### Requirement: Instance Facts Internal Interface

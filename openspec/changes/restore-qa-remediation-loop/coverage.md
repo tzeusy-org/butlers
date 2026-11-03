@@ -1,6 +1,6 @@
 # Mandatory requirement coverage
 
-All in-scope requirements are v1-mandatory. Existing active requirements remain governed by their own owners. One scenario uses one gate species; the allocation packets name executing test seams. REQ-qa-investigation-dispatch-006 is explicitly split: A owns pre-execution phase/session linkage; C owns the lifetime budget scenario, sequentially. G verifies cross-child coverage without duplicating their tests.
+All in-scope requirements are v1-mandatory. Existing active requirements remain governed by their own owners. One scenario uses one gate species; the allocation packets name executing test seams. REQ-qa-investigation-dispatch-006 is explicitly split: A owns pre-execution phase/session linkage; C owns the lifetime budget scenario, sequentially. G verifies cross-child coverage without duplicating their tests. [goal-runtime-reconciliation.md](goal-runtime-reconciliation.md) records each requirement's RFC 0038 kind, its retained or amended disposition and the one real verification seam its owner extends.
 
 | Requirement | Exact requirement | Owner | Gate species |
 |---|---|---|---|
@@ -41,6 +41,7 @@ All in-scope requirements are v1-mandatory. Existing active requirements remain 
 | Development/security doctrine and RFC0015: trustworthy, controlled action | B, E, F | Provenance, restricted publisher, human merge, verified recovery |
 | Dispatch/single-pane: honest evidence doors | B, F | Existing QA route flows, keyboard access, unknown states |
 | Craft and care: observable proportional proof | A–G | Named real seams, exact hosted gates, one closing report |
+| RFC 0038 D18: engineering executors and staffer goals stay apart | A, C, E, G | Executor launches create no goal or grant; incident budget and staffer-goal budget never merge; triage judgment cannot launch work |
 
 Rule 1 (single-owner sovereignty) and Rule 7 (connector-owned transport) are preserved: no multi-tenancy or new transport handling is introduced.
 
