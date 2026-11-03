@@ -87,7 +87,7 @@ matching read and the D18 fast answer recording no gap are owned by REQ-dashboar
 | module-memory: A third-party fact is reported, not established | retained unchanged |
 | module-memory: Expiry and dismissal are terminal | retained unchanged |
 | module-memory: Delivery failure never drops a gap silently | retained; adds the landed attention event and `delivery_failed` listing flag |
-| relationship-facts: An assert closes a relationship-owned gap | retained unchanged in REQ-relationship-facts-009 |
+| relationship-facts: An assert closes a relationship-owned gap | retained unchanged in REQ-relationship-facts-010 |
 
 Added from merged code: "A closure failure never loses the fact" and "An inverse edge answers the
 object entity's gap" (bu-q7vx1q.74). Added as goal-runtime seams for `.70`: "Model-supplied origin

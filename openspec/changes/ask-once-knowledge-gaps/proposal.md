@@ -48,7 +48,7 @@ None.
 - `module-memory`: adds "Owner knowledge gaps" (`REQ-module-memory-018`) and "Knowledge-gap
   capture admits only a verified owner origin" (`REQ-module-memory-019`).
 - `relationship-facts`: adds "The central writer answers matching knowledge gaps"
-  (`REQ-relationship-facts-009`).
+  (`REQ-relationship-facts-010`).
 
 The amendment withdraws this change's `butler-switchboard` delta ("Answer-lane decline may record a
 knowledge gap"). Generalist removes the dashboard classification lanes at task 4.2, so an
@@ -69,7 +69,7 @@ palette verb, PR #5383), `bu-q7vx1q.75` (closure-failure counter). At the switch
 ## Re-scope and delivery boundary
 
 Every original outcome and scenario survives; the trace is in design.md. `REQ-module-memory-018`,
-`REQ-module-memory-019` and `REQ-relationship-facts-009` are minted here for the three blocks. Goal
+`REQ-module-memory-019` and `REQ-relationship-facts-010` are minted here for the three blocks. Goal
 admission, the broker refusal of a gap `record` after a matching read, effect identity and the D19
 answer goal stay with their own owners (generalist, `dashboard-one-mind-goal-surface`). No code,
 tests, baseline spec, RFC, archive or runtime activation belongs to this documentation amendment.

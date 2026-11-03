@@ -13,7 +13,7 @@ reached only through the Relationship domain's granted `record` capabilities, an
 authority still comes from the server-held goal origin, never from arguments or third-party text,
 so a third-party report can never close a gap as established fact.
 
-ID: REQ-relationship-facts-009
+ID: REQ-relationship-facts-010
 Source: bu-q7vx1q.9 S3 (merged PR #4354); bu-q7vx1q.74 inverse-edge closure (PR #4510); bu-q7vx1q.76; re-scope bu-q7vx1q.93.2 per generalist-lead-focused-delegation collision-dispositions.md; RFC 0038 D2, D4, D6, D15; REQ-relationship-facts-008; REQ-module-memory-018
 Scope: v1-mandatory
 
