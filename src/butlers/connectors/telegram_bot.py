@@ -128,6 +128,12 @@ _GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
     "confirm": "Logged as a work day ✅",
     "correct": "Removed — not a work day ✏️",
     "dismiss": "Dismissed 🚫",
+    # Block-interview lane answers (bu-r3fmja).
+    "work": "Logged as work 💼",
+    "social": "Logged as social 🧑‍🤝‍🧑",
+    "play": "Logged as play 🎮",
+    "eat": "Logged as eating 🍽️",
+    "rest": "Logged as rest 🛋️",
 }
 
 _APPROVAL_CALLBACK_DECISION_ACTOR = "owner@telegram"

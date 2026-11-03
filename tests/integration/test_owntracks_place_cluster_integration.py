@@ -122,7 +122,7 @@ async def test_stationary_run_projects_a_labeled_place_episode(places_pool: asyn
     assert row is not None
     assert row["payload"]["label"] == "home"
     assert row["payload"]["point_count"] == 6
-    assert row["layer"] == "activity"
+    assert row["layer"] == "evidence"  # bu-r3fmja: place answers "where"; situation blocks count
     assert row["confidence"] == "low"
     assert row["evidence_refs"], "expected evidence_refs to cite the location point events"
 

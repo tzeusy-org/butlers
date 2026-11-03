@@ -368,6 +368,40 @@ async def test_resolve_tool_roundtrip(full_pool) -> None:
     assert again["status"] == "already_answered"
 
 
+async def test_lane_answer_roundtrip_counts_one_owner_block(full_pool) -> None:
+    """A lane tap writes one counted owner block; a re-tap writes nothing (bu-r3fmja)."""
+    from butlers.chronicler.aggregations import lane_for_activity
+    from butlers.chronicler.storage import list_episodes
+    from butlers.core.state import state_set
+
+    start = datetime(2026, 7, 2, 7, 55, tzinfo=_TZ).astimezone(UTC)
+    end = datetime(2026, 7, 2, 10, 40, tzinfo=_TZ).astimezone(UTC)
+    await state_set(
+        full_pool,
+        f"gap_interview:pending:{_LOCAL_DATE}",
+        {
+            "interview_id": _LOCAL_DATE,
+            "local_date": _LOCAL_DATE,
+            "occupation_episode_id": None,
+            "routine_id": None,
+            "block_start_at": start.isoformat(),
+            "block_end_at": end.isoformat(),
+            "options": ["work", "social", "play", "eat", "rest", "dismiss"],
+            "answered": False,
+        },
+    )
+    resolve = (await _register(full_pool))["chronicler_resolve_gap_interview"]
+
+    applied = await resolve(interview_id=_LOCAL_DATE, answer="social")
+    again = await resolve(interview_id=_LOCAL_DATE, answer="social")
+
+    assert applied["status"] == "applied"
+    assert again["status"] == "already_answered"
+    (episode,) = await list_episodes(full_pool, source_name="chronicler.owner_answer")
+    assert (episode.start_at, episode.end_at) == (start, end)
+    assert lane_for_activity("activity", episode.source_name, episode.episode_type) == "social"
+
+
 async def test_concurrent_resolve_applies_once(full_pool) -> None:
     """Two concurrent taps for the same interview must apply exactly once.
 

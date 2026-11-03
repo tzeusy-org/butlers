@@ -50,11 +50,10 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("spotify.session_summary", "listening_episode"): "music",
     ("steam.play_history", "play_episode"): "gaming",
     ("owntracks.points", "movement_episode"): "travel",
-    # GPS place-cluster dwells (bu-ac2pg) fold into 'home' -> 'rest', same as
-    # HA person-domain presence, regardless of the cluster's derived label
-    # (home/work/place_unknown) — deliberately NEVER 'occupation'/'work' (see
-    # design doc §6.2 lane-discipline note); a future explicit corroborator
-    # wiring in occupation.py is a separate, coordinated change.
+    # GPS place-cluster stays (bu-ac2pg) are evidence-layer since bu-r3fmja:
+    # they say where the owner was and never count on their own. The category
+    # only labels the row; chronicler.situation_inferred derives the counted
+    # block (work place -> Work, home -> Rest, elsewhere -> Social).
     ("owntracks.place_cluster", "place_episode"): "home",
     # Away-from-home spans (bu-2tsgqb.6) are evidence-layer framing, never
     # counted time; they display in the Travel lane.
@@ -100,6 +99,19 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # ambient HA sensor evidence from re-opening the work/occupation
     # lane-conflation problem bu-whhll.14 is fixing (design §1.5).
     ("home_assistant.sensor_activity", "room_activity_episode"): "ambient",
+    # Situational blocks (bu-r3fmja, REQ-butler-chronicler-016): one place stay
+    # minus higher-precedence activity, laned by the anchor it lies in.
+    ("chronicler.situation_inferred", "work_presence_block"): "occupation",
+    ("chronicler.situation_inferred", "outing_block"): "social",
+    ("chronicler.situation_inferred", "airport_block"): "travel",
+    ("chronicler.situation_inferred", "home_block"): "home",
+    # Owner gap-interview answers (bu-r3fmja, REQ-butler-chronicler-017): the
+    # owner said what an unexplained block was; it counts in that lane.
+    ("chronicler.owner_answer", "owner_work_block"): "occupation",
+    ("chronicler.owner_answer", "owner_social_block"): "social",
+    ("chronicler.owner_answer", "owner_play_block"): "gaming",
+    ("chronicler.owner_answer", "owner_eat_block"): "meal",
+    ("chronicler.owner_answer", "owner_rest_block"): "home",
 }
 
 # trigger_source values that represent user→butler conversations.
