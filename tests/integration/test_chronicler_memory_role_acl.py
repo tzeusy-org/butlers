@@ -672,14 +672,20 @@ async def test_domain_pool_explicit_private_schema_disowns_exact_provenance_atom
                     memory_id,
                 ) == [graph_before[0]]
             else:
-                assert await control.fetch(
-                    "SELECT * FROM public.memory_catalog WHERE source_id=$1 ORDER BY source_schema",
-                    memory_id,
-                ) == catalog_before
-                assert await control.fetch(
-                    "SELECT * FROM public.entity_graph_edges WHERE source_id=$1 ORDER BY source_schema",
-                    memory_id,
-                ) == graph_before
+                assert (
+                    await control.fetch(
+                        "SELECT * FROM public.memory_catalog WHERE source_id=$1 ORDER BY source_schema",
+                        memory_id,
+                    )
+                    == catalog_before
+                )
+                assert (
+                    await control.fetch(
+                        "SELECT * FROM public.entity_graph_edges WHERE source_id=$1 ORDER BY source_schema",
+                        memory_id,
+                    )
+                    == graph_before
+                )
     finally:
         if fault:
             relation = "memory_catalog" if fault == "catalog" else "entity_graph_edges"
@@ -851,7 +857,8 @@ async def test_invoker_underlying_acl_failure_rolls_back_private_correction(
     memory_id, entity_id = uuid.uuid4(), uuid.uuid4()
     target = (
         "FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)"
-        if relation == "function" else f"TABLE public.{relation}"
+        if relation == "function"
+        else f"TABLE public.{relation}"
     )
     try:
         await control.execute(
@@ -888,10 +895,12 @@ async def test_invoker_underlying_acl_failure_rolls_back_private_correction(
         await control.execute(f"REVOKE {privilege} ON {target} FROM butler_chronicler_rw")
         async with _runtime_pool(private_grant_database, schema="chronicler") as pool:
             assert not await pool.fetchval(
-                "SELECT has_function_privilege($1,$2)" if relation == "function"
+                "SELECT has_function_privilege($1,$2)"
+                if relation == "function"
                 else "SELECT has_table_privilege($1,$2)",
                 "public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)"
-                if relation == "function" else "public." + relation,
+                if relation == "function"
+                else "public." + relation,
                 privilege,
             ), "negative ACL fixture must actually remove inherited effective privilege"
             with pytest.raises(asyncpg.InsufficientPrivilegeError):

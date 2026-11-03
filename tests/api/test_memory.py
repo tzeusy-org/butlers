@@ -1809,9 +1809,7 @@ async def test_unsafe_memory_schema_is_rejected_before_any_database_access():
     with pytest.raises(ValueError, match="Unsafe memory schema identifier"):
         await forget_memory(pool, "fact", memory_id, memory_schema="chronicler_mem.bad")
     with pytest.raises(ValueError, match="Unsafe memory schema identifier"):
-        await cascade_fact_retraction(
-            pool, [], source_schema="chronicler_mem.bad"
-        )
+        await cascade_fact_retraction(pool, [], source_schema="chronicler_mem.bad")
 
 
 async def test_retract_fact_404_when_not_found(app):

@@ -1,7 +1,7 @@
 """Native contracts for the shared invoker memory projection boundary.
 
 No mocked SQL or superuser effective role counts as primitive/ACL evidence.
-REQ-module-memory-001: mandatory retraction keeps projections in its transaction.
+Spec: openspec/specs/memory-discovery-catalog/spec.md, "Atomic catalog disownment on forget, expiry, and purge".
 """
 
 from __future__ import annotations
@@ -431,7 +431,6 @@ def test_late_created_allowlist_role_receives_actual_bootstrap_replay():
             engine.dispose()
 
 
-
 def test_unrelated_role_cannot_execute_even_with_public_schema_access(
     projection_database, postgres_container
 ):
@@ -446,8 +445,9 @@ def test_unrelated_role_cannot_execute_even_with_public_schema_access(
         with engine.begin() as conn:
             conn.execute(text(f'SET LOCAL ROLE "{role}"'))
             assert conn.scalar(text("SELECT current_user")) == role
-            assert not conn.scalar(text("SELECT has_function_privilege(:sig,'EXECUTE')"),
-                                   {"sig": _SIGNATURE})
+            assert not conn.scalar(
+                text("SELECT has_function_privilege(:sig,'EXECUTE')"), {"sig": _SIGNATURE}
+            )
             with pytest.raises(DBAPIError) as error, conn.begin_nested():
                 _invoke(conn, str(uuid.uuid4()))
             assert error.value.orig.pgcode == "42501"
