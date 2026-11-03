@@ -4,12 +4,13 @@
 
 The dashboard API SHALL expose `PATCH /api/butlers/{name}/runtime-config` accepting a partial update of runtime config fields. The `delegation` core group SHALL remain a known group so stored rows keep validating, but it SHALL register no tools, because the `delegate_*` tools it carried are deleted at cutover.
 
+ID: REQ-runtime-config-api-002
 Source: RFC 0007 §Dashboard API Surface; RFC 0038 D7
 Scope: v1-mandatory
 
 #### Scenario: Accepted fields
 - **WHEN** a PATCH request is processed
-- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, `max_queued`, and `tool_exposure_policy` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
 
 #### Scenario: Catalog read sensitivity updates hot
 
@@ -43,7 +44,7 @@ Scope: v1-mandatory
 #### Scenario: Invalid core_groups — unknown group name
 - **WHEN** a PATCH request sets `core_groups` to `["infra", "foo"]`
 - **THEN** the response SHALL return HTTP 422 with a validation error listing `"foo"` as an unknown group
-- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `graph`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`
+- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `graph`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`, `cost_claims`, `continuity`
 
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
@@ -57,3 +58,14 @@ Scope: v1-mandatory
 #### Scenario: Butler not found
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
+
+#### Scenario: Exposure policy update is persisted without restart
+
+- **WHEN** a PATCH supplies `tool_exposure_policy` as `eager_filtered` or `auto`
+- **THEN** the DB row SHALL be updated and that field SHALL NOT appear in `restart_required`
+- **AND** persistence SHALL NOT claim native discovery activation or an implemented per-attempt planner
+
+#### Scenario: Invalid exposure policy is rejected
+
+- **WHEN** a PATCH supplies another non-null exposure policy value
+- **THEN** the API SHALL return HTTP 422 without changing the stored policy

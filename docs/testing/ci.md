@@ -150,6 +150,9 @@ No local gate command matches CI's scope; check which command produced a number.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
   The CI lane groups pass `-rs`, so every skip reason (for example a real-PG node's
   "Docker not available") appears in the group log; the group's junit evidence records it too.
+- The integration lane guarantees Docker, so `scripts/ci_lanes.py` sets `BUTLERS_REQUIRE_DOCKER=1`
+  for it and the root `conftest.py` turns a "Docker not available" skip into a failure there.
+  Local runs leave the flag unset, so Docker-less hosts keep skipping real-PG tests.
 
 ## Removing or weakening tests
 
@@ -323,6 +326,9 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
     direct baseline edits and to `## REMOVED` blocks.
   - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
     `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
+    A modified heading keeps its existing canonical ID, including an already-synced rename;
+    otherwise same-delta `RENAMED` FROM/TO chains resolve its canonical ancestor. A newly minted
+    replacement ID fails, and an unanchored rename cycle fails rather than looping.
   - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a

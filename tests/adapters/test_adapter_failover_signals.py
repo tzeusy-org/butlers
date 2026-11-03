@@ -338,6 +338,34 @@ class TestRateLimitAuthModelUnavailableTimeoutMapping:
         assert "error_detail" in info
         assert detail_substr in info["error_detail"].lower()
 
+    @pytest.mark.parametrize(
+        "stderr,stdout,expected",
+        [
+            (b"quota exceeded for project\n", b"", "quota exceeded for project"),
+            (b"", b"partial output", "partial output"),
+        ],
+    )
+    async def test_gemini_error_detail_drops_known_cli_noise(
+        self, stderr: bytes, stdout: bytes, expected: str
+    ) -> None:
+        # Warning texts verbatim from the pinned @google/gemini-cli@0.66.0 bundle.
+        noise = (
+            b"Warning: 256-color support not detected. Using a terminal with at least "
+            b"256-color support is recommended for a better visual experience.\n"
+            b"Warning: True color (24-bit) support not detected. Using a terminal with "
+            b"true color enabled will result in a better visual experience.\n"
+            b"Ripgrep is not available. Falling back to GrepTool.\n"
+        )
+        proc = _make_proc(1, stdout=stdout, stderr=noise + stderr)
+        with patch(_GEMINI_EXEC, return_value=proc):
+            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+            with pytest.raises(RuntimeError, match=f"exited with code 1: {expected}$"):
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        info = adapter.last_process_info
+        assert info is not None
+        assert info["error_detail"] == expected
+        assert info["stderr"] == (noise + stderr).decode()
+
     @pytest.mark.parametrize("adapter_key", ["claude", "gemini", "opencode"])
     async def test_adapter_timeout_sets_is_pre_tool_call(self, adapter_key: str) -> None:
         """Each adapter's timeout path sets is_pre_tool_call=True."""

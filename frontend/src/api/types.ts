@@ -3689,6 +3689,59 @@ export interface ApprovalsPolicy {
   timezone: string;
 }
 
+/**
+ * An inactive standing-reply template draft (`/approvals/reply-templates`).
+ * `state` is `draft` or `revoked`, never active: drafts carry no authority.
+ */
+export interface StandingReplyTemplateDraft {
+  id: string;
+  butler: string;
+  tool_name: string;
+  /** Content argument name -> template source, e.g. `"Running {mins:duration} late"`. */
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+  state: "draft" | "revoked";
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string | null;
+}
+
+export interface StandingReplyTemplateDraftCreateRequest {
+  butler: string;
+  tool_name: string;
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+  idempotency_key: string;
+}
+
+export interface StandingReplyTemplateDraftEditRequest {
+  expected_revision: number;
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+}
+
+/** A hypothetical send call to test against a draft. Nothing is sent or approved. */
+export interface StandingReplyTemplatePreviewRequest {
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+}
+
+/** Preview-only match result; `authority` is always `none`. */
+export interface StandingReplyTemplatePreview {
+  draft_id: string;
+  revision: number;
+  matched: boolean;
+  eligible: boolean;
+  reasons: string[];
+  /** Content argument name -> slot name -> captured value. */
+  slots: Record<string, Record<string, string>>;
+  authority: "none";
+}
+
 export interface ApprovalApproveRequest {
   displayed_call?: DisplayedApprovalCall | null;
   edits?: Record<string, unknown> | null;
@@ -6396,7 +6449,8 @@ export interface QaInvestigationNotes {
 /** Pull request summary embedded in a QA case dossier. */
 export interface QaPrSummary {
   number: number;
-  state: "drafted" | "open" | "merged" | "closed";
+  /** Null means known PR identity with unavailable lifecycle, not absence. */
+  state: "drafted" | "open" | "merged" | "closed" | null;
   title: string;
   branch: string;
   ci_status: "passing" | "failing" | "pending" | "unknown" | null;
