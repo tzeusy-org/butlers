@@ -147,9 +147,29 @@ describe("QA dossier atoms", () => {
     expect(activeRow.className).toContain("focus-visible:outline-2");
     expect(activeRow.className).toContain("focus-visible:outline-offset-2");
     expect(activeRow.className).toContain("focus-visible:outline-focus");
+    expect(screen.getByLabelText("PR open")).toBeTruthy();
+    expect(screen.getByLabelText("No PR")).toBeTruthy();
 
     fireEvent.click(screen.getByTestId("qa-case-row-case-2"));
     expect(onSelect).toHaveBeenCalledWith("case-2");
+  });
+
+  it("distinguishes a known adopted PR with unknown lifecycle from no PR", () => {
+    render(
+      <MemoryRouter>
+        <CaseList
+          cases={[{ ...cases[0], state: "failed", pr_state: null }, cases[1]]}
+          selectedId="case-1"
+          onSelect={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+    const unknown = screen.getByLabelText("PR state unknown");
+    expect(unknown.className).not.toContain("var(--green)");
+    expect(screen.getByLabelText("No PR")).toBeTruthy();
+    expect(screen.queryByLabelText(/PR closed|PR merged/)).toBeNull();
+    expect(screen.getByTestId("qa-case-row-failed-badge-case-1")).toBeTruthy();
+    expect(screen.getByTestId("qa-case-session-door-case-1")).toBeTruthy();
   });
 
   it("renders an accessible session-trace door in the rail when sessions are linked", () => {

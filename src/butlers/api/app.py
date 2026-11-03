@@ -70,6 +70,10 @@ from butlers.db import (
     has_insecure_infra_defaults,
     is_grafana_anonymous_enabled,
 )
+from butlers.jobs.backup_facts_snapshot import (
+    DEFAULT_SNAPSHOT_INTERVAL_S,
+    run_backup_facts_snapshot_loop,
+)
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
@@ -193,6 +197,7 @@ async def lifespan(app: FastAPI):
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
     calendar_deadman_task: asyncio.Task | None = None
+    backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
     model_verify_task: asyncio.Task | None = None
@@ -484,6 +489,25 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
+        # Backup facts snapshot (bu-deqpzd): this process alone mounts the dump
+        # volume, so it publishes the content-free facts the QA patrol needs
+        # into public.state. Always on: an unset BUTLERS_BACKUP_DIR is itself
+        # published, so the patrol can tell "unconfigured" from "unseen".
+        try:
+            backup_facts_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "backup_facts_snapshot",
+                    lambda: run_backup_facts_snapshot_loop(
+                        get_db_manager(), interval_s=DEFAULT_SNAPSHOT_INTERVAL_S
+                    ),
+                    health=job_health.recorder(
+                        "backup_facts_snapshot", "periodic", DEFAULT_SNAPSHOT_INTERVAL_S
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start backup-facts-snapshot loop", exc_info=True)
+
         # External deadman: DB write/read and receiver-fleet truth gate the
         # outbound heartbeat. No configured target means no loop or HTTP.
         # See butlers.jobs.external_deadman for tick identity and failure rules.
@@ -567,6 +591,10 @@ async def lifespan(app: FastAPI):
         calendar_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_deadman_task
+    if backup_facts_task is not None:
+        backup_facts_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backup_facts_task
     if external_deadman_task is not None:
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

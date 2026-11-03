@@ -527,8 +527,6 @@ _SEVERITY_IMPORTANCE: dict[str, float] = {
     "info": 5.0,
 }
 
-_TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
-
 # Comfort thresholds are Celsius throughout: Home Assistant reports its sensors
 # in the unit configured for the installation (°C here), readings are normalised
 # to °C at discovery, and the owner-facing report renders °C.

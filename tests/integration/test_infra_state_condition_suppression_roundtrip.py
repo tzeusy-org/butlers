@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.core.backup_facts_snapshot import publish_backup_facts_snapshot
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
 from butlers.core.qa.sources.infra_state import (
@@ -55,9 +56,13 @@ pytestmark = [
 @pytest.fixture
 async def infra_pool(db) -> asyncpg.Pool:
     """InfraStateSource reads the real Switchboard and infra/healing tables."""
-    return await db(
+    pool = await db(
         "core", "switchboard", schemas={"switchboard": "switchboard"}, min_size=2, max_size=10
     )
+    # A fresh "no backups configured" snapshot: an absent one is itself a
+    # BackupFactsUnavailable finding (bu-deqpzd) that would leak into every test.
+    await publish_backup_facts_snapshot(pool, "", interval_s=600)
+    return pool
 
 
 async def _insert_connector(

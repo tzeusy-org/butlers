@@ -755,10 +755,11 @@ async def test_ot_span_ends_within_batch_unchanged_behavior() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ot_no_valid_rows_does_not_overwrite_carryover() -> None:
-    """When all rows are filtered as invalid (malformed), save_carryover is not called."""
+async def test_ot_no_valid_rows_keeps_carryover_and_advances_cursor() -> None:
+    """An all-invalid batch keeps episode carryover and only moves the ingest cursor."""
     # Row with NaN lat — will be filtered by _normalize_row.
     bad_row = _make_ot_row(lat=float("nan"), idempotency_key="bad", row_id=1)
+    prior = {_ENDPOINT: {"source_ref": "open-episode"}}
 
     adapter = OwnTracksPointAdapter()
     pool = _pool_returning(bad_row)
@@ -767,14 +768,21 @@ async def test_ot_no_valid_rows_does_not_overwrite_carryover() -> None:
     with (
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event"),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode"),
-        patch("butlers.chronicler.adapters.owntracks.get_carryover") as mock_get,
+        patch("butlers.chronicler.adapters.owntracks.get_carryover", return_value=dict(prior)),
         patch("butlers.chronicler.adapters.owntracks.save_carryover") as mock_save,
     ):
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
     assert result.rows_projected == 0
-    mock_get.assert_not_called()
-    mock_save.assert_not_called()
+    saved = mock_save.call_args.args[2]
+    assert saved == {
+        **prior,
+        "_ingest_cursor": {
+            "version": 1,
+            "recorded_at": bad_row["recorded_at"].isoformat(),
+            "id": str(bad_row["id"]),
+        },
+    }
 
 
 @pytest.mark.asyncio
