@@ -167,3 +167,36 @@ describe("trend chart grammar lint", { timeout: 60_000 }, () => {
     }
   });
 });
+
+const ZERO_FILL_RULE = "count-bucket/no-zero-fill";
+
+describe("count bucket zero-fill lint (bu-s11n0s.5.1)", { timeout: 60_000 }, () => {
+  it("flags zero-filled bucket arrays in every source file and honours a reasoned disable", async () => {
+    const zeroFills = (messages: ESLint.LintResult["messages"]) =>
+      messages.filter((message) => message.ruleId === ZERO_FILL_RULE);
+    for (const filePath of ["src/components/butlers/Strip.tsx", "src/lib/strip-derive.ts"]) {
+      for (const source of [
+        "export const A = Array(24).fill(0);",
+        "export const A = new Array<number>(24).fill(0);",
+        "const a = new Array(24); a.fill(0); export const A = a;",
+        "export const A = (n: number) => { const a: number[] = []; a.length = n; return a.fill(0, 0); };",
+        "export const A = Array.from({ length: 24 }, () => 0);",
+        "export const A = Array.from({ length: 24 }, () => { return 0; });",
+      ]) {
+        expect(zeroFills(await lint(source, filePath)), source).toEqual([
+          expect.objectContaining({ severity: 2, message: expect.stringContaining("buildBucketSeries") }),
+        ]);
+      }
+      for (const source of [
+        "export const A = Array<number | null>(24).fill(null);",
+        "export const A = Array.from({ length: 24 }, (_, i) => i);",
+        "export const A = Array(3).fill(1);",
+        "export const A = Array.from({ length: 3 }, () => []);",
+        "export const A = (s: string) => s.padStart(2, '0');",
+        "// eslint-disable-next-line count-bucket/no-zero-fill -- LCS table, not a chart\nexport const A = Array(4).fill(0);",
+      ]) expect(zeroFills(await lint(source, filePath)), source).toEqual([]);
+    }
+    const fixture = await lint("export const A = Array(24).fill(0);", "src/components/butlers/Strip.test.tsx");
+    expect(zeroFills(fixture)).toEqual([]);
+  });
+});

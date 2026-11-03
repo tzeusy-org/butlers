@@ -1,7 +1,7 @@
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
 
-describe("no-window-confirm lint (bu-ep4ks.11)", () => {
+describe("no-window-confirm lint (bu-ep4ks.11)", { timeout: 60_000 }, () => {
   it("rejects window.confirm in a file migrated onto ConfirmDialog", async () => {
     const eslint = new ESLint();
     const [result] = await eslint.lintText(

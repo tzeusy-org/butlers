@@ -69,12 +69,12 @@ def _make_app_missing_butler() -> object:
 
 
 async def test_daily_activity_7d_window() -> None:
-    """Default window_days=7 returns a bucket for each day with sessions."""
+    """Default window_days=7 returns one bucket per day, measured zeros included."""
     today = datetime.date(2026, 5, 11)
+    counts = [0, 0, 0, 0, 3, 5, 1]
     rows = [
-        _make_activity_row(d=today - datetime.timedelta(days=2), sessions_count=3),
-        _make_activity_row(d=today - datetime.timedelta(days=1), sessions_count=5),
-        _make_activity_row(d=today, sessions_count=1),
+        _make_activity_row(d=today - datetime.timedelta(days=6 - i), sessions_count=c)
+        for i, c in enumerate(counts)
     ]
     app = _make_app_with_rows("atlas", rows)
 
@@ -85,10 +85,12 @@ async def test_daily_activity_7d_window() -> None:
     data = resp.json()["data"]
     assert "buckets" in data
     buckets = data["buckets"]
-    assert len(buckets) == 3
-    assert buckets[0]["sessions_count"] == 3
-    assert buckets[1]["sessions_count"] == 5
-    assert buckets[2]["sessions_count"] == 1
+    # Dense window (bu-s11n0s.5.1): a quiet day is a measured 0 row, so a
+    # client can draw a day the API did not report as unreported, not zero.
+    assert [b["sessions_count"] for b in buckets] == counts
+    assert buckets[-1]["date"] == "2026-05-11"
+    # The SQL window itself is proven against real Postgres in
+    # tests/integration/test_daily_activity_db.py.
 
 
 async def test_daily_activity_30d_window() -> None:

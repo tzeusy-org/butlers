@@ -378,18 +378,11 @@ ORDER BY 1 DESC
 """
 
 # Owner-tz audit (bu-uqkfm, follow-up from bu-8ogli/PR #3072): this is the same
-# UTC-bucketed ``hour_start`` shape as sessions.py::_HOURLY_ACTIVITY_SQL, whose
-# per-butler §5 histogram needed owner-tz bucketing (frontend/src/lib/
-# hourly-buckets.ts::bucketHourInZone) because it slots each bucket onto a
-# fixed 0-23 hour-of-day axis. This board query does NOT need the same fix:
-# _fetch_board_hourly_stripe() below discards every ``hour_start`` and returns
-# only a relative-position ``stripe: list[int]`` (slot = "N hours ago", not a
-# clock hour). Its sole renderer, ActivityStripe.tsx, treats the stripe as a
-# rolling window, not an hour-of-day histogram; the peak-hour figure in its
-# aria-label is derived from the viewer's live clock via ``getUTCHours()``
-# (deliberately host-tz-invariant, guarded by ActivityStripe.test.tsx), never
-# from a backend ``hour_start`` value. No consumer here needs bucketHourInZone
-# / useTimezone conversion.
+# UTC-bucketed ``hour_start`` shape as sessions.py::_HOURLY_ACTIVITY_SQL. The
+# board returns each bucket keyed by its ``hour_start`` (bu-s11n0s.5.1) and the
+# client places it on the rolling 24h stripe by that instant, never by array
+# position; no consumer slots it onto an owner-tz hour-of-day axis, so no
+# bucketHourInZone / useTimezone conversion is needed.
 
 # A butler is "overdue" only once its silence exceeds its own cadence by this
 # factor -- avoids flagging a butler that simply hasn't hit its next
@@ -428,6 +421,13 @@ _BOARD_LEGACY_REGISTRY_SQL = """
 """
 
 
+class BoardHourlyBucket(BaseModel):
+    """One hour of a board row's session stripe, keyed by its UTC start."""
+
+    hour_start: datetime
+    sessions_count: int
+
+
 class BoardRow(BaseModel):
     """One butler's row on the consolidated fleet status board."""
 
@@ -458,10 +458,13 @@ class BoardRow(BaseModel):
     heartbeat_unavailable: bool
     schema_unreachable: bool
 
-    hourly_stripe: list[int]
-    hourly_total: int
-    # True when the hourly-activity query failed -- hourly_stripe/hourly_total
-    # above are a fabricated [0]*24/0 in that case, never a truthful empty.
+    # Last 24 UTC hours keyed by bucket start, oldest first (bu-s11n0s.5.1).
+    # Dense on success (a quiet hour is a measured 0); empty on failure.
+    hourly_buckets: list[BoardHourlyBucket]
+    # Sum of hourly_buckets; None when the hourly-activity query failed.
+    hourly_total: int | None
+    # True when the hourly-activity query failed -- hourly_buckets is empty and
+    # hourly_total None, never a fabricated row of zeros.
     stripe_source_error: bool
 
     # --- cron-expectation join ---
@@ -584,15 +587,17 @@ async def _fetch_enabled_crons(pool: object) -> list[str]:
     return [r["cron"] for r in rows if r["cron"]]
 
 
-async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int, bool]:
-    """Return a 24-slot oldest-first session-count stripe, its total, and an error flag.
+async def _fetch_board_hourly_stripe(
+    pool: object,
+) -> tuple[list[BoardHourlyBucket], int | None, bool]:
+    """Return the 24h session buckets (oldest first), their total, and an error flag.
 
     Mirrors GET /api/butlers/{name}/analytics/hourly-activity so the board's
     stripe and SESS·24H figure always match that endpoint's numbers.
 
-    A query failure returns ``([0] * 24, 0, True)`` -- the third element must
-    be surfaced as ``stripe_source_error`` so that all-zero stripe is never
-    read as a truthful "no activity" (degraded-mode doctrine, CLAUDE.md).
+    A query failure returns ``([], None, True)`` -- the third element is
+    surfaced as ``stripe_source_error`` and no hour is reported, so a failed
+    stripe is never read as a truthful "no activity" (bu-s11n0s.5.1).
     """
     try:
         rows = await asyncio.wait_for(
@@ -600,16 +605,15 @@ async def _fetch_board_hourly_stripe(pool: object) -> tuple[list[int], int, bool
             timeout=_STATUS_TIMEOUT_S,
         )
     except Exception:
-        return [0] * 24, 0, True
+        return [], None, True
 
-    # SQL orders newest-first (index 0 = current hour); convert to
-    # oldest-first (slot 0 = oldest) for the stripe.
-    stripe = [0] * 24
-    for idx, row in enumerate(rows):
-        slot = 23 - idx
-        if 0 <= slot < 24:
-            stripe[slot] = int(row["sessions_count"])
-    return stripe, sum(stripe), False
+    # SQL orders newest-first; each bucket carries its own hour_start, so the
+    # order only makes the payload read oldest-first.
+    buckets = [
+        BoardHourlyBucket(hour_start=row["hour_start"], sessions_count=int(row["sessions_count"]))
+        for row in reversed(rows)
+    ]
+    return buckets, sum(b.sessions_count for b in buckets), False
 
 
 async def _fetch_board_max_concurrent(pool: object) -> int | None:
@@ -751,8 +755,8 @@ async def _fetch_board_row(
 
     heartbeat_unavailable = registry_source_error or schema_unreachable
 
-    hourly_stripe, hourly_total, stripe_source_error = (
-        await _fetch_board_hourly_stripe(pool) if pool is not None else ([0] * 24, 0, True)
+    hourly_buckets, hourly_total, stripe_source_error = (
+        await _fetch_board_hourly_stripe(pool) if pool is not None else ([], None, True)
     )
     max_concurrent = await _fetch_board_max_concurrent(pool) if pool is not None else None
     cost_today = await _fetch_board_cost_today(pool, pricing) if pool is not None else None
@@ -818,7 +822,7 @@ async def _fetch_board_row(
         heartbeat_age_seconds=heartbeat_age,
         heartbeat_unavailable=heartbeat_unavailable,
         schema_unreachable=schema_unreachable,
-        hourly_stripe=hourly_stripe,
+        hourly_buckets=hourly_buckets,
         hourly_total=hourly_total,
         stripe_source_error=stripe_source_error,
         cadence_seconds=cadence_seconds,
@@ -839,7 +843,7 @@ def _compute_board_aggregates(
     offline = sum(1 for r in rows if r.activity == "offline")
     quarantined = sum(1 for r in rows if r.activity == "quarantined")
     overdue = sum(1 for r in rows if r.activity == "overdue")
-    total_sessions_24h = sum(r.hourly_total for r in rows)
+    total_sessions_24h = sum(r.hourly_total for r in rows if r.hourly_total is not None)
 
     known_costs = [r.cost_today for r in rows if r.cost_today is not None]
     cost_source_error = any(r.cost_today is None for r in rows)

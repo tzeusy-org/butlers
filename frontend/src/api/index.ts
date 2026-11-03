@@ -646,6 +646,7 @@ export type {
   ConnectorRoutingRulesResponse,
   ConnectorStats,
   ConnectorStatsBucket,
+  ListeningState,
   ConnectorStatsSummary,
   ConnectorSummariesResponse,
   ConnectorSummary,
