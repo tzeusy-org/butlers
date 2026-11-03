@@ -52,6 +52,7 @@ from butlers.api.routers.dashboard_briefing import (
     get_dashboard_briefing,
 )
 from butlers.core.model_routing import Complexity
+from butlers.testing.records import Record
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -61,15 +62,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_record(row: dict) -> MagicMock:
-    rec = MagicMock()
-    rec.__getitem__ = MagicMock(side_effect=lambda k: row[k])
-    rec.get = MagicMock(side_effect=lambda k, default=None: row.get(k, default))
-    for k, v in row.items():
-        setattr(rec, k, v)
-    return rec
 
 
 def _board_row(
@@ -140,7 +132,7 @@ def _make_owner_pool(
 
     async def _fetch(sql, *args):
         if "audit_source" in sql:
-            return [_make_record(r) for r in audits]
+            return [Record(r) for r in audits]
         return []
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
@@ -681,9 +673,7 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "error", "error_detail": None})
-        )
+        pool.fetchrow = AsyncMock(return_value=Record({"status": "error", "error_detail": None}))
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchval = AsyncMock(return_value=2)
         db.credential_shared_pool.return_value = pool
@@ -706,9 +696,7 @@ class TestFetchQaState:
     async def test_unknown_persisted_patrol_status_is_not_quiet(self, status: str):
         db = MagicMock()
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": status, "error_detail": None})
-        )
+        pool.fetchrow = AsyncMock(return_value=Record({"status": status, "error_detail": None}))
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
@@ -730,7 +718,7 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
         pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": status, "error_detail": "legacy detail"})
+            return_value=Record({"status": status, "error_detail": "legacy detail"})
         )
         pool.fetch = AsyncMock(return_value=[])
         pool.fetchval = AsyncMock(return_value=0)
@@ -748,10 +736,8 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "clean", "error_detail": None})
-        )
-        pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(5)])
+        pool.fetchrow = AsyncMock(return_value=Record({"status": "clean", "error_detail": None}))
+        pool.fetch = AsyncMock(return_value=[Record({"status": "failed"}) for _ in range(5)])
         pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
 
@@ -769,10 +755,8 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "clean", "error_detail": None})
-        )
-        pool.fetch = AsyncMock(return_value=[_make_record({"status": "failed"}) for _ in range(2)])
+        pool.fetchrow = AsyncMock(return_value=Record({"status": "clean", "error_detail": None}))
+        pool.fetch = AsyncMock(return_value=[Record({"status": "failed"}) for _ in range(2)])
         pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
 
@@ -788,9 +772,7 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "error", "error_detail": None})
-        )
+        pool.fetchrow = AsyncMock(return_value=Record({"status": "error", "error_detail": None}))
         pool.fetch = AsyncMock(side_effect=RuntimeError("connection dropped"))
         pool.fetchval = AsyncMock(return_value=0)
         db.credential_shared_pool.return_value = pool
@@ -810,9 +792,7 @@ class TestFetchQaState:
         db = MagicMock()
         pool = AsyncMock()
 
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "clean", "error_detail": None})
-        )
+        pool.fetchrow = AsyncMock(return_value=Record({"status": "clean", "error_detail": None}))
         pool.fetch = AsyncMock(
             side_effect=RuntimeError('relation "healing_attempts" does not exist')
         )
@@ -828,9 +808,7 @@ class TestFetchQaState:
         """A partial QA source outage must not turn an error patrol into a quiet state."""
         db = MagicMock()
         pool = AsyncMock()
-        pool.fetchrow = AsyncMock(
-            return_value=_make_record({"status": "error", "error_detail": None})
-        )
+        pool.fetchrow = AsyncMock(return_value=Record({"status": "error", "error_detail": None}))
         pool.fetchval = AsyncMock(side_effect=RuntimeError("healing attempts unavailable"))
         pool.fetch = AsyncMock(return_value=[])
         db.credential_shared_pool.return_value = pool
@@ -991,7 +969,7 @@ class TestFetchAuditIssues:
         pool = AsyncMock()
         pool.fetch = AsyncMock(
             return_value=[
-                _make_record(
+                Record(
                     {
                         "error_summary": "OAuth token expired",
                         "first_seen_at": datetime(2026, 5, 13, 15, 59, tzinfo=UTC),
@@ -1013,7 +991,7 @@ class TestFetchAuditIssues:
         assert attention_items[0]["severity"] == "high"
 
     async def test_excludes_a_group_last_seen_more_than_twelve_hours_ago(self):
-        fresh = _make_record(
+        fresh = Record(
             {
                 "error_summary": "Fresh runtime error",
                 "first_seen_at": datetime(2026, 5, 13, 12, 0, tzinfo=UTC),
@@ -1024,7 +1002,7 @@ class TestFetchAuditIssues:
                 "schedule_names": [],
             }
         )
-        historical = _make_record(
+        historical = Record(
             {
                 "error_summary": "Historical model error",
                 "first_seen_at": datetime(2026, 5, 12, 12, 0, tzinfo=UTC),
@@ -1035,7 +1013,7 @@ class TestFetchAuditIssues:
                 "schedule_names": [],
             }
         )
-        future = _make_record(
+        future = Record(
             {
                 "error_summary": "Future clock-skewed error",
                 "first_seen_at": datetime(2026, 5, 14, 16, 0, tzinfo=UTC),

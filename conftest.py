@@ -465,15 +465,11 @@ def _install_serialized_testcontainers_run() -> None:
 
     def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
         with _serialize_testcontainer_startup():
-            if os.environ.get("GITHUB_ACTIONS") == "true":
-                from scripts.ci_test_images import IMAGES, prepare
+            from scripts.ci_test_images import prepare_alias_on_hosted_runner
 
-                image = args[0] if args else kwargs.get("image")
-                required = [name for name, pin in IMAGES.items() if image == pin["alias"]]
-                if required:
-                    # Only an actual known container consumer acquires content.
-                    # Ryuk reaches this same boundary under its existing policy.
-                    prepare(required)
+            # Only an actual known container consumer acquires content.
+            # Ryuk reaches this same boundary under its existing policy.
+            prepare_alias_on_hosted_runner(args[0] if args else kwargs.get("image"))
             return original_run(self, *args, **kwargs)
 
     _serialized_run.__butlers_serialized_start__ = True
@@ -799,3 +795,25 @@ def fresh_db(postgres_container: PostgresContainer) -> Callable[..., str]:
         return migrated_url(postgres_container, *chains, **kwargs)
 
     return _make
+
+
+@pytest.fixture
+async def booted_daemon(
+    postgres_container: PostgresContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for real daemon boots with no LLM (``butlers.testing.daemon``).
+
+    ``booted = await booted_daemon(config_dir)`` starts the butler in ``config_dir`` on a
+    fresh ``core`` clone (pass more chains after it) under a fake runtime adapter;
+    ``await booted.call_tool("status")`` calls it over HTTP. Teardown shuts down every
+    daemon still running.
+    """
+    from butlers.testing.daemon import DaemonBooter
+
+    booter = DaemonBooter(postgres_container, monkeypatch, tmp_path_factory.mktemp("daemon"))
+    try:
+        yield booter.boot
+    finally:
+        await booter.close()

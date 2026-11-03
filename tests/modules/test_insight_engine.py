@@ -1784,14 +1784,15 @@ class TestBudgetEnforcement:
 class TestCleanup:
     """Periodic cleanup removes stale rows from insight tables."""
 
-    async def test_old_non_pending_candidates_deleted(self, insight_pool):
-        """Delivered/expired/filtered candidates older than 30 days are deleted."""
+    async def test_cleanup_never_deletes_candidates(self, insight_pool):
+        """bu-3jyrqz: the daily cleanup leaves every candidate in place.
+
+        Terminal candidates are pruned only by the opt-in retention pruner [C]
+        (docs/operations/data-retention.md), never by the broker cycle — so a
+        31-day-old delivered candidate survives, as does a pending one.
+        """
         from butlers.tools.switchboard.insight.broker import cleanup_old_rows
 
-        old_time = datetime.now(UTC) - timedelta(days=35)
-        recent_time = datetime.now(UTC) - timedelta(days=5)
-
-        # Old delivered candidate
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -1799,24 +1800,9 @@ class TestCleanup:
                  status, created_at)
             VALUES ('health', 70, 'health', 'health:old:user:2020', $1, 'Old', 'delivered', $2)
         """,
-            _past(35),
-            old_time,
+            _past(31),
+            datetime.now(UTC) - timedelta(days=31),
         )
-
-        # Recent delivered candidate
-        await insight_pool.execute(
-            """
-            INSERT INTO insight_candidates
-                (origin_butler, priority, category, dedup_key, expires_at, message,
-                 status, created_at)
-            VALUES ('health', 70, 'health', 'health:recent:user:2026', $1, 'Recent',
-                    'delivered', $2)
-        """,
-            _future(),
-            recent_time,
-        )
-
-        # Pending candidate (should NOT be deleted)
         await insight_pool.execute(
             """
             INSERT INTO insight_candidates
@@ -1828,12 +1814,11 @@ class TestCleanup:
 
         await cleanup_old_rows(insight_pool)
 
-        remaining = await insight_pool.fetch("SELECT dedup_key, status FROM insight_candidates")
-        dedup_keys = {r["dedup_key"] for r in remaining}
-
-        assert "health:old:user:2020" not in dedup_keys
-        assert "health:recent:user:2026" in dedup_keys
-        assert "health:pending:user:2026" in dedup_keys
+        remaining = await insight_pool.fetch("SELECT dedup_key FROM insight_candidates")
+        assert {r["dedup_key"] for r in remaining} == {
+            "health:old:user:2020",
+            "health:pending:user:2026",
+        }
 
     async def test_old_cooldowns_deleted(self, insight_pool):
         """Cooldown rows older than 30 days past their expiry are deleted."""

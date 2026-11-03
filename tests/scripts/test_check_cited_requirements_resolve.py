@@ -514,3 +514,62 @@ def test_roster_test_file_is_reported_once_not_twice(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stdout
     assert result.stdout.count("roster/general/tests/test_tools.py") == 1
     assert "1 citation(s) across 1 file(s)" in result.stdout
+
+
+def _write_requirement(path: Path, *, section: str, heading: str, req_id: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"## {section} Requirements\n\n"
+        f"### Requirement: {heading}\n"
+        f"The system SHALL behave as {heading} says.\n\n"
+        f"ID: {req_id}\n"
+        f"Scope: v1-mandatory\n",
+        encoding="utf-8",
+    )
+
+
+def test_one_id_under_two_requirement_headings_fails_and_names_both(tmp_path: Path) -> None:
+    _write_requirement(
+        tmp_path / "openspec" / "specs" / "widgets" / "spec.md",
+        section="",
+        heading="Widget Data Model",
+        req_id=IN_BASELINE,
+    )
+    _write_requirement(
+        tmp_path / "openspec" / "changes" / "add-gadgets" / "specs" / "widgets" / "spec.md",
+        section="ADDED",
+        heading="Gadget Resolution",
+        req_id=IN_BASELINE,
+    )
+    result = _run("--root", str(tmp_path), "--baseline", str(_empty_frozen(tmp_path)))
+
+    assert result.returncode == 1, result.stdout
+    assert IN_BASELINE in result.stdout
+    assert "Widget Data Model" in result.stdout and "Gadget Resolution" in result.stdout
+
+
+def test_modified_delta_reusing_the_baseline_id_and_heading_is_not_a_collision(
+    tmp_path: Path,
+) -> None:
+    _write_requirement(
+        tmp_path / "openspec" / "specs" / "widgets" / "spec.md",
+        section="",
+        heading="Widget Data Model",
+        req_id=IN_BASELINE,
+    )
+    _write_requirement(
+        tmp_path / "openspec" / "changes" / "tweak-widgets" / "specs" / "widgets" / "spec.md",
+        section="MODIFIED",
+        heading="Widget Data Model",
+        req_id=IN_BASELINE,
+    )
+    # An archived change may reuse any id: it is history, not a live definition.
+    _write_requirement(
+        tmp_path / "openspec" / "changes" / "archive" / "old" / "specs" / "widgets" / "spec.md",
+        section="ADDED",
+        heading="Something Else Entirely",
+        req_id=IN_BASELINE,
+    )
+    result = _run("--root", str(tmp_path), "--baseline", str(_empty_frozen(tmp_path)))
+
+    assert result.returncode == 0, result.stdout

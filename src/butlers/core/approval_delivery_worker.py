@@ -9,13 +9,95 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
+
+from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
 HandoffClass = Literal["confirmed", "safe_retry", "ambiguous"]
+
+# Versioned closed reason vocabulary (REQ-approval-delivery-intent-recovery-002).
+# Durable rows, API projections, metric labels and structured logs share it.
+SAFE_REASON_CODES: frozenset[str] = frozenset(
+    {
+        "quiet_hours",
+        "owner_recipient_unavailable",
+        "callback_secret_unavailable",
+        "transport_unavailable",
+        "provider_preflight_failed",
+        "provider_outcome_unknown",
+        "action_approved",
+        "action_rejected",
+        "action_expired",
+        "action_abandoned",
+        "defer_rescheduled",
+        "cohort_empty",
+    }
+)
+
+ObservationStage = Literal["scan", "claim", "handoff"]
+# Closed outcome vocabulary per stage. A ``handoff`` outcome is recorded only
+# after the repository write it names has committed; refusals and lease loss
+# are their own outcomes, never a success.
+OBSERVATION_OUTCOMES: dict[str, frozenset[str]] = {
+    "scan": frozenset({"idle", "failed"}),
+    "claim": frozenset({"send", "reconcile"}),
+    "handoff": frozenset(
+        {
+            "confirmed",
+            "safe_retry",
+            "ambiguous",
+            "subject_unavailable",
+            "start_refused",
+            "write_refused",
+            "lease_lost",
+        }
+    ),
+}
+
+approval_delivery_worker_outcomes = get_or_create_counter(
+    "approval_delivery_worker_outcomes_total",
+    "Approval delivery recovery scan/claim/handoff outcomes; closed labels only.",
+    labelnames=["schema", "stage", "outcome", "reason"],
+)
+
+DeliveryObserver = Callable[[str, str, str, str], None]
+
+
+def _safe_reason_label(reason_code: str | None) -> str:
+    if reason_code is None:
+        return "none"
+    return reason_code if reason_code in SAFE_REASON_CODES else "invalid"
+
+
+def record_delivery_outcome(schema: str, stage: str, outcome: str, reason: str) -> None:
+    """Default observer: closed-label counter plus a content-blind log line.
+
+    Labels never carry presentation/action identifiers, recipients, callback
+    material, provider references or exception text.
+    """
+    if outcome not in OBSERVATION_OUTCOMES.get(stage, frozenset()):
+        stage, outcome = "scan", "failed"
+    approval_delivery_worker_outcomes.labels(
+        schema=schema, stage=stage, outcome=outcome, reason=reason
+    ).inc()
+    if (stage, outcome) == ("scan", "idle"):
+        return
+    logger.info(
+        "approval delivery %s outcome %s (reason %s)",
+        stage,
+        outcome,
+        reason,
+        extra={
+            "approval_delivery_schema": schema,
+            "approval_delivery_stage": stage,
+            "approval_delivery_outcome": outcome,
+            "approval_delivery_reason": reason,
+        },
+    )
 
 
 class ClaimLeaseLost(RuntimeError):
@@ -110,6 +192,8 @@ class ApprovalDeliveryWorker:
         *,
         poll_interval_s: float = 5.0,
         heartbeat_interval_s: float = 10.0,
+        schema: str = "unknown",
+        observe: DeliveryObserver = record_delivery_outcome,
     ) -> None:
         if poll_interval_s <= 0:
             raise ValueError("poll_interval_s must be positive")
@@ -120,6 +204,27 @@ class ApprovalDeliveryWorker:
         self._runtime = runtime
         self._poll_interval_s = poll_interval_s
         self._heartbeat_interval_s = heartbeat_interval_s
+        self._schema = schema
+        self._observe_outcome = observe
+
+    def _observe(self, stage: str, outcome: str, reason_code: str | None = None) -> None:
+        """Record one closed outcome; observation can never alter the outcome."""
+        try:
+            self._observe_outcome(self._schema, stage, outcome, _safe_reason_label(reason_code))
+        except Exception:
+            pass
+
+    async def _complete(self, claim: DeliveryClaim, result: HandoffResult) -> None:
+        if await self._repository.complete_handoff(claim, result):
+            self._observe("handoff", result.classification, result.reason_code)
+        else:
+            self._observe("handoff", "write_refused")
+
+    async def _prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> None:
+        if await self._repository.record_prestart_retry(claim, reason_code):
+            self._observe("handoff", "safe_retry", reason_code)
+        else:
+            self._observe("handoff", "write_refused")
 
     async def _await_with_heartbeat(self, claim: DeliveryClaim, operation: Awaitable[Any]) -> Any:
         """Keep authority live during an external await and renew before CAS."""
@@ -151,23 +256,27 @@ class ApprovalDeliveryWorker:
         await self._repository.cancel_ineligible_presentations()
         claim = await self._repository.claim_next()
         if claim is None:
+            self._observe("scan", "idle")
             return False
+        self._observe("claim", "reconcile" if claim.reconcile_only else "send")
 
         if claim.reconcile_only:
             try:
                 result = await self._await_with_heartbeat(claim, self._runtime.reconcile(claim))
             except ClaimLeaseLost:
+                self._observe("handoff", "lease_lost")
                 return True
             except Exception:  # an unknown post-start result is never retry permission
                 result = HandoffResult(
                     classification="ambiguous",
                     reason_code="provider_outcome_unknown",
                 )
-            await self._repository.complete_handoff(claim, result)
+            await self._complete(claim, result)
             return True
 
         subject = await self._repository.load_render_subject(claim)
         if subject is None:
+            self._observe("handoff", "subject_unavailable")
             return True
 
         try:
@@ -175,7 +284,7 @@ class ApprovalDeliveryWorker:
         except Exception:
             owner_recipient = None
         if not isinstance(owner_recipient, str) or not owner_recipient.strip():
-            await self._repository.record_prestart_retry(claim, "owner_recipient_unavailable")
+            await self._prestart_retry(claim, "owner_recipient_unavailable")
             return True
         owner_recipient = owner_recipient.strip()
 
@@ -186,9 +295,7 @@ class ApprovalDeliveryWorker:
                 except Exception:
                     callback_secret = None
                 if not isinstance(callback_secret, str) or not callback_secret:
-                    await self._repository.record_prestart_retry(
-                        claim, "callback_secret_unavailable"
-                    )
+                    await self._prestart_retry(claim, "callback_secret_unavailable")
                     return True
                 envelope = self._renderer.render_single(
                     subject,
@@ -201,22 +308,24 @@ class ApprovalDeliveryWorker:
                     owner_recipient=owner_recipient,
                 )
         except Exception:
-            await self._repository.record_prestart_retry(claim, "provider_preflight_failed")
+            await self._prestart_retry(claim, "provider_preflight_failed")
             return True
 
         if not await self._repository.mark_handoff_started(claim):
+            self._observe("handoff", "start_refused")
             return True
 
         try:
             result = await self._await_with_heartbeat(claim, self._runtime.handoff(claim, envelope))
         except ClaimLeaseLost:
+            self._observe("handoff", "lease_lost")
             return True
         except Exception:
             result = HandoffResult(
                 classification="ambiguous",
                 reason_code="provider_outcome_unknown",
             )
-        await self._repository.complete_handoff(claim, result)
+        await self._complete(claim, result)
         return True
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -226,8 +335,14 @@ class ApprovalDeliveryWorker:
                 worked = await self.process_one()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("approval delivery recovery scan failed")
+            except Exception as exc:
+                # Exception text can carry provider or SQL detail; keep the
+                # structured record to the closed outcome and the error class.
+                self._observe("scan", "failed")
+                logger.warning(
+                    "approval delivery recovery scan failed (%s)",
+                    type(exc).__name__,
+                )
                 worked = False
             if worked:
                 continue
@@ -246,6 +361,9 @@ __all__ = [
     "DeliveryClaim",
     "HandoffClass",
     "HandoffResult",
+    "OBSERVATION_OUTCOMES",
+    "SAFE_REASON_CODES",
+    "record_delivery_outcome",
     "start_approval_delivery_worker",
     "stop_approval_delivery_worker",
 ]
@@ -278,7 +396,7 @@ async def start_approval_delivery_worker(daemon: Any) -> bool:
         return False
     repository, renderer = components()
     stop = asyncio.Event()
-    worker = ApprovalDeliveryWorker(repository, renderer, runtime)
+    worker = ApprovalDeliveryWorker(repository, renderer, runtime, schema=daemon.config.name)
     daemon._approval_delivery_stop = stop
     daemon._approval_delivery_task = asyncio.create_task(
         worker.run(stop),

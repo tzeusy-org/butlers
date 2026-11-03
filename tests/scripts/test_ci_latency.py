@@ -102,6 +102,31 @@ def test_metrics_use_own_job_ready_time_for_both_dags():
         assert sample["guards_execution_s"] == (160 if inventory else 38)
 
 
+def test_a_fan_in_run_ends_its_required_completion_at_alls_green():
+    """After the mirrors were deleted, alls-green alone is the required context (bu-29wkwj.3)."""
+    row = run()
+    value = jobs(row)
+    for job in value["jobs"]:
+        if job["name"] == "check":
+            job["name"] = "alls-green"
+    value["jobs"] = [job for job in value["jobs"] if job["name"] != "frontend"]
+    value["total_count"] = len(value["jobs"])
+
+    sample = latency.sample(row, value)
+
+    assert sample["required_elapsed_s"] == 230
+
+
+def test_a_run_without_a_required_context_is_refused():
+    row = run()
+    value = jobs(row)
+    value["jobs"] = [job for job in value["jobs"] if job["name"] != "frontend"]
+    value["total_count"] = len(value["jobs"])
+
+    with pytest.raises(ValueError, match="missing required jobs"):
+        latency.sample(row, value)
+
+
 def test_objective_counts_only_clean_successes_and_explicit_cohort():
     """REQ-ci-latency-001: measured service budget with honest population admission."""
     rows = [run(i) for i in range(1, 21)]

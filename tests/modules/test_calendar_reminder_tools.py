@@ -9,6 +9,7 @@ unit-level (no live DB required).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -17,8 +18,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from butlers.modules.approvals.execution_context import (
+    ApprovalExecutionContext,
+    approval_tool_args_digest,
+    reset_approval_execution_context,
+    set_approval_execution_context,
+)
 from butlers.modules.calendar import SOURCE_KIND_INTERNAL_REMINDERS, CalendarModule
+from butlers.modules.calendar_approval import calendar_approval_args
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.mcp import registered_tools, tool_fn
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -33,28 +43,24 @@ def _make_db(*, pool=None) -> SimpleNamespace:
     return SimpleNamespace(db_name="butlers", schema="relationship", pool=pool)
 
 
-def _make_pool(
+def _calendar_pool(
     *,
     fetchrow_result=None,
     fetchrow_side_effect=None,
     fetch_result=None,
-) -> MagicMock:
-    """Build an asyncpg-like pool mock."""
-    pool = MagicMock()
+) -> FakePool:
+    """Build a fake asyncpg pool; ``fetchrow_side_effect`` queues fetchrow results."""
     if fetchrow_side_effect is not None:
-        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    else:
-        pool.fetchrow = AsyncMock(return_value=fetchrow_result)
-    pool.fetch = AsyncMock(return_value=fetch_result or [])
-    pool.execute = AsyncMock(return_value=None)
-    pool.executemany = AsyncMock(return_value=None)
-    return pool
+        fetchrow_result = AsyncMock(side_effect=fetchrow_side_effect)
+    return fake_pool(
+        fetchrow=fetchrow_result, fetch=fetch_result or [], execute=None, executemany=None
+    )
 
 
 async def _make_module(
     *,
     butler_name: str = "relationship",
-    pool: MagicMock | None = None,
+    pool: FakePool | None = None,
 ) -> tuple[FastMCP, CalendarModule]:
     """Register a CalendarModule with a FastMCP, bypassing table checks."""
     mod = CalendarModule()
@@ -169,7 +175,7 @@ def _event_row_dict(
 class TestReminderCreateBehavior:
     async def test_default_ends_at_is_15_minutes_after_due(self):
         """reminder_create uses due_at + 15min when ends_at is omitted."""
-        pool = _make_pool(fetchrow_side_effect=[_source_row(), _event_row_dict()])
+        pool = _calendar_pool(fetchrow_side_effect=[_source_row(), _event_row_dict()])
         mcp, mod = await _make_module(pool=pool)
 
         with patch(
@@ -186,7 +192,7 @@ class TestReminderCreateBehavior:
 
     async def test_explicit_ends_at_honored(self):
         explicit_ends = _DUE_AT + timedelta(hours=1)
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[_source_row(), _event_row_dict(ends_at=explicit_ends)]
         )
         mcp, mod = await _make_module(pool=pool)
@@ -202,7 +208,7 @@ class TestReminderCreateBehavior:
         assert result["ends_at"] == explicit_ends.isoformat()
 
     async def test_yearly_recurrence_produces_rrule(self):
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[
                 _source_row(),
                 _event_row_dict(title="Mom birthday", recurrence_rule="RRULE:FREQ=YEARLY"),
@@ -221,7 +227,7 @@ class TestReminderCreateBehavior:
         assert result["recurrence_rule"] == "RRULE:FREQ=YEARLY"
 
     async def test_monthly_recurrence_produces_rrule(self):
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[
                 _source_row(),
                 _event_row_dict(title="Rent due", recurrence_rule="RRULE:FREQ=MONTHLY"),
@@ -241,7 +247,7 @@ class TestReminderCreateBehavior:
 
     async def test_entity_ids_linked(self):
         entity_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_side_effect=[_source_row(), _event_row_dict()])
+        pool = _calendar_pool(fetchrow_side_effect=[_source_row(), _event_row_dict()])
         mcp, mod = await _make_module(pool=pool)
 
         with patch(
@@ -262,7 +268,7 @@ class TestReminderCreateBehavior:
         assert str(entity_id) in result["entity_ids"]
 
     async def test_no_entity_ids_skips_junction_insert(self):
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[_source_row(), _event_row_dict(title="Go for a run")]
         )
         mcp, mod = await _make_module(pool=pool)
@@ -277,7 +283,7 @@ class TestReminderCreateBehavior:
 
     async def test_source_butler_passed_to_insert(self):
         """INSERT must receive the module's butler name."""
-        pool = _make_pool(fetchrow_side_effect=[_source_row(), _event_row_dict()])
+        pool = _calendar_pool(fetchrow_side_effect=[_source_row(), _event_row_dict()])
         mcp, mod = await _make_module(butler_name="relationship", pool=pool)
 
         with patch(
@@ -301,7 +307,7 @@ class TestReminderCreateBehavior:
 class TestCreateButlerReminder:
     async def test_uses_native_calendar_event_without_legacy_reminders_table(self):
         """The butler-events group can create reminders on every calendar butler."""
-        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mcp, mod = await _make_module(butler_name="finance", pool=_calendar_pool())
         event_id = uuid.uuid4()
         event_row = {
             "id": event_id,
@@ -352,7 +358,7 @@ class TestCreateButlerReminder:
 
     async def test_rejects_cron_instead_of_silently_dropping_it(self):
         """Native reminders use RRULE; cron-backed events must use scheduled tasks."""
-        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mcp, mod = await _make_module(butler_name="finance", pool=_calendar_pool())
         mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
         mod._resolve_action_source_id = AsyncMock(return_value=_SOURCE_ID)
         mod._insert_reminder_to_calendar_events = AsyncMock()
@@ -382,7 +388,7 @@ class TestCreateButlerReminder:
         match,
     ):
         """Executable fields belong to scheduled tasks, not native reminders."""
-        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mcp, mod = await _make_module(butler_name="finance", pool=_calendar_pool())
         mod._insert_reminder_to_calendar_events = AsyncMock()
 
         with pytest.raises(ValueError, match=match):
@@ -399,7 +405,7 @@ class TestCreateButlerReminder:
 
     async def test_encodes_explicit_until_at_in_native_reminder_rrule(self):
         """Native reminder recurrence keeps the requested terminal bound."""
-        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mcp, mod = await _make_module(butler_name="finance", pool=_calendar_pool())
         event_id = uuid.uuid4()
         event_row = {
             **_event_row_dict(recurrence_rule="RRULE:FREQ=MONTHLY;UNTIL=20261231T235900Z"),
@@ -428,7 +434,7 @@ class TestCreateButlerReminder:
 
     async def test_native_reminder_supports_butler_event_lifecycle(self):
         """A native reminder returned by create remains update/toggle/delete manageable."""
-        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mcp, mod = await _make_module(butler_name="finance", pool=_calendar_pool())
         event_id = uuid.uuid4()
         entity_id = uuid.uuid4()
         event_row = {
@@ -454,9 +460,10 @@ class TestCreateButlerReminder:
         mod._toggle_native_reminder_event = AsyncMock(return_value=paused_row)
         mod._delete_native_reminder_event = AsyncMock(return_value=True)
         mod._upsert_event_entities = AsyncMock()
-        mod._gate_high_impact_mutation = AsyncMock(return_value=None)
         mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
         mod._finalize_workspace_mutation = AsyncMock()
+        enqueue = AsyncMock(return_value="pending-action")
+        mod.set_approval_enqueuer(enqueue)
 
         created = await (await tool_fn(mcp, "calendar_create_butler_event"))(
             butler_name="finance",
@@ -470,16 +477,39 @@ class TestCreateButlerReminder:
             source_hint="butler_reminder",
             entity_ids=[entity_id],
         )
-        toggled = await (await tool_fn(mcp, "calendar_toggle_butler_event"))(
+
+        async def approved_call(tool_name, **args):
+            task = asyncio.current_task()
+            assert task is not None
+            # Mirror the approvals executor: authority is the digest-bound
+            # context for this exact call, never a caller-supplied argument.
+            token = set_approval_execution_context(
+                ApprovalExecutionContext(
+                    action_id=uuid.uuid4(),
+                    session_id=None,
+                    actor="owner",
+                    tool_name=tool_name,
+                    tool_args_digest=approval_tool_args_digest(
+                        calendar_approval_args(tool_name, **args)
+                    ),
+                    authorized_task=task,
+                )
+            )
+            try:
+                return await (await tool_fn(mcp, tool_name))(**args)
+            finally:
+                reset_approval_execution_context(token)
+
+        toggled = await approved_call(
+            "calendar_toggle_butler_event",
             event_id=created["event_id"],
             enabled=False,
             source_hint="butler_reminder",
-            _approval_bypass=True,
         )
-        deleted = await (await tool_fn(mcp, "calendar_delete_butler_event"))(
+        deleted = await approved_call(
+            "calendar_delete_butler_event",
             event_id=created["event_id"],
             source_hint="butler_reminder",
-            _approval_bypass=True,
         )
 
         assert updated["status"] == "updated"
@@ -498,10 +528,11 @@ class TestCreateButlerReminder:
             scope="series",
             instance_start_at=None,
         )
+        enqueue.assert_not_awaited()
 
     async def test_native_reminder_delete_forwards_occurrence_scope(self):
         """Occurrence-scoped deletion reaches the native reminder backend."""
-        mcp, mod = await _make_module(butler_name="finance", pool=_make_pool())
+        mcp, mod = await _make_module(butler_name="finance", pool=_calendar_pool())
         event_id = uuid.uuid4()
 
         mod._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
@@ -531,7 +562,7 @@ class TestButlerReminderTargetResolution:
     async def test_native_target_is_resolved_from_calendar_events(self):
         """Native reminder IDs resolve only through calendar_events."""
         event_id = uuid.uuid4()
-        pool = _make_pool(fetchrow_result={"id": event_id})
+        pool = _calendar_pool(fetchrow_result={"id": event_id})
         _, mod = await _make_module(butler_name="finance", pool=pool)
         mod._table_exists = AsyncMock(side_effect=lambda table: table == "calendar_events")
 
@@ -555,7 +586,7 @@ class TestReminderList:
         assert result["reminders"] == []
 
     async def test_tables_not_available_returns_empty(self):
-        pool = _make_pool()
+        pool = _calendar_pool()
         mcp, mod = await _make_module(pool=pool)
         # Projection tables unavailable.
         mod._projection_tables_available_cache = False
@@ -582,7 +613,7 @@ class TestReminderList:
         }
         reminder_row.__getitem__ = lambda self, key: data[key]
 
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetch_result=[reminder_row],  # first fetch: events
         )
         # Second pool.fetch call (entity_map) returns [].
@@ -611,18 +642,15 @@ def _dismiss_event_row(
     status: str = "confirmed",
     source_butler: str = "relationship",
     source_kind: str = SOURCE_KIND_INTERNAL_REMINDERS,
-) -> MagicMock:
-    data = {
-        "id": _EVENT_ID,
-        "title": "Call Mom",
-        "status": status,
-        "recurrence_rule": recurrence_rule,
-        "source_butler": source_butler,
-        "source_kind": source_kind,
-    }
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: data[key]
-    return row
+) -> Record:
+    return row(
+        id=_EVENT_ID,
+        title="Call Mom",
+        status=status,
+        recurrence_rule=recurrence_rule,
+        source_butler=source_butler,
+        source_kind=source_kind,
+    )
 
 
 class TestReminderDismiss:
@@ -637,21 +665,21 @@ class TestReminderDismiss:
             await (await tool_fn(mcp, "reminder_dismiss"))(event_id="not-a-uuid")
 
     async def test_missing_event_raises(self):
-        pool = _make_pool(fetchrow_result=None)
+        pool = _calendar_pool(fetchrow_result=None)
         mcp, mod = await _make_module(pool=pool)
         with pytest.raises(ValueError, match="not found"):
             await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
 
     async def test_wrong_source_kind_raises(self):
         row = _dismiss_event_row(source_kind="provider_event")
-        pool = _make_pool(fetchrow_result=row)
+        pool = _calendar_pool(fetchrow_result=row)
         mcp, mod = await _make_module(pool=pool)
         with pytest.raises(ValueError, match="not a reminder"):
             await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
 
     async def test_wrong_butler_raises(self):
         row = _dismiss_event_row(source_butler="health")
-        pool = _make_pool(fetchrow_result=row)
+        pool = _calendar_pool(fetchrow_result=row)
         mcp, mod = await _make_module(pool=pool)
         with pytest.raises(ValueError, match="belongs to butler"):
             await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
@@ -659,7 +687,7 @@ class TestReminderDismiss:
     async def test_one_time_reminder_cancelled(self):
         """Dismissing a one-time reminder sets status='cancelled' on the event row."""
         row = _dismiss_event_row(recurrence_rule=None)
-        pool = _make_pool(fetchrow_result=row)
+        pool = _calendar_pool(fetchrow_result=row)
         mcp, mod = await _make_module(pool=pool)
 
         result = await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
@@ -670,7 +698,7 @@ class TestReminderDismiss:
 
     async def test_already_cancelled_one_time_is_noop(self):
         row = _dismiss_event_row(recurrence_rule=None, status="cancelled")
-        pool = _make_pool(fetchrow_result=row)
+        pool = _calendar_pool(fetchrow_result=row)
         mcp, mod = await _make_module(pool=pool)
 
         result = await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
@@ -686,7 +714,7 @@ class TestReminderDismiss:
         instance_row = MagicMock()
         instance_row.__getitem__ = lambda self, key: instance_data[key]
 
-        pool = _make_pool(fetchrow_side_effect=[event_row, instance_row])
+        pool = _calendar_pool(fetchrow_side_effect=[event_row, instance_row])
         mcp, mod = await _make_module(pool=pool)
 
         result = await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
@@ -699,7 +727,7 @@ class TestReminderDismiss:
     async def test_recurring_reminder_no_instances_returns_graceful_message(self):
         """No upcoming instances → graceful message, series remains active."""
         event_row = _dismiss_event_row(recurrence_rule="RRULE:FREQ=MONTHLY")
-        pool = _make_pool(fetchrow_side_effect=[event_row, None])
+        pool = _calendar_pool(fetchrow_side_effect=[event_row, None])
         mcp, mod = await _make_module(pool=pool)
 
         result = await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
@@ -724,7 +752,7 @@ class TestReminderDismiss:
         instance_row = MagicMock()
         instance_row.__getitem__ = lambda self, key: instance_data[key]
 
-        pool = _make_pool(fetchrow_side_effect=[event_row, instance_row])
+        pool = _calendar_pool(fetchrow_side_effect=[event_row, instance_row])
         mcp, mod = await _make_module(pool=pool)
 
         await (await tool_fn(mcp, "reminder_dismiss"))(event_id=str(_EVENT_ID))
@@ -750,7 +778,7 @@ class TestReminderDismiss:
 class TestInsertReminderToCalendarEvents:
     async def test_source_butler_matches_module_butler_name(self):
         """The INSERT must use the module's butler name, not a hardcoded value."""
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[
                 _source_row(),
                 _event_row_dict(),
@@ -801,7 +829,7 @@ class TestInsertReminderToCalendarEvents:
 
     async def test_recurring_reminder_materializes_rolling_instance_window(self):
         """A recurring reminder materializes every occurrence in its rolling window."""
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[
                 _source_row(),
                 _event_row_dict(recurrence_rule="RRULE:FREQ=MONTHLY"),
@@ -850,7 +878,7 @@ class TestInsertReminderToCalendarEvents:
 
     async def test_one_time_reminder_does_not_insert_instance(self):
         """A one-time reminder must NOT insert into calendar_event_instances."""
-        pool = _make_pool(
+        pool = _calendar_pool(
             fetchrow_side_effect=[
                 _source_row(),
                 _event_row_dict(),

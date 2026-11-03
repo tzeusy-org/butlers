@@ -10,10 +10,11 @@ Verifies:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -24,14 +25,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_089_butler_logs.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_089", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def test_migration_sql_contains_expected_columns():
@@ -64,7 +57,7 @@ def test_migration_downgrade_drops_table():
 
 
 def test_migration_covers_all_butler_schemas():
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_089")
     expected_schemas = {
         "education",
         "finance",

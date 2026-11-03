@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,6 +11,7 @@ import asyncpg
 import pytest
 
 from butlers.core.expected_signals import upsert_expected_signal
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -22,17 +22,9 @@ _MIGRATION_PATHS = [
 ]
 
 
-def _load_migration(path: Path):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def _run_migration(pool, path: Path, direction: str) -> None:
     statements: list[str] = []
-    module = _load_migration(path)
+    module = load_migration(path, path.stem)
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
     with patch.object(module, "op", mocked_op):

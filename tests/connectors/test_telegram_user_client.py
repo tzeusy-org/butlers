@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import butlers.connectors.owner_outbound_events as owner_outbound_events
 import butlers.connectors.telegram_user_client as telegram_user_client
 from butlers.connectors.telegram_user_client import (
     TelegramUserClientConnector,
@@ -540,8 +541,10 @@ async def test_missing_message_date_does_not_record(
 
 async def test_backfill_records_owner_points_with_live_replay_dedup_and_no_content(
     owner_connector: TelegramUserClientConnector,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Startup replay preserves the live recorder's owner/privacy/dedup contract."""
+    monkeypatch.setattr(owner_outbound_events, "_dedup_key", b"test-dedup-key")
     owner_message = _make_message(
         msg_id=42,
         chat_id=100,

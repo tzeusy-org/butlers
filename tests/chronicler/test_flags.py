@@ -629,6 +629,7 @@ _FLAG_DEPENDENT_JOB_TO_SOURCE: dict[str, str] = {
     "chronicler_project_comms": "comms.message_bursts",
     "chronicler_project_activitywatch": "activitywatch.window",
     "chronicler_project_occupation_inferred": "chronicler.occupation_inferred",
+    "chronicler_project_situation_inferred": "chronicler.situation_inferred",
 }
 
 

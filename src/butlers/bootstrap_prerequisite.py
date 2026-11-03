@@ -341,7 +341,7 @@ def _normal_roles() -> list[str]:
     )
 
 
-def check_bootstrap_connection(connection: Connection) -> None:
+def _admit(connection: Connection) -> None:
     """Inspect this actual connection before online migration side effects.
 
     A managed privileged lifecycle caller may read the trusted private singleton
@@ -401,6 +401,49 @@ def check_bootstrap_connection(connection: Connection) -> None:
     except DBAPIError:
         # Exception chaining would print SQL/driver parameters or private rows.
         raise BootstrapPrerequisiteError("unreadable") from None
+
+
+# The finalized-interface predicates join hundreds of catalog relations. Under the
+# default collapse limits PostgreSQL spends most of admission planning them (about
+# 0.6 s of ~0.6 s for core_198/core_197 on PG16); written join order plans them in
+# milliseconds. Planner settings choose a plan, never a result (bu-rvgzmf.6).
+_PLANNER_BOUNDS = ("join_collapse_limit = 1", "from_collapse_limit = 1")
+
+
+def _autocommit(connection: Connection) -> bool:
+    """Whether the DBAPI connection is in autocommit mode (no transaction block)."""
+    proxied = getattr(connection, "connection", None)
+    return getattr(getattr(proxied, "dbapi_connection", None), "autocommit", False) is True
+
+
+def check_bootstrap_connection(connection: Connection) -> None:
+    """Inspect this actual connection before online migration side effects.
+
+    On a transactional connection (both production callers), admission runs inside
+    its own savepoint with the planner's join search bounded by ``SET LOCAL`` and
+    rolls the savepoint back afterwards, refused or admitted, so the bound reaches no
+    later statement of the caller. Every check is read-only, so the rollback discards
+    nothing. An autocommit connection has no transaction to scope ``SET LOCAL`` to, so
+    it is admitted unbounded, as before. See :func:`_admit` for what is checked.
+    """
+    if _autocommit(connection):
+        _admit(connection)
+        return
+    try:
+        savepoint = connection.begin_nested()
+    except DBAPIError:
+        raise BootstrapPrerequisiteError("unreadable") from None
+    try:
+        for bound in _PLANNER_BOUNDS:
+            connection.execute(text(f"SET LOCAL {bound}"))
+        _admit(connection)
+    except DBAPIError:
+        raise BootstrapPrerequisiteError("unreadable") from None
+    finally:
+        try:
+            savepoint.rollback()
+        except DBAPIError:
+            raise BootstrapPrerequisiteError("unreadable") from None
 
 
 def check_bootstrap_database(db_url: str) -> None:

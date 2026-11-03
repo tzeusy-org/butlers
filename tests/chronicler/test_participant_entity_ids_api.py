@@ -15,7 +15,6 @@ from __future__ import annotations
 import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -24,6 +23,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -44,25 +44,15 @@ EPISODE_ID_2 = "00000000-0000-0000-0000-000000000002"
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """asyncpg.Record-like dict subclass."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
 def _episode_row(
     *,
     episode_id: str = EPISODE_ID_1,
     participant_entity_ids: list[UUID] | None = None,
     source_name: str = "google_calendar.completed",
     episode_type: str = "scheduled_block",
-) -> _Row:
+) -> Record:
     """Build a mock v_episodes_corrected row."""
-    return _Row(
+    return Record(
         {
             "id": UUID(episode_id),
             "source_name": source_name,
@@ -91,7 +81,7 @@ def _episode_row(
     )
 
 
-def _build_app(rows: list[_Row], *, fetchrow_result: _Row | None = None):
+def _build_app(rows: list[Record], *, fetchrow_result: Record | None = None):
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows)
     pool.fetchrow = AsyncMock(
@@ -149,9 +139,8 @@ async def test_get_episode_includes_participant_entity_ids_empty() -> None:
 
 async def test_get_episode_participant_entity_ids_defensive_missing_key() -> None:
     """GET /api/chronicler/episodes/{id} defaults to [] when column absent from row."""
-    row = _episode_row()
     # Remove the participant_entity_ids key to simulate a row from an older view.
-    del row["participant_entity_ids"]
+    row = Record({k: v for k, v in _episode_row().items() if k != "participant_entity_ids"})
     app, _ = _build_app([row])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

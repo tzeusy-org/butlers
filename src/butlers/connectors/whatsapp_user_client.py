@@ -79,7 +79,10 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
-from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.owner_outbound_events import (
+    record_owner_outbound_point,
+    resolve_dedup_key,
+)
 from butlers.conversation_identity import whatsapp_conversation_id
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
@@ -2639,6 +2642,10 @@ async def run_whatsapp_user_client_connector() -> None:
         codex_authority=codex_auth_authority,
         context="whatsapp_user_client",
     )
+
+    # Owner-outbound point events need the keyed dedup HMAC; without it they
+    # are not recorded at all (bu-szrvwu). Warns once, never raises.
+    await resolve_dedup_key(CredentialStore(cursor_pool))
 
     # Step 4: Run health server and connector concurrently
     health_task = asyncio.create_task(

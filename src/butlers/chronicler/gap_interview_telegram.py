@@ -41,12 +41,18 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_CHAT_INFO_TYPE = "telegram_chat_id"
 _TELEGRAM_TOKEN_SECRET = "BUTLER_TELEGRAM_TOKEN"
 
-# Button labels shown to the owner, paired with the answer they encode.
-_BUTTONS: tuple[tuple[str, GapInterviewAnswer], ...] = (
-    ("✅ Work day", GapInterviewAnswer.CONFIRM),
-    ("✏️ Not work", GapInterviewAnswer.CORRECT),
-    ("🚫 Dismiss", GapInterviewAnswer.DISMISS),
-)
+# Button label for each answer. A decision's ``options`` pick which are shown.
+_BUTTON_LABELS: dict[GapInterviewAnswer, str] = {
+    GapInterviewAnswer.CONFIRM: "✅ Work day",
+    GapInterviewAnswer.CORRECT: "✏️ Not work",
+    GapInterviewAnswer.DISMISS: "🚫 Dismiss",
+    GapInterviewAnswer.WORK: "💼 Work",
+    GapInterviewAnswer.SOCIAL: "🧑‍🤝‍🧑 Social",
+    GapInterviewAnswer.PLAY: "🎮 Play",
+    GapInterviewAnswer.EAT: "🍽️ Eat",
+    GapInterviewAnswer.REST: "🛋️ Rest",
+}
+_BUTTONS_PER_ROW = 3
 
 
 class TelegramInlineButtonTransport(GapInterviewTransport):
@@ -57,24 +63,22 @@ class TelegramInlineButtonTransport(GapInterviewTransport):
         self._api_base = api_base.rstrip("/")
         self._chat_id = chat_id
 
-    def _reply_markup(self, interview_id: str) -> dict[str, Any]:
-        return {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": label,
-                        "callback_data": build_callback_data(interview_id, answer),
-                    }
-                    for label, answer in _BUTTONS
-                ]
-            ]
-        }
+    def _reply_markup(self, interview: GapInterview) -> dict[str, Any]:
+        buttons = [
+            {
+                "text": _BUTTON_LABELS[GapInterviewAnswer(option)],
+                "callback_data": build_callback_data(interview.interview_id, option),
+            }
+            for option in interview.decision.options
+        ]
+        rows = [buttons[i : i + _BUTTONS_PER_ROW] for i in range(0, len(buttons), _BUTTONS_PER_ROW)]
+        return {"inline_keyboard": rows}
 
     async def deliver_interview(self, interview: GapInterview) -> TransportResult:
         payload = {
             "chat_id": self._chat_id,
             "text": interview.decision.question,
-            "reply_markup": self._reply_markup(interview.interview_id),
+            "reply_markup": self._reply_markup(interview),
         }
         try:
             resp = await self._http.post(f"{self._api_base}/sendMessage", json=payload)
