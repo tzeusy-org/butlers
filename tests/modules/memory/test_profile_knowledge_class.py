@@ -96,7 +96,7 @@ async def test_event_facts_leave_profile_but_stay_recallable(_migrated_db_url: s
                 pool, content=content, near=True, predicate=predicate, entity_id=owner_id
             )
 
-        profile, _ = await _context._fetch_profile_facts(pool, "owner")
+        profile, _ = await _context._fetch_profile_facts(pool, "shared")
         assert {f["predicate"] for f in profile} == set(durable)
 
         recalled = await _search.recall(
