@@ -678,8 +678,9 @@ services:
       net.ipv4.ip_local_reserved_ports: "41100-41112"
     # No security_opt: runtime sessions run Codex with
     # --dangerously-bypass-approvals-and-sandbox (never bwrap), so butlers-up
-    # keeps Docker's default AppArmor confinement. Only the dashboard services
-    # below need a user-namespace-capable posture (bu-swzloi).
+    # keeps Docker's default AppArmor confinement. Only the dashboard-api
+    # services (dashboard-api and dashboard-api-hotreload) need a
+    # user-namespace-capable posture (bu-swzloi).
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200

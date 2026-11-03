@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,6 +14,7 @@ from sqlalchemy.exc import ProgrammingError
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    load_migration,
     migration_db_name,
 )
 
@@ -38,21 +38,13 @@ _CORE_MIGRATION_PATH = (
 )
 
 
-def _load_migration(path: Path = _MIGRATION_PATH, module_name: str = "chronicler_026"):
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _executed_sql(
     function_name: str,
     *,
     path: Path = _MIGRATION_PATH,
     module_name: str = "chronicler_026",
 ) -> str:
-    module = _load_migration(path, module_name)
+    module = load_migration(path, module_name)
     operation = MagicMock()
     with patch.object(module, "op", operation):
         getattr(module, function_name)()
@@ -60,7 +52,7 @@ def _executed_sql(
 
 
 def test_revision_chain_and_calendar_surface_allowlist() -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "chronicler_026")
 
     assert module.revision == "chronicler_026"
     assert module.down_revision == "chronicler_025"
@@ -105,7 +97,7 @@ def test_downgrade_revokes_only_the_explicit_calendar_grants() -> None:
 
 
 def test_core_follow_up_replays_only_the_calendar_read_surface() -> None:
-    module = _load_migration(_CORE_MIGRATION_PATH, "core_207")
+    module = load_migration(_CORE_MIGRATION_PATH, "core_207")
     assert module.revision == "core_207"
     assert module.down_revision == "core_206"
 

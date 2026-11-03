@@ -13,11 +13,12 @@ migrated to core_008 by the shared ``db`` factory.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -34,15 +35,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("core_009", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required
 # ---------------------------------------------------------------------------
@@ -57,7 +49,7 @@ class TestUpgradeSQLShape:
     """
 
     def _collect_execute_calls(self) -> list[str]:
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_009")
         calls_collected: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
@@ -102,7 +94,7 @@ class TestMemoryCatalogMigrationIntegration:
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_009")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -113,7 +105,7 @@ class TestMemoryCatalogMigrationIntegration:
 
     async def _run_downgrade(self, pool) -> None:
         """Execute downgrade() SQL against the pool."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_009")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)

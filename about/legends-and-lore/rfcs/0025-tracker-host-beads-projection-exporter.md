@@ -4,6 +4,8 @@
 
 **Date:** 2026-08-13
 
+Traceability disposition: withdrawn, not an implementation contract; [Development Principles, Work Exists Only in Beads](../../heart-and-soul/development.md#work-exists-only-in-beads) governs the retained local engineering convention and does not authorize the retired runtime bridge.
+
 The former projection and development tracker write bridge are retired from the
 personal-assistant product under bu-99t5s3.6. Their original design remains in
 Git history. This RFC no longer authorizes implementation, activation, exporter

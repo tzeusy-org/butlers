@@ -12,12 +12,13 @@ Parent epic: bu-5vpyh — relational-edges-single-home
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -40,16 +41,8 @@ _EXPECTED_PREDICATES = [
 ]
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("rel_026", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_026")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -59,7 +52,7 @@ def _collect_upgrade_sqls() -> list[str]:
 
 
 def _collect_downgrade_sqls() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_026")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -90,7 +83,7 @@ def test_downgrade_does_not_drop_table() -> None:
 
 def test_new_predicates_count() -> None:
     """Migration must seed exactly 7 predicates (the complete long-tail triage set)."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_026")
     assert len(mod._NEW_PREDICATES) == 7, (
         f"Expected 7 new predicates in rel_026, got {len(mod._NEW_PREDICATES)}"
     )

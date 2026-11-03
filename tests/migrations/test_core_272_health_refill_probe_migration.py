@@ -17,8 +17,6 @@ from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
@@ -39,24 +37,15 @@ def _migration():
 
 
 @pytest.fixture
-def engine(postgres_container):
-    db_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+def engine(fresh_db):
+    # The real Health memory store: the memory chain migrated into the health schema.
+    db_url = fresh_db("core", "memory", schemas={"core": "health", "memory": "health"})
     engine = create_engine(db_url)
     with engine.begin() as conn:
-        # The managed bootstrap already created the role schemas in this fresh per-fixture
-        # database; creating the Health schema again raises DuplicateSchema.
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS health"))
         conn.execute(
             text(
-                "CREATE TABLE IF NOT EXISTS health.facts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-                "subject text, predicate text, scope text, validity text, metadata jsonb, "
-                "valid_at timestamptz, created_at timestamptz DEFAULT clock_timestamp())"
-            )
-        )
-        conn.execute(
-            text(
-                "INSERT INTO health.facts (subject, predicate, scope, validity, metadata) "
-                "VALUES ('medication:Sample', 'medication', 'health', 'active', "
+                "INSERT INTO health.facts (subject, predicate, content, scope, validity, metadata) "
+                "VALUES ('medication:Sample', 'medication', 'Sample', 'health', 'active', "
                 "jsonb_build_object('active', true, 'quantity', 10, "
                 "'quantity_updated_at', (now() - interval '2 days')::text))"
             )

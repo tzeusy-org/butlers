@@ -36,7 +36,6 @@ from butlers.jobs.meeting_debrief import (
     DEBRIEF_CATEGORY,
     run_meeting_debrief,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.relationship.meeting_debrief import (
     meeting_debrief_answer,
     meeting_debrief_pending,
@@ -59,29 +58,18 @@ _TRUNCATE = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
+@pytest.fixture
+def debrief_url(fresh_db) -> str:
+    return fresh_db("core", "memory", "relationship")
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
+async def debrief_pool(db, debrief_url: str):
     """A pool resolving bare table names the way a butler pool does (own schema first)."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=1,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "relationship, public"},
-    )
+    p = await db.open(debrief_url, schema="relationship", max_size=1)
     for table in _TRUNCATE:
         await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
-    yield p
-    await p.close()
+    return p
 
 
 class _Proposer:
@@ -416,52 +404,63 @@ async def _assert_winning_effects(pool, debrief_id, answers, results, before) ->
 
 
 class TestSelection:
-    async def test_excluded_meetings_get_no_row_and_two_runs_make_one_row(self, pool) -> None:
+    async def test_excluded_meetings_get_no_row_and_two_runs_make_one_row(
+        self, debrief_pool
+    ) -> None:
         """A declined meeting, a solo block, an owner-only meeting and others are excluded."""
-        src = await _source(pool)
-        await _person(pool, "Owner Person", "owner@example.test", owner=True)
-        await _person(pool, "Sam Rivera", "sam@example.test")
-        await _person(pool, "Maya Quiet", "maya@example.test", posture="memorial")
+        src = await _source(debrief_pool)
+        await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        await _person(debrief_pool, "Maya Quiet", "maya@example.test", posture="memorial")
 
-        await _event(pool, src, "With Sam", attendees=_attendees("sam@example.test"))
+        await _event(debrief_pool, src, "With Sam", attendees=_attendees("sam@example.test"))
         await _event(
-            pool, src, "Declined", attendees=_attendees("sam@example.test", owner_status="declined")
+            debrief_pool,
+            src,
+            "Declined",
+            attendees=_attendees("sam@example.test", owner_status="declined"),
         )
-        await _event(pool, src, "Solo block", attendees=_attendees())
-        await _event(pool, src, "Owner only", attendees=_attendees("owner@example.test"))
+        await _event(debrief_pool, src, "Solo block", attendees=_attendees())
+        await _event(debrief_pool, src, "Owner only", attendees=_attendees("owner@example.test"))
         await _event(
-            pool,
+            debrief_pool,
             src,
             "Free time",
             attendees=_attendees("sam@example.test"),
             extra_meta={"transparency": "transparent"},
         )
-        await _event(pool, src, "All day", attendees=_attendees("sam@example.test"), all_day=True)
         await _event(
-            pool, src, "Cancelled", attendees=_attendees("sam@example.test"), status="cancelled"
+            debrief_pool, src, "All day", attendees=_attendees("sam@example.test"), all_day=True
         )
         await _event(
-            pool,
+            debrief_pool,
+            src,
+            "Cancelled",
+            attendees=_attendees("sam@example.test"),
+            status="cancelled",
+        )
+        await _event(
+            debrief_pool,
             src,
             "Not yet",
             attendees=_attendees("sam@example.test"),
             ended_ago=timedelta(hours=-3),
         )
         await _event(
-            pool,
+            debrief_pool,
             src,
             "Butler made",
             attendees=_attendees("sam@example.test"),
             extra_meta={"butler_generated": True},
         )
-        await _event(pool, src, "Memorial only", attendees=_attendees("maya@example.test"))
-        await _event(pool, src, "Stranger", attendees=_attendees("new.person@example.test"))
+        await _event(debrief_pool, src, "Memorial only", attendees=_attendees("maya@example.test"))
+        await _event(debrief_pool, src, "Stranger", attendees=_attendees("new.person@example.test"))
 
         proposer = _Proposer()
-        first = await run_meeting_debrief(pool, insight_proposer=proposer)
-        second = await run_meeting_debrief(pool, insight_proposer=proposer)
+        first = await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
+        second = await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
-        assert await _titles(pool) == {"With Sam", "Stranger"}
+        assert await _titles(debrief_pool) == {"With Sam", "Stranger"}
         assert first["recorded"] == 2 and second["recorded"] == 0
         assert len(proposer.calls) == 1, "a meeting is prompted at most once"
         message = proposer.calls[0]["message"]
@@ -470,12 +469,12 @@ class TestSelection:
         assert "Maya" not in message and "Memorial only" not in message
         assert proposer.calls[0]["category"] == DEBRIEF_CATEGORY
 
-    async def test_recurring_series_is_debriefed_per_occurrence(self, pool) -> None:
-        src = await _source(pool)
-        await _person(pool, "Sam Rivera", "sam@example.test")
+    async def test_recurring_series_is_debriefed_per_occurrence(self, debrief_pool) -> None:
+        src = await _source(debrief_pool)
+        await _person(debrief_pool, "Sam Rivera", "sam@example.test")
         now = datetime.now(UTC)
         event_id = await _event(
-            pool,
+            debrief_pool,
             src,
             "Weekly 1:1",
             attendees=_attendees("sam@example.test"),
@@ -485,7 +484,7 @@ class TestSelection:
         )
         for days in (1, 0):
             start = now - timedelta(days=days, hours=3)
-            await pool.execute(
+            await debrief_pool.execute(
                 """
                 INSERT INTO calendar_event_instances
                     (event_id, source_id, origin_instance_ref, timezone, starts_at, ends_at)
@@ -498,48 +497,52 @@ class TestSelection:
                 start + timedelta(hours=1),
             )
 
-        await run_meeting_debrief(pool, insight_proposer=_Proposer())
+        await run_meeting_debrief(debrief_pool, insight_proposer=_Proposer())
 
-        rows = await pool.fetch("SELECT occurrence_start FROM meeting_debriefs")
+        rows = await debrief_pool.fetch("SELECT occurrence_start FROM meeting_debriefs")
         assert len(rows) == 2
 
-    async def test_a_failed_proposal_is_retried_not_marked_prompted(self, pool) -> None:
-        src = await _source(pool)
-        await _person(pool, "Sam Rivera", "sam@example.test")
-        await _event(pool, src, "With Sam", attendees=_attendees("sam@example.test"))
+    async def test_a_failed_proposal_is_retried_not_marked_prompted(self, debrief_pool) -> None:
+        src = await _source(debrief_pool)
+        await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        await _event(debrief_pool, src, "With Sam", attendees=_attendees("sam@example.test"))
 
         proposer = _Proposer("error", "accepted")
-        await run_meeting_debrief(pool, insight_proposer=proposer)
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
         assert (
-            await pool.fetchval(
+            await debrief_pool.fetchval(
                 "SELECT count(*) FROM meeting_debriefs WHERE prompted_at IS NOT NULL"
             )
             == 0
         )
-        await run_meeting_debrief(pool, insight_proposer=proposer)
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
         assert len(proposer.calls) == 2
         assert (
-            await pool.fetchval(
+            await debrief_pool.fetchval(
                 "SELECT count(*) FROM meeting_debriefs WHERE prompted_at IS NOT NULL"
             )
             == 1
         )
 
-    async def test_person_marked_no_contact_after_selection_is_not_asked_about(self, pool) -> None:
-        src = await _source(pool)
-        sam = await _person(pool, "Sam Rivera", "sam@example.test")
-        await _event(pool, src, "With Sam", attendees=_attendees("sam@example.test"))
+    async def test_person_marked_no_contact_after_selection_is_not_asked_about(
+        self, debrief_pool
+    ) -> None:
+        src = await _source(debrief_pool)
+        sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        await _event(debrief_pool, src, "With Sam", attendees=_attendees("sam@example.test"))
 
         proposer = _Proposer("filtered")
-        await run_meeting_debrief(pool, insight_proposer=proposer)  # recorded, not accepted
-        await pool.execute("UPDATE public.entities SET posture = 'no_contact' WHERE id = $1", sam)
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)  # recorded, not accepted
+        await debrief_pool.execute(
+            "UPDATE public.entities SET posture = 'no_contact' WHERE id = $1", sam
+        )
         proposer.statuses = ["accepted"]
-        result = await run_meeting_debrief(pool, insight_proposer=proposer)
+        result = await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
         assert result["prompted"] == 0
         assert len(proposer.calls) == 1, "the second run found nothing askable"
-        assert await pool.fetchval("SELECT state FROM meeting_debriefs") == "expired"
+        assert await debrief_pool.fetchval("SELECT state FROM meeting_debriefs") == "expired"
 
 
 async def _prompted_batch(pool, *, ago: timedelta, answered: bool = False) -> None:
@@ -566,45 +569,45 @@ class TestBackoff:
         await _person(pool, "Sam Rivera", "sam@example.test")
         await _event(pool, src, "With Sam", attendees=_attendees("sam@example.test"))
 
-    async def test_three_unanswered_batches_drop_the_cadence_to_weekly(self, pool) -> None:
+    async def test_three_unanswered_batches_drop_the_cadence_to_weekly(self, debrief_pool) -> None:
         for days in (3, 2, 1):
-            await _prompted_batch(pool, ago=timedelta(days=days))
-        await self._fresh_meeting(pool)
+            await _prompted_batch(debrief_pool, ago=timedelta(days=days))
+        await self._fresh_meeting(debrief_pool)
         proposer = _Proposer()
 
-        result = await run_meeting_debrief(pool, insight_proposer=proposer)
+        result = await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
         assert result["skipped"] == "backoff" and proposer.calls == []
 
-    async def test_weekly_batch_goes_out_once_the_cadence_has_elapsed(self, pool) -> None:
+    async def test_weekly_batch_goes_out_once_the_cadence_has_elapsed(self, debrief_pool) -> None:
         for days in (12, 11, 10):
-            await _prompted_batch(pool, ago=timedelta(days=days))
+            await _prompted_batch(debrief_pool, ago=timedelta(days=days))
         assert timedelta(days=10) > BACKOFF_CADENCE
-        await self._fresh_meeting(pool)
+        await self._fresh_meeting(debrief_pool)
         proposer = _Proposer()
 
-        await run_meeting_debrief(pool, insight_proposer=proposer)
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
         assert len(proposer.calls) == 1
 
-    async def test_the_batch_that_crosses_the_threshold_says_so(self, pool) -> None:
+    async def test_the_batch_that_crosses_the_threshold_says_so(self, debrief_pool) -> None:
         for days in (3, 2):
-            await _prompted_batch(pool, ago=timedelta(days=days))
-        await self._fresh_meeting(pool)
+            await _prompted_batch(debrief_pool, ago=timedelta(days=days))
+        await self._fresh_meeting(debrief_pool)
         proposer = _Proposer()
 
-        await run_meeting_debrief(pool, insight_proposer=proposer)
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
         assert "ask weekly" in proposer.calls[0]["message"]
 
-    async def test_an_answer_restores_the_daily_cadence(self, pool) -> None:
+    async def test_an_answer_restores_the_daily_cadence(self, debrief_pool) -> None:
         for days in (4, 3, 2):
-            await _prompted_batch(pool, ago=timedelta(days=days))
-        await _prompted_batch(pool, ago=timedelta(hours=30), answered=True)
-        await self._fresh_meeting(pool)
+            await _prompted_batch(debrief_pool, ago=timedelta(days=days))
+        await _prompted_batch(debrief_pool, ago=timedelta(hours=30), answered=True)
+        await self._fresh_meeting(debrief_pool)
         proposer = _Proposer()
 
-        await run_meeting_debrief(pool, insight_proposer=proposer)
+        await run_meeting_debrief(debrief_pool, insight_proposer=proposer)
 
         assert len(proposer.calls) == 1
 
@@ -621,17 +624,19 @@ class TestAnswer:
         )
         return event_id, str(debrief_id)
 
-    async def test_answer_creates_a_commitment_whose_evidence_names_the_meeting(self, pool) -> None:
-        owner = await _person(pool, "Owner Person", "owner@example.test", owner=True)
-        sam = await _person(pool, "Sam Rivera", "sam@example.test")
-        event_id, debrief_id = await self._debrief(pool, "sam@example.test")
+    async def test_answer_creates_a_commitment_whose_evidence_names_the_meeting(
+        self, debrief_pool
+    ) -> None:
+        owner = await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        event_id, debrief_id = await self._debrief(debrief_pool, "sam@example.test")
 
-        pending = await meeting_debrief_pending(pool)
+        pending = await meeting_debrief_pending(debrief_pool)
         assert [d["debrief_id"] for d in pending["debriefs"]] == [debrief_id]
         assert pending["debriefs"][0]["number"] == 1
 
         result = await meeting_debrief_answer(
-            pool,
+            debrief_pool,
             debrief_id=debrief_id,
             commitments=[
                 {
@@ -645,7 +650,7 @@ class TestAnswer:
         )
 
         assert result["status"] == "captured"
-        rows = await _commitments(pool)
+        rows = await _commitments(debrief_pool)
         assert {row["summary"] for row in rows} == {
             "Send Sam the deck",
             "Confirm the roadmap date",
@@ -657,7 +662,7 @@ class TestAnswer:
         assert meta["counterparty_entity_id"] == str(sam), "the sole attendee is the default"
         assert meta["sphere"] == "work"
         assert meta["deadline"].startswith("2031-03-07")
-        effects = await _effects(pool)
+        effects = await _effects(debrief_pool)
         assert len(effects["public.owner_conditions"]) == 2
         assert {edge["source_id"] for edge in effects["public.entity_graph_edges"]} == {
             condition["id"] for condition in effects["public.owner_conditions"]
@@ -668,37 +673,37 @@ class TestAnswer:
             and edge["predicate"] == "committed-to"
             for edge in effects["public.entity_graph_edges"]
         )
-        state = await pool.fetchrow("SELECT state, answered_at FROM meeting_debriefs")
+        state = await debrief_pool.fetchrow("SELECT state, answered_at FROM meeting_debriefs")
         assert state["state"] == "captured" and state["answered_at"] is not None
-        assert (await meeting_debrief_pending(pool))["debriefs"] == []
+        assert (await meeting_debrief_pending(debrief_pool))["debriefs"] == []
 
     async def test_next_prep_envelope_for_the_counterparty_carries_the_commitment(
-        self, pool
+        self, debrief_pool
     ) -> None:
-        sam = await _person(pool, "Sam Rivera", "sam@example.test")
-        _event_id, debrief_id = await self._debrief(pool, "sam@example.test")
+        sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        _event_id, debrief_id = await self._debrief(debrief_pool, "sam@example.test")
         await meeting_debrief_answer(
-            pool, debrief_id=debrief_id, commitments=[{"summary": "Send Sam the deck"}]
+            debrief_pool, debrief_id=debrief_id, commitments=[{"summary": "Send Sam the deck"}]
         )
-        src = await _source(pool)
+        src = await _source(debrief_pool)
         tomorrow = datetime.now(UTC) + timedelta(days=1)
         next_event = await _event(
-            pool,
+            debrief_pool,
             src,
             "Follow-up with Sam",
             attendees=_attendees("sam@example.test"),
             starts_at=tomorrow,
             ends_at=tomorrow + timedelta(hours=1),
         )
-        await pool.execute(
+        await debrief_pool.execute(
             "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
             next_event,
             sam,
         )
 
-        await run_relationship_calendar_prep_contribution(pool, None)
+        await run_relationship_calendar_prep_contribution(debrief_pool, None)
 
-        raw = await pool.fetchval(
+        raw = await debrief_pool.fetchval(
             "SELECT value FROM public.state WHERE key = $1", prep_key(str(next_event))
         )
         envelope = json.loads(raw) if isinstance(raw, str) else raw
@@ -706,12 +711,12 @@ class TestAnswer:
         assert [c["summary"] for c in attendee["commitments"]] == ["Send Sam the deck"]
 
     async def test_competing_distinct_answers_commit_only_the_winner(
-        self, pool, migrated_db_url
+        self, debrief_pool, debrief_url
     ) -> None:
-        await _person(pool, "Owner Person", "owner@example.test", owner=True)
-        sam = await _person(pool, "Sam Rivera", "sam@example.test")
-        _event_id, debrief_id = await self._debrief(pool, "sam@example.test")
-        before = await _sentinels(pool, sam)
+        await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        _event_id, debrief_id = await self._debrief(debrief_pool, "sam@example.test")
+        before = await _sentinels(debrief_pool, sam)
         answers = [
             {
                 "commitments": [{"summary": "Send the alpha deck"}, {"summary": "Book alpha room"}],
@@ -723,28 +728,28 @@ class TestAnswer:
             },
         ]
 
-        results = await _race_answers(migrated_db_url, debrief_id, answers)
+        results = await _race_answers(debrief_url, debrief_id, answers)
 
-        await _assert_winning_effects(pool, debrief_id, answers, results, before)
+        await _assert_winning_effects(debrief_pool, debrief_id, answers, results, before)
 
     @pytest.mark.parametrize(
         "mode", ["sequential-none", "competing-none", "stale-none", "stale-captured-self"]
     )
     async def test_none_is_a_recorded_answer_and_a_second_answer_changes_nothing(
-        self, pool, migrated_db_url, monkeypatch, mode
+        self, debrief_pool, debrief_url, monkeypatch, mode
     ) -> None:
-        await _person(pool, "Owner Person", "owner@example.test", owner=True)
-        sam = await _person(pool, "Sam Rivera", "sam@example.test")
-        _event_id, debrief_id = await self._debrief(pool, "sam@example.test")
+        await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        _event_id, debrief_id = await self._debrief(debrief_pool, "sam@example.test")
 
         if mode == "competing-none":
-            before = await _sentinels(pool, sam)
+            before = await _sentinels(debrief_pool, sam)
             answers = [
                 {"commitments": [], "session_id": "answer-none"},
                 {"commitments": [{"summary": "Send Sam the deck"}], "session_id": "answer-deck"},
             ]
-            results = await _race_answers(migrated_db_url, debrief_id, answers)
-            await _assert_winning_effects(pool, debrief_id, answers, results, before)
+            results = await _race_answers(debrief_url, debrief_id, answers)
+            await _assert_winning_effects(debrief_pool, debrief_id, answers, results, before)
             statuses = [result["status"] for result in results]
             assert statuses.count("already_answered") == 1
             winner = next(
@@ -753,15 +758,15 @@ class TestAnswer:
             expected_state = "none_agreed" if winner == 0 else "captured"
             assert statuses[winner] == expected_state
             first = results[winner]
-            state = await _debrief_state(pool, debrief_id)
+            state = await _debrief_state(debrief_pool, debrief_id)
             assert state["state"] == expected_state and state["answered_at"] is not None
             assert state["session_id"] == answers[winner]["session_id"]
         elif mode.startswith("stale-"):
             # Both rows were selected while pending. The second remains a genuine
             # pending-expiry positive; the first is answered after the job's read.
-            _second_event, pending_id = await self._debrief(pool, "sam@example.test")
-            await pool.execute("UPDATE meeting_debriefs SET prompted_at = NULL")
-            await pool.execute(
+            _second_event, pending_id = await self._debrief(debrief_pool, "sam@example.test")
+            await debrief_pool.execute("UPDATE meeting_debriefs SET prompted_at = NULL")
+            await debrief_pool.execute(
                 "UPDATE public.entities SET posture = 'no_contact' WHERE id = $1", sam
             )
             selected = asyncio.Event()
@@ -777,13 +782,13 @@ class TestAnswer:
 
             monkeypatch.setattr(debrief_job, "active_entity_ids", held_active)
             job = asyncio.create_task(
-                debrief_job._propose_batch(pool, _Proposer(), datetime.now(UTC))
+                debrief_job._propose_batch(debrief_pool, _Proposer(), datetime.now(UTC))
             )
             try:
                 async with asyncio.timeout(15):
                     await _wait_until_held(job, selected)
                     first = await meeting_debrief_answer(
-                        pool,
+                        debrief_pool,
                         debrief_id=debrief_id,
                         commitments=(
                             [
@@ -800,43 +805,47 @@ class TestAnswer:
                     )
                     expected_state = "captured" if mode == "stale-captured-self" else "none_agreed"
                     assert first["status"] == expected_state
-                    state = await _debrief_state(pool, debrief_id)
-                    effects = await _effects(pool)
+                    state = await _debrief_state(debrief_pool, debrief_id)
+                    effects = await _effects(debrief_pool)
                     release.set()
                     result = await job
                 assert result["skipped"] == "nothing_to_ask"
-                assert (await _debrief_state(pool, pending_id))["state"] == "expired"
-                assert await _debrief_state(pool, debrief_id) == state
-                assert await _effects(pool) == effects
+                assert (await _debrief_state(debrief_pool, pending_id))["state"] == "expired"
+                assert await _debrief_state(debrief_pool, debrief_id) == state
+                assert await _effects(debrief_pool) == effects
             finally:
                 release.set()
                 if not job.done():
                     job.cancel()
                 await asyncio.gather(job, return_exceptions=True)
         else:
-            first = await meeting_debrief_answer(pool, debrief_id=debrief_id)
-            state = await _debrief_state(pool, debrief_id)
+            first = await meeting_debrief_answer(debrief_pool, debrief_id=debrief_id)
+            state = await _debrief_state(debrief_pool, debrief_id)
             assert first["status"] == "none_agreed"
-            assert await _commitments(pool) == []
-            assert await pool.fetchval("SELECT state FROM meeting_debriefs") == "none_agreed"
+            assert await _commitments(debrief_pool) == []
+            assert (
+                await debrief_pool.fetchval("SELECT state FROM meeting_debriefs") == "none_agreed"
+            )
 
-        before_retry = await _effects(pool)
+        before_retry = await _effects(debrief_pool)
         second = await meeting_debrief_answer(
-            pool, debrief_id=debrief_id, commitments=[{"summary": "Send Sam the deck"}]
+            debrief_pool, debrief_id=debrief_id, commitments=[{"summary": "Send Sam the deck"}]
         )
 
         assert second["status"] == "already_answered"
-        assert await _effects(pool) == before_retry
-        assert await _debrief_state(pool, debrief_id) == state
+        assert await _effects(debrief_pool) == before_retry
+        assert await _debrief_state(debrief_pool, debrief_id) == state
 
     @pytest.mark.parametrize("invalid_item", ["outside-attendee", "empty-normalized-action"])
-    async def test_counterparty_outside_the_meeting_is_refused(self, pool, invalid_item) -> None:
-        await _person(pool, "Sam Rivera", "sam@example.test")
-        outsider = await _person(pool, "Priya Outsider", "priya@example.test")
-        _event_id, debrief_id = await self._debrief(pool, "sam@example.test")
+    async def test_counterparty_outside_the_meeting_is_refused(
+        self, debrief_pool, invalid_item
+    ) -> None:
+        await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        outsider = await _person(debrief_pool, "Priya Outsider", "priya@example.test")
+        _event_id, debrief_id = await self._debrief(debrief_pool, "sam@example.test")
 
         result = await meeting_debrief_answer(
-            pool,
+            debrief_pool,
             debrief_id=debrief_id,
             commitments=[
                 {"summary": "Send Sam the deck"},
@@ -849,22 +858,22 @@ class TestAnswer:
         )
 
         assert result["status"] == "invalid"
-        assert await _commitments(pool) == [], "validated before the first write"
-        assert await pool.fetchval("SELECT state FROM meeting_debriefs") == "pending"
+        assert await _commitments(debrief_pool) == [], "validated before the first write"
+        assert await debrief_pool.fetchval("SELECT state FROM meeting_debriefs") == "pending"
 
     @pytest.mark.parametrize(
         "fault", ["later-create", "later-graph", "final-state", "cancellation", "connection-close"]
     )
     async def test_answer_fault_after_real_write_rolls_back_the_batch(
-        self, pool, monkeypatch, fault
+        self, debrief_pool, monkeypatch, fault
     ) -> None:
-        await _person(pool, "Owner Person", "owner@example.test", owner=True)
-        sam = await _person(pool, "Sam Rivera", "sam@example.test")
-        _event_id, debrief_id = await self._debrief(pool, "sam@example.test")
+        await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+        _event_id, debrief_id = await self._debrief(debrief_pool, "sam@example.test")
         # The first item inserts a new episode. The second also exercises a real
         # confirmation UPDATE; its before image and graph upsert must roll back.
         prior = await commitment_tools.create_commitment(
-            pool,
+            debrief_pool,
             source="relationship:commitment",
             summary="Confirm prior deck agreement",
             kind="promise",
@@ -875,8 +884,8 @@ class TestAnswer:
             action_description="Confirm prior deck agreement",
         )
         assert prior is not None
-        before = await _sentinels(pool, sam)
-        state_before = await _debrief_state(pool, debrief_id)
+        before = await _sentinels(debrief_pool, sam)
+        state_before = await _debrief_state(debrief_pool, debrief_id)
         assert state_before == {"state": "pending", "answered_at": None, "session_id": None}
         real_graph = commitment_tools._post_write_commitment_edges
         answer_module = inspect.getmodule(meeting_debrief_answer)
@@ -930,7 +939,7 @@ class TestAnswer:
         monkeypatch.setattr(commitment_tools, "_post_write_commitment_edges", observed_graph)
         monkeypatch.setattr(answer_module, "create_commitment", observed_create)
         if fault == "final-state":
-            await pool.execute(
+            await debrief_pool.execute(
                 """
                 CREATE FUNCTION relationship.test_debrief_final_state_fault()
                 RETURNS trigger LANGUAGE plpgsql AS $$
@@ -947,7 +956,7 @@ class TestAnswer:
             )
         task = asyncio.create_task(
             meeting_debrief_answer(
-                pool,
+                debrief_pool,
                 debrief_id=debrief_id,
                 commitments=[
                     {"summary": "Send a new project memo"},
@@ -988,26 +997,30 @@ class TestAnswer:
             assert len(graph_writes) == (1 if fault in {"later-create", "cancellation"} else 2)
             if len(graph_writes) == 2:
                 assert graph_writes[1] == prior.condition_id, "actual confirmation SQL was reached"
-            assert await _debrief_state(pool, debrief_id) == state_before
-            assert await _effects(pool) == before, f"{fault}: pre-commit batch effects survived"
+            assert await _debrief_state(debrief_pool, debrief_id) == state_before
+            assert await _effects(debrief_pool) == before, (
+                f"{fault}: pre-commit batch effects survived"
+            )
         finally:
             release.set()
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             if fault == "final-state":
-                await pool.execute(
+                await debrief_pool.execute(
                     "DROP TRIGGER test_debrief_final_state_fault ON relationship.meeting_debriefs; "
                     "DROP FUNCTION relationship.test_debrief_final_state_fault()"
                 )
 
-    async def test_unresolved_attendee_yields_a_null_counterparty_commitment(self, pool) -> None:
-        _event_id, debrief_id = await self._debrief(pool, "new.person@example.test")
+    async def test_unresolved_attendee_yields_a_null_counterparty_commitment(
+        self, debrief_pool
+    ) -> None:
+        _event_id, debrief_id = await self._debrief(debrief_pool, "new.person@example.test")
 
         result = await meeting_debrief_answer(
-            pool, debrief_id=debrief_id, commitments=[{"summary": "Send the deck"}]
+            debrief_pool, debrief_id=debrief_id, commitments=[{"summary": "Send the deck"}]
         )
 
         assert result["status"] == "captured"
-        (row,) = await _commitments(pool)
+        (row,) = await _commitments(debrief_pool)
         assert row["metadata"]["counterparty_entity_id"] is None

@@ -25,7 +25,6 @@ These tests prove:
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import shutil
 from pathlib import Path
@@ -39,6 +38,7 @@ from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -60,17 +60,9 @@ _MIGRATION_PATH = (
 _DEFAULTS_TOML_PATH = Path(__file__).resolve().parents[2] / "model_catalog_defaults.toml"
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_159", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def test_canonical_tiers_match_core_093_rename_target() -> None:
     """core_159's tier filter must accept exactly the vocabulary core_093 introduced."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_159")
     assert set(mod._CANONICAL_TIERS) == {
         "reasoning",
         "workhorse",
@@ -85,7 +77,7 @@ def test_defaults_toml_entries_all_use_canonical_vocab() -> None:
     """Guard against re-drifting the toml back to legacy tier names."""
     import tomllib
 
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_159")
     with open(_DEFAULTS_TOML_PATH, "rb") as f:
         data = tomllib.load(f)
     for entry in data["models"]:
@@ -181,7 +173,7 @@ async def test_fresh_bootstrap_specific_toml_alias_resolves(fresh_core_db_url: s
 @pytest.mark.asyncio(loop_scope="session")
 async def test_reseed_upgrade_is_idempotent(fresh_core_db_url: str) -> None:
     """Re-running core_159's upgrade() again must not error or duplicate rows."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_159")
     pool = await asyncpg.create_pool(fresh_core_db_url, min_size=1, max_size=2)
     try:
         before = await pool.fetchval("SELECT COUNT(*) FROM public.model_catalog")
@@ -220,7 +212,7 @@ async def test_reseed_upgrade_is_idempotent(fresh_core_db_url: str) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_downgrade_removes_toml_aliases(fresh_core_db_url: str) -> None:
     """downgrade() deletes exactly the toml-derived aliases; other rows survive."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_159")
     pool = await asyncpg.create_pool(fresh_core_db_url, min_size=1, max_size=2)
     try:
         seed_entries = mod._load_seed_entries()
@@ -277,7 +269,7 @@ def test_downgrade_and_reupgrade_real_alembic_roundtrip(postgres_container) -> N
         migration_bootstrap_db_url(postgres_container, db_name), chains=["core"]
     )
 
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_159")
     # Stop at the migration under test.  Rollback is not uniformly available
     # across the core chain: later revisions install privileged boundaries
     # whose rollback is deliberately bootstrap-only, so migrating to head first

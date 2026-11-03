@@ -24,11 +24,13 @@ from butlers.chronicler.adapters.owner_outbound import (
     OwnerOutboundMessageAdapter,
 )
 from butlers.chronicler.models import Layer, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 7, 5, 10, 0, 0, tzinfo=UTC)
 
 
-def _make_row(
+def _outbound_row(
     row_id: str = "some-uuid",
     channel: str = "telegram_user_client",
     occurred_at: datetime = _NOW,
@@ -36,27 +38,12 @@ def _make_row(
     return {"id": row_id, "channel": channel, "occurred_at": occurred_at}
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -65,7 +52,7 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -73,7 +60,7 @@ def _chronicler_pool() -> AsyncMock:
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -111,7 +98,7 @@ def test_no_llm_imports_in_owner_outbound_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_project_single_row_produces_one_point_event() -> None:
-    row = _make_row()
+    row = _outbound_row()
     adapter = OwnerOutboundMessageAdapter()
 
     upserted_events = []
@@ -144,7 +131,7 @@ async def test_project_single_row_produces_one_point_event() -> None:
 @pytest.mark.asyncio
 async def test_point_event_payload_carries_channel_only() -> None:
     """Privacy: payload must never carry content or counterpart identity."""
-    row = _make_row(channel="whatsapp_user_client")
+    row = _outbound_row(channel="whatsapp_user_client")
     adapter = OwnerOutboundMessageAdapter()
     upserted_events = []
 
@@ -168,7 +155,7 @@ async def test_point_event_payload_carries_channel_only() -> None:
 @pytest.mark.asyncio
 async def test_no_episode_ever_created() -> None:
     """Point events only — an owner-outbound message must never inflate lane time alone."""
-    row = _make_row()
+    row = _outbound_row()
     adapter = OwnerOutboundMessageAdapter()
     pool = _pool_returning(row)
     cp = _chronicler_pool()
@@ -185,9 +172,9 @@ async def test_no_episode_ever_created() -> None:
 
 @pytest.mark.asyncio
 async def test_multiple_rows_each_produce_a_point_event_and_watermark_advances() -> None:
-    row1 = _make_row(row_id="a", occurred_at=_NOW)
+    row1 = _outbound_row(row_id="a", occurred_at=_NOW)
     later = datetime(2026, 7, 5, 11, 0, 0, tzinfo=UTC)
-    row2 = _make_row(row_id="b", occurred_at=later)
+    row2 = _outbound_row(row_id="b", occurred_at=later)
     adapter = OwnerOutboundMessageAdapter()
     pool = _pool_returning(row1, row2)
     cp = _chronicler_pool()

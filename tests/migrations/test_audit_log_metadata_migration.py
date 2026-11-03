@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,6 +19,7 @@ import asyncpg
 import pytest
 
 from butlers.api.routers.audit import append
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -28,14 +28,6 @@ _CORE_092 = _VERSIONS / "core_092_audit_log.py"
 _CORE_122 = _VERSIONS / "core_122_audit_log_metadata_result_error.py"
 _CORE_202 = _VERSIONS / "core_202_audit_log_failure_category.py"
 _CORE_279 = _VERSIONS / "core_279_audit_writer_integrity.py"
-
-
-def _load_migration(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 async def _apply(pool: asyncpg.Pool, mod, direction: str) -> None:
@@ -61,8 +53,8 @@ async def _upgrade_to_122(pool: asyncpg.Pool) -> None:
     Used by the tests that assert what core_122 itself did, which must keep
     describing that revision no matter what later migrations add.
     """
-    await _apply(pool, _load_migration("core_092", _CORE_092), "upgrade")
-    await _apply(pool, _load_migration("core_122", _CORE_122), "upgrade")
+    await _apply(pool, load_migration(_CORE_092, "core_092"), "upgrade")
+    await _apply(pool, load_migration(_CORE_122, "core_122"), "upgrade")
 
 
 async def _upgrade_for_append(pool: asyncpg.Pool) -> None:
@@ -76,8 +68,8 @@ async def _upgrade_for_append(pool: asyncpg.Pool) -> None:
     against a writer that no longer exists.
     """
     await _upgrade_to_122(pool)
-    await _apply(pool, _load_migration("core_202", _CORE_202), "upgrade")
-    await _apply(pool, _load_migration("core_279", _CORE_279), "upgrade")
+    await _apply(pool, load_migration(_CORE_202, "core_202"), "upgrade")
+    await _apply(pool, load_migration(_CORE_279, "core_279"), "upgrade")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -155,7 +147,7 @@ async def test_downgrade_drops_new_columns(audit_log_pool: asyncpg.Pool) -> None
     """Downgrade removes metadata/result/error, leaving the base table intact."""
     pool = audit_log_pool
     await _upgrade_to_122(pool)
-    await _apply(pool, _load_migration("core_122", _CORE_122), "downgrade")
+    await _apply(pool, load_migration(_CORE_122, "core_122"), "downgrade")
 
     remaining = await pool.fetch(
         "SELECT column_name FROM information_schema.columns "

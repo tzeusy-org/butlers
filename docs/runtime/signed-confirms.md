@@ -73,6 +73,23 @@ terminal rendering. Each row is attempted at most once in a tick, so a failing s
 starve other answers. Timeout without a declared option never invents a domain choice.
 Conversational timeout enters admission as system record-only evidence, not owner speech.
 
+## Prompt retention
+
+A row keeps its question, quoted facts and option labels only while something may still
+read them. Each worker cycle replaces the prompt of a settled row (terminal, applied, and
+with no terminal rendering still owed) with a content-free tombstone once 14 days have
+passed since it was answered or expired (`PROMPT_RETENTION` in `confirm_service.py`).
+The tombstone is `{"redacted": true, "digest": <sha256 of the original prompt>}`, built
+only by `public.confirm_redacted_prompt` (`core_307`). The identity guard admits no other
+prompt change, admits this one only on a settled row, and refuses to send a redacted row
+back into application.
+
+Recipient, answer, channel, receipts and timestamps stay, so the answer is still on
+record. A repeated producer request compares its prompt through the digest and still
+returns the same row, or refuses a different question under the same key. Owner cards
+show a fixed placeholder and no options. Rows still pending, retrying application or
+owed a terminal edit keep their content until they settle.
+
 `ConfirmEvidence` reloads accepted provenance and immutable question/option content.
 The question is a structural data segment; a verified owner's chosen value is owner input.
 Non-owner values remain data and exposed. `GoalAdmission.admit_submission` alone applies

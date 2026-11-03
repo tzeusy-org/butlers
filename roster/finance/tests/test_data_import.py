@@ -660,6 +660,7 @@ class TestDeduplication:
         blob_store = self._make_blob_store(CHASE_CSV)
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])  # no duplicates found
         pool.execute = AsyncMock()
 
@@ -850,6 +851,7 @@ class TestBatchProcessing:
         content = self._build_large_csv(1000)
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])  # no duplicates in batch query
         pool.execute = AsyncMock()
 
@@ -872,6 +874,7 @@ class TestBatchProcessing:
         content = self._build_large_csv(501)
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])  # no duplicates
         pool.execute = AsyncMock()
 
@@ -953,23 +956,56 @@ class TestErrorHandling:
             assert result["reason"] == reason
             blob_store.get.assert_not_awaited()
 
-    async def test_undetectable_date_format_returns_error(self):
-        """CSV with unrecognizable date format returns structured error."""
+    _WIDE_HEADERS = ["Date", "Description", "Amount", "x" * 150] + [f"c{i}" for i in range(56)]
+
+    @pytest.mark.parametrize(
+        ("csv_text", "headers", "headers_truncated", "missing_columns"),
+        [
+            # Columns resolve, but the date values match no known format.
+            (
+                "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n",
+                ["Transaction Date", "Description", "Amount"],
+                False,
+                [],
+            ),
+            # Dates parse, but no merchant or amount column can be found.
+            (
+                "Date,Memo,Sum\n2024-01-15,MERCHANT,-10.00\n",
+                ["Date", "Memo", "Sum"],
+                False,
+                ["merchant", "amount"],
+            ),
+            # Untrusted headers are bounded: first 50 names, each cut to 100 chars.
+            (
+                ",".join(_WIDE_HEADERS) + "\nJanuary 15 2024,MERCHANT,-10.00\n",
+                ["Date", "Description", "Amount", "x" * 100] + [f"c{i}" for i in range(46)],
+                True,
+                [],
+            ),
+        ],
+        ids=["bad-date", "no-merchant-amount", "oversized-headers"],
+    )
+    async def test_unknown_format_returns_unrecognized_format_with_headers(
+        self, csv_text, headers, headers_truncated, missing_columns
+    ):
+        """Spec 'Unknown format fallback': unrecognized_format plus the headers to map."""
         from butlers.tools.finance.data_import import import_transactions
 
-        bad_csv = "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n"
-        blob_store = self._make_blob_store(bad_csv)
         pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
 
         result = await import_transactions(
             pool=pool,
-            blob_store=blob_store,
+            blob_store=self._make_blob_store(csv_text),
             storage_ref="s3://bucket/finance/bad.csv",
             origin_butler="finance",
         )
 
-        assert result["status"] == "error"
-        assert "date" in result["error"].lower()
+        assert result["status"] == "unrecognized_format"
+        assert result["headers"] == headers
+        assert result["headers_truncated"] is headers_truncated
+        assert result["missing_columns"] == missing_columns
+        pool.execute.assert_not_called()
 
     async def test_row_with_missing_amount_logged_as_error(self):
         """Row with empty amount is captured in error_details, not raised."""
@@ -982,6 +1018,7 @@ class TestErrorHandling:
         )
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1023,6 +1060,7 @@ class TestErrorHandling:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1053,6 +1091,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1070,6 +1109,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(AMEX_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1087,6 +1127,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(CAPITAL_ONE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1104,6 +1145,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1218,6 +1260,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
@@ -1241,6 +1284,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         # First fetchrow call is _lookup_account_currency, returns GBP.
         pool.fetchrow = AsyncMock(return_value={"currency": "GBP"})
         pool.fetch = AsyncMock(return_value=[])
@@ -1266,6 +1310,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
@@ -1288,6 +1333,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         # Account found but currency field is empty.
         pool.fetchrow = AsyncMock(return_value={"currency": ""})
         pool.fetch = AsyncMock(return_value=[])
@@ -1386,39 +1432,32 @@ class TestCurrencyInference:
         assert cur == "USD"
         assert warn is not None
 
-    async def test_file_import_infers_currency_from_account(self):
-        """import_transactions_from_file also infers currency from the account record."""
-        import os
-        import tempfile
+    async def test_import_infers_currency_from_account_with_full_pipeline(self):
+        """The storage_ref import infers currency from the account through the full pipeline."""
+        from butlers.tools.finance.data_import import import_transactions
 
-        from butlers.tools.finance.data_import import import_transactions_from_file
+        blob_store = AsyncMock(scheme="s3")
+        blob_store.get = AsyncMock(return_value=CHASE_CSV.encode("utf-8"))
+        pool = MagicMock()
+        # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                {"currency": "AUD"},  # _lookup_account_currency
+                None,  # dedup check rows (fetchrow fallback)
+            ]
+        )
+        pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
+        pool.fetch = AsyncMock(return_value=[])  # batch dedup
+        pool.execute = AsyncMock()
 
-        # Write a small Chase CSV to a temp file.
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as fh:
-            fh.write(CHASE_CSV)
-            tmp_path = fh.name
-
-        try:
-            pool = MagicMock()
-            # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
-            pool.fetchrow = AsyncMock(
-                side_effect=[
-                    {"currency": "AUD"},  # _lookup_account_currency
-                    None,  # dedup check rows (fetchrow fallback)
-                ]
-            )
-            pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
-            pool.fetch = AsyncMock(return_value=[])  # batch dedup
-            pool.execute = AsyncMock()
-
-            result = await import_transactions_from_file(
-                pool=pool,
-                file_path=tmp_path,
-                account_id="33333333-3333-3333-3333-333333333333",
-                currency=None,
-            )
-        finally:
-            os.unlink(tmp_path)
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
+            account_id="33333333-3333-3333-3333-333333333333",
+            currency=None,
+        )
 
         assert result.get("currency_warning") is None
         assert "import_batch_id" in result
@@ -1453,6 +1492,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1476,6 +1516,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1500,6 +1541,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1530,6 +1572,7 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1554,6 +1597,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 

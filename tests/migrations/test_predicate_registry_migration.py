@@ -16,12 +16,13 @@ Parent epic: bu-ao6uh — entity-redesign backend contracts
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -32,18 +33,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("rel_014", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
     """Run upgrade() with op mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_014")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -54,7 +46,7 @@ def _collect_upgrade_sqls() -> list[str]:
 
 def _collect_downgrade_sqls() -> list[str]:
     """Run downgrade() with op mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_014")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -137,7 +129,7 @@ class TestUpgradeSQLShape:
 
     def test_seed_count_by_kind(self) -> None:
         """Verify total and per-kind seed counts match the spec."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_014")
         contact_count = len(mod._CONTACT_PREDICATES)
         relational_count = len(mod._RELATIONAL_PREDICATES)
         override_count = len(mod._OVERRIDE_PREDICATES)

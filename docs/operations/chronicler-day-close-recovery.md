@@ -98,15 +98,21 @@ credential transport (`.5`) are separate work.
 
 ## Sanitized capture and requested-input binding
 
-Core notify capture deliberately omits raw message/recipient/context input. The
-writer reads the actual registered notify signature through an inert local
-registrar, expands its declared defaults, and recomputes the existing complete
-input fingerprint for same-session parser values. It requires one unambiguous
+Core notify capture keeps only the notify allowlist (`message`, `channel`,
+`intent`, `recipient`, `entity_id`, `request_context`); subject, attachments,
+options and the other delivery arguments stay out. The capture's input
+fingerprint is a plain sha256 of the complete default-bound input when that
+allowlist view reproduces it, so recovery can recompute it from the persisted
+row in a later process; a call that set any other argument keeps a keyed
+per-process fingerprint, and recovery refuses it. The writer reads the actual
+registered notify signature through an inert local registrar, expands its
+declared defaults, and recomputes that complete input fingerprint for
+same-session values. It requires one unambiguous
 match to the trusted successful execution. A merged record can inherit parser
 input: adjacency to an outcome, or a parser-supplied fingerprint, is never that
 binding. Missing/changed signatures, missing carriers/hashes, mismatches,
 duplicate candidates and malformed arguments refuse; historical defaults are
-not guessed. This adds no raw capture fields and invokes no notify handler.
+not guessed. It invokes no notify handler.
 
 The match proves requested input only. Owner-default request, exact executed
 bundle date/timezone and actual return semantics remain separate checks.
