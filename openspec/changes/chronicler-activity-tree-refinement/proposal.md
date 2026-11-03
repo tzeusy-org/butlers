@@ -17,7 +17,7 @@ A deep dive on 2026-11-03 tested that tree against the owner's dev data for Sep 
 - **Steam play is placed by guesswork.**
   - The Chronicler Steam adapter knows only a daily playtime total, so it anchors each day's play to the poll time. Nov 1's 258 minutes were placed at 21:38–01:56.
   - The Steam connector already detects in-game changes every 5 minutes. On Nov 1 they came in two runs, about 13:15–16:51 and about 21:06–01:56. No table stores them, so Chronicler cannot read them.
-- **Trips get no blocks.** A stay more than 50 km from home gets no block, so the Oct 21–30 trip in Japan is mostly unaccounted. The calendar already holds the flights and the hotel stay.
+- **Trips get no blocks.** A stay more than 50 km from home gets no block, so the Oct 21–30 trip in Japan is mostly unaccounted. The calendar holds the flights and the hotel stay, but it cannot be relied on to say which events are travel: they land under whichever butler schema projects them first.
 
 The deep dive also found signals that the owner chose **not** to use:
 
@@ -26,18 +26,21 @@ The deep dive also found signals that the owner chose **not** to use:
 
 ## Owner decisions (2026-11-03, this change's authority)
 
-1. **Home is never Work.** Work is inferred only at the registered work place, which keeps the earlier office-only decision. PC power and home presence sensors never make home time Work.
-2. **Only Steam means Play.** Play comes from Steam's in-game status, with the daily Steam total as a fallback. PC power draw is never a lane source.
-3. **The whole trip is Travel.** Waking time on a trip away from home counts as Travel.
+1. **Home is never Work.** Work is inferred only at the registered work place, which keeps the earlier office-only decision. PC power, home presence sensors and the occupation, focus and screen inferences never make home time Work.
+2. **Only Steam means Play.** Play comes from Steam's in-game status, with the daily Steam total as a fallback. PC power draw is never a lane source. Spotify, which the earlier taxonomy counted as Play, now counts toward no lane.
+3. **The whole trip is Travel.** Every waking hour on a trip counts as Travel, including any workout. This places trips above exercise in the precedence order.
 
 Text that conforms to these decisions is approved by them. An independent reviewer checks conformance in each PR.
 
 ## What changes
 
-- **Inferred sleep and a personal waking window.** A night with no watch sleep gets a low-confidence `inferred_sleep` block. The block covers the longest quiet run inside the owner's usual sleep window. The waking window used for untracked time and the gap interview comes from that day's sleep, else from the owner's 28-day median, else from 06:00–22:00.
-- **Exercise needs effort.** A Google Health workout counts as Exercise when the owner started it by hand, when it is not a walk, or when it averages at least 4 km/h for at least 10 minutes. Any other walk becomes on-foot evidence. Away from home it joins the surrounding outing or travel block; at home it counts nothing.
-- **Steam in-game status becomes timed Play.** The Steam connector stores each in-game start and stop. Chronicler projects minute-precision `play_session` episodes from them and suppresses the daily-total guess for a date that has sessions. A session while the owner's phone is away from home is evidence only.
-- **Trip days are Travel.** A trip span runs while the owner's latest fix is more than 50 km from home, extended by overlapping calendar flight, hotel and trip blocks. `chronicler.situation_inferred` emits a `trip_block` over that span, minus sleep and owner answers. The gap interview asks nothing for a day spent mostly on a trip.
+- **One fusion point.** `chronicler.situation_inferred` derives every place-dependent block in precedence order, so none of them overlap. Workouts, Steam sessions and Spotify become evidence, and the adapter turns the qualifying ones into blocks.
+- **Inferred sleep and owner awake time.** A night with no watch sleep gets a low-confidence `inferred_sleep_block` over the longest quiet run inside the owner's usual sleep window. Untracked time and the gap interview measure the day minus its sleep, not a fixed 06:00–22:00 window.
+- **Exercise needs effort.** A workout is Exercise when the owner recorded or started it, when it is not a walk, or when it averages at least 4 km/h for at least 10 minutes. The Google Health connector stops folding owner-started workouts into `auto`. A slow walk adds nothing itself; the movement, outing or home block around it decides its time.
+- **Steam in-game status becomes timed Play.** The Steam connector stores each in-game change. Chronicler projects minute-precision `play_session` evidence and a `play_block` for the part not away from home. A date that has sessions has its daily-total guess suppressed.
+- **Trip days are Travel.** A trip span runs from the departure fix before the owner goes more than 50 km from home to the first fix back within 50 km. A `trip_block` covers it, minus sleep and owner answers. The gap interview asks nothing for a day spent mostly on a trip.
+- **Home is never Work, end to end.** Occupation, focus and screen episodes add nothing to Work while the owner is at home.
+- **Amends `chronicler-situational-inference`.** That change's lane taxonomy gains the new block types and drops Spotify from Play. Its "no block beyond 50 km" clause now defers to the trip rule.
 
 ## Non-goals
 
@@ -45,8 +48,9 @@ Text that conforms to these decisions is approved by them. An independent review
 - Meals: no meal source exists (`health.meals` is absent). The gap interview's Eat answer remains the only source.
 - ActivityWatch: it is not running on either PC (0 events). Owner-optional; this change does not depend on it.
 - Wi-Fi SSID auto-learning: only 23 fixes in the trail carry an SSID, too few to matter yet.
-- Changing the place clustering, anchors or precedence order from `chronicler-situational-inference`.
+- Changing the place clustering or anchors from `chronicler-situational-inference`. The precedence order changes in one place only: trips now rank above exercise (decision 3).
+- Calendar-derived trips: calendar events cannot be reliably attributed to travel today.
 
 ## Work items
 
-Epic `bu-r3fmja`. Children: `.5` (sleep and waking window), `.6` (walks), `.7` (Steam sessions) and `.8` (trips). Each depends on `.1` (PR #5457).
+Epic `bu-r3fmja`. Children: `.5` (sleep and awake time), `.6` (exercise effort), `.7` (Steam sessions and Spotify), `.8` (trips) and `.9` (home is never Work). Each depends on `.1` (PR #5457).

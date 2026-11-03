@@ -9,9 +9,10 @@ Source: bu-r3fmja.7; deep dive 2026-11-03 [Observed] 74 `status_change` events i
 Scope: v1-mandatory
 
 #### Scenario: A detected change is stored
-- **WHEN** an `online_status` poll observes a change in `gameextrainfo`, `gameid` or `personastate`
-- **THEN** the connector SHALL insert one `connectors.steam_status_history` row with `steam_id`, `steam_account_id`, `observed_at` (the poll time), `persona_state`, `game_id`, `game_name`, `prev_game_name` and `recorded_at`
+- **WHEN** an `online_status` poll observes a change under the existing delta rule (`personastate` or `gameextrainfo`)
+- **THEN** the connector SHALL insert one `connectors.steam_status_history` row with `steam_id`, `steam_account_id`, `observed_at` (the poll time), `persona_state`, `game_id` (from `gameid` when present), `game_name`, `prev_game_name` and `recorded_at`
 - **AND** inserting the same `(steam_id, observed_at)` again SHALL be a no-op
+- **AND** `gameid` SHALL NOT take part in change detection
 
 #### Scenario: Storage failure does not stall polling
 - **WHEN** the insert fails

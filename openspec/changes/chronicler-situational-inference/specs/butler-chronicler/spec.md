@@ -83,7 +83,7 @@ Scope: v1-mandatory
 - **WHEN** a place stay within 50 km of home matches no anchor
 - **THEN** an `outing_block` in the Social lane SHALL cover it minus higher-precedence spans
 - **AND** its payload SHALL give the distance from home rounded to 100 m
-- **AND** a stay more than 50 km from home SHALL produce no situational block
+- **AND** a stay more than 50 km from home SHALL produce no `outing_block`; trip time is counted as Travel instead (REQ-butler-chronicler-021, change `chronicler-activity-tree-refinement`)
 
 #### Scenario: Hold at the last known place
 - **WHEN** the latest accepted location fix is later than every place and movement episode end
