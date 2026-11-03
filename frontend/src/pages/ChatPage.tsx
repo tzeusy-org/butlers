@@ -169,9 +169,12 @@ export default function ChatPage() {
   });
 
   // A brand-new conversation (bare /chat) gets its id from the first send;
-  // reflect it in the URL so a refresh or copy-link keeps working.
+  // reflect it in the URL so a refresh or copy-link keeps working. Only bare
+  // /chat may push the URL: on /chat/:id the route is the source of truth, and
+  // a route change (A -> B) must flow route -> state, never back, or the two
+  // effects ping-pong (bu-p5umi2.6).
   useEffect(() => {
-    if (activeConversationId && activeConversationId !== routeId) {
+    if (routeId == null && activeConversationId) {
       navigate(`/chat/${activeConversationId}`, { replace: true });
     }
   }, [activeConversationId, routeId, navigate]);

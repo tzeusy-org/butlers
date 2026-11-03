@@ -27,6 +27,7 @@ defect this table exists to close).
 from __future__ import annotations
 
 import shutil
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -139,20 +140,31 @@ async def test_state_update_overwrites_in_place(home_pool: asyncpg.Pool) -> None
             state="22.5",
             attributes={"friendly_name": "Living Room Temperature"},
             last_updated="2026-06-27T10:00:00+00:00",
+            last_changed="2026-06-27T09:00:00+00:00",
         )
     }
     await module._persist_entity_snapshot()
+    assert await _last_changed(pool) == datetime(2026, 6, 27, 9, 0, tzinfo=UTC)
 
     # Simulate an HA state_changed update.
-    module._entity_cache["sensor.living_room_temperature"].state = "25.0"
-    module._entity_cache[
-        "sensor.living_room_temperature"
-    ].last_updated = "2026-06-27T10:05:00+00:00"
+    entity = module._entity_cache["sensor.living_room_temperature"]
+    entity.state = "25.0"
+    entity.last_updated = "2026-06-27T10:05:00+00:00"
+    entity.last_changed = "2026-06-27T10:05:00+00:00"
     await module._persist_entity_snapshot()
 
     rows = await _read_entity_snapshot(home_pool)
     assert len(rows) == 1
     assert rows[0]["state"] == "25.0"
+    # The safety job measures its hold from last_changed, so a re-persist must move it forward.
+    assert await _last_changed(pool) == datetime(2026, 6, 27, 10, 5, tzinfo=UTC)
+
+
+async def _last_changed(pool: asyncpg.Pool) -> datetime | None:
+    return await pool.fetchval(
+        "SELECT last_changed FROM ha_entity_snapshot WHERE entity_id = $1",
+        "sensor.living_room_temperature",
+    )
 
 
 async def test_read_unmeasurable_during_outage_despite_stale_rows(home_pool: asyncpg.Pool) -> None:

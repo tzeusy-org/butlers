@@ -9,6 +9,7 @@ from typing import Any, Literal
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.core.audit import write_audit_entry
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION, require_permission
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -254,7 +255,8 @@ class MutationsMixin:
         action_type: str,
         request_id: str | None,
         action_payload: dict[str, Any],
-        allow_pending_replay: bool = False,
+        tool_name: str | None = None,
+        tool_args: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         idempotency_key = self._mutation_idempotency_key(action_type, request_id)
         existing = await self._load_projection_action(idempotency_key)
@@ -273,7 +275,13 @@ class MutationsMixin:
                     "error": error or "Mutation failed",
                     "idempotent_replay": True,
                 }
-            if status == MUTATION_STATUS_PENDING and not allow_pending_replay:
+            # A pending row resumes only under the approvals executor's
+            # context for this exact tool call; any other caller is told it
+            # is still queued.
+            if (
+                status == MUTATION_STATUS_PENDING
+                and get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is None
+            ):
                 return idempotency_key, {
                     "status": "pending",
                     "message": "Mutation already queued for processing",

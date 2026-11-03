@@ -15,9 +15,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.routing.rule_promotion_apply import (
     AUTO_APPLY_ACTOR,
     SuggestionNotApplicable,
@@ -34,35 +32,12 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """A fresh migrated clone per test, so every test starts from a clean slate."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    # Clean slate for each test (module-scoped DB, function-scoped isolation).
-    # rule_promotion_suggestions.created_rule_id and
-    # ingestion_rules.promoted_from_suggestion_id form a two-way FK cycle — break
-    # it by nulling the suggestion→rule link before deleting either side.
-    async with p.acquire() as conn:
-        await conn.execute("UPDATE rule_promotion_suggestions SET created_rule_id = NULL")
-        await conn.execute("DELETE FROM ingestion_rules WHERE created_by = 'promotion'")
-        await conn.execute("DELETE FROM rule_promotion_suggestions")
-    yield p
-    await p.close()
 
 
 async def _insert_suggestion(
@@ -97,14 +72,14 @@ async def _insert_suggestion(
     )
 
 
-async def test_mint_creates_rule_with_provenance_and_confirms(pool):
+async def test_mint_creates_rule_with_provenance_and_confirms(switchboard_pool):
     sid = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="noreply@acme.com",
         proposed_action="metadata_only",
         is_clearly_automated=True,
     )
-    rule = await mint_rule_from_suggestion(pool, sid, decided_by="owner")
+    rule = await mint_rule_from_suggestion(switchboard_pool, sid, decided_by="owner")
 
     assert rule["created_by"] == "promotion"
     assert str(rule["promoted_from_suggestion_id"]) == str(sid)
@@ -112,7 +87,7 @@ async def test_mint_creates_rule_with_provenance_and_confirms(pool):
     assert rule["scope"] == "global"
     assert rule["enabled"] is True
 
-    sug = await pool.fetchrow(
+    sug = await switchboard_pool.fetchrow(
         "SELECT status, created_rule_id, decided_by, decided_at "
         "FROM rule_promotion_suggestions WHERE id = $1",
         sid,
@@ -123,14 +98,14 @@ async def test_mint_creates_rule_with_provenance_and_confirms(pool):
     assert sug["decided_at"] is not None
 
 
-async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(pool):
+async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(switchboard_pool):
     """Confirmation mints an exact endpoint rule, which the runtime can match."""
-    await pool.execute(
+    await switchboard_pool.execute(
         "INSERT INTO butler_registry (name, endpoint_url) VALUES ('lifestyle', 'http://localhost:1') "
         "ON CONFLICT (name) DO NOTHING"
     )
     sid = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="spotify:acct-1",
         source_channel="music",
         proposed_rule_type="source_endpoint",
@@ -139,11 +114,11 @@ async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(poo
         is_clearly_automated=False,
     )
 
-    rule = await apply_suggestion(pool, sid, decided_by="owner")
+    rule = await apply_suggestion(switchboard_pool, sid, decided_by="owner")
 
     assert rule["rule_type"] == "source_endpoint"
     assert rule["condition"] == {"endpoint_identity": "spotify:acct-1"}
-    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=pool)
+    evaluator = IngestionPolicyEvaluator(scope="global", db_pool=switchboard_pool)
     await evaluator.ensure_loaded()
     decision = evaluator.evaluate(
         IngestionEnvelope(source_channel="music", source_endpoint_identity="spotify:acct-1")
@@ -152,100 +127,102 @@ async def test_mint_source_endpoint_promotion_is_effective_for_that_endpoint(poo
     assert decision.target_butler == "lifestyle"
 
 
-async def test_mint_is_idempotent_against_double_apply(pool):
+async def test_mint_is_idempotent_against_double_apply(switchboard_pool):
     sid = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="alerts@acme.com",
         proposed_action="skip",
         is_clearly_automated=True,
     )
-    await mint_rule_from_suggestion(pool, sid, decided_by="owner")
+    await mint_rule_from_suggestion(switchboard_pool, sid, decided_by="owner")
     with pytest.raises(SuggestionNotApplicable) as exc:
-        await mint_rule_from_suggestion(pool, sid, decided_by="owner")
+        await mint_rule_from_suggestion(switchboard_pool, sid, decided_by="owner")
     assert exc.value.status_code == 409
     # Exactly one rule minted, not two.
-    count = await pool.fetchval(
+    count = await switchboard_pool.fetchval(
         "SELECT count(*) FROM ingestion_rules WHERE promoted_from_suggestion_id = $1", sid
     )
     assert count == 1
 
 
-async def test_missing_suggestion_is_404(pool):
+async def test_missing_suggestion_is_404(switchboard_pool):
     import uuid
 
     with pytest.raises(SuggestionNotApplicable) as exc:
-        await mint_rule_from_suggestion(pool, uuid.uuid4(), decided_by="owner")
+        await mint_rule_from_suggestion(switchboard_pool, uuid.uuid4(), decided_by="owner")
     assert exc.value.status_code == 404
 
 
-async def test_route_to_unregistered_butler_is_422(pool):
+async def test_route_to_unregistered_butler_is_422(switchboard_pool):
     sid = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="ceo@acme.com",
         proposed_action="route_to:ghost",
         is_clearly_automated=False,
     )
     with pytest.raises(SuggestionNotApplicable) as exc:
-        await apply_suggestion(pool, sid, decided_by="owner")
+        await apply_suggestion(switchboard_pool, sid, decided_by="owner")
     assert exc.value.status_code == 422
     # The failed apply left the suggestion pending (transaction rolled back).
-    status = await pool.fetchval("SELECT status FROM rule_promotion_suggestions WHERE id = $1", sid)
+    status = await switchboard_pool.fetchval(
+        "SELECT status FROM rule_promotion_suggestions WHERE id = $1", sid
+    )
     assert status == "pending_review"
 
 
-async def test_route_to_registered_butler_mints(pool):
-    await pool.execute(
+async def test_route_to_registered_butler_mints(switchboard_pool):
+    await switchboard_pool.execute(
         "INSERT INTO butler_registry (name, endpoint_url) VALUES ('finance', 'http://localhost:1') "
         "ON CONFLICT (name) DO NOTHING"
     )
     sid = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="invoices@acme.com",
         proposed_action="route_to:finance",
         is_clearly_automated=False,
     )
-    rule = await apply_suggestion(pool, sid, decided_by="owner")
+    rule = await apply_suggestion(switchboard_pool, sid, decided_by="owner")
     assert rule["action"] == "route_to:finance"
     assert rule["created_by"] == "promotion"
 
 
-async def test_auto_apply_only_mints_automated_skip_metadata(pool):
+async def test_auto_apply_only_mints_automated_skip_metadata(switchboard_pool):
     auto_skip = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="noreply@a.com",
         proposed_action="skip",
         is_clearly_automated=True,
     )
     auto_meta = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="alerts@b.com",
         proposed_action="metadata_only",
         is_clearly_automated=True,
     )
     # NOT auto-applied: non-automated skip, and an automated route_to.
     manual_skip = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="human@c.com",
         proposed_action="skip",
         is_clearly_automated=False,
     )
-    await pool.execute(
+    await switchboard_pool.execute(
         "INSERT INTO butler_registry (name, endpoint_url) VALUES ('finance', 'http://localhost:1') "
         "ON CONFLICT (name) DO NOTHING"
     )
     auto_route = await _insert_suggestion(
-        pool,
+        switchboard_pool,
         sender_key="noreply@d.com",
         proposed_action="route_to:finance",
         is_clearly_automated=True,
     )
 
-    counts = await auto_apply_automated_suggestions(pool)
+    counts = await auto_apply_automated_suggestions(switchboard_pool)
     assert counts["auto_apply_candidates"] == 2
     assert counts["auto_apply_applied"] == 2
 
     async def _status(sid):
-        return await pool.fetchval(
+        return await switchboard_pool.fetchval(
             "SELECT status FROM rule_promotion_suggestions WHERE id = $1", sid
         )
 
@@ -256,7 +233,7 @@ async def test_auto_apply_only_mints_automated_skip_metadata(pool):
     assert await _status(auto_route) == "pending_review"
 
     # Auto-applied rows are stamped with the auto-apply actor for the info surface.
-    decided_by = await pool.fetchval(
+    decided_by = await switchboard_pool.fetchval(
         "SELECT decided_by FROM rule_promotion_suggestions WHERE id = $1", auto_skip
     )
     assert decided_by == AUTO_APPLY_ACTOR

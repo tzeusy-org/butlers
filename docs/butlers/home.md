@@ -51,9 +51,12 @@ name for the device. A declared sensor that stays on for 60 seconds opens an own
 (source `home:safety`) and sends one high-priority message through the notify path, which
 quiet hours and do-not-disturb do not hold. Two triggers feed the same ledger: the websocket
 event hook (seconds) and the `home_safety_sentinel` job every five minutes, so they never
-double-alert. If delivery fails the condition stays open and is retried, and a still-active alarm
-re-sends as the condition ages. A sensor that reads `unavailable`, or a Home Assistant source
-that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
+double-alert. Both judge the 60-second hold from the sensor's last state change (`last_changed`),
+so an attribute-only update never makes an old alarm look new. If delivery fails the condition
+stays open and is retried, and a still-active alarm re-sends after 15 minutes, 1 hour and 4 hours,
+then daily, while the sensor stays on; a duplicate send between the two triggers is prevented by
+keeping the delivery marker across confirmations. A sensor that reads `unavailable`, or a Home
+Assistant source that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
 Assistant service. Code: `src/butlers/jobs/home_safety.py`; requirement: `home-deterministic-jobs`
 spec, "Home Safety Sentinel Job".
 

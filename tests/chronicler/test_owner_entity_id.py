@@ -387,6 +387,7 @@ async def test_steam_adapter_stamps_entity_id_on_episode() -> None:
     steam_row = MagicMock()
     steam_row.__getitem__ = MagicMock(
         side_effect=lambda k: {
+            "id": "00000000-0000-0000-0000-000000000001",
             "steam_id": "12345",
             "steam_account_id": None,
             "app_id": "730",
@@ -455,7 +456,11 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
 
     adapter = OwnTracksPointAdapter()
     with (
-        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[point_row, second_row])),
+        patch.object(
+            adapter,
+            "_fetch_points",
+            new=AsyncMock(return_value=([point_row, second_row], None)),
+        ),
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event", new=AsyncMock()),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_upsert),
         patch(

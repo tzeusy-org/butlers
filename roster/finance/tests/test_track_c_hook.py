@@ -17,9 +17,6 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -33,28 +30,10 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + finance migrations (incl. 009) applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool; truncate finance tables between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE bills, transactions, subscriptions, accounts CASCADE")
-    yield p
-    await p.close()
+async def finance_pool(db):
+    """A private clone migrated with the core and finance chains."""
+    return await db("core", "finance")
 
 
 # ---------------------------------------------------------------------------
@@ -100,12 +79,12 @@ async def _insert_bill(
 class TestAutoSettle:
     """C2a: debit that exactly matches a placeholder bill auto-settles it."""
 
-    async def test_auto_settle_returned_in_response(self, pool):
+    async def test_auto_settle_returned_in_response(self, finance_pool):
         """record_transaction returns bill_reconciliation.auto_settled for a matching debit."""
         from butlers.tools.finance.transactions import record_transaction
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=0.00,
             currency="SGD",
@@ -115,7 +94,7 @@ class TestAutoSettle:
 
         posted = datetime.now(UTC) - timedelta(days=3)
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="HSBC Credit Card",
             amount=-717.57,
@@ -133,12 +112,12 @@ class TestAutoSettle:
         assert "txn_id" in settled
         assert settled["txn_id"] == str(result["id"])
 
-    async def test_auto_settle_marks_bill_paid_in_db(self, pool):
+    async def test_auto_settle_marks_bill_paid_in_db(self, finance_pool):
         """After auto_settle, the bill row is status='paid' with reconciled_transaction_id set."""
         from butlers.tools.finance.transactions import record_transaction
 
         bill = await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=0.00,
             currency="SGD",
@@ -148,7 +127,7 @@ class TestAutoSettle:
 
         posted = datetime.now(UTC) - timedelta(days=3)
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="HSBC Credit Card",
             amount=-717.57,
@@ -157,7 +136,7 @@ class TestAutoSettle:
         )
 
         # Verify DB state
-        row = await pool.fetchrow(
+        row = await finance_pool.fetchrow(
             "SELECT status, reconciled_transaction_id, amount FROM bills WHERE id = $1",
             bill["id"],
         )
@@ -166,12 +145,12 @@ class TestAutoSettle:
         # Amount backfilled from $0.00 to the transaction amount
         assert abs(float(row["amount"]) - 717.57) < 0.01
 
-    async def test_auto_settle_idempotent_second_call_skipped(self, pool):
+    async def test_auto_settle_idempotent_second_call_skipped(self, finance_pool):
         """A second matching debit does not re-settle an already-paid bill."""
         from butlers.tools.finance.transactions import record_transaction
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=0.00,
             currency="SGD",
@@ -181,7 +160,7 @@ class TestAutoSettle:
 
         posted = datetime.now(UTC) - timedelta(days=3)
         result1 = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="HSBC Credit Card",
             amount=-717.57,
@@ -195,7 +174,7 @@ class TestAutoSettle:
         # The bill is already paid so the hook should not fire again.
         posted2 = datetime.now(UTC) - timedelta(days=2)
         result2 = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted2,
             merchant="HSBC Credit Card",
             amount=-717.57,
@@ -207,12 +186,12 @@ class TestAutoSettle:
         # so the matcher skips it.  The key guarantee is no crash.
         assert "id" in result2
 
-    async def test_credit_transaction_has_no_bill_reconciliation(self, pool):
+    async def test_credit_transaction_has_no_bill_reconciliation(self, finance_pool):
         """Credits never settle bills — bill_reconciliation must be absent."""
         from butlers.tools.finance.transactions import record_transaction
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=717.57,
             currency="SGD",
@@ -221,7 +200,7 @@ class TestAutoSettle:
         )
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=datetime.now(UTC),
             merchant="HSBC Credit Card",
             amount=717.57,  # positive → credit
@@ -241,13 +220,13 @@ class TestAutoSettle:
 class TestConfirmCandidates:
     """C2b: ambiguous debit surfaces candidates without settling anything."""
 
-    async def test_confirm_returned_when_two_bills_in_window(self, pool):
+    async def test_confirm_returned_when_two_bills_in_window(self, finance_pool):
         """Two in-window bills for same payee → candidates, no settlement."""
         from butlers.tools.finance.transactions import record_transaction
 
         today = date.today()
         bill_a = await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=717.57,
             currency="SGD",
@@ -255,7 +234,7 @@ class TestConfirmCandidates:
             status="pending",
         )
         bill_b = await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=717.57,
             currency="SGD",
@@ -265,7 +244,7 @@ class TestConfirmCandidates:
 
         posted = datetime.now(UTC) - timedelta(days=3)
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="HSBC Credit Card",
             amount=-717.57,
@@ -283,16 +262,16 @@ class TestConfirmCandidates:
 
         # Bills must remain unpaid
         for bill_id in (bill_a["id"], bill_b["id"]):
-            row = await pool.fetchrow("SELECT status FROM bills WHERE id = $1", bill_id)
+            row = await finance_pool.fetchrow("SELECT status FROM bills WHERE id = $1", bill_id)
             assert row["status"] == "pending", "ambiguous bills must not be settled"
 
-    async def test_confirm_candidates_contain_required_fields(self, pool):
+    async def test_confirm_candidates_contain_required_fields(self, finance_pool):
         """Each candidate entry exposes bill_id, payee, due_date, and amount."""
         from butlers.tools.finance.transactions import record_transaction
 
         today = date.today()
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="DBS Credit Card",
             amount=500.00,
             currency="SGD",
@@ -300,7 +279,7 @@ class TestConfirmCandidates:
             status="pending",
         )
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="DBS Credit Card",
             amount=500.00,
             currency="SGD",
@@ -309,7 +288,7 @@ class TestConfirmCandidates:
         )
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=datetime.now(UTC) - timedelta(days=2),
             merchant="DBS Credit Card",
             amount=-500.00,
@@ -335,7 +314,7 @@ class TestConfirmCandidates:
 class TestFireAndForgetSafety:
     """Reconciliation failures must never break the primary transaction insert."""
 
-    async def test_reconciliation_error_does_not_propagate(self, pool):
+    async def test_reconciliation_error_does_not_propagate(self, finance_pool):
         """When match_transaction_to_bills raises, record_transaction still succeeds."""
         from butlers.tools.finance.transactions import record_transaction
 
@@ -345,7 +324,7 @@ class TestFireAndForgetSafety:
             new=AsyncMock(side_effect=RuntimeError("simulated reconciliation failure")),
         ):
             result = await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=datetime.now(UTC),
                 merchant="Some Merchant",
                 amount=-99.00,
@@ -363,16 +342,18 @@ class TestFireAndForgetSafety:
         assert "bill_reconciliation" not in result
 
         # The row actually made it into the DB
-        row = await pool.fetchrow("SELECT id FROM transactions WHERE id = $1::uuid", result["id"])
+        row = await finance_pool.fetchrow(
+            "SELECT id FROM transactions WHERE id = $1::uuid", result["id"]
+        )
         assert row is not None
 
-    async def test_debit_no_matching_bill_no_reconciliation_key(self, pool):
+    async def test_debit_no_matching_bill_no_reconciliation_key(self, finance_pool):
         """A debit with no matching bill produces no bill_reconciliation block."""
         from butlers.tools.finance.transactions import record_transaction
 
         # No bills in DB at all
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=datetime.now(UTC),
             merchant="Random Merchant",
             amount=-55.00,

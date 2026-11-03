@@ -40,8 +40,6 @@ import pytest
 
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity, record_token_usage, resolve_model
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -51,36 +49,19 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+@pytest.fixture
+def ledger_url(fresh_db) -> str:
+    # core_004 creates the current month's token_usage_ledger partition onward.
+    return fresh_db("core")
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    # Historical partitions so an out-of-band insert never hits "no partition found".
-    await p.execute("""
-        DO $$
-        DECLARE month_start TIMESTAMPTZ := date_trunc('month', now());
-        BEGIN
-            EXECUTE format(
-                'CREATE TABLE IF NOT EXISTS public.%I PARTITION OF public.token_usage_ledger '
-                'FOR VALUES FROM (%L) TO (%L)',
-                format('token_usage_ledger_%s', to_char(month_start, 'YYYYMM')),
-                month_start,
-                month_start + INTERVAL '1 month'
-            );
-        END $$;
-    """)
-    yield p
-    await p.close()
+async def ledger_pool(db, ledger_url: str) -> asyncpg.Pool:
+    return await db.open(ledger_url)
 
 
-async def test_purpose_column_exists_and_is_nullable(pool: asyncpg.Pool) -> None:
-    row = await pool.fetchrow(
+async def test_purpose_column_exists_and_is_nullable(ledger_pool: asyncpg.Pool) -> None:
+    row = await ledger_pool.fetchrow(
         """
         SELECT is_nullable, column_default
         FROM information_schema.columns
@@ -93,25 +74,27 @@ async def test_purpose_column_exists_and_is_nullable(pool: asyncpg.Pool) -> None
     assert row["column_default"] is None
 
 
-async def test_seeded_api_catalog_rows_win_cheap_and_specialty_tiers(pool: asyncpg.Pool) -> None:
+async def test_seeded_api_catalog_rows_win_cheap_and_specialty_tiers(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     """core_157's seed rows outrank every pre-existing entry for their tier."""
-    cheap = await resolve_model(pool, "switchboard", Complexity.CHEAP)
+    cheap = await resolve_model(ledger_pool, "switchboard", Complexity.CHEAP)
     assert cheap is not None
     runtime_type, model_id, _extra_args, _id, _timeout = cheap
     assert runtime_type == "api"
     assert model_id == "claude-haiku-4-5-20251001"
 
-    specialty = await resolve_model(pool, "__discretion__", Complexity.SPECIALTY)
+    specialty = await resolve_model(ledger_pool, "__discretion__", Complexity.SPECIALTY)
     assert specialty is not None
     assert specialty[0] == "api"
 
 
 async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
-    pool: asyncpg.Pool,
-    migrated_db_url: str,
+    ledger_pool: asyncpg.Pool,
+    ledger_url: str,
 ) -> None:
     """DiscretionDispatcher.call(identity=...) round-trips through a real INSERT."""
-    dispatcher = DiscretionDispatcher(pool=pool)
+    dispatcher = DiscretionDispatcher(pool=ledger_pool)
     fake_adapter = AsyncMock()
     fake_adapter.invoke = AsyncMock(
         return_value=("FORWARD: looks real", [], {"input_tokens": 7, "output_tokens": 3})
@@ -141,7 +124,7 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
                 }
             )
 
-    unconfigured = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
+    unconfigured = await asyncpg.create_pool(ledger_url, min_size=1, max_size=1)
     try:
         old_fixture_dispatcher = DiscretionDispatcher(pool=unconfigured)
         with (
@@ -160,7 +143,7 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
         assert old_result == "FORWARD: looks real"
         assert failures == [{"argument_codec_refusal": True, "sqlstate_is_data_exception": True}]
         assert (
-            await pool.fetchval(
+            await ledger_pool.fetchval(
                 "SELECT count(*) FROM public.token_usage_ledger WHERE butler_name='tg:555'"
             )
             == 0
@@ -176,7 +159,7 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
 
     assert result == "FORWARD: looks real"
 
-    row = await pool.fetchrow(
+    row = await ledger_pool.fetchrow(
         """
         SELECT butler_name, session_id, purpose, purpose_lane, input_tokens, output_tokens,
                base_prompt_tokens, timezone_instruction_tokens,
@@ -202,22 +185,26 @@ async def test_discretion_dispatcher_writes_identity_and_purpose_via_real_pool(
     assert row["resume_outcome"] is None
 
 
-async def test_record_token_usage_purpose_defaults_null_when_omitted(pool: asyncpg.Pool) -> None:
+async def test_record_token_usage_purpose_defaults_null_when_omitted(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     """Backward compatibility: callers that don't pass purpose= get an honest NULL,
     never a fabricated category."""
-    row = await pool.fetchrow("SELECT id FROM public.model_catalog WHERE alias = 'api-haiku-cheap'")
+    row = await ledger_pool.fetchrow(
+        "SELECT id FROM public.model_catalog WHERE alias = 'api-haiku-cheap'"
+    )
     assert row is not None
     entry_id = row["id"]
 
     await record_token_usage(
-        pool,
+        ledger_pool,
         catalog_entry_id=entry_id,
         butler_name="atlas",
         session_id=uuid.uuid4(),
         input_tokens=1,
         output_tokens=1,
     )
-    written = await pool.fetchrow(
+    written = await ledger_pool.fetchrow(
         "SELECT purpose, purpose_lane FROM public.token_usage_ledger WHERE catalog_entry_id = $1 "
         "ORDER BY recorded_at DESC LIMIT 1",
         entry_id,
@@ -226,9 +213,11 @@ async def test_record_token_usage_purpose_defaults_null_when_omitted(pool: async
     assert written["purpose_lane"] == "standard"
 
 
-async def test_composition_and_resume_columns_exist_and_are_nullable(pool: asyncpg.Pool) -> None:
+async def test_composition_and_resume_columns_exist_and_are_nullable(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     """core_223 added all six columns nullable, no default (bu-hz0g0)."""
-    rows = await pool.fetch(
+    rows = await ledger_pool.fetch(
         """
         SELECT column_name, is_nullable, column_default
         FROM information_schema.columns
@@ -259,18 +248,20 @@ async def test_composition_and_resume_columns_exist_and_are_nullable(pool: async
 
 
 async def test_record_token_usage_persists_composition_digest_and_resume_outcome(
-    pool: asyncpg.Pool,
+    ledger_pool: asyncpg.Pool,
 ) -> None:
     """A caller passing the new kwargs (the spawner's composed-prompt path)
     round-trips every value through a real INSERT -- catching a
     parameter-count/column-order mismatch the mocked-pool unit tests cannot."""
-    row = await pool.fetchrow("SELECT id FROM public.model_catalog WHERE alias = 'api-haiku-cheap'")
+    row = await ledger_pool.fetchrow(
+        "SELECT id FROM public.model_catalog WHERE alias = 'api-haiku-cheap'"
+    )
     assert row is not None
     entry_id = row["id"]
     session_id = uuid.uuid4()
 
     await record_token_usage(
-        pool,
+        ledger_pool,
         catalog_entry_id=entry_id,
         butler_name="atlas",
         session_id=session_id,
@@ -284,7 +275,7 @@ async def test_record_token_usage_persists_composition_digest_and_resume_outcome
         memory_context_tokens=150,
         resume_outcome="resumed",
     )
-    written = await pool.fetchrow(
+    written = await ledger_pool.fetchrow(
         """
         SELECT base_prompt_tokens, timezone_instruction_tokens, context_preamble_tokens,
                routing_instructions_tokens, memory_context_tokens, resume_outcome

@@ -110,6 +110,17 @@ BEGIN
            OR _amendment_owner NOT IN (_bootstrap_oid, _amendment_target_oid) THEN
             RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
         END IF;
+        -- The two core_255 definers converge with the table (bu-jjv2du), same owner rule.
+        IF EXISTS (
+            SELECT 1 FROM pg_proc
+            WHERE oid IN (
+                to_regprocedure('public.enqueue_premise_amendments(text, text, timestamptz, text)'),
+                to_regprocedure('public.resolve_finance_bill_status(uuid)')
+            )
+              AND proowner NOT IN (_bootstrap_oid, _amendment_target_oid)
+        ) THEN
+            RAISE EXCEPTION 'definer ownership refuses an unexpected existing owner';
+        END IF;
     END IF;
     -- Session-only snapshots bind the later DO to this actual catalog read.
     -- Every full script invocation overwrites them; they grant no authority.
@@ -716,6 +727,44 @@ BEGIN
         END LOOP;
     END IF;
 
+    -- public.state holds dashboard-owned control facts (settings.general,
+    -- Telegram consent, infra.backup_facts). Only the owner login writes it;
+    -- runtime roles read it. Keep core_306's revoke after the broad public
+    -- grant above so a bootstrap replay cannot restore runtime DML.
+    IF to_regclass('public.state') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_connector_role, _optional_calendar_role] LOOP
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
+                EXECUTE format(
+                    'REVOKE INSERT, UPDATE, DELETE ON TABLE public.state FROM %I', _role
+                );
+                EXECUTE format('GRANT SELECT ON TABLE public.state TO %I', _role);
+            END IF;
+        END LOOP;
+    END IF;
+
+    -- public.consolidation_runs is an append-only audit: each memory-enabled
+    -- butler daemon inserts its own rows as butler_<name>_rw, and nothing may
+    -- rewrite or erase them. Keep core_308's fence after the broad public grant
+    -- so a bootstrap replay cannot restore UPDATE/DELETE (or connector INSERT).
+    IF to_regclass('public.consolidation_runs') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_optional_calendar_role] LOOP
+            IF _role = _connector_role THEN
+                EXECUTE format(
+                    'REVOKE INSERT, UPDATE, DELETE ON TABLE public.consolidation_runs FROM %I',
+                    _role
+                );
+                EXECUTE format('GRANT SELECT ON TABLE public.consolidation_runs TO %I', _role);
+            ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
+                EXECUTE format(
+                    'REVOKE UPDATE, DELETE ON TABLE public.consolidation_runs FROM %I', _role
+                );
+                EXECUTE format(
+                    'GRANT SELECT, INSERT ON TABLE public.consolidation_runs TO %I', _role
+                );
+            END IF;
+        END LOOP;
+    END IF;
+
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
 END
 $$;
@@ -738,6 +787,9 @@ DECLARE
     _expected_oid OID := NULLIF(current_setting('butlers.bootstrap_amendment_oid', true), '')::oid;
     _expected_owner OID := NULLIF(current_setting('butlers.bootstrap_amendment_owner', true), '')::oid;
     _expected_target OID := NULLIF(current_setting('butlers.bootstrap_amendment_target_oid', true), '')::oid;
+    _definer TEXT;
+    _definer_oid OID;
+    _definer_owner OID;
 BEGIN
     IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
         RAISE EXCEPTION 'amendment ownership requires the original privileged bootstrap identity';
@@ -774,28 +826,52 @@ BEGIN
     IF _owner IS DISTINCT FROM _expected_owner THEN
         RAISE EXCEPTION 'amendment ownership owner changed after initial preflight';
     END IF;
-    IF _owner = _target_oid THEN
-        RETURN;
-    END IF;
-    IF _owner IS DISTINCT FROM _bootstrap THEN
-        RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
-    END IF;
+    -- The table transition; EXIT leaves it as a no-op so the definers still converge.
+    <<amendment_table>>
+    BEGIN
+        IF _owner = _target_oid THEN
+            EXIT amendment_table;
+        END IF;
+        IF _owner IS DISTINCT FROM _bootstrap THEN
+            RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
+        END IF;
 
-    LOCK TABLE ONLY public.insight_amendments IN ACCESS EXCLUSIVE MODE NOWAIT;
-    SELECT oid,
-           rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
-                                OR rolreplication OR rolbypassrls)
-      INTO _locked_target, _locked_target_safe FROM pg_roles WHERE rolname::text = _target;
-    SELECT relowner, relkind, relpersistence INTO _owner, _kind, _persistence
-      FROM pg_class WHERE oid = _oid;
-    IF to_regclass('public.insight_amendments') IS DISTINCT FROM _oid
-       OR _kind IS DISTINCT FROM 'r'::"char" OR _persistence IS DISTINCT FROM 'p'::"char"
-       OR _owner IS DISTINCT FROM _bootstrap
-       OR _locked_target IS DISTINCT FROM _target_oid
-       OR NOT COALESCE(_locked_target_safe, false) THEN
-        RAISE EXCEPTION 'amendment ownership identity changed before transition';
-    END IF;
-    EXECUTE format('ALTER TABLE public.insight_amendments OWNER TO %I', _target);
+        LOCK TABLE ONLY public.insight_amendments IN ACCESS EXCLUSIVE MODE NOWAIT;
+        SELECT oid,
+               rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
+                                    OR rolreplication OR rolbypassrls)
+          INTO _locked_target, _locked_target_safe FROM pg_roles WHERE rolname::text = _target;
+        SELECT relowner, relkind, relpersistence INTO _owner, _kind, _persistence
+          FROM pg_class WHERE oid = _oid;
+        IF to_regclass('public.insight_amendments') IS DISTINCT FROM _oid
+           OR _kind IS DISTINCT FROM 'r'::"char" OR _persistence IS DISTINCT FROM 'p'::"char"
+           OR _owner IS DISTINCT FROM _bootstrap
+           OR _locked_target IS DISTINCT FROM _target_oid
+           OR NOT COALESCE(_locked_target_safe, false) THEN
+            RAISE EXCEPTION 'amendment ownership identity changed before transition';
+        END IF;
+        EXECUTE format('ALTER TABLE public.insight_amendments OWNER TO %I', _target);
+    END;
+
+    -- bu-jjv2du: the table's two core_255 SECURITY DEFINER functions follow it. A
+    -- bootstrap-owned definer runs as the superuser and blocks every ordinary CREATE OR
+    -- REPLACE (core_312 then fails loud). ALTER FUNCTION OWNER keeps the body, proconfig
+    -- and EXECUTE grants (owner references in the ACL follow the new owner). Same rule
+    -- as the table: already-target is a no-op, only the bootstrap owner is transferred,
+    -- a third owner refuses, and this DO stays atomic with the table transition.
+    FOREACH _definer IN ARRAY ARRAY[
+        'public.enqueue_premise_amendments(text, text, timestamptz, text)',
+        'public.resolve_finance_bill_status(uuid)'
+    ] LOOP
+        _definer_oid := to_regprocedure(_definer);
+        CONTINUE WHEN _definer_oid IS NULL;
+        SELECT proowner INTO _definer_owner FROM pg_proc WHERE oid = _definer_oid;
+        CONTINUE WHEN _definer_owner = _target_oid;
+        IF _definer_owner IS DISTINCT FROM _bootstrap THEN
+            RAISE EXCEPTION 'definer ownership refuses an unexpected existing owner';
+        END IF;
+        EXECUTE format('ALTER FUNCTION %s OWNER TO %I', _definer, _target);
+    END LOOP;
 END;
 $$;
 -- AMENDMENT_OWNER_CONVERGENCE_END

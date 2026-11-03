@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import uuid
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -383,3 +385,141 @@ async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly
     module.approval_delivery_worker_enabled.side_effect = RuntimeError("invalid rollout config")
     assert await start_approval_delivery_worker(daemon) is False
     assert module.approval_delivery_worker_components.call_count == 2
+
+
+_SENTINEL = "SENTINEL-7f3c"
+_OUTCOME_METRIC = "approval_delivery_worker_outcomes_total"
+
+
+def _outcome_samples() -> dict[tuple[str, str, str, str], float]:
+    from prometheus_client import REGISTRY
+
+    return {
+        (s.labels["schema"], s.labels["stage"], s.labels["outcome"], s.labels["reason"]): s.value
+        for metric in REGISTRY.collect()
+        for s in metric.samples
+        if s.name == _OUTCOME_METRIC
+    }
+
+
+def _sentinel_claim(*, reconcile_only: bool = False) -> DeliveryClaim:
+    subject_key = f"approval:relationship:{_SENTINEL}-action"
+    return DeliveryClaim(
+        presentation_id=f"{_SENTINEL}-presentation",
+        presentation_generation=1,
+        presentation_key=f"{subject_key}:p:1",
+        presentation_mode="single",
+        subject_kind="action",
+        subject_key=subject_key,
+        claim_token=f"{_SENTINEL}-token",
+        claim_fence=3,
+        reconcile_only=reconcile_only,
+    )
+
+
+def _outcome_seam(scenario: str, stop: asyncio.Event) -> tuple[Any, Any]:
+    claim = _sentinel_claim(reconcile_only=scenario == "reconcile")
+    repository = SimpleNamespace(
+        cancel_ineligible_presentations=AsyncMock(return_value=0),
+        claim_next=AsyncMock(return_value=None if scenario == "idle" else claim),
+        load_render_subject=AsyncMock(
+            return_value=None if scenario == "subject_unavailable" else object()
+        ),
+        record_prestart_retry=AsyncMock(return_value=True),
+        mark_handoff_started=AsyncMock(return_value=scenario != "start_refused"),
+        heartbeat=AsyncMock(return_value=True),
+        complete_handoff=AsyncMock(return_value=scenario != "write_refused"),
+    )
+    if scenario == "transaction_exit":
+
+        def _fail_commit(*_args: object) -> None:
+            stop.set()
+            raise RuntimeError(f"commit {_SENTINEL}")
+
+        repository.complete_handoff.side_effect = _fail_commit
+    if scenario == "scan_failed":
+
+        def _fail_scan() -> None:
+            stop.set()
+            raise RuntimeError(f"pool {_SENTINEL}")
+
+        repository.cancel_ineligible_presentations.side_effect = _fail_scan
+    runtime = SimpleNamespace(
+        resolve_verified_owner_recipient=AsyncMock(
+            return_value=None if scenario == "owner_missing" else f"owner-{_SENTINEL}"
+        ),
+        resolve_callback_secret=AsyncMock(return_value=f"secret-{_SENTINEL}"),
+        handoff=AsyncMock(return_value=HandoffResult("confirmed", None, f"ref-{_SENTINEL}")),
+        reconcile=AsyncMock(side_effect=RuntimeError(f"provider {_SENTINEL}")),
+    )
+    if scenario == "provider_raised":
+        runtime.handoff.side_effect = RuntimeError(f"provider {_SENTINEL}")
+    return repository, runtime
+
+
+_SEND = ("claim", "send", "none")
+_OUTCOME_SCENARIOS = {
+    "idle": [("scan", "idle", "none")],
+    "confirmed": [_SEND, ("handoff", "confirmed", "none")],
+    "owner_missing": [_SEND, ("handoff", "safe_retry", "owner_recipient_unavailable")],
+    "subject_unavailable": [_SEND, ("handoff", "subject_unavailable", "none")],
+    "start_refused": [_SEND, ("handoff", "start_refused", "none")],
+    "write_refused": [_SEND, ("handoff", "write_refused", "none")],
+    "provider_raised": [_SEND, ("handoff", "ambiguous", "provider_outcome_unknown")],
+    "reconcile": [
+        ("claim", "reconcile", "none"),
+        ("handoff", "ambiguous", "provider_outcome_unknown"),
+    ],
+    "transaction_exit": [_SEND, ("scan", "failed", "none")],
+    "scan_failed": [("scan", "failed", "none")],
+}
+
+
+# Spec: REQ-approval-delivery-intent-recovery-002, REQ-approval-delivery-intent-recovery-007; scan/claim/handoff outcomes are closed, bounded, safe, and observer failure never changes the outcome.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", sorted(_OUTCOME_SCENARIOS))
+async def test_worker_outcome_observations_are_closed_safe_and_side_effect_free(
+    scenario: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    def _repository_effects(repository: Any, runtime: Any) -> list[Any]:
+        return [
+            (name, [c.args for c in getattr(repository, name).await_args_list])
+            for name in sorted(vars(repository))
+        ] + [("handoff", runtime.handoff.await_count)]
+
+    async def _drive(observer: Any) -> tuple[list[Any], Any]:
+        stop = asyncio.Event()
+        repository, runtime = _outcome_seam(scenario, stop)
+        renderer = SimpleNamespace(render_single=Mock(return_value={"safe": "envelope"}))
+        kwargs = {} if observer is None else {"observe": observer}
+        worker = ApprovalDeliveryWorker(
+            repository, renderer, runtime, schema="relationship", poll_interval_s=0.01, **kwargs
+        )
+        outcome: Any
+        if scenario in {"transaction_exit", "scan_failed"}:
+            await asyncio.wait_for(worker.run(stop), timeout=2)
+            outcome = "stopped"
+        else:
+            outcome = await worker.process_one()
+        return _repository_effects(repository, runtime), outcome
+
+    before = _outcome_samples()
+    caplog.set_level(logging.DEBUG, logger="butlers.core.approval_delivery_worker")
+    effects, outcome = await _drive(None)
+    after = _outcome_samples()
+
+    expected: dict[tuple[str, str, str, str], float] = {}
+    for stage, result, reason in _OUTCOME_SCENARIOS[scenario]:
+        key = ("relationship", stage, result, reason)
+        expected[key] = expected.get(key, 0.0) + 1.0
+    delta = {k: v - before.get(k, 0.0) for k, v in after.items() if v != before.get(k, 0.0)}
+    assert delta == expected
+    assert all(_SENTINEL not in value for key in after for value in key)
+    assert _SENTINEL not in caplog.text
+    if scenario != "idle":
+        assert "approval delivery" in caplog.text
+
+    def _broken_observer(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("metrics backend down")
+
+    assert await _drive(_broken_observer) == (effects, outcome)

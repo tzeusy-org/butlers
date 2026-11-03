@@ -173,33 +173,26 @@ async def test_owner_zone_read_is_schema_qualified_to_public_state():
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
-async def test_owner_zone_comes_from_public_state_not_the_butlers_own_state_table(
-    provisioned_postgres_pool,
-) -> None:
+async def test_owner_zone_comes_from_public_state_not_the_butlers_own_state_table(db) -> None:
     """The job's pool resolves an unqualified ``state`` to ``health.state``.
 
     Both tables hold a ``settings.general`` row with a different timezone; only the
     shared ``public.state`` row is the owner's setting.
     """
-    create = (
-        "CREATE TABLE IF NOT EXISTS {}.state (key TEXT PRIMARY KEY, value JSONB NOT NULL, "
-        "updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
+    # The core chain in the health schema creates health.state and public.state (core_087).
+    pool = await db("core", schemas={"core": "health"}, schema="health")
+    await pool.execute(
+        "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
+        {"timezone": "Europe/Berlin"},
     )
-    async with provisioned_postgres_pool(schema="health") as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
-        await pool.execute(create.format("public"))
-        await pool.execute(create.format("health"))
-        await pool.execute(
-            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
-            {"timezone": "Europe/Berlin"},
-        )
-        await pool.execute(
-            "INSERT INTO health.state (key, value) VALUES ('settings.general', $1)",
-            {"timezone": "America/Los_Angeles"},
-        )
+    await pool.execute(
+        "INSERT INTO health.state (key, value) VALUES ('settings.general', $1)",
+        {"timezone": "America/Los_Angeles"},
+    )
 
-        zone = await owner_briefing_zone(pool)
+    zone = await owner_briefing_zone(pool)
 
-        assert isinstance(zone, ZoneInfo)
-        assert zone.key == "Europe/Berlin"
+    assert isinstance(zone, ZoneInfo)
+    assert zone.key == "Europe/Berlin"

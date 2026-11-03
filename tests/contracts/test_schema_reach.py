@@ -371,6 +371,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{schema}.collections>",
     ): "dynamic-local: quoted current General schema for trigger-owned collection tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "roster/general/migrations/004_owner_projects.py",
+        "<dynamic:{schema}.projects>",
+    ): "dynamic-local: quoted current General schema for the owner-project freeze trigger (bu-jv1moa.12); not a foreign-schema exception",
+    (
         "roster/messenger/tests/test_delivery_tracking_retirement.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed retired local Messenger table tuple in a test fixture; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -406,14 +410,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "roster/relationship/tests/calendar_projection.py",
         "switchboard.message_inbox",
     ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
-    (
-        "roster/relationship/tests/test_commitment_extraction_db.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: closed public table cleanup tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
-        "<dynamic:{_child}>",
-    ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
         "<dynamic:{table}>",
@@ -490,10 +486,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "roster/switchboard/migrations/047_goal_ledger.py",
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "roster/switchboard/tests/test_correct_route.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
@@ -607,6 +599,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         '<dynamic:"{admin}".bootstrap_configuration>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
+        "src/butlers/chronicler/adapters/base.py",
+        "<dynamic:{table}>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface; keyset_page builds the page query over the adapter's own fixed source table",
+    (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
@@ -650,6 +646,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/connectors/cursor_store.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/connectors/gmail.py",
+        "switchboard.attachment_refs",
+    ): "burn-down: existing switchboard.attachment_refs coupling (was unqualified, so unseen); the connector alone holds Gmail credentials, so it serves attachment_materialize requests from this row",
     (
         "src/butlers/connectors/gmail_policy.py",
         "relationship.entity_facts",

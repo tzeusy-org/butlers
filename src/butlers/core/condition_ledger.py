@@ -83,10 +83,10 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import asyncpg
 
@@ -339,6 +339,8 @@ async def reconcile_snapshot(
     post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
     | None = None,
     transaction_connection: asyncpg.Connection | None = None,
+    escalation_advance: Mapping[str, tuple[str, timedelta]] | None = None,
+    preserve_metadata_keys: Sequence[str] = (),
 ) -> list[ConditionTransition]:
     """Atomically reconcile one producer check-in against the condition ledger at ``table``.
 
@@ -383,6 +385,20 @@ async def reconcile_snapshot(
     active transaction. It uses the same source lock, writes and callback, and
     never acquires, commits or releases that connection. The ordinary pool path
     remains the default. Inputs are validated before checking connection state.
+
+    Two opt-ins serve a producer whose cadence or evidence needs differ from the
+    shared default; leaving them out keeps the shared behavior exactly:
+
+    ``escalation_advance`` replaces :data:`ESCALATION_ADVANCE` for this call: the
+    level a due episode advances to and the interval until the following due date.
+    It must name every level in :data:`ESCALATION_LEVELS`, advance only to a known
+    level, and use a positive interval.
+
+    ``preserve_metadata_keys`` names top-level ``metadata`` keys a confirmation
+    keeps from the stored row when the confirming observation does not carry them.
+    Without it a confirmation replaces the stored metadata whole, so a marker one
+    writer recorded (for example a delivery marker) is dropped by a concurrent
+    writer that confirms with metadata built from an earlier read.
     """
     if not table:
         raise ValueError("reconcile_snapshot: table must be non-empty")
@@ -407,6 +423,8 @@ async def reconcile_snapshot(
     if len(set(predecessor_fingerprints)) != len(predecessor_fingerprints):
         raise ValueError("reconcile_snapshot: duplicate predecessor_fingerprint in observations")
     _reject_reserved_metadata_keys(observations)
+    advance = _validated_escalation_advance(escalation_advance)
+    preserved = _validated_preserve_keys(preserve_metadata_keys)
 
     async def _reconcile(conn: asyncpg.Connection) -> list[ConditionTransition]:
         transitions = await _reconcile_source_locked(
@@ -416,6 +434,8 @@ async def reconcile_snapshot(
             observations=observations,
             snapshot_complete=snapshot_complete,
             initial_grace_seconds=initial_grace_seconds,
+            escalation_advance=advance,
+            preserve_metadata_keys=preserved,
         )
         if post_write is not None:
             await post_write(conn, transitions)
@@ -438,6 +458,8 @@ async def resolve_condition(
     source: str,
     fingerprint: str,
     resolution_metadata: dict[str, Any] | None = None,
+    post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[object]]
+    | None = None,
 ) -> ConditionTransition | None:
     """Explicitly resolve the active episode for one condition identity.
 
@@ -448,6 +470,10 @@ async def resolve_condition(
     snapshot cannot produce duplicate terminal transitions. ``resolution_metadata``
     is shallow-merged with creation-wins semantics: existing top-level row
     values win over keys supplied by the resolver.
+
+    ``post_write``, when given, is awaited with ``(conn, [transition])`` inside the
+    same transaction, after the resolution write and before commit, exactly as in
+    :func:`reconcile_snapshot`. It is not called when there is no active episode.
 
     Returns ``None`` when the identity has no active ``open``/``aging``
     episode, including after a previous explicit or snapshot resolution.
@@ -479,7 +505,7 @@ async def resolve_condition(
             )
             if row is None:
                 return None
-            return await _resolve_episode(
+            transition = await _resolve_episode(
                 conn,
                 row,
                 table=table,
@@ -488,6 +514,40 @@ async def resolve_condition(
                 now=now,
                 resolution_metadata=resolution_metadata,
             )
+            if post_write is not None:
+                await post_write(cast(asyncpg.Connection, conn), [transition])
+            return transition
+
+
+def _validated_escalation_advance(
+    advance: Mapping[str, tuple[str, timedelta]] | None,
+) -> Mapping[str, tuple[str, timedelta]]:
+    """Return the cadence to use, refusing a table that cannot drive every level."""
+    if advance is None:
+        return ESCALATION_ADVANCE
+    if set(advance) != set(ESCALATION_LEVELS):
+        raise ValueError(
+            f"reconcile_snapshot: escalation_advance must name exactly {ESCALATION_LEVELS}"
+        )
+    for level, (target, interval) in advance.items():
+        if target not in ESCALATION_LEVELS:
+            raise ValueError(f"reconcile_snapshot: escalation_advance[{level}] targets {target!r}")
+        if interval <= timedelta(0):
+            raise ValueError(
+                f"reconcile_snapshot: escalation_advance[{level}] interval must be > 0"
+            )
+    return advance
+
+
+def _validated_preserve_keys(keys: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(keys, str) or not all(isinstance(key, str) and key for key in keys):
+        raise ValueError("reconcile_snapshot: preserve_metadata_keys must be non-empty strings")
+    reserved = sorted(RESOLUTION_METADATA_KEYS.intersection(keys))
+    if reserved or "identity_payload" in keys:
+        raise ValueError(
+            "reconcile_snapshot: preserve_metadata_keys may not name a ledger-owned key"
+        )
+    return tuple(dict.fromkeys(keys))
 
 
 async def _reconcile_source_locked(
@@ -498,6 +558,8 @@ async def _reconcile_source_locked(
     observations: Sequence[Observation],
     snapshot_complete: bool,
     initial_grace_seconds: float,
+    escalation_advance: Mapping[str, tuple[str, timedelta]] = ESCALATION_ADVANCE,
+    preserve_metadata_keys: tuple[str, ...] = (),
 ) -> list[ConditionTransition]:
     # Serializes every concurrent reconciler for this (table, source) pair.
     # Different sources, or the same source in a different table, never
@@ -539,7 +601,16 @@ async def _reconcile_source_locked(
             )
         else:
             results.append(
-                await _confirm_episode(conn, existing, table=table, source=source, obs=obs, now=now)
+                await _confirm_episode(
+                    conn,
+                    existing,
+                    table=table,
+                    source=source,
+                    obs=obs,
+                    now=now,
+                    escalation_advance=escalation_advance,
+                    preserve_metadata_keys=preserve_metadata_keys,
+                )
             )
 
     if snapshot_complete:
@@ -648,11 +719,13 @@ async def _confirm_episode(
     source: str,
     obs: Observation,
     now: datetime,
+    escalation_advance: Mapping[str, tuple[str, timedelta]] = ESCALATION_ADVANCE,
+    preserve_metadata_keys: tuple[str, ...] = (),
 ) -> ConditionTransition:
     due = existing["next_reescalate_at"] is not None and existing["next_reescalate_at"] <= now
 
     if due:
-        new_level, interval_to_next = ESCALATION_ADVANCE[existing["escalation_level"]]
+        new_level, interval_to_next = escalation_advance[existing["escalation_level"]]
         new_state = "aging"
         transition: TransitionKind = "escalation_due"
     else:
@@ -675,13 +748,31 @@ async def _confirm_episode(
             metadata = CASE
                 WHEN $8::text::jsonb IS NULL THEN metadata
                 WHEN $8::text::jsonb ? 'identity_payload' THEN jsonb_set(
-                    $8::text::jsonb,
+                    CASE
+                        WHEN cardinality($9::text[]) = 0
+                            OR jsonb_typeof(metadata) IS DISTINCT FROM 'object'
+                            THEN $8::text::jsonb
+                        ELSE COALESCE(
+                            (SELECT jsonb_object_agg(kept.key, kept.value)
+                             FROM jsonb_each(metadata) AS kept
+                             WHERE kept.key = ANY($9::text[])),
+                            '{{}}'::jsonb
+                        ) || $8::text::jsonb
+                    END,
                     '{{identity_payload}}',
                     COALESCE(metadata -> 'identity_payload', '{{}}'::jsonb)
                         || ($8::text::jsonb -> 'identity_payload'),
                     true
                 )
-                ELSE $8::text::jsonb
+                WHEN cardinality($9::text[]) = 0
+                    OR jsonb_typeof(metadata) IS DISTINCT FROM 'object'
+                    THEN $8::text::jsonb
+                ELSE COALESCE(
+                    (SELECT jsonb_object_agg(kept.key, kept.value)
+                     FROM jsonb_each(metadata) AS kept
+                     WHERE kept.key = ANY($9::text[])),
+                    '{{}}'::jsonb
+                ) || $8::text::jsonb
             END
         WHERE id = $1
         RETURNING id, episode, state, escalation_level, next_reescalate_at
@@ -694,6 +785,7 @@ async def _confirm_episode(
         interval_to_next,
         obs.summary,
         _dumps_metadata(_metadata_with_identity_payload(obs)),
+        list(preserve_metadata_keys),
     )
     return ConditionTransition(
         condition_id=row["id"],

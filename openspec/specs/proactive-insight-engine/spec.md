@@ -450,7 +450,8 @@ The insight broker SHALL be implemented as a Switchboard module (`module-insight
   adaptive reduction), (6) select top-B candidates by priority, (7) deliver
   via `notify` (digest for B>1, standalone for B=1), (8) record cooldowns for
   delivered candidates, (9) record engagement tracking rows, (10) clean up old
-  rows (candidates older than 30 days, cooldowns older than 30 days past expiry)
+  bookkeeping rows (cooldowns older than 30 days past expiry, engagement rows
+  older than 30 days); candidates are never deleted by the cycle
 
 #### Scenario: Delivery cycle scheduling
 - **WHEN** the Switchboard butler's `butler.toml` configures the `insight-delivery-cycle`
@@ -485,9 +486,12 @@ User insight preferences SHALL be stored in a dedicated `public.insight_settings
 ### Requirement: Candidate Cleanup
 The system SHALL periodically clean up old insight data to prevent unbounded table growth.
 
-#### Scenario: Candidate row cleanup
+#### Scenario: Candidate rows are not deleted by the delivery cycle
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `public.insight_candidates` where `status` is NOT `'pending'` AND `created_at` is older than 30 days
+- **THEN** it SHALL NOT delete any row from `public.insight_candidates`
+- **AND** terminal (non-`pending`) candidates SHALL be deleted only by the opt-in, default-off,
+  dry-run-capable retention pruner `insight_candidates_prune`, whose default bound is 90 days
+  since `created_at` (`docs/operations/data-retention.md`, pruner [C])
 
 #### Scenario: Cooldown row cleanup
 - **WHEN** the delivery cycle runs its cleanup step
@@ -875,7 +879,7 @@ A candidate MAY carry a typed `premise` naming the fact its message asserts: `{"
 - **AND** the stored `insight_candidates.message` is unchanged
 
 ### Requirement: In-Place Amendment of Delivered Insights
-When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. The owner-condition ledger's `reconcile_snapshot` `post_write` hook SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the reconcile transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
+When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. Both owner-condition resolution paths, the ledger's `reconcile_snapshot` `post_write` hook and the explicit `resolve_condition` facade, SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the resolving transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
 
 #### Scenario: A standalone Telegram delivery is edited in place
 - **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
@@ -889,6 +893,21 @@ When a delivered candidate's `owner_condition` premise resolves, the delivered m
 #### Scenario: Repeated reconciles stay single
 - **WHEN** the same resolved condition is reconciled again
 - **THEN** exactly one amendment exists for the candidate and episode, and a second cycle performs no second edit
+
+#### Scenario: An explicit resolution amends exactly like a snapshot resolution
+- **WHEN** an owner condition that is the premise of a delivered candidate is resolved by the explicit `resolve_condition` facade
+- **THEN** exactly one amendment is enqueued for that candidate in the same transaction as the resolution, and resolving again enqueues none
+- **AND** a failed enqueue never rolls back the resolution
+
+#### Scenario: A forged enqueue writes nothing
+- **WHEN** a role granted EXECUTE on the SECURITY DEFINER `public.enqueue_premise_amendments` calls it for a condition with no `resolved` `owner_conditions` row, or with a `resolved_at` that differs from that row's
+- **THEN** it returns 0 and writes nothing
+- **AND** a genuine call keys the episode on the ledger row's own fingerprint and `resolved_at`, rendered identically from any session time zone or date style, and stores no caller-supplied summary
+
+#### Scenario: Amendment evidence outlives candidate cleanup
+- **WHEN** a candidate that has an amendment is deleted
+- **THEN** the amendment row remains, and the delivery cycle skips it without error
+- **AND** broker cleanup settles a `pending` or `fold` amendment whose candidate is gone to the terminal `orphaned` state; amendment rows are never deleted
 
 ### Requirement: Premise Amendment Migration Evidence
 
@@ -919,7 +938,7 @@ The premise-amendment migration lifecycle SHALL distinguish the ordinary migrati
 
 ### Requirement: Privileged Bootstrap Converges the Amendment Table Owner
 
-The privileged managed bootstrap SHALL narrowly converge an existing ordinary `public.insight_amendments` table from the actual current bootstrap owner to the existing configured trusted ordinary migration identity before subsequent ordinary core replay. An absent table and an already-converged owner SHALL be no-ops. Unexpected relation kind, third ownership or unsafe/unknown target identity SHALL fail closed; no generic owner reassignment, role creation, new grant, destructive recreation, applied-revision rewrite or new caller interface SHALL be introduced. Read-only initial classification SHALL precede bootstrap side effects, and the transition SHALL revalidate qualified object/owner/target identity under a finite nonwaiting exclusive lock. Its atomic ownership block SHALL preserve complete amendment rows, logical definitions, FK, runtime effective privileges and grant options, RLS flags/policy bodies and independently installed functions. Expected PostgreSQL owner-OID ACL and dependent-index/TOAST/owned-sequence ownership effects SHALL be separately measured. The trusted migration owner's ordinary RLS bypass SHALL be explicit and SHALL NOT be conflated with runtime-role authority. Existing historical diagnostics, six causal variants, 45 role controls, two bootstrap replays, 43-row baseline, all amendment retention states and bounded cumulative CHECK/lossy-fold/q34 invariants SHALL remain enforced. Actual ordinary canonical replay SHALL reach the dynamic core head and durable per-schema version/data witnesses; metadata, a stamped head, mocks or expected-failure green SHALL NOT establish repair. Function/caller/FK/FORCE-RLS hardening remains a separate contract.
+The privileged managed bootstrap SHALL narrowly converge an existing ordinary `public.insight_amendments` table from the actual current bootstrap owner to the existing configured trusted ordinary migration identity before subsequent ordinary core replay. An absent table and an already-converged owner SHALL be no-ops. Unexpected relation kind, third ownership or unsafe/unknown target identity SHALL fail closed; no generic owner reassignment, role creation, new grant, destructive recreation, applied-revision rewrite or new caller interface SHALL be introduced. Read-only initial classification SHALL precede bootstrap side effects, and the transition SHALL revalidate qualified object/owner/target identity under a finite nonwaiting exclusive lock. Its atomic ownership block SHALL preserve complete amendment rows, logical definitions, FK, runtime effective privileges and grant options, RLS flags/policy bodies and function bodies. The same atomic block SHALL converge the two core_255 SECURITY DEFINER functions (`public.enqueue_premise_amendments`, `public.resolve_finance_bill_status`) under the same rule — absent or already-target is a no-op, only the bootstrap owner transfers, a third owner fails closed in the read-only preflight — preserving their bodies, `proconfig` and runtime EXECUTE rights. Expected PostgreSQL owner-OID ACL and dependent-index/TOAST/owned-sequence ownership effects SHALL be separately measured. The trusted migration owner's ordinary RLS bypass SHALL be explicit and SHALL NOT be conflated with runtime-role authority. Existing historical diagnostics, six causal variants, 45 role controls, two bootstrap replays, 43-row baseline, all amendment retention states and bounded cumulative CHECK/lossy-fold/q34 invariants SHALL remain enforced. Actual ordinary canonical replay SHALL reach the dynamic core head and durable per-schema version/data witnesses; metadata, a stamped head, mocks or expected-failure green SHALL NOT establish repair. Function/caller/FK/FORCE-RLS hardening remains a separate contract.
 
 ID: REQ-proactive-insight-engine-033
 Source: RFC0006; scripts/init-db.sql Important ownership note; bu-d55reo adopted complete canonical P0-P9; scripts/init-db.sql qualified owner convergence
@@ -959,7 +978,7 @@ Scope: v1-mandatory
 
 #### Scenario: Independent lifecycle proof retains historical contracts and attribution
 - **WHEN** the bounded repair is validated, reviewed and delivered through normal native/source/hosted/protected operations
-- **THEN** all existing amendment states, candidate retention/cascade, documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
+- **THEN** all existing amendment states, candidate retention (core_312 replaced the cascade with indefinite amendment retention), documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
 - **AND** function ownership/caller/EXECUTE and FK/FORCE-RLS hardening are reported separately, source/mock/collection or historical diagnostic green is never called SQL repair, and full original delivery outcomes remain required for closure
 
 ### Requirement: Finance contribution protection survives durable insight processing

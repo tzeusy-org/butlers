@@ -3,17 +3,25 @@
 Spec-first: nothing below is authorized until the owner adopts this change. One follow-up bead
 per group.
 
-- [ ] 1.1 Verify the `[Unknown]` identity seam: whether `calendar_event_instances.id` is stable
+- [x] 1.1 Verify the `[Unknown]` identity seam: whether `calendar_event_instances.id` is stable
   across a provider resync of the same instance (read `src/butlers/modules/calendar` sync and
   upsert code, and a resync test), and whether a dedup-store outage (`load_dedup_rules` and
   `load_keep_separate_keys` fail open to the default strategy while `available` stays true) can
   change which copy survives a cluster and so the `instance_id` feeding `overlap_pair_id`. If
   unstable, replace the overlap identity with a content-free
   stable key before implementation and amend the requirement.
-- [ ] 1.2 Verify the `[Unknown]` freshness seam: whether a complete scan over stale
+  Resolved (bu-vcjgo8): unstable. One schema's instance id survives its own resync, but each
+  calendar butler's schema holds a copy of the same provider event and the `origin_ref` dedup
+  keeps the most recently synced copy, so the surviving instance id rotates between schemas.
+  The pair id is now `overlap_pair_id` over provider identities (the `origin_ref` cluster key),
+  and a dedup-store read failure is reported on the scan and skips the tick. Requirement
+  amended.
+- [x] 1.2 Verify the `[Unknown]` freshness seam: whether a complete scan over stale
   `source_freshness` rows can miss a provider-side cancellation, and decide whether the loop must
   also require fresh sources before `snapshot_complete=true`.
-- [ ] 1.3 Add a supervised loop modeled on `run_calendar_sync_deadman_loop`
+  Resolved (bu-vcjgo8): no. Stale rows can keep a cancelled conflict observed or miss a new one,
+  but cannot resolve a live one, and `calendar_sync_deadman` already raises sync death.
+- [x] 1.3 Add a supervised loop modeled on `run_calendar_sync_deadman_loop`
   (`src/butlers/jobs/calendar_sync_deadman.py`, started in `src/butlers/api/app.py`) that calls
   `query_calendar_conflicts` over `[owner-local midnight, + N days)`, builds title-free
   observations, and reconciles `calendar:overcommitment` through the Switchboard pool with
@@ -21,12 +29,15 @@ per group.
   (`openspec/specs/infrastructure-reliability/spec.md`), which enumerates the supervised
   dashboard loops consumed by the RFC 0007 `supervisors` readiness projection, to add the new
   loop.
-- [ ] 1.4 Tests: open (overlap and overloaded day), `back_to_back` ignored, auto-resolve,
+- [x] 1.4 Tests: open (overlap and overloaded day), `back_to_back` ignored, auto-resolve,
   `available=false` never resolves, reconciliation failure keeps the loop alive, privacy
   (no title, attendee or location in summary or metadata), concurrent scans idempotent.
   Nearest existing test: `tests/jobs/test_calendar_sync_deadman.py` (pattern) and
   `tests/integration/test_calendar_sync_deadman_roundtrip.py` (real Postgres).
-  Tests delta: +9 ~0 -0 expected (revisit at implementation).
+  Tests delta: +9 ~0 -0 expected (revisit at implementation); measured +23 ~1 -0 collected
+  (`tests/jobs/test_calendar_overcommitment.py` 10 functions, 3 parametrized; 2 in
+  `tests/integration/test_calendar_overcommitment_roundtrip.py`; the lifespan inventory test
+  extended). Shipped by bu-vcjgo8 as `src/butlers/jobs/calendar_overcommitment.py`.
 
 ## 2. Home device threshold producer (`home:device-threshold`)
 
@@ -55,7 +66,7 @@ The group number is left vacant so groups 4 and 5 stay stable.
 
 ## 4. Finance budget threshold producer (`finance:budget-threshold`)
 
-- [ ] 4.1 In `run_insight_scan` (`roster/finance/jobs/finance_jobs.py`), after the existing
+- [x] 4.1 In `run_insight_scan` (`roster/finance/jobs/finance_jobs.py`), after the existing
   budget section, build observations from `budget_status()` items with status `warning` or
   `exceeded` and reconcile `finance:budget-threshold` through `_reconcile_owner_conditions`.
   Wrap the currently unwrapped `budget_status()` call so a raise skips only this source.
@@ -63,12 +74,13 @@ The group number is left vacant so groups 4 and 5 stay stable.
   `{"items": [], "count": 0}` with no active budgets, and the empty result is a complete
   snapshot that resolves. The early exits in sections 1 to 3 skip the reconcile on those runs;
   that latency is accepted and no change is made.
-- [ ] 4.2 Tests: open on warn, warning to exceeded keeps one episode, resolve on new period or
+- [x] 4.2 Tests: open on warn, warning to exceeded keeps one episode, resolve on new period or
   lower total, failing `budget_status()` never resolves, reconciliation failure does not break
   the scan.
   Nearest existing test: `roster/finance/tests/test_jobs.py`
   (`test_insight_scan_overdue_bill_opens_owner_condition` pattern).
-  Tests delta: +5 ~0 -0 expected.
+  Tests delta: +5 ~0 -0 expected; measured +6 ~0 -0 collected (4 functions, one parametrized x3).
+  Shipped by bu-5rjeup.
 
 ## 5. Cross-cutting spec hygiene
 

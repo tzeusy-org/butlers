@@ -25,9 +25,6 @@ from decimal import Decimal
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -41,28 +38,10 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + finance migrations (incl. 009) applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool; truncate finance tables between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE bills, transactions, subscriptions, accounts CASCADE")
-    yield p
-    await p.close()
+async def finance_pool(db):
+    """A private clone migrated with the core and finance chains."""
+    return await db("core", "finance")
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +117,7 @@ async def _insert_txn(
 class TestSweepAutoSettledNotInUpcoming:
     """D1: auto-settled bills are paid and must not appear as overdue/pending."""
 
-    async def test_auto_settled_bill_removed_from_upcoming(self, pool):
+    async def test_auto_settled_bill_removed_from_upcoming(self, finance_pool):
         """A bill auto-settled by reconcile_bills() does not appear in upcoming_bills().
 
         Scenario: HSBC placeholder bill ($0, past due) + matching debit
@@ -148,7 +127,7 @@ class TestSweepAutoSettledNotInUpcoming:
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="HSBC Credit Card",
             amount=0.00,
             currency="SGD",
@@ -156,7 +135,7 @@ class TestSweepAutoSettledNotInUpcoming:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="HSBC Credit Card",
             amount=717.57,
             currency="SGD",
@@ -164,22 +143,22 @@ class TestSweepAutoSettledNotInUpcoming:
         )
 
         # Step 0: run sweep first
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
         assert len(sweep["auto_settled"]) == 1
         assert sweep["auto_settled"][0]["payee"] == "HSBC Credit Card"
 
         # Step 1: fetch upcoming bills — settled bill is gone
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert result["needs_action"] == [], "auto-settled bill must not appear as unpaid"
         overdue_count = len([i for i in result["needs_action"] if i["urgency"] == "overdue"])
         assert overdue_count == 0
 
-    async def test_auto_settled_bill_appears_only_in_sweep_output(self, pool):
+    async def test_auto_settled_bill_appears_only_in_sweep_output(self, finance_pool):
         """reconcile_bills() returns settled bill in auto_settled for digest reporting."""
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Singtel",
             amount=80.00,
             currency="SGD",
@@ -187,14 +166,14 @@ class TestSweepAutoSettledNotInUpcoming:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="Singtel",
             amount=80.00,
             currency="SGD",
             posted_at=datetime.now(UTC) - timedelta(days=2),
         )
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
 
         assert len(sweep["auto_settled"]) == 1
         settled = sweep["auto_settled"][0]
@@ -209,14 +188,14 @@ class TestSweepAutoSettledNotInUpcoming:
         assert settled["payee"] == "Singtel"
         assert abs(Decimal(settled["amount"]) - Decimal("80.00")) < Decimal("0.01")
 
-    async def test_multiple_auto_settled_all_removed(self, pool):
+    async def test_multiple_auto_settled_all_removed(self, finance_pool):
         """Two auto-settled bills are both removed from the upcoming list."""
         from butlers.tools.finance.bills import upcoming_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         for payee, amount in [("Netflix", 15.49), ("Spotify", 9.99)]:
             await _insert_bill(
-                pool,
+                finance_pool,
                 payee=payee,
                 amount=amount,
                 currency="USD",
@@ -224,17 +203,17 @@ class TestSweepAutoSettledNotInUpcoming:
                 status="pending",
             )
             await _insert_txn(
-                pool,
+                finance_pool,
                 merchant=payee,
                 amount=amount,
                 currency="USD",
                 posted_at=datetime.now(UTC) - timedelta(days=1),
             )
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
         assert len(sweep["auto_settled"]) == 2
 
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert result["needs_action"] == [], "all auto-settled bills must be gone from upcoming"
 
 
@@ -246,7 +225,7 @@ class TestSweepAutoSettledNotInUpcoming:
 class TestSweepCandidatesRemainPending:
     """D1: confirm-tier candidates are not settled — they appear in upcoming list."""
 
-    async def test_candidates_remain_in_upcoming_list(self, pool):
+    async def test_candidates_remain_in_upcoming_list(self, finance_pool):
         """Bills in the candidates (confirm) tier are NOT settled and still appear as pending."""
         from butlers.tools.finance.bills import upcoming_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
@@ -254,7 +233,7 @@ class TestSweepCandidatesRemainPending:
         today = date.today()
         # Two same-payee bills — both in-window → confirm tier
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="DBS Credit Card",
             amount=500.00,
             currency="SGD",
@@ -262,7 +241,7 @@ class TestSweepCandidatesRemainPending:
             status="pending",
         )
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="DBS Credit Card",
             amount=500.00,
             currency="SGD",
@@ -270,32 +249,32 @@ class TestSweepCandidatesRemainPending:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="DBS Credit Card",
             amount=500.00,
             currency="SGD",
             posted_at=datetime.now(UTC) - timedelta(days=3),
         )
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
 
         # Should surface candidates, not auto-settle
         assert len(sweep["auto_settled"]) == 0
         assert len(sweep["candidates"]) >= 1
 
         # Both bills still pending → appear in upcoming
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert len(result["needs_action"]) == 2, (
             "unresolved ambiguous bills must remain in upcoming list"
         )
 
-    async def test_candidates_carry_required_digest_fields(self, pool):
+    async def test_candidates_carry_required_digest_fields(self, finance_pool):
         """Each candidate entry has the fields needed for the digest confirm section."""
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         today = date.today()
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="OCBC",
             amount=350.00,
             currency="SGD",
@@ -303,7 +282,7 @@ class TestSweepCandidatesRemainPending:
             status="pending",
         )
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="OCBC",
             amount=350.00,
             currency="SGD",
@@ -311,14 +290,14 @@ class TestSweepCandidatesRemainPending:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="OCBC",
             amount=350.00,
             currency="SGD",
             posted_at=datetime.now(UTC) - timedelta(days=2),
         )
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
         assert len(sweep["candidates"]) >= 1
 
         for candidate in sweep["candidates"]:
@@ -345,12 +324,12 @@ class TestSweepCandidatesRemainPending:
 class TestEmptySweepNoEffect:
     """D1 no-op: when there are no matching transactions, the sweep is empty."""
 
-    async def test_sweep_empty_when_no_transactions(self, pool):
+    async def test_sweep_empty_when_no_transactions(self, finance_pool):
         """reconcile_bills() returns empty lists when there are no transactions."""
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="SP Group",
             amount=120.00,
             currency="SGD",
@@ -358,18 +337,18 @@ class TestEmptySweepNoEffect:
             status="pending",
         )
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
 
         assert sweep["auto_settled"] == []
         assert sweep["candidates"] == []
 
-    async def test_upcoming_bills_unaffected_by_empty_sweep(self, pool):
+    async def test_upcoming_bills_unaffected_by_empty_sweep(self, finance_pool):
         """If sweep finds nothing, upcoming_bills() still returns the pending bills."""
         from butlers.tools.finance.bills import upcoming_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Electric Company",
             amount=95.00,
             currency="USD",
@@ -378,23 +357,23 @@ class TestEmptySweepNoEffect:
         )
 
         # No transactions → sweep is a no-op
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
         assert sweep["auto_settled"] == []
 
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert len(result["needs_action"]) == 1
         assert result["needs_action"][0]["bill"]["payee"] == "Electric Company"
 
-    async def test_no_bills_no_transactions_sweep_empty(self, pool):
+    async def test_no_bills_no_transactions_sweep_empty(self, finance_pool):
         """Empty database: sweep returns empty lists, upcoming_bills returns empty items."""
         from butlers.tools.finance.bills import upcoming_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
         assert sweep["auto_settled"] == []
         assert sweep["candidates"] == []
 
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert result["needs_action"] == []
 
 
@@ -406,12 +385,12 @@ class TestEmptySweepNoEffect:
 class TestSweepIdempotency:
     """D1 idempotency: running the sweep twice does not double-settle anything."""
 
-    async def test_second_sweep_settles_nothing_new(self, pool):
+    async def test_second_sweep_settles_nothing_new(self, finance_pool):
         """Running reconcile_bills() twice: first settles, second finds nothing."""
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Spotify",
             amount=9.99,
             currency="USD",
@@ -419,29 +398,29 @@ class TestSweepIdempotency:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="Spotify",
             amount=9.99,
             currency="USD",
             posted_at=datetime.now(UTC) - timedelta(days=1),
         )
 
-        sweep1 = await reconcile_bills(pool=pool)
+        sweep1 = await reconcile_bills(pool=finance_pool)
         assert len(sweep1["auto_settled"]) == 1
 
         # Second sweep (as would happen the following week)
-        sweep2 = await reconcile_bills(pool=pool)
+        sweep2 = await reconcile_bills(pool=finance_pool)
         assert len(sweep2["auto_settled"]) == 0
         assert len(sweep2["candidates"]) == 0
 
-    async def test_sweep_then_upcoming_then_sweep_stable(self, pool):
+    async def test_sweep_then_upcoming_then_sweep_stable(self, finance_pool):
         """Calling sweep → upcoming_bills → sweep again yields stable results."""
         from butlers.tools.finance.bills import upcoming_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         # Two bills: one that matches (will be settled), one that doesn't
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Netflix",
             amount=15.49,
             currency="USD",
@@ -449,7 +428,7 @@ class TestSweepIdempotency:
             status="pending",
         )
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Hulu",
             amount=17.99,
             currency="USD",
@@ -457,7 +436,7 @@ class TestSweepIdempotency:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="Netflix",
             amount=15.49,
             currency="USD",
@@ -465,15 +444,15 @@ class TestSweepIdempotency:
         )
         # No transaction for Hulu
 
-        sweep1 = await reconcile_bills(pool=pool)
+        sweep1 = await reconcile_bills(pool=finance_pool)
         assert len(sweep1["auto_settled"]) == 1  # Netflix settled
 
-        bills = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        bills = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         payees = [item["bill"]["payee"] for item in bills["needs_action"]]
         assert "Netflix" not in payees, "settled bill must not appear"
         assert "Hulu" in payees, "pending bill must still appear"
 
-        sweep2 = await reconcile_bills(pool=pool)
+        sweep2 = await reconcile_bills(pool=finance_pool)
         assert len(sweep2["auto_settled"]) == 0  # no new settlements
 
 
@@ -485,7 +464,7 @@ class TestSweepIdempotency:
 class TestPaymentBeforeBillSwept:
     """D1 backstop: sweep catches the inline-hook miss when txn preceded the bill."""
 
-    async def test_payment_before_bill_caught_by_sweep(self, pool):
+    async def test_payment_before_bill_caught_by_sweep(self, finance_pool):
         """Transaction recorded before bill existed is settled by the weekly sweep.
 
         This is the core reason for the backstop: the inline hook missed it because
@@ -496,7 +475,7 @@ class TestPaymentBeforeBillSwept:
 
         # 1. Transaction arrives first (e.g. bank SMS notification)
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="POSB",
             amount=250.00,
             currency="SGD",
@@ -505,7 +484,7 @@ class TestPaymentBeforeBillSwept:
 
         # 2. Bill created later (e.g. bill statement email arrived after payment)
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="POSB",
             amount=250.00,
             currency="SGD",
@@ -514,7 +493,7 @@ class TestPaymentBeforeBillSwept:
         )
 
         # 3. Without sweep, bill appears as overdue
-        result_before = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result_before = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert len(result_before["needs_action"]) == 1
         overdue_before = len(
             [i for i in result_before["needs_action"] if i["urgency"] == "overdue"]
@@ -522,15 +501,15 @@ class TestPaymentBeforeBillSwept:
         assert overdue_before == 1
 
         # 4. Sweep catches and settles it
-        sweep = await reconcile_bills(pool=pool, lookback_days=90)
+        sweep = await reconcile_bills(pool=finance_pool, lookback_days=90)
         assert len(sweep["auto_settled"]) == 1
         assert sweep["auto_settled"][0]["payee"] == "POSB"
 
         # 5. Bill no longer appears as overdue
-        result_after = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result_after = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         assert result_after["needs_action"] == []
 
-    async def test_sweep_return_structure_for_full_digest(self, pool):
+    async def test_sweep_return_structure_for_full_digest(self, finance_pool):
         """reconcile_bills() returns both auto_settled and candidates with full digest data."""
         from butlers.tools.finance.reconciliation import reconcile_bills
 
@@ -538,7 +517,7 @@ class TestPaymentBeforeBillSwept:
 
         # One auto-settleable: exact match
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="Grab",
             amount=45.00,
             currency="SGD",
@@ -546,7 +525,7 @@ class TestPaymentBeforeBillSwept:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="Grab",
             amount=45.00,
             currency="SGD",
@@ -555,7 +534,7 @@ class TestPaymentBeforeBillSwept:
 
         # Two ambiguous: same-payee bills both in-window
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="StarHub",
             amount=100.00,
             currency="SGD",
@@ -563,7 +542,7 @@ class TestPaymentBeforeBillSwept:
             status="pending",
         )
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="StarHub",
             amount=100.00,
             currency="SGD",
@@ -571,14 +550,14 @@ class TestPaymentBeforeBillSwept:
             status="pending",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="StarHub",
             amount=100.00,
             currency="SGD",
             posted_at=datetime.now(UTC) - timedelta(days=5),
         )
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
 
         # Digest data: auto-settled section
         assert len(sweep["auto_settled"]) == 1
@@ -591,13 +570,13 @@ class TestPaymentBeforeBillSwept:
             assert c["payee"] == "StarHub"
             assert Decimal(str(c["amount"])) == Decimal("100.00")
 
-    async def test_overdue_bill_settled_by_sweep_clears_overdue_count(self, pool):
+    async def test_overdue_bill_settled_by_sweep_clears_overdue_count(self, finance_pool):
         """An overdue-status bill settled by the sweep disappears from the overdue count."""
         from butlers.tools.finance.bills import upcoming_bills
         from butlers.tools.finance.reconciliation import reconcile_bills
 
         await _insert_bill(
-            pool,
+            finance_pool,
             payee="SP Services",
             amount=130.00,
             currency="SGD",
@@ -605,21 +584,21 @@ class TestPaymentBeforeBillSwept:
             status="overdue",
         )
         await _insert_txn(
-            pool,
+            finance_pool,
             merchant="SP Services",
             amount=130.00,
             currency="SGD",
             posted_at=datetime.now(UTC) - timedelta(days=2),
         )
 
-        before = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        before = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         overdue_before = len([i for i in before["needs_action"] if i["urgency"] == "overdue"])
         assert overdue_before == 1
 
-        sweep = await reconcile_bills(pool=pool)
+        sweep = await reconcile_bills(pool=finance_pool)
         assert len(sweep["auto_settled"]) == 1
 
-        after = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        after = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         overdue_after = len([i for i in after["needs_action"] if i["urgency"] == "overdue"])
         assert overdue_after == 0
         assert after["needs_action"] == []

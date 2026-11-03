@@ -17,7 +17,6 @@ import importlib
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -25,6 +24,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -35,23 +35,6 @@ _ROUTER_PATH = Path(__file__).resolve().parents[2] / "roster" / "chronicler" / "
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(*, fetch_side_effect=None, fetch_rows=None):
@@ -128,7 +111,7 @@ class TestSourceStateAPI:
     async def test_populated_table_returns_source_rows(self):
         """Two source adapters → two rows in response, sorted by source_name ASC."""
         adapter_rows = [
-            _row(
+            Record(
                 {
                     "source_name": "core.sessions",
                     "chronicler_compatibility": "supported",
@@ -139,7 +122,7 @@ class TestSourceStateAPI:
                     "inactive_reason": None,
                 }
             ),
-            _row(
+            Record(
                 {
                     "source_name": "spotify.session_summary",
                     "chronicler_compatibility": "supported",
@@ -151,7 +134,7 @@ class TestSourceStateAPI:
                 }
             ),
         ]
-        checkpoint_rows: list[_Row] = []  # no checkpoint data
+        checkpoint_rows: list[Record] = []  # no checkpoint data
         app, _ = _make_app(fetch_side_effect=[adapter_rows, checkpoint_rows])
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -173,7 +156,7 @@ class TestSourceStateAPI:
         t_new = datetime(2026, 4, 25, 8, 0, 0, tzinfo=UTC)
 
         adapter_rows = [
-            _row(
+            Record(
                 {
                     "source_name": "core.sessions",
                     "chronicler_compatibility": "supported",
@@ -186,7 +169,7 @@ class TestSourceStateAPI:
             ),
         ]
         checkpoint_rows = [
-            _row(
+            Record(
                 {
                     "source_name": "core.sessions",
                     "subsource": "butler_a",
@@ -194,7 +177,7 @@ class TestSourceStateAPI:
                     "last_error": None,
                 }
             ),
-            _row(
+            Record(
                 {
                     "source_name": "core.sessions",
                     "subsource": "butler_b",
@@ -222,7 +205,7 @@ class TestSourceStateAPI:
     async def test_no_checkpoints_returns_null_subsource_checkpoints(self):
         """Source with no checkpoint rows → subsource_checkpoints is null."""
         adapter_rows = [
-            _row(
+            Record(
                 {
                     "source_name": "steam.play_history",
                     "chronicler_compatibility": "planned",
