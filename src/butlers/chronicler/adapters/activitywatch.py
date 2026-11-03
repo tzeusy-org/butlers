@@ -70,6 +70,7 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.base import (
     AdapterResult,
+    KeyCols,
     ProjectionAdapter,
     cursor_key,
     keyset_page,
@@ -145,7 +146,7 @@ class ActivityWatchWindowAdapter(ProjectionAdapter):
     ``screen_episode`` spans with a per-app-class duration breakdown.
     """
 
-    keyset_cols = (("id", "uuid"),)
+    keyset_cols: KeyCols = (("id", "uuid"),)
 
     def __init__(
         self,

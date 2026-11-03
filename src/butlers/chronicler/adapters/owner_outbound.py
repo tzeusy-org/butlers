@@ -41,6 +41,7 @@ import asyncpg
 
 from butlers.chronicler.adapters.base import (
     AdapterResult,
+    KeyCols,
     ProjectionAdapter,
     cursor_key,
     keyset_page,
@@ -72,7 +73,7 @@ class OwnerOutboundMessageAdapter(ProjectionAdapter):
     rollup (see module docstring).
     """
 
-    keyset_cols = (("id", "uuid"),)
+    keyset_cols: KeyCols = (("id", "uuid"),)
 
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)

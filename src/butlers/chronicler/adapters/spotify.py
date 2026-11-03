@@ -42,6 +42,7 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.base import (
     AdapterResult,
+    KeyCols,
     ProjectionAdapter,
     cursor_key,
     keyset_page,
@@ -69,7 +70,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
     Fine-grained per-track events are deferred (bu-pa4e0.10).
     """
 
-    keyset_cols = (("id", "uuid"),)
+    keyset_cols: KeyCols = (("id", "uuid"),)
 
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)

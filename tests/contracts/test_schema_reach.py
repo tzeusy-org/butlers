@@ -603,6 +603,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         '<dynamic:"{admin}".bootstrap_configuration>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
+        "src/butlers/chronicler/adapters/base.py",
+        "<dynamic:{table}>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface; keyset_page builds the page query over the adapter's own fixed source table",
+    (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",

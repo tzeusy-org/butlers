@@ -79,6 +79,7 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.base import (
     AdapterResult,
+    KeyCols,
     ProjectionAdapter,
     cursor_key,
     key_for_watermark,
@@ -651,7 +652,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
     project different signal shapes (movement vs. stationary dwell).
     """
 
-    keyset_cols = (("id", "uuid"),)
+    keyset_cols: KeyCols = (("id", "uuid"),)
 
     def __init__(
         self,

@@ -142,6 +142,7 @@ from butlers.chronicler.adapters._owner_entity import (
 )
 from butlers.chronicler.adapters.base import (
     AdapterResult,
+    KeyCols,
     ProjectionAdapter,
     cursor_key,
     keyset_page,
@@ -222,7 +223,7 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
     domain/device_class is left untouched (bead-1 scope).
     """
 
-    keyset_cols = (("id", "uuid"),)
+    keyset_cols: KeyCols = (("id", "uuid"),)
 
     def __init__(
         self,

@@ -65,7 +65,7 @@ class _Ctx:
         return None
 
 
-class _FakeConn:
+class _SqliteConn:
     """Executes the adapters' Postgres SQL on SQLite."""
 
     def __init__(self, db: sqlite3.Connection) -> None:
@@ -88,8 +88,8 @@ class _FakeConn:
         return self._db.execute(sql, params).fetchall()
 
 
-class _FakePool:
-    def __init__(self, conn: _FakeConn) -> None:
+class _SqlitePool:
+    def __init__(self, conn: _SqliteConn) -> None:
         self._conn = conn
 
     def acquire(self) -> _Ctx:
@@ -249,7 +249,7 @@ _SPECS = [
 ]
 
 
-def _seed(spec: _Spec) -> tuple[_FakeConn, list[str], list[str]]:
+def _seed(spec: _Spec) -> tuple[_SqliteConn, list[str], list[str]]:
     """Return ``(conn, expected ids in (ts, id) order, noise ids)``."""
     db = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
     db.row_factory = sqlite3.Row
@@ -270,16 +270,16 @@ def _seed(spec: _Spec) -> tuple[_FakeConn, list[str], list[str]]:
         cols = ", ".join(row)
         marks = ", ".join(f":{c}" for c in row)
         db.execute(f"INSERT INTO {spec.table} ({cols}) VALUES ({marks})", row)
-    return _FakeConn(db), expected, noise_ids
+    return _SqliteConn(db), expected, noise_ids
 
 
 def _identity(spec: _Spec, row: sqlite3.Row) -> str:
     return row["id"]
 
 
-async def _drain(spec: _Spec, conn: _FakeConn) -> list[list[str]]:
+async def _drain(spec: _Spec, conn: _SqliteConn) -> list[list[str]]:
     adapter = spec.make_adapter()
-    source = conn if spec.pass_connection else _FakePool(conn)
+    source = conn if spec.pass_connection else _SqlitePool(conn)
     since: datetime | None = None
     since_key: list[str] | None = None
     pages: list[list[str]] = []
@@ -312,7 +312,7 @@ async def test_checkpoint_without_tiebreaker_resumes_strictly_after_ts(spec):
     """Stored pre-cursor checkpoints (no key) keep the old ``ts > watermark`` read."""
     conn, expected, _ = _seed(spec)
     adapter = spec.make_adapter()
-    source = conn if spec.pass_connection else _FakePool(conn)
+    source = conn if spec.pass_connection else _SqlitePool(conn)
 
     rows = await getattr(adapter, spec.fetch)(source, _T2, None)
 
@@ -395,7 +395,7 @@ async def test_crash_between_cursor_and_watermark_writes_loses_no_rows(crash_at,
         row = spec.row(n, ts)
         marks = ", ".join(f":{c}" for c in row)
         db.execute(f"INSERT INTO {spec.table} ({', '.join(row)}) VALUES ({marks})", row)
-    pool = _FakePool(_FakeConn(db))
+    pool = _SqlitePool(_SqliteConn(db))
 
     store: dict[str, Any] = {"wm": None, "cursor": None, "run": 0}
     projected: list[str] = []
