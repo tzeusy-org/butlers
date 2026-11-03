@@ -673,8 +673,9 @@ class TestListConditionsMetadataPredicate:
     """The sphere filter's SQL (bu-q7vx1q.64) against the real JSONB column."""
 
     async def test_equals_and_missing_partition_commitments_by_declared_sphere(
-        self, pool: asyncpg.Pool
+        self, raw_pool: asyncpg.Pool
     ) -> None:
+        pool = raw_pool  # metadata is bound as JSON text with an explicit ::jsonb cast
         source = f"relationship:sphere-{uuid.uuid4().hex[:8]}"
         rows = {
             "work": {"class": "commitment", "sphere": "work"},
