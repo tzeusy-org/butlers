@@ -334,9 +334,10 @@ class MutationsMixin:
         executed approval is superseded by the replay's own row (noop); a
         rejected, expired or abandoned one failed. Bounded per call.
         """
-        if not await self._projection_tables_available():
+        if not await self._projection_tables_available():  # pyright: ignore[reportAttributeAccessIssue]
             return 0
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        db = self._db  # pyright: ignore[reportAttributeAccessIssue]
+        pool = getattr(db, "pool", None) if db is not None else None
         if pool is None:
             return 0
         try:

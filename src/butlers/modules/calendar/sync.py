@@ -655,7 +655,7 @@ class SyncMixin:
             except Exception as exc:
                 logger.error("Calendar internal projection poller error: %s", exc, exc_info=True)
             try:
-                await self._settle_orphaned_overlap_rows()
+                await self._settle_orphaned_overlap_rows()  # pyright: ignore[reportAttributeAccessIssue]
             except Exception as exc:
                 logger.warning("Settling orphaned overlap rows failed: %s", exc)
             # Push butler events to the Butlers Google Calendar after projection.
