@@ -139,33 +139,37 @@ class RecurrenceMixin:
     ) -> dict[str, Any] | None:
         """Route large ``series`` / ``following`` mutations through the approval gate.
 
-        Returns an ``approval_required`` response when gated, otherwise ``None``.
+        Return an approval request or explicit refusal when gated, otherwise ``None``.
         A single-occurrence ``this`` mutation is never gated on impact.
         """
-        if (
-            get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None
-            or self._approval_enqueuer is None
-        ):
+        if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None:
             return None
         if recurrence_scope == "this":
             return None
         if occurrences_touched < RECURRENCE_HIGH_IMPACT_THRESHOLD:
             return None
-        gated_tool_args = bind_calendar_approval_calendar(
-            calendar_approval_args(tool_name, **tool_args), resolved_calendar_id
-        )
-        agent_summary = (
-            f"Calendar recurrence high-impact action: {tool_name} touches "
-            f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
-            f"butler={self._butler_name})"
-        )
-        action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
-        response = {
-            "status": "approval_required",
-            "action_id": action_id,
-            "message": "This recurrence-scoped mutation has been queued for approval.",
-            "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
-        }
+        if self._approval_enqueuer is None:
+            response = {
+                "status": "approval_unavailable",
+                "message": "This high-impact recurrence mutation requires the approvals module.",
+                "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+            }
+        else:
+            gated_tool_args = bind_calendar_approval_calendar(
+                calendar_approval_args(tool_name, **tool_args), resolved_calendar_id
+            )
+            agent_summary = (
+                f"Calendar recurrence high-impact action: {tool_name} touches "
+                f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
+                f"butler={self._butler_name})"
+            )
+            action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
+            response = {
+                "status": "approval_required",
+                "action_id": action_id,
+                "message": "This recurrence-scoped mutation has been queued for approval.",
+                "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+            }
         source_id = await self._resolve_action_source_id(
             source_kind=SOURCE_KIND_PROVIDER, lane="user"
         )
@@ -173,7 +177,11 @@ class RecurrenceMixin:
             idempotency_key=idempotency_key,
             action_type=action_type,
             request_id=request_id,
-            action_status=MUTATION_STATUS_PENDING,
+            action_status=(
+                MUTATION_STATUS_NOOP
+                if response["status"] == "approval_unavailable"
+                else MUTATION_STATUS_PENDING
+            ),
             action_payload=action_payload,
             action_result=response,
             source_id=source_id,
@@ -607,25 +615,32 @@ class RecurrenceMixin:
         if action_type not in MUTATION_HIGH_IMPACT_ACTIONS:
             return None
         if self._approval_enqueuer is None:
-            return None
-
-        gated_tool_args = calendar_approval_args(tool_name, **tool_args)
-        agent_summary = (
-            f"Calendar workspace high-impact action requested: {tool_name} "
-            f"(butler={self._butler_name})"
-        )
-        action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
-        response = {
-            "status": "approval_required",
-            "action_id": action_id,
-            "message": "This workspace mutation has been queued for approval.",
-        }
+            response = {
+                "status": "approval_unavailable",
+                "message": "This high-impact workspace mutation requires the approvals module.",
+            }
+        else:
+            gated_tool_args = calendar_approval_args(tool_name, **tool_args)
+            agent_summary = (
+                f"Calendar workspace high-impact action requested: {tool_name} "
+                f"(butler={self._butler_name})"
+            )
+            action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
+            response = {
+                "status": "approval_required",
+                "action_id": action_id,
+                "message": "This workspace mutation has been queued for approval.",
+            }
         source_id = await self._resolve_action_source_id(source_kind=source_kind, lane="butler")
         await self._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
             action_type=action_type,
             request_id=request_id,
-            action_status=MUTATION_STATUS_PENDING,
+            action_status=(
+                MUTATION_STATUS_NOOP
+                if response["status"] == "approval_unavailable"
+                else MUTATION_STATUS_PENDING
+            ),
             action_payload=action_payload,
             action_result=response,
             source_id=source_id,
