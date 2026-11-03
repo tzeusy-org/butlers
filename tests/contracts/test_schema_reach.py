@@ -907,6 +907,22 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "dynamic-local: closed local memory tier tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{_q(schema, )}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{_q(schema, table)}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{events}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{links}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
         "src/butlers/modules/memory/knowledge_gaps.py",
         "relationship.entity_facts",
     ): "burn-down: Relationship-only branch of shared memory code; preserve local fact/coverage behavior when exposing ownership",
