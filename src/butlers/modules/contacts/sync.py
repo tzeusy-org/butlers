@@ -1409,7 +1409,10 @@ class ContactsSyncEngine:
                 )
             else:
                 # Content-free: an exception message can carry contact ids or names.
-                state.last_error = f"{DEFAULT_FAILURE_ERROR}: {type(exc).__name__}"
+                # A pending apply-retry marker survives a failed run, or the failed contacts
+                # would wait for the forced full sync.
+                if state.last_error != CONTACT_APPLY_FAILED_ERROR:
+                    state.last_error = f"{DEFAULT_FAILURE_ERROR}: {type(exc).__name__}"
                 await self._state_store.save(
                     provider=provider_name, account_id=account_id, state=state
                 )

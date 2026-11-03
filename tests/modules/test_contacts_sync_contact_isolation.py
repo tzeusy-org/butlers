@@ -72,7 +72,7 @@ def _engine(store, contacts, failing: set[str], *, fail_fetch=None):
     return engine, written
 
 
-async def test_a_failing_contact_is_isolated_and_the_cursor_advances(
+async def test_a_failing_contact_is_isolated_and_logged_content_free(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     store = _Store()
@@ -88,27 +88,7 @@ async def test_a_failing_contact_is_isolated_and_the_cursor_advances(
     # The failed contact has no recorded version, so a later full sync retries it.
     assert set(store.state.contact_versions) == {"people/1", "people/3"}
     assert store.state.last_error == CONTACT_APPLY_FAILED_ERROR
-    assert "people/2" not in store.state.last_error and _SECRET not in store.state.last_error
-
-
-async def test_the_failure_log_is_content_free() -> None:
-    store = _Store()
-    engine, _ = _engine(store, [_contact("people/1"), _contact("people/2")], {"people/2"})
-    records: list[logging.LogRecord] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record: logging.LogRecord) -> None:
-            records.append(record)
-
-    logger = logging.getLogger("butlers.modules.contacts.sync")
-    handler = _Capture(level=logging.WARNING)
-    logger.addHandler(handler)
-    try:
-        await engine.sync(account_id="acct", mode="full")
-    finally:
-        logger.removeHandler(handler)
-
-    (record,) = [r for r in records if r.getMessage() == "contact_sync_apply_failed"]
+    (record,) = [r for r in caplog.records if r.getMessage() == "contact_sync_apply_failed"]
     assert (record.provider, record.account_id, record.external_id) == (
         "google",
         "acct",
@@ -118,20 +98,7 @@ async def test_the_failure_log_is_content_free() -> None:
     assert _SECRET not in repr(record.__dict__) and record.exc_info is None
 
 
-async def test_a_run_level_failure_stores_a_content_free_last_error() -> None:
-    store = _Store()
-    boom = ConnectionError(f"upstream said {_SECRET} people/9")
-    engine, _ = _engine(store, [], set(), fail_fetch=boom)
-
-    with pytest.raises(ConnectionError):
-        await engine.sync(account_id="acct", mode="full")
-
-    assert store.state.last_error is not None
-    assert _SECRET not in store.state.last_error and "people/9" not in store.state.last_error
-    assert "ConnectionError" in store.state.last_error
-
-
-async def test_when_every_contact_fails_the_run_fails_and_the_cursor_stays() -> None:
+async def test_every_contact_failing_fails_the_run_and_the_cursor_stays() -> None:
     store = _Store(ContactsSyncState(sync_cursor="cursor-1"))
     engine, written = _engine(
         store, [_contact("people/1"), _contact("people/2")], {"people/1", "people/2"}
@@ -143,39 +110,51 @@ async def test_when_every_contact_fails_the_run_fails_and_the_cursor_stays() -> 
     assert written == [] and store.state.sync_cursor == "cursor-1"
 
 
-async def test_an_incremental_run_keeps_the_retry_marker_and_a_clean_full_run_clears_it() -> None:
-    store = _Store(ContactsSyncState(sync_cursor="cursor-1", last_error=CONTACT_APPLY_FAILED_ERROR))
-    engine, _ = _engine(store, [_contact("people/1")], set())
-
-    await engine.sync(account_id="acct", mode="incremental")
+async def test_the_retry_marker_survives_failed_and_incremental_runs_until_a_full_run() -> None:
+    store = _Store()
+    engine, _ = _engine(store, [_contact("people/1"), _contact("people/2")], {"people/2"})
+    await engine.sync(account_id="acct", mode="full")
     assert store.state.last_error == CONTACT_APPLY_FAILED_ERROR
 
-    await engine.sync(account_id="acct", mode="full")
+    boom = ConnectionError(f"upstream said {_SECRET} people/9")
+    failing_run, _ = _engine(store, [], set(), fail_fetch=boom)
+    with pytest.raises(ConnectionError):
+        await failing_run.sync(account_id="acct", mode="full")
+    assert store.state.last_error == CONTACT_APPLY_FAILED_ERROR
+
+    clean_run, _ = _engine(store, [_contact("people/1")], set())
+    await clean_run.sync(account_id="acct", mode="incremental")
+    assert store.state.last_error == CONTACT_APPLY_FAILED_ERROR
+    await clean_run.sync(account_id="acct", mode="full")
     assert store.state.last_error is None
 
+    # Without a pending marker, a failed run stores only the exception class.
+    fresh = _Store()
+    fresh_run, _ = _engine(fresh, [], set(), fail_fetch=boom)
+    with pytest.raises(ConnectionError):
+        await fresh_run.sync(account_id="acct", mode="full")
+    assert "ConnectionError" in fresh.state.last_error
+    assert _SECRET not in fresh.state.last_error and "people/9" not in fresh.state.last_error
 
-@pytest.mark.parametrize(
-    ("last_full_age", "expected"),
-    [(timedelta(minutes=10), "incremental"), (timedelta(hours=2), "full")],
-)
-async def test_the_runtime_retries_failed_contacts_with_a_bounded_full_sync(
-    last_full_age: timedelta, expected: str
-) -> None:
-    last_full = (_NOW - last_full_age).isoformat()
-    store = _Store(
-        ContactsSyncState(
-            sync_cursor="cursor-1",
-            cursor_issued_at=_NOW.isoformat(),
-            last_full_sync_at=last_full,
-            last_error=CONTACT_APPLY_FAILED_ERROR,
+
+async def test_the_runtime_retries_failed_contacts_with_a_bounded_full_sync() -> None:
+    async def next_mode(last_full_age: timedelta) -> str:
+        store = _Store(
+            ContactsSyncState(
+                sync_cursor="cursor-1",
+                cursor_issued_at=_NOW.isoformat(),
+                last_full_sync_at=(_NOW - last_full_age).isoformat(),
+                last_error=CONTACT_APPLY_FAILED_ERROR,
+            )
         )
-    )
-    runtime = ContactsSyncRuntime(
-        sync_engine=object(),  # type: ignore[arg-type]
-        state_store=store,
-        provider_name="google",
-        account_id="acct",
-        now_fn=lambda: _NOW,
-    )
+        runtime = ContactsSyncRuntime(
+            sync_engine=object(),  # type: ignore[arg-type]
+            state_store=store,
+            provider_name="google",
+            account_id="acct",
+            now_fn=lambda: _NOW,
+        )
+        return await runtime._next_mode()
 
-    assert await runtime._next_mode() == expected
+    assert await next_mode(timedelta(minutes=10)) == "incremental"
+    assert await next_mode(timedelta(hours=2)) == "full"
