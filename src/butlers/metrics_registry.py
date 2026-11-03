@@ -11,7 +11,8 @@ client raises::
 
 That collision was the root cause of a flaky finance ``test_bulk_*`` suite under
 ``pytest -n`` (bu-um02p): importing ``butlers.api.routers.audit`` a second time
-re-ran ``Counter("audit_log_appended_total", ...)`` and exploded.
+re-ran a module-level ``Counter(...)`` and exploded (that audit counter has since moved
+to OpenTelemetry as ``butlers.audit.log.appended``).
 
 The ``get_or_create_*`` helpers below make registration idempotent: on the first
 definition they create and register the collector; on any subsequent definition
@@ -23,10 +24,10 @@ Usage::
 
     from butlers.metrics_registry import get_or_create_counter
 
-    audit_log_appended_total = get_or_create_counter(
-        "audit_log_appended_total",
-        "Number of rows appended to public.audit_log, partitioned by action.",
-        labelnames=["action"],
+    approval_delivery_lifecycle_total = get_or_create_counter(
+        "approval_delivery_lifecycle_total",
+        "Approval delivery lifecycle transitions, partitioned by phase.",
+        labelnames=["phase"],
     )
 """
 

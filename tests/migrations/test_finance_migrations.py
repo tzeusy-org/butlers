@@ -45,108 +45,21 @@ async def _apply(pool: asyncpg.Pool, mod, direction: str) -> None:
         await pool.execute(sql)
 
 
+async def _finance_at(db, revision: str) -> asyncpg.Pool:
+    """A pool on the real finance chain as *revision* left it."""
+    return await db(
+        "core",
+        "finance",
+        schemas={"finance": "finance"},
+        schema="finance",
+        revisions={"finance": revision},
+    )
+
+
 @pytest.fixture
-async def finance_pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance tables and return a pool.
-
-    WARNING: This fixture duplicates the schema from the finance migrations
-    (finance_001 through finance_005) to keep tests lightweight and avoid a
-    runtime Alembic dependency.  If any migration changes, this fixture
-    MUST be updated manually to stay in sync.
-
-    Relevant migration files:
-      - roster/finance/migrations/001_finance_tables.py  (finance_001)
-      - roster/finance/migrations/002_merchant_mappings_trigram_index.py  (finance_002)
-      - roster/finance/migrations/003_merchant_mappings_schema_correction.py  (finance_003)
-      - roster/finance/migrations/004_transactions_dedup_constraint.py  (finance_004)
-      - roster/finance/migrations/005_add_csv_dedup_index.py  (finance_005)
-    """
-    async with provisioned_postgres_pool() as pool:
-        # We need to run the migrations through Alembic's op interface,
-        # but for testing we can directly execute the SQL
-        try:
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    institution TEXT NOT NULL,
-                    type        TEXT NOT NULL
-                                    CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                    name        TEXT,
-                    last_four   CHAR(4),
-                    currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                    source_message_id TEXT,
-                    posted_at         TIMESTAMPTZ NOT NULL,
-                    merchant          TEXT NOT NULL,
-                    description       TEXT,
-                    amount            NUMERIC(14, 2) NOT NULL,
-                    currency          CHAR(3) NOT NULL,
-                    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-                    category          TEXT NOT NULL,
-                    payment_method    TEXT,
-                    receipt_url       TEXT,
-                    external_ref      TEXT,
-                    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-
-            # Create existing indexes from finance_001
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_accounts_institution
-                    ON accounts (institution)
-            """)
-            await pool.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_accounts_institution_type_last_four
-                    ON accounts (institution, type, last_four)
-                    WHERE last_four IS NOT NULL
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_posted_at
-                    ON transactions (posted_at DESC)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_merchant
-                    ON transactions (merchant)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_category
-                    ON transactions (category)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_account_id
-                    ON transactions (account_id)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_source_message_id
-                    ON transactions (source_message_id)
-            """)
-            await pool.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe
-                    ON transactions (source_message_id, merchant, amount, posted_at)
-                    WHERE source_message_id IS NOT NULL
-            """)
-
-            # Create the CSV dedup index from finance_005
-            await pool.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_csv_dedup
-                    ON transactions (posted_at, amount, merchant, account_id)
-                    WHERE source_message_id IS NULL
-            """)
-
-        except asyncpg.PostgresError as e:
-            pytest.fail(f"Failed to set up test database: {e}")
-
-        yield pool
+async def finance_pool(db):
+    """finance tables as finance_005 left them (CSV dedup index in place)."""
+    return await _finance_at(db, "finance_005")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -316,54 +229,9 @@ _MIGRATION_011 = _FINANCE_MIGRATIONS / "011_drop_superseded_transaction_dedup_in
 
 
 @pytest.fixture
-async def bills_pool(provisioned_postgres_pool):
-    """Pool with a minimal finance schema (accounts + bills) for migration 009 tests.
-
-    Sets up the schema at the finance_001 state for the two tables that matter:
-    accounts (required by the FK in bills) and bills itself.  No other tables
-    are needed to test the additive column migration.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                institution TEXT NOT NULL,
-                type        TEXT NOT NULL
-                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                name        TEXT,
-                last_four   CHAR(4),
-                currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS bills (
-                id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                payee                  TEXT NOT NULL,
-                amount                 NUMERIC(14, 2) NOT NULL,
-                currency               CHAR(3) NOT NULL,
-                due_date               DATE NOT NULL,
-                frequency              TEXT NOT NULL
-                                           CHECK (frequency IN (
-                                               'one_time', 'weekly', 'monthly',
-                                               'quarterly', 'yearly', 'custom'
-                                           )),
-                status                 TEXT NOT NULL
-                                           CHECK (status IN ('pending', 'paid', 'overdue')),
-                payment_method         TEXT,
-                account_id             UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id      TEXT,
-                statement_period_start DATE,
-                statement_period_end   DATE,
-                paid_at                TIMESTAMPTZ,
-                metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield pool
+async def bills_pool(db):
+    """finance tables as finance_008 left them, for the finance_009 bills column."""
+    return await _finance_at(db, "finance_008")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -494,48 +362,9 @@ _MIGRATION_013 = _FINANCE_MIGRATIONS / "013_subscription_cancellation_door.py"
 
 
 @pytest.fixture
-async def subscriptions_pool(provisioned_postgres_pool):
-    """Pool with a minimal finance schema (accounts + subscriptions) at the
-    finance_001 state, for testing the additive finance_013 column migration.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                institution TEXT NOT NULL,
-                type        TEXT NOT NULL
-                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                name        TEXT,
-                last_four   CHAR(4),
-                currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                service           TEXT NOT NULL,
-                amount            NUMERIC(14, 2) NOT NULL,
-                currency          CHAR(3) NOT NULL,
-                frequency         TEXT NOT NULL
-                                      CHECK (frequency IN (
-                                          'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                                      )),
-                next_renewal      DATE NOT NULL,
-                status            TEXT NOT NULL
-                                      CHECK (status IN ('active', 'cancelled', 'paused')),
-                auto_renew        BOOLEAN NOT NULL DEFAULT true,
-                payment_method    TEXT,
-                account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id TEXT,
-                metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield pool
+async def subscriptions_pool(db):
+    """finance tables as finance_012 left them, for the subscription migrations."""
+    return await _finance_at(db, "finance_012")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -629,7 +458,7 @@ _MIGRATION_014 = _FINANCE_MIGRATIONS / "014_obligation_ledger.py"
 class TestObligationLedgerMigration:
     """Integration tests for finance_014: obligation ledger table.
 
-    Reuses the ``subscriptions_pool`` fixture (finance_001 state) and layers
+    Reuses the ``subscriptions_pool`` fixture (finance_012 state) and layers
     finance_013 on top, since obligation_ledger.subscription_id references
     subscriptions and slice 2's derivation reads the finance_013 door columns.
     """

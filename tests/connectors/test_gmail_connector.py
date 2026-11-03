@@ -14,6 +14,7 @@ Verifies:
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2156,3 +2157,38 @@ async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
     assert reports[-1]["status"] == "completed"
     tokens = [a["progress_token"] for a in reports]
     assert all(tokens) and len(set(tokens)) == 3
+
+
+@pytest.mark.parametrize(
+    ("exc", "level"),
+    [
+        (RuntimeError("endpoint_identity does not match job"), logging.ERROR),
+        (ConnectionError("switchboard unreachable"), logging.WARNING),
+    ],
+    ids=["application-error", "transport-error"],
+)
+async def test_backfill_progress_failure_logs_application_errors_loudly(
+    gmail_config: GmailConnectorConfig,
+    caplog: pytest.LogCaptureFixture,
+    exc: Exception,
+    level: int,
+) -> None:
+    """A rejected progress report is a protocol break, not a blip (bu-02zdve).
+
+    Both failures stay non-fatal so the backfill keeps going, but a tool error
+    (RuntimeError from CachedMCPClient) logs at ERROR so a contract break like
+    the missing identity fields fixed in #5173 cannot stay silent.
+    """
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(side_effect=exc)
+
+    with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+        status = await runtime._report_backfill_progress(
+            job_id="job-1", rows_processed=1, rows_skipped=0, cost_spent_cents=1
+        )
+
+    assert status == "ack"
+    [record] = [r for r in caplog.records if "backfill.progress" in r.getMessage()]
+    assert record.levelno == level
+    assert "job-1" in record.getMessage() and str(exc) in record.getMessage()

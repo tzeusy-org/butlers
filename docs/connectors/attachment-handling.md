@@ -38,7 +38,17 @@ When a butler needs the actual content, it triggers an on-demand fetch: download
 
 ## Envelope Contract
 
-The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py`. Lazy paths expose enough identity to trigger a fetch once `attachment_materialize` (not yet implemented) lands.
+The ingest payload `attachments[]` array carries `media_type`, `filename`, `size_bytes`, `message_id`, `attachment_id`, `fetched` (boolean), and `storage_ref` (nullable). For an eager, in-cap `storage_ref`: an `image/*` attachment is retrieved with `attachment_view(storage_ref)`, which returns a real MCP image content block (the correct channel for vision input, never a JSON payload) and refuses (a typed `status: "refused"` result) anything over the vision size cap. A non-image attachment is retrieved with `get_attachment(storage_ref)`, which embeds the blob as base64 JSON only up to a 64KB inline cap — see `src/butlers/tools/attachments.py`. Both tools, like `attachment_read`, serve only refs under the calling butler's RFC 0016 prefix `{bucket}/{butler}/` or the connector prefix `{bucket}/connectors/`; any other ref returns an `attachment_forbidden` refusal without being fetched. Lazy paths expose enough identity to trigger a fetch once `attachment_materialize` (not yet implemented) lands.
+
+### Reading PDFs by page
+
+`attachment_read(storage_ref, page_start=1, page_count=10)` reads a stored PDF of any size up to 20 MB, so documents over the `get_attachment` inline cap are readable. It extracts text locally with pypdfium2 (no external service) and returns at most 20 pages and 16,000 characters a call as a `pages` list of `{page, text}` entries, with `next_page_start` naming the next unread page. A page with no text layer (a scan) returns empty text with `no_text_layer: true`. Extraction runs in a child interpreter (`src/butlers/tools/_pdf_extract.py`, started with `python -I` and an empty environment) capped at 512 MB of address space and 15 seconds. The 16,000-character budget is applied per page through `count_chars()` before any text is copied, and no page is opened once it is spent, so a decompression-bomb page costs at most the child, which is refused as `extraction_limit_exceeded`. The child sets its own rlimits before importing PDFium. At most two children run at once per daemon; a caller queues up to 30 seconds for a slot and is otherwise refused as `extraction_busy`, so a burst of hostile reads cannot multiply the per-child cap past the pod memory limit. A non-PDF (by extension or by bytes), an encrypted or corrupt PDF, an oversized blob, a page range past the end, or a ref outside `{bucket}/{butler}/` and `{bucket}/connectors/` returns a typed refusal (`status: "refused"`, `reason`: `unsupported_media_type`, `encrypted_pdf`, `corrupt_pdf`, `attachment_too_large`, `invalid_page_range`, `attachment_forbidden`, `extraction_limit_exceeded`, `extraction_busy`, ...).
+
+Page text is untrusted (`content_trust: "untrusted"`): it travels only as JSON string data, and the D4 catalog declaration marks the output untrusted so a goal that reads it becomes exposed under RFC 0038 D6. The tool is a dark build: the daemon catalogs it in `_finalize_tool_catalog`, then disables it on FastMCP (`GOAL_RUNTIME_DARK_TOOLS` in `src/butlers/core_tools/_media.py`), so today's classify-and-route sessions cannot list or call it until the goal-runtime cutover presents it.
+
+### Viewing scanned pages
+
+`attachment_page_view(storage_ref, page=1)` renders one PDF page to a PNG for a page `attachment_read` marked `no_text_layer`. It runs in the same child (`render` mode of `src/butlers/tools/_pdf_extract.py`) under the same 512 MB and 15-second limits and two shared slots, so text reads and renders together never exceed two children. The scale is fixed from the page size before drawing: at most 200 dpi, 1568 px on the long edge and 1,150,000 px in area. The parent does not trust the child's header on its own: it reads the width and height from the PNG's IHDR chunk and rejects, as `extraction_limit_exceeded`, any output over 4 MB, without a PNG signature, whose IHDR dimensions differ from the header, are below 1 px or fall outside those bounds, or that names a page other than the one requested. The result is a metadata dict (`content_trust: "untrusted"`, page, page count, width, height) followed by an MCP image content block. Scope, size and media refusals match `attachment_read`. The tool is dark (`GOAL_RUNTIME_DARK_TOOLS`) and, because its output is vision input, presenting it also waits on a model with a passing RFC 0036 exact-path vision proof (bu-s1u4br).
 
 ## Metrics
 
@@ -107,6 +117,10 @@ psql -h localhost -U butlers -d butlers -c \
   `capabilities: {"vision": true}`; `Spawner._run` requires it for any `image/*` attachment.
 - `tests/core/test_attachment_view.py::test_no_other_tool_source_embeds_a_data_base64_field`
   guards the inline base64 cap repo-wide.
+- `tests/tools/test_attachments.py::test_attachment_read_pages_and_refusals` pins the paged read
+  bounds and refusals; `test_attachment_page_view_renders_bounded_png_or_refuses` pins the render
+  bounds; `tests/contracts/test_tool_presentation_inventory.py` pins that `attachment_read` and
+  `attachment_page_view` are cataloged but not listed.
 
 ## Related Pages
 

@@ -315,15 +315,15 @@ bootstrap change and disposable-PG validation of first install, retained-table
 replay, repeated convergence and the same positive/negative role controls.
 It is a proposal, not an adopted owner change or a verified repair. No applied
 core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
-is authorized here. Function-owner convergence remains with `bu-q7vx1q.33`.
+is authorized here. Function-owner convergence remains open (`bu-jjv2du`).
 
 A bounded core_255-to-core_254 rollback intentionally retains complete amendment
 rows in all four states, while their referenced candidates remain. It removes
 candidate `premise` and `delivery_ref`, folds candidate `withdrawn` to `filtered`, and
 folds ledger `withdrawn` to `suppressed` and `amended` to `delivered`. Reupgrade cannot
 recover the removed candidate fields. The surviving table does not mean that older
-code can deliver corrections. Its existing candidate FK still cascades on deletion;
-this decision is not a promise of indefinite evidence retention.
+code can deliver corrections. From `core_312` the table has no candidate FK, so its rows
+also outlive candidate cleanup; the retention rule is in `docs/operations/data-retention.md`.
 
 Retaining a table also does not converge function ownership. A managed-bootstrap
 reupgrade can recreate the two definers under the bootstrap owner. An ordinary
@@ -333,9 +333,16 @@ them through schema ownership; the function is then unavailable (`42883`) until
 ordinary reupgrade recreates it under the ordinary owner. Record the actual
 database/schema authority and function absence or ownership at each step. Do not
 extrapolate this DROP authority to a migration login that lacks schema ownership.
-Broader caller/source validation, FK lifecycle, FORCE RLS and
-definer ownership hardening remain with `bu-q7vx1q.33`; this investigation adds no
-authority or waiver for those choices.
+The `bu-q7vx1q.33` items were merged into `bu-q7vx1q.32` and settled by `core_312`: caller
+validation (the definer inserts only for a resolved `owner_conditions` row with exactly that
+source, fingerprint and `resolved_at`), FK lifecycle (the candidate FK is dropped; orphaned
+rows settle to `orphaned`) and FORCE RLS (declined: the table owner is the migration role,
+so it would change nothing for runtime callers). The definer also pins TimeZone/DateStyle
+(session-independent dedup keys) and ignores the caller's summary. Function-owner
+convergence is not part of that scope, but `core_312` no longer hides it: its upgrade
+asserts that the replacement, the dropped key and the widened CHECK took effect and raises
+otherwise, so a database whose definer is bootstrap-owned fails `core_312` until `bu-jjv2du`
+converges ownership. This investigation adds no authority or waiver for that choice.
 
 The real-PG controls live in
 `tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
@@ -435,6 +442,13 @@ their separate authority contract or equate the trusted migration owner with run
   reads ids/count/provenance through a separate connection, and compares the final schema and
   vocabulary with a fresh dynamic-head database. Test downgrade/reupgrade separately at each
   bounded revision, preserving every row and all provenance outside the documented outcome fold.
+- A shared-DDL downgrade that counts schema-local consumers selects `alembic_version` namespaces
+  with `left(namespace.nspname, 3) <> 'pg_'`, never `NOT LIKE 'pg_%'`: LIKE's `_` is a wildcard, so
+  supported names such as `pgpeer` or `pga` would be omitted, undercounting retained consumers and
+  dropping shared objects they still use. The core246-305 consumer scans were corrected in place
+  (a forward revision cannot change an earlier downgrade); the real-PG pgpeer control in
+  `tests/migrations/test_dashboard_job_health_migration.py` executes every core scan and rejects the
+  old clause.
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
 - `run_migrations` builds its Alembic config through

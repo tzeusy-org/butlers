@@ -176,6 +176,8 @@ class TestExplicitResolutionValidation:
                 "source": "finance:commitment",
                 "fingerprint": "fp-1",
                 "resolution_metadata": None,
+                # bu-q7vx1q.32: explicit resolution amends delivered insights too.
+                "post_write": owner_conditions.enqueue_premise_amendments,
             }
         ]
         assert "resolve_condition" in owner_conditions.__all__

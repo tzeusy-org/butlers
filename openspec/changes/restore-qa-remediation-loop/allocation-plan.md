@@ -2,9 +2,11 @@
 
 Proposed packet-complete graph; all implementation remains owner-held. One serial lane A → B → C → D → E → F → G. External prerequisites remain real blockers. Closing the owner gate does not waive them. Six implementation outcomes plus one combined reconciliation/report keep this epic within the seven-child ceiling.
 
+Goal-runtime refresh (`bu-6a9xxw.8`): [goal-runtime-reconciliation.md](goal-runtime-reconciliation.md) is the current requirement-to-owner-to-seam map and supersedes stale dependency and path text below where they differ. A's launch-seam predecessor is now `bu-mc01y5.7` (the credential strip `bu-mc01y5.3` is closed and consumed); C, D, E and F also wait on `bu-u5euwb.17`. Investigation sessions are D18 engineering executors, incident admission is deterministic QA infrastructure, and the `qa_triage_v1` staffer goal is owned by the generalist and durable-dashboard changes, not by any packet here.
+
 ## A. Restore QA-owned launch capability and durable session lineage
 
-Dependencies: bu-2jtfw.5, bu-mc01y5.3
+Dependencies: bu-2jtfw.5, bu-mc01y5.7
 
 Outcome and non-goals: Initial and follow-up investigations run with QA prompt, session store, model resolution and accounting regardless of daemon startup order. Own actual launch/phase receipts; no general spawner rewrite or publication implementation.
 
@@ -38,7 +40,7 @@ Documentation impact: docs/operations/qa-remediation-loop.md (new canonical QA r
 
 ## Acceptance Criteria
 
-Extend tests/core/qa/test_dispatch_investigation_notes.py and test_investigation_notes.py at output descriptor-to-persist seam for inherited/missing/mismatched notes, schema limits and race-safe consumption. Extend test_diff.py for two-commit proposal/base and truncated preview. Extend test_dispatch.py/test_journal.py for every typed terminal/closed_at/breaker result including successful open PR, failed follow-up and late closure across reset, raw-evidence retention eligibility and merge-only journal. Extend tests/api/test_api_qa_cases.py and frontend/src/components/qa/__tests__/dossier.test.tsx for contaminated fallback, no-op copy, ambiguity and action/evidence doors. Real-Postgres annotation read-back via integration pipeline. Expected net Tests: +6 ~8 -0.
+Extend tests/core/qa/test_investigation_notes.py and test_dispatch.py at output descriptor-to-persist seam for inherited/missing/mismatched notes, schema limits and race-safe consumption. Extend test_diff.py for two-commit proposal/base and truncated preview. Extend test_dispatch.py/test_journal.py for every typed terminal/closed_at/breaker result including successful open PR, failed follow-up and late closure across reset, raw-evidence retention eligibility and merge-only journal. Extend tests/api/test_api_qa_cases.py and frontend/src/components/qa/__tests__/dossier.test.tsx for contaminated fallback, no-op copy, ambiguity and action/evidence doors. Real-Postgres annotation read-back via integration pipeline. Expected net Tests: +6 ~8 -0.
 
 For each invariant use exactly one gate species: behavior-executing tests below, not duplicate source-string assertions. Start exact affected node with -n 0, widen owning scope; make test-plan BASE=origin/main before escalation. Include real-Postgres/API/runtime lane as appropriate, roster scope if changed, collect tests/ roster/ for fixture/import/topology changes. Push targeted-tested head; hosted merge-group required check/guards/frontend is terminal broad evidence. No broad local suite by default. Reconcile every cited requirement including preserved scenarios; update implementation docs and archive/sync only after whole-epic adoption and delivery. Record actual Tests: +a ~b -c and condense/budget justification in PR; estimates here are not test-count targets.
 
