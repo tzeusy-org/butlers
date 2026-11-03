@@ -201,7 +201,9 @@ async def condition_update(
             new_meta[k] = v
 
     name = new_meta.get("name", "")
-    status = new_meta.get("status", "active")
+    # Persist the status the content states, so a status-less row (stripped by the old
+    # decay sweep) never produces a superseding row that is also status-less.
+    status = new_meta.setdefault("status", "active")
     content = f"{name}: {status}"
 
     embedding_engine = _get_embedding_engine()
