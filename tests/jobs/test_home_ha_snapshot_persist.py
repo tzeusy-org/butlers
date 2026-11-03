@@ -144,7 +144,7 @@ async def test_state_update_overwrites_in_place(home_pool: asyncpg.Pool) -> None
         )
     }
     await module._persist_entity_snapshot()
-    assert await _last_changed(pool) == datetime(2026, 6, 27, 9, 0, tzinfo=UTC)
+    assert await _last_changed(home_pool) == datetime(2026, 6, 27, 9, 0, tzinfo=UTC)
 
     # Simulate an HA state_changed update.
     entity = module._entity_cache["sensor.living_room_temperature"]
@@ -157,7 +157,7 @@ async def test_state_update_overwrites_in_place(home_pool: asyncpg.Pool) -> None
     assert len(rows) == 1
     assert rows[0]["state"] == "25.0"
     # The safety job measures its hold from last_changed, so a re-persist must move it forward.
-    assert await _last_changed(pool) == datetime(2026, 6, 27, 10, 5, tzinfo=UTC)
+    assert await _last_changed(home_pool) == datetime(2026, 6, 27, 10, 5, tzinfo=UTC)
 
 
 async def _last_changed(pool: asyncpg.Pool) -> datetime | None:

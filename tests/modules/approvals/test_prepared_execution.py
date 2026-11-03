@@ -90,7 +90,7 @@ async def test_approve_replays_exact_stored_args_and_writes_execution_result(
     assert row["execution_result"]["result"] == {"status": "sent"}
 
 
-async def test_legacy_calendar_marker_retires_only_after_original_binding(pool) -> None:
+async def test_legacy_calendar_marker_retires_only_after_original_binding(approvals_pool) -> None:
     from butlers.modules.approvals.execution_context import get_approval_execution_context
     from butlers.modules.calendar_approval import calendar_approval_args
 
@@ -106,7 +106,9 @@ async def test_legacy_calendar_marker_retires_only_after_original_binding(pool) 
     ):
         action_id = uuid.uuid4()
         stored = {"event_id": "event", "enabled": False, **extra}
-        await _park_and_approve(pool, action_id=action_id, tool_args=stored, tool_name=tool_name)
+        await _park_and_approve(
+            approvals_pool, action_id=action_id, tool_args=stored, tool_name=tool_name
+        )
         calls = []
 
         async def handler(event_id, enabled, source_hint=None, request_id=None, calls=calls):
@@ -123,18 +125,22 @@ async def test_legacy_calendar_marker_retires_only_after_original_binding(pool) 
 
         if admitted:
             altered = await execute_approved_action(
-                pool, action_id, tool_name, {**stored, "enabled": True}, handler
+                approvals_pool, action_id, tool_name, {**stored, "enabled": True}, handler
             )
             assert not altered.success and calls == []
-        outcome = await execute_approved_action(pool, action_id, tool_name, stored, handler)
+        outcome = await execute_approved_action(
+            approvals_pool, action_id, tool_name, stored, handler
+        )
         assert outcome.success is admitted
         if admitted:
-            repeated = await execute_approved_action(pool, action_id, tool_name, stored, handler)
+            repeated = await execute_approved_action(
+                approvals_pool, action_id, tool_name, stored, handler
+            )
             assert repeated.to_dict() == outcome.to_dict()
             assert len(calls) == 1 and "_approval_bypass" not in calls[0]
         else:
             assert calls == []
-        row = await pool.fetchrow(
+        row = await approvals_pool.fetchrow(
             "SELECT status, tool_args FROM pending_actions WHERE id=$1", action_id
         )
         assert row["status"] == ("executed" if admitted else "approved")
