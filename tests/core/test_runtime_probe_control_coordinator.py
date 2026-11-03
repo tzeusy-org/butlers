@@ -175,6 +175,7 @@ class _Harness:
         behaviour: Any = ("OK", [], None),
         claimed: bool = True,
         codex_auth_authority: Any = None,
+        credential_store: Any = None,
     ) -> None:
         self.trace: list[str] = []
         self.pool = _Pool(rows if rows is not None else {_ENTRY_ID: _catalog_row()}, self.trace)
@@ -200,6 +201,7 @@ class _Harness:
             persistence=self.persistence,
             adapter_factory=_build_adapter,
             codex_auth_authority=codex_auth_authority,
+            credential_store=credential_store,
         )
 
     async def run(self, capability: str | None, *, now: datetime = _NOW) -> coord.ProbeResult:
@@ -237,8 +239,8 @@ async def test_adapter_is_built_from_the_catalog_entry_and_explicit_codex_author
 ):
     """Criterion 3: authority is passed explicitly, never inferred from the pool."""
     signer_key, _ = signer
-    authority = object()
-    harness = _Harness(keyring, codex_auth_authority=authority)
+    authority, store = object(), object()
+    harness = _Harness(keyring, codex_auth_authority=authority, credential_store=store)
 
     await harness.run(_sign(signer_key))
 
@@ -247,6 +249,8 @@ async def test_adapter_is_built_from_the_catalog_entry_and_explicit_codex_author
     assert request["model_id"] == "claude-sonnet-4"
     assert request["pool"] is harness.pool
     assert request["codex_auth_authority"] is authority
+    # Non-Codex runtimes load their keys (cli-auth/claude) from this store.
+    assert request["credential_store"] is store
 
 
 async def test_opencode_entry_is_launched_with_the_canonical_model_id(signer, keyring):

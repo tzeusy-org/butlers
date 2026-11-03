@@ -78,7 +78,7 @@ jobs:
     # from 2026-07-25 as new tests arrived without the marker.
     #
     # Scheduled/dispatch-only by design: this must never gate PR merges or
-    # slow the required `check` job, only surface future hazards early. A
+    # slow the required `alls-green` check, only surface future hazards early. A
     # failure here is visible via GitHub's built-in scheduled-workflow-failure
     # email notification -- no bespoke issue-tracking automation is added
     # (kept in scope with the epic's cost budget).

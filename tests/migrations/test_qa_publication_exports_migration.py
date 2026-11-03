@@ -1,6 +1,7 @@
 """core_294: retained sealed QA exports (bu-mc01y5.19); core_301: pruning (bu-mc01y5.25).
 
 core_302 (bu-mc01y5.28): the refusal receipt for an attempt refused before retention.
+core_305 (bu-mc01y5.36): the retention window's ``closed_at`` is stamped by the database.
 
 Real-Postgres contract for the spec scenario "Committed proposal cannot be
 published": the sealed artifact is retained outside agent control, only the QA
@@ -170,11 +171,22 @@ def _admin(db_url: str, sql: str) -> None:
 
 
 def _close(db_url: str, attempt_id: uuid.UUID, *, days_ago: int, status: str = "failed") -> None:
-    _admin(
-        db_url,
-        f"UPDATE public.healing_attempts SET status = '{status}', "
-        f"closed_at = now() - interval '{days_ago} days' WHERE id = '{attempt_id}'",
-    )
+    """Backdate a close as the table owner: core_305 stamps ``closed_at`` for every DML writer."""
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE public.healing_attempts DISABLE TRIGGER healing_attempts_closed_at_stamp"
+            )
+            conn.exec_driver_sql(
+                f"UPDATE public.healing_attempts SET status = '{status}', "
+                f"closed_at = now() - interval '{days_ago} days' WHERE id = '{attempt_id}'"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE public.healing_attempts ENABLE TRIGGER healing_attempts_closed_at_stamp"
+            )
+    finally:
+        engine.dispose()
 
 
 def _new_attempt(db_url: str) -> uuid.UUID:
@@ -277,6 +289,67 @@ def test_prune_downgrade_refuses_while_an_export_is_pruned(
 
     with pytest.raises(DBAPIError, match="pruned export exists"):
         _replay(db_url, "downgrade", "core_301")
+
+
+def _closed_age(db_url: str, attempt_id: uuid.UUID) -> object:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            return conn.exec_driver_sql(
+                "SELECT CASE WHEN closed_at IS NULL THEN NULL "
+                "ELSE now() - closed_at < interval '1 hour' END "
+                f"FROM public.healing_attempts WHERE id = '{attempt_id}'"
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+
+def test_closed_at_is_database_time_so_retention_cannot_be_backdated(
+    db_url: str, attempt_id: uuid.UUID
+) -> None:
+    """core_305 (bu-mc01y5.36): no DML writer chooses the close the prune window keys on."""
+    _replay(db_url, "upgrade", "core_301")
+    _as_role(db_url, "butler_qa_rw", _insert_sql(attempt_id))
+    backdated = "now() - interval '31 days'"
+
+    # Non-terminal rows carry no close, whatever the writer supplies.
+    _as_role(
+        db_url,
+        "butler_qa_rw",
+        f"UPDATE public.healing_attempts SET closed_at = {backdated} WHERE id = '{attempt_id}'",
+    )
+    assert _closed_age(db_url, attempt_id) is None
+    # Closing stamps database time, then a terminal row's close never moves: not by the QA
+    # role, and not by a privileged login either.
+    _as_role(
+        db_url,
+        "butler_qa_rw",
+        f"UPDATE public.healing_attempts SET status = 'failed', closed_at = {backdated} "
+        f"WHERE id = '{attempt_id}'",
+    )
+    assert _closed_age(db_url, attempt_id) is True
+    for writer in ("butler_qa_rw", None):
+        sql = (
+            f"UPDATE public.healing_attempts SET closed_at = {backdated} WHERE id = '{attempt_id}'"
+        )
+        if writer is None:
+            _admin(db_url, sql)
+        else:
+            _as_role(db_url, writer, sql)
+        assert _closed_age(db_url, attempt_id) is True
+    with pytest.raises(DBAPIError, match="not past retention"):
+        _as_role(db_url, "butler_qa_rw", _prune_sql(attempt_id))
+
+    # An attempt inserted already terminal is stamped too.
+    inserted = uuid.uuid4()
+    _as_role(
+        db_url,
+        "butler_qa_rw",
+        "INSERT INTO public.healing_attempts (id, fingerprint, butler_name, status, severity, "
+        f"exception_type, call_site, closed_at) VALUES ('{inserted}', '{uuid.uuid4().hex * 2}', "
+        f"'qa', 'failed', 2, 'E', 'x:y', {backdated})",
+    )
+    assert _closed_age(db_url, inserted) is True
 
 
 # --- core_302: the trusted receipt for a refusal before retention (bu-mc01y5.28) ---

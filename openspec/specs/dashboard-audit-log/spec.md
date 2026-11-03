@@ -19,7 +19,7 @@ The dashboard SHALL maintain a single, append-only audit log used by every mutat
 - **WHEN** a mutation endpoint succeeds
 - **THEN** it calls `audit.append(pool_or_conn, actor, action, *, target=None, note=None, ip=None, request_id=None, metadata=None, result=None, error=None) -> int` returning the new row id (the first positional argument is an asyncpg pool or an already-acquired connection; passing a connection lets the audit insert participate in the caller's open transaction)
 - **AND** the call is made INSIDE the same SQL transaction as the state change (commit only after the audit row is written)
-- **AND** Prometheus counter `audit_log_appended_total{action}` is incremented after commit.
+- **AND** OpenTelemetry counter `butlers.audit.log.appended` (on the `butlers` meter, attribute `action` only) is incremented after commit. The attribute is bounded: the audited `action`, except that middleware-recorded rows use `METHOD <matched route template>` (e.g. `POST /api/x/{id}`) or `METHOD unmatched` when no route matched, never the raw request path.
 
 #### Scenario: audit.append raises on missing table
 - **WHEN** `audit.append()` is called and `public.audit_log` does not exist (migration failed or rolled back)

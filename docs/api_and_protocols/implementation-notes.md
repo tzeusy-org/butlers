@@ -40,5 +40,7 @@ Moved verbatim from `AGENTS.md` (API and security contracts).
 - `CredentialRedactionFilter` (Telegram `/bot<token>/`, `Bearer`, `?key=`-style query parameters)
   sits on every handler `configure_logging` installs, never on the root logger: a logger's own
   filters only see records logged directly to it, so a root filter never sees records propagated
-  from `httpx` or `butlers.*`. It scrubs the message only; exception text in tracebacks is not
-  scrubbed, so log only the exception type for errors raised from credential-bearing URLs.
+  from `httpx` or `butlers.*`. It scrubs the message; the formatters' `redact_exception` processor
+  applies the same rules to `exc_info` tracebacks (e.g. `httpx.HTTPStatusError` URLs) and stack
+  text. Patterns outside those rules still pass through tracebacks, so errors that can carry
+  unpublished or private text (QA publication pre-egress failures) log the exception type only.

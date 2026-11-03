@@ -101,6 +101,8 @@ class FakeLedger:
     #: Refusal receipts by attempt: ``(status, category)``, first receipt wins.
     refusals: dict[uuid.UUID, tuple[str, str]] = field(default_factory=dict)
     refusal_unrecordable: bool = False
+    #: Adopted PRs written to the attempt by a ``pr_create`` adoption: ``(number, url)``.
+    attempt_prs: dict[uuid.UUID, tuple[int, str]] = field(default_factory=dict)
     #: Stands in for database ``now()``: stamps egress/outcome and judges the settle.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -178,9 +180,16 @@ class FakeLedger:
         return self.rows.get((attempt_id, kind.value))
 
     async def reconcile(
-        self, operation_id, observation, *, observed_object_id, expected_stage, absence_settle
+        self,
+        operation_id,
+        observation,
+        *,
+        observed_object_id,
+        expected_stage,
+        absence_settle,
+        adopted_pr_url=None,
     ) -> bool:
-        """Mirror ``state.record_reconciliation`` and the core_298 adoption CHECK."""
+        """Mirror ``state.record_reconciliation``, the core_298 CHECK and the attempt write."""
         row = self._get(operation_id)
         if not row.holds_lineage or row.stage != expected_stage:
             return False
@@ -199,6 +208,13 @@ class FakeLedger:
             return False
         if observation == "resource_absent" and observed_object_id is not None:
             return False
+        if observation == "resource_found" and adopted and adopted_pr_url is not None:
+            if adopted_pr_url.startswith("https://github.com/") and adopted_pr_url.endswith(
+                f"/pull/{observed_object_id}"
+            ):
+                self.attempt_prs.setdefault(
+                    row.attempt_id, (int(observed_object_id), adopted_pr_url)
+                )
         return self._replace(
             operation_id,
             stage="reconciled",

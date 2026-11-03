@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from tests.api.test_switchboard import _app_with_mock, _make_row
+from butlers.testing.records import Record
+from tests.api.test_switchboard import _app_with_mock
 
 pytestmark = pytest.mark.unit
 
@@ -33,7 +34,7 @@ def _client(app):
 
 async def test_list_returns_pending_and_auto_applied(app):
     pending = [
-        _make_row(
+        Record(
             {
                 "id": "11111111-1111-1111-1111-111111111111",
                 "sender_key": "alerts@acme.com",
@@ -50,7 +51,7 @@ async def test_list_returns_pending_and_auto_applied(app):
         )
     ]
     auto_applied = [
-        _make_row(
+        Record(
             {
                 "id": "22222222-2222-2222-2222-222222222222",
                 "sender_key": "noreply@acme.com",
@@ -96,7 +97,7 @@ async def test_list_flags_degraded_when_pending_query_fails(app):
 
 
 async def test_confirm_mints_rule(app):
-    minted = _make_row(
+    minted = Record(
         {
             "id": "33333333-3333-3333-3333-333333333333",
             "scope": "global",
@@ -150,7 +151,7 @@ async def test_confirm_invalid_id_is_422(app):
 
 
 async def test_dismiss_pending_suggestion(app):
-    _app, mock_pool = _app_with_mock(app, fetchrow_result=_make_row({"status": "pending_review"}))
+    _app, mock_pool = _app_with_mock(app, fetchrow_result=Record({"status": "pending_review"}))
     mock_pool.execute = AsyncMock(return_value="UPDATE 1")
     async with _client(app) as client:
         resp = await client.post(
@@ -175,7 +176,7 @@ async def test_dismiss_missing_is_404(app):
 
 
 async def test_dismiss_already_decided_is_409(app):
-    _app_with_mock(app, fetchrow_result=_make_row({"status": "confirmed"}))
+    _app_with_mock(app, fetchrow_result=Record({"status": "confirmed"}))
     async with _client(app) as client:
         resp = await client.post(
             "/api/switchboard/rule-promotion-suggestions/"
@@ -187,7 +188,7 @@ async def test_dismiss_already_decided_is_409(app):
 
 async def test_dismiss_does_not_overwrite_a_concurrent_supersede(app):
     """The owner dismissal must lose cleanly if the trigger decides first."""
-    _app, mock_pool = _app_with_mock(app, fetchrow_result=_make_row({"status": "pending_review"}))
+    _app, mock_pool = _app_with_mock(app, fetchrow_result=Record({"status": "pending_review"}))
     mock_pool.execute = AsyncMock(return_value="UPDATE 0")
 
     async with _client(app) as client:
@@ -206,8 +207,8 @@ async def test_rule_enabled_toggles_minted_rule(app):
     _app, mock_pool = _app_with_mock(app)
     mock_pool.fetchrow = AsyncMock(
         side_effect=[
-            _make_row({"created_rule_id": "33333333-3333-3333-3333-333333333333"}),
-            _make_row({"id": "33333333-3333-3333-3333-333333333333"}),
+            Record({"created_rule_id": "33333333-3333-3333-3333-333333333333"}),
+            Record({"id": "33333333-3333-3333-3333-333333333333"}),
         ]
     )
     async with _client(app) as client:
@@ -221,7 +222,7 @@ async def test_rule_enabled_toggles_minted_rule(app):
 
 
 async def test_rule_enabled_no_minted_rule_is_409(app):
-    _app_with_mock(app, fetchrow_result=_make_row({"created_rule_id": None}))
+    _app_with_mock(app, fetchrow_result=Record({"created_rule_id": None}))
     async with _client(app) as client:
         resp = await client.post(
             "/api/switchboard/rule-promotion-suggestions/"
@@ -261,14 +262,14 @@ def _stats_fetch_router(*, counts=None, ids=None, counts_exc=None, ids_exc=None)
 async def test_stats_happy_path(app):
     """Aggregate metrics are computed from the sub-queries."""
     counts = [
-        _make_row({"suggestion_kind": "promotion", "status": "pending_review", "n": 3}),
-        _make_row({"suggestion_kind": "promotion", "status": "confirmed", "n": 7}),
-        _make_row({"suggestion_kind": "promotion", "status": "dismissed", "n": 2}),
-        _make_row({"suggestion_kind": "promotion", "status": "superseded", "n": 4}),
-        _make_row({"suggestion_kind": "demotion", "status": "pending_review", "n": 1}),
+        Record({"suggestion_kind": "promotion", "status": "pending_review", "n": 3}),
+        Record({"suggestion_kind": "promotion", "status": "confirmed", "n": 7}),
+        Record({"suggestion_kind": "promotion", "status": "dismissed", "n": 2}),
+        Record({"suggestion_kind": "promotion", "status": "superseded", "n": 4}),
+        Record({"suggestion_kind": "demotion", "status": "pending_review", "n": 1}),
     ]
-    ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
-    verdict = _make_row({"matches": 128, "spot_checks": 40})
+    ids = [Record({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
+    verdict = Record({"matches": 128, "spot_checks": 40})
     _app, mock_pool = _app_with_mock(app)
     mock_pool.fetch = AsyncMock(side_effect=_stats_fetch_router(counts=counts, ids=ids))
     mock_pool.fetchval = AsyncMock(return_value=5)
@@ -295,7 +296,7 @@ async def test_stats_happy_path(app):
 
 async def test_stats_no_promoted_rules_skips_verdict_query(app):
     """With no promoted rules, verdict metrics are 0 and not degraded."""
-    counts = [_make_row({"suggestion_kind": "promotion", "status": "pending_review", "n": 1})]
+    counts = [Record({"suggestion_kind": "promotion", "status": "pending_review", "n": 1})]
     _app, mock_pool = _app_with_mock(app)
     mock_pool.fetch = AsyncMock(side_effect=_stats_fetch_router(counts=counts, ids=[]))
     mock_pool.fetchval = AsyncMock(return_value=0)
@@ -314,8 +315,8 @@ async def test_stats_no_promoted_rules_skips_verdict_query(app):
 
 async def test_stats_flags_degraded_verdict_block(app):
     """A failed verdict-log scan must flag its source, never read as zero savings."""
-    counts = [_make_row({"suggestion_kind": "promotion", "status": "confirmed", "n": 4})]
-    ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
+    counts = [Record({"suggestion_kind": "promotion", "status": "confirmed", "n": 4})]
+    ids = [Record({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
     _app, mock_pool = _app_with_mock(app)
     mock_pool.fetch = AsyncMock(side_effect=_stats_fetch_router(counts=counts, ids=ids))
     mock_pool.fetchval = AsyncMock(return_value=2)
@@ -337,14 +338,14 @@ async def test_stats_flags_degraded_verdict_block(app):
 
 async def test_stats_flags_degraded_suggestion_and_rules_blocks(app):
     """Each block degrades independently."""
-    ids = [_make_row({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
+    ids = [Record({"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"})]
     _app, mock_pool = _app_with_mock(app)
     # Block 1 (suggestion counts) fails; block 3's id fetch succeeds.
     mock_pool.fetch = AsyncMock(
         side_effect=_stats_fetch_router(counts_exc=RuntimeError("boom"), ids=ids)
     )
     mock_pool.fetchval = AsyncMock(side_effect=RuntimeError("boom"))
-    mock_pool.fetchrow = AsyncMock(return_value=_make_row({"matches": 9, "spot_checks": 0}))
+    mock_pool.fetchrow = AsyncMock(return_value=Record({"matches": 9, "spot_checks": 0}))
 
     async with _client(app) as client:
         resp = await client.get("/api/switchboard/rule-promotion-stats")

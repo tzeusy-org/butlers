@@ -21,7 +21,6 @@ from butlers.db import register_jsonb_codec
 from butlers.entity_rebind import rebind_entity_references, run_entity_rebind_listener
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 from butlers.testing.fake_pool import AsyncCtx
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.testing.schema_standins import (
     CONTACT_ENTITY_MAP,
     ENTITY_GRAPH_EDGES,
@@ -335,18 +334,14 @@ async def _insert_entity(pool, name: str) -> UUID:
 
 
 @pytest.fixture
-async def owner_merge_pools(postgres_container):
+async def owner_merge_pools(fresh_db):
     """Fresh main chains and bootstrap-established runtime identities.
 
-    This singleton proof does not use the unmerged migrated-template cache or
-    the legacy copied schema used by the other bounded merge scenarios.
+    This singleton proof does not use the legacy copied schema used by the
+    other bounded merge scenarios.
     """
     db_url = await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        migration_db_name(),
-        ["core", "memory", "relationship"],
-        {"relationship": "relationship"},
+        fresh_db, "core", "memory", "relationship", schemas={"relationship": "relationship"}
     )
 
     async def relationship_role(conn):

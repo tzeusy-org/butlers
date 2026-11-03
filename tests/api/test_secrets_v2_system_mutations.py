@@ -38,6 +38,8 @@ from butlers.api.routers.secrets_v2 import (
     SystemSecretDetail,
     _system_probe_timestamps,
 )
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -47,13 +49,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC)
-
-
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
 
 
 def _make_butler_secrets_row(
@@ -68,8 +63,8 @@ def _make_butler_secrets_row(
     last_test_code: int | None = None,
     last_test_message: str | None = None,
     created_at: datetime | None = None,
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return make_row(
         secret_key=secret_key,
         secret_value=secret_value,
         category=category,
@@ -1011,7 +1006,7 @@ def test_set_system_credential_omits_every_free_text_sentinel():
         last_test_code=401,
         last_test_message="sentinel-system-failure-tail",
     )
-    probe_row = _make_row(
+    probe_row = make_row(
         ok=False,
         code=401,
         message="sentinel-system-probe-message",

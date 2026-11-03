@@ -39,6 +39,9 @@ spec:
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_BACKUP_DIR, value: /backups}
+            {{- if .Values.offsiteCopy.enabled }}
+            - {name: BUTLERS_OFFSITE_COPY_ENABLED, value: "1"}
+            {{- end }}
             - {name: BUTLERS_API_DB_POOL_MIN_SIZE, value: {{ .Values.database.apiPoolMinSize | quote }}}
             - {name: BUTLERS_API_DB_POOL_MAX_SIZE, value: {{ .Values.database.apiPoolMaxSize | quote }}}
             - name: GOOGLE_OAUTH_REDIRECT_URI
