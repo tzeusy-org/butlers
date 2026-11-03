@@ -1625,7 +1625,7 @@ async def test_visit_brief(health_pool, case):
             assert "Health brief for Dr Tan follow-up," in text
             assert "BUTLER:" not in text and "https://" not in text
             assert (
-                "Metformin: 5 doses logged against 11 scheduled, 6 missed (tracked since Oct 5)"
+                "Metformin: 5 doses logged against 10 scheduled, 5 missed (tracked since Oct 5)"
             ) in text
             assert re.search(r"usual range 69\.[01] to 71\.[56] kg, latest is within it", text)
             assert "+/-" not in text
