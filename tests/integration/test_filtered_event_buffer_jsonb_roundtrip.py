@@ -1003,7 +1003,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         )
         await runtime._refresh_policy_tier_assigner()
         assert any(
-            record.name == "butlers.connectors.gmail_policy"
+            record.name == "butlers.connectors.known_contact_snapshot"
             and "DB refresh failed" in record.getMessage()
             for record in caplog.records
         ), "The actual first contact query must reach its DB exception path"

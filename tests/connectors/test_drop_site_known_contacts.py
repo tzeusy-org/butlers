@@ -305,9 +305,8 @@ async def test_current_availability_requires_evidence_from_every_marking_runtime
     pool = MagicMock()
     pool.fetch = AsyncMock(return_value=rows)
 
-    assert (
-        await ingestion_current_classification_available(pool, now=datetime.now(UTC)) is available
-    )
+    pinned = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+    assert await ingestion_current_classification_available(pool, now=pinned) is available
 
 
 async def test_whatsapp_unresolved_peer_records_no_classification_and_counts_uncertain(
