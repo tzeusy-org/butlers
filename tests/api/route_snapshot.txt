@@ -260,6 +260,7 @@ OP GET /api/memory/episodes/{episode_id} 31bbecd98062
 OP GET /api/memory/facts a53a5b7e85d1
 OP GET /api/memory/facts/{fact_id} e5c38b50a85f
 OP GET /api/memory/gaps f457cbbc6276
+OP GET /api/memory/gaps/demand 7b86976af5d7
 OP GET /api/memory/inspect af9b866af201
 OP GET /api/memory/links/{memory_type}/{memory_id} 7438eeaab05f
 OP GET /api/memory/reembed/pending 82042a83c29d
@@ -886,6 +887,7 @@ ROUTE APIRoute GET '/api/memory/episodes/{episode_id}' name=get_episode op=get_e
 ROUTE APIRoute GET '/api/memory/facts' name=list_facts op=list_facts_api_memory_facts_get tags=memory schema=True
 ROUTE APIRoute GET '/api/memory/facts/{fact_id}' name=get_fact op=get_fact_api_memory_facts__fact_id__get tags=memory schema=True
 ROUTE APIRoute GET '/api/memory/gaps' name=list_memory_gaps op=list_memory_gaps_api_memory_gaps_get tags=memory schema=True
+ROUTE APIRoute GET '/api/memory/gaps/demand' name=memory_gap_demand op=memory_gap_demand_api_memory_gaps_demand_get tags=memory schema=True
 ROUTE APIRoute GET '/api/memory/inspect' name=inspect_memory op=inspect_memory_api_memory_inspect_get tags=memory schema=True
 ROUTE APIRoute GET '/api/memory/links/{memory_type}/{memory_id}' name=list_memory_links op=list_memory_links_api_memory_links__memory_type___memory_id__get tags=memory schema=True
 ROUTE APIRoute GET '/api/memory/reembed/pending' name=get_reembed_pending op=get_reembed_pending_api_memory_reembed_pending_get tags=memory schema=True
@@ -1491,6 +1493,7 @@ SCHEMA ApiResponse_list_Issue__ 36e1437bdd3b
 SCHEMA ApiResponse_list_MCPToolInfo__ d82b3257bfd3
 SCHEMA ApiResponse_list_MemoryActivity__ 7a55b63fcc43
 SCHEMA ApiResponse_list_MemoryCatalogSearchResult__ ef4ef884a8b8
+SCHEMA ApiResponse_list_MemoryGapDemand__ 9cdd0e65821d
 SCHEMA ApiResponse_list_MemoryLink__ 44d9a6854478
 SCHEMA ApiResponse_list_MemoryRetentionPolicy__ efad87f1cae8
 SCHEMA ApiResponse_list_ModelCatalogEntry__ 2fddb5b0c577
@@ -1962,6 +1965,7 @@ SCHEMA MemoryAccess 77a36fc13042
 SCHEMA MemoryActivity ec6c94ad677d
 SCHEMA MemoryCatalogSearchResult 871ab339335c
 SCHEMA MemoryGap d68e69fb829c
+SCHEMA MemoryGapDemand 0dcec58a1f86
 SCHEMA MemoryGapDismissal 2b28c8cb9e74
 SCHEMA MemoryGapOrigin e8080f69b02b
 SCHEMA MemoryInspectResult 9d1a480f608c
@@ -2164,7 +2168,7 @@ SCHEMA ResearchCreateRequest 59b023d22e62
 SCHEMA ResearchUpdateRequest 66ef6c4b3542
 SCHEMA ReservationModel fac9fcf0d8d9
 SCHEMA ResetUsageRequest 4800c2579c23
-SCHEMA ResolveGapInterviewRequest 2821a4b69ed7
+SCHEMA ResolveGapInterviewRequest f0bd314277d0
 SCHEMA ResolveModelResponse a5a081288a48
 SCHEMA RestoreDrillFacts 0ade9fdf5ff5
 SCHEMA RetryPolicy f667714c050a

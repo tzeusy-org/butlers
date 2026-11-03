@@ -536,6 +536,29 @@ async def run_project_occupation_inferred(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_situation_inferred(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Derive situational blocks from place stays and anchors (bu-r3fmja)."""
+    # Imported here, not from the adapters package: the situational adapter
+    # depends on butlers.chronicler.anchors, which imports from that package.
+    from butlers.chronicler.adapters.situation import (
+        DEFAULT_LOOKBACK_DAYS,
+        SituationInferredAdapter,
+    )
+
+    options = _parse_job_args(
+        "chronicler_project_situation_inferred",
+        job_args,
+        supported_fields=("lookback_days",),
+    )
+    adapter = SituationInferredAdapter(
+        lookback_days=options.get("lookback_days", DEFAULT_LOOKBACK_DAYS)
+    )
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 async def run_project_comms(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -723,6 +746,7 @@ __all__ = [
     "run_project_owntracks_ssid",
     "run_project_reading_inferred",
     "run_project_sessions",
+    "run_project_situation_inferred",
     "run_project_spotify",
     "run_project_steam",
     "run_rollup_daily",

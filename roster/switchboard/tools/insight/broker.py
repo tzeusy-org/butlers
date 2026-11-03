@@ -848,9 +848,14 @@ async def cleanup_old_rows(
     now: datetime | None = None,
     retention_days: int = 30,
 ) -> None:
-    """Delete old insight data to prevent unbounded table growth.
+    """Delete old insight bookkeeping rows to prevent unbounded table growth.
 
-    - insight_candidates: non-pending rows older than retention_days
+    ``insight_candidates`` is never touched here (bu-3jyrqz): terminal
+    candidates are pruned only by the opt-in, default-off, dry-run-first
+    retention pruner [C] (``butlers.jobs.retention.prune_insight_candidates``,
+    90-day bound), per docs/operations/data-retention.md. Amendments are not
+    cascaded since ``core_312`` (no FK to the candidate).
+
     - insight_amendments: never deleted (kept as evidence); a ``pending`` or ``fold``
       row whose candidate is gone settles to terminal ``orphaned`` (bu-q7vx1q.32)
     - insight_cooldowns: rows where cooldown_until is older than retention_days
@@ -863,13 +868,6 @@ async def cleanup_old_rows(
         now = datetime.now(UTC)
     cutoff = now - timedelta(days=retention_days)
 
-    await pool.execute(
-        """
-        DELETE FROM insight_candidates
-        WHERE status != 'pending' AND created_at < $1
-        """,
-        cutoff,
-    )
     # Amendment evidence outlives its candidate (core_312 dropped the cascade), but a
     # correction with nothing left to correct must not wait forever.
     await pool.execute(

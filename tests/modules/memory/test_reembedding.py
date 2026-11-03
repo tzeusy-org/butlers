@@ -24,6 +24,7 @@ from butlers.modules.memory.reembedding import (
     count_pending,
     run,
 )
+from butlers.testing.fake_pool import FakeConnection, FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -32,35 +33,14 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(fetch_results: list | None = None, fetchrow_result=None) -> AsyncMock:
-    """Build a minimal asyncpg pool mock.
-
-    - pool.acquire() is an async context manager returning a connection mock.
-    - conn.fetchrow() returns fetchrow_result (a dict-like).
-    - conn.fetch() returns fetch_results (a list of dict-like rows).
-    - conn.execute() is an AsyncMock (returns nothing; used for count queries).
-    - conn.executemany() is an AsyncMock (returns nothing; used for batch UPDATEs).
-    - conn.transaction() is an async context manager (no-op).
-    """
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=fetchrow_result)
-    conn.fetch = AsyncMock(return_value=fetch_results or [])
-    conn.execute = AsyncMock()
-    conn.executemany = AsyncMock()
-
-    # transaction() is an async context manager.
-    txn_ctx = AsyncMock()
-    txn_ctx.__aenter__ = AsyncMock(return_value=None)
-    txn_ctx.__aexit__ = AsyncMock(return_value=False)
-    conn.transaction = MagicMock(return_value=txn_ctx)
-
-    # pool.acquire() is an async context manager returning the connection.
-    acquire_ctx = AsyncMock()
-    acquire_ctx.__aenter__ = AsyncMock(return_value=conn)
-    acquire_ctx.__aexit__ = AsyncMock(return_value=False)
-    pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=acquire_ctx)
-    return pool, conn
+def _pool_and_conn(
+    fetch_results: list | None = None, fetchrow_result=None
+) -> tuple[FakePool, FakeConnection]:
+    """Fake pool: fetchrow/fetch return the given rows; execute/executemany return None."""
+    pool = fake_pool(
+        fetchrow=fetchrow_result, fetch=fetch_results or [], execute=None, executemany=None
+    )
+    return pool, pool.connection
 
 
 def _make_engine(model_name: str = "new-model", dim: int = 384) -> MagicMock:
@@ -99,7 +79,7 @@ class TestResolveTiers:
 class TestCountPending:
     async def test_counts_stale_rows_all_tiers(self) -> None:
         """count_pending queries each tier and returns counts."""
-        pool, conn = _make_pool(fetchrow_result={"cnt": 7})
+        pool, conn = _pool_and_conn(fetchrow_result={"cnt": 7})
 
         result = await count_pending(pool, current_model="model-v2")
 
@@ -109,7 +89,7 @@ class TestCountPending:
         assert set(result.keys()) == set(ALL_TIERS)
 
     async def test_counts_single_tier(self) -> None:
-        pool, conn = _make_pool(fetchrow_result={"cnt": 3})
+        pool, conn = _pool_and_conn(fetchrow_result={"cnt": 3})
 
         result = await count_pending(pool, current_model="model-v2", tier="facts")
 
@@ -117,7 +97,7 @@ class TestCountPending:
         assert result == {"facts": 3}
 
     async def test_invalid_tier_raises(self) -> None:
-        pool, _ = _make_pool()
+        pool, _ = _pool_and_conn()
         with pytest.raises(ValueError, match="Unknown tier"):
             await count_pending(pool, current_model="model-v2", tier="bogus")
 
@@ -166,7 +146,7 @@ class TestRunDryRun:
             {"id": uuid.uuid4(), "content": "hello"},
             {"id": uuid.uuid4(), "content": "world"},
         ]
-        pool, conn = _make_pool(fetch_results=stale_rows)
+        pool, conn = _pool_and_conn(fetch_results=stale_rows)
         engine = _make_engine(model_name="new-model")
 
         result = await run(pool, engine, dry_run=True)
@@ -179,7 +159,7 @@ class TestRunDryRun:
     async def test_dry_run_counts_batch(self) -> None:
         """dry_run counts the first batch found per tier."""
         stale_rows = [{"id": uuid.uuid4(), "content": "x"}]
-        pool, conn = _make_pool(fetch_results=stale_rows)
+        pool, conn = _pool_and_conn(fetch_results=stale_rows)
         engine = _make_engine()
 
         result = await run(pool, engine, dry_run=True, tiers=["facts"])
@@ -190,7 +170,7 @@ class TestRunDryRun:
         conn.executemany.assert_not_called()
 
     async def test_dry_run_no_rows_returns_zero(self) -> None:
-        pool, _ = _make_pool(fetch_results=[])
+        pool, _ = _pool_and_conn(fetch_results=[])
         engine = _make_engine()
 
         result = await run(pool, engine, dry_run=True, tiers=["rules"])
@@ -211,7 +191,7 @@ class TestRunFull:
 
         # First call returns stale rows; second call (next iteration) returns
         # empty list to terminate the loop.
-        pool, conn = _make_pool()
+        pool, conn = _pool_and_conn()
         conn.fetch = AsyncMock(side_effect=[stale_rows, []])
         engine = _make_engine(model_name="new-model")
         engine.embed_batch = MagicMock(return_value=[[0.5] * 384])
@@ -231,7 +211,7 @@ class TestRunFull:
         """With batch_size=2, a batch of 2 triggers a second fetch."""
         batch = [{"id": uuid.uuid4(), "content": f"c{i}"} for i in range(2)]
 
-        pool, conn = _make_pool()
+        pool, conn = _pool_and_conn()
         # First fetch: full batch; second fetch: empty (done).
         conn.fetch = AsyncMock(side_effect=[batch, []])
         engine = _make_engine()
@@ -244,7 +224,7 @@ class TestRunFull:
         assert result.counts["episodes"] == 2
 
     async def test_no_rows_returns_zero_count(self) -> None:
-        pool, conn = _make_pool(fetch_results=[])
+        pool, conn = _pool_and_conn(fetch_results=[])
         engine = _make_engine()
 
         result = await run(pool, engine, dry_run=False, tiers=["rules"])
@@ -253,7 +233,7 @@ class TestRunFull:
         conn.executemany.assert_not_called()
 
     async def test_invalid_tier_raises_before_db_access(self) -> None:
-        pool, conn = _make_pool()
+        pool, conn = _pool_and_conn()
         engine = _make_engine()
 
         with pytest.raises(ValueError, match="Unknown tiers"):
@@ -267,7 +247,7 @@ class TestRunFull:
         Each tier fetch returns 1 row (< batch_size=50), so the loop exits
         after a single fetch per tier — 3 total fetches across all tiers.
         """
-        pool, conn = _make_pool()
+        pool, conn = _pool_and_conn()
         # One row per tier; batch_size=50 so 1 < 50 means "last batch" after first fetch.
         single_row = [{"id": uuid.uuid4(), "content": "text"}]
         conn.fetch = AsyncMock(side_effect=[single_row, single_row, single_row])

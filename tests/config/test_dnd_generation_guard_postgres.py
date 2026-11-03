@@ -23,7 +23,6 @@ from sqlalchemy.exc import DBAPIError
 from alembic import command
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import (
-    create_migrated_test_db,
     create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
@@ -38,10 +37,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
+@pytest.fixture
+def dnd_db_url(fresh_db) -> str:
     """A disposable core-migrated database with the privileged bootstrap staged."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+    return fresh_db("core")
 
 
 def _quote_ident(identifier: str) -> str:
@@ -182,9 +181,9 @@ def test_dnd_bootstrap_rejects_any_preexisting_user_context_policy(postgres_cont
 
 
 def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
-    migrated_db_url: str,
+    dnd_db_url: str,
 ) -> None:
-    engine = create_engine(migrated_db_url)
+    engine = create_engine(dnd_db_url)
     try:
         with engine.connect() as conn:
             catalog = conn.execute(
@@ -510,7 +509,7 @@ def test_dnd_final_catalog_has_no_login_owner_force_rls_and_no_public_execute(
     assert admin_catalog == (True, True, True, True, True, True)
 
 
-def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
+def test_dnd_gateway_replay_and_real_role_denials(dnd_db_url: str) -> None:
     mutation_id = str(uuid.uuid4())
     expires_at = datetime.now(UTC) + timedelta(hours=1)
     parameters = {
@@ -522,12 +521,8 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
     }
     gateway = _dnd_set_statement()
 
-    first = _execute_as_role(
-        migrated_db_url, "butler_general_rw", gateway, parameters, fetch_one=True
-    )
-    replay = _execute_as_role(
-        migrated_db_url, "butler_general_rw", gateway, parameters, fetch_one=True
-    )
+    first = _execute_as_role(dnd_db_url, "butler_general_rw", gateway, parameters, fetch_one=True)
+    replay = _execute_as_role(dnd_db_url, "butler_general_rw", gateway, parameters, fetch_one=True)
     assert replay == first
     assert first.writer == "general"
     assert first.operation == "set"
@@ -542,18 +537,18 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
     for changed_fields in changed_replays:
         with pytest.raises(DBAPIError, match="idempotency_conflict"):
             _execute_as_role(
-                migrated_db_url,
+                dnd_db_url,
                 "butler_general_rw",
                 gateway,
                 {**parameters, **changed_fields},
             )
 
     with pytest.raises(DBAPIError, match="active canonical runtime role"):
-        _execute_as_connecting_user(migrated_db_url, gateway, parameters)
+        _execute_as_connecting_user(dnd_db_url, gateway, parameters)
 
     with pytest.raises(DBAPIError, match="active canonical runtime role"):
         _execute_as_connecting_user(
-            migrated_db_url,
+            dnd_db_url,
             """
             SELECT * FROM dnd_generation_private.mutate(
                 CAST(:mutation_id AS uuid),
@@ -570,13 +565,13 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
 
     with pytest.raises(DBAPIError):
         _execute_as_connecting_user(
-            migrated_db_url,
+            dnd_db_url,
             "SELECT dnd_generation_admin.finalize_interface()",
         )
 
     with pytest.raises(DBAPIError):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_health_rw",
             """
             INSERT INTO public.user_context (
@@ -588,7 +583,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
 
     with pytest.raises(DBAPIError):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_general_rw",
             """
             INSERT INTO public.user_context (
@@ -600,7 +595,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
         )
 
     direct_dnd_update_rowcount = _execute_as_role(
-        migrated_db_url,
+        dnd_db_url,
         "butler_general_rw",
         """
         UPDATE public.user_context
@@ -613,7 +608,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
     # zero affected rows is the direct-DML denial proof for this existing DND row.
     assert direct_dnd_update_rowcount == 0
     unchanged_dnd_row = _execute_as_role(
-        migrated_db_url,
+        dnd_db_url,
         "butler_general_rw",
         """
         SELECT value
@@ -626,7 +621,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
 
     with pytest.raises(DBAPIError):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_health_rw",
             gateway,
             {**parameters, "mutation_id": str(uuid.uuid4())},
@@ -634,7 +629,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
 
     with pytest.raises(DBAPIError):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_general_rw",
             """
             SELECT * FROM public.context_dnd_mutate(
@@ -652,14 +647,14 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
 
     with pytest.raises(DBAPIError):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_general_rw",
             "SELECT * FROM public.dnd_generation_mutations",
         )
 
     # FORCE RLS must preserve the ordinary allowed path while rejecting DND.
     _execute_as_role(
-        migrated_db_url,
+        dnd_db_url,
         "butler_health_rw",
         """
         INSERT INTO public.user_context (
@@ -671,7 +666,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
 
     with pytest.raises(DBAPIError):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_health_rw",
             """
             UPDATE public.user_context
@@ -681,7 +676,7 @@ def test_dnd_gateway_replay_and_real_role_denials(migrated_db_url: str) -> None:
         )
 
 
-def test_switchboard_can_mutate_only_its_own_dnd_row(migrated_db_url: str) -> None:
+def test_switchboard_can_mutate_only_its_own_dnd_row(dnd_db_url: str) -> None:
     """The second canonical writer has an actual role-enforced success path."""
     set_parameters = {
         "mutation_id": str(uuid.uuid4()),
@@ -691,14 +686,14 @@ def test_switchboard_can_mutate_only_its_own_dnd_row(migrated_db_url: str) -> No
         "metadata": '{"proof":"switchboard"}',
     }
     set_receipt = _execute_as_role(
-        migrated_db_url,
+        dnd_db_url,
         "butler_switchboard_rw",
         _dnd_set_statement("switchboard"),
         set_parameters,
         fetch_one=True,
     )
     clear_receipt = _execute_as_role(
-        migrated_db_url,
+        dnd_db_url,
         "butler_switchboard_rw",
         _dnd_clear_statement("switchboard"),
         {
@@ -716,7 +711,7 @@ def test_switchboard_can_mutate_only_its_own_dnd_row(migrated_db_url: str) -> No
 
 
 def test_dnd_default_ttl_and_normalized_metadata_replay_are_durable(
-    migrated_db_url: str,
+    dnd_db_url: str,
 ) -> None:
     """Database-normalized defaults/canonical metadata survive an exact retry."""
     parameters = {
@@ -727,11 +722,9 @@ def test_dnd_default_ttl_and_normalized_metadata_replay_are_durable(
         "metadata": '{"accent":"\\u00e9","count":1}',
     }
     gateway = _dnd_set_statement()
-    first = _execute_as_role(
-        migrated_db_url, "butler_general_rw", gateway, parameters, fetch_one=True
-    )
+    first = _execute_as_role(dnd_db_url, "butler_general_rw", gateway, parameters, fetch_one=True)
     replay = _execute_as_role(
-        migrated_db_url,
+        dnd_db_url,
         "butler_general_rw",
         gateway,
         {
@@ -747,7 +740,7 @@ def test_dnd_default_ttl_and_normalized_metadata_replay_are_durable(
 
     with pytest.raises(DBAPIError, match="duplicate NFC-normalized keys"):
         _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_general_rw",
             gateway,
             {
@@ -758,7 +751,7 @@ def test_dnd_default_ttl_and_normalized_metadata_replay_are_durable(
         )
 
 
-def test_dnd_concurrent_identical_retry_advances_generation_once(migrated_db_url: str) -> None:
+def test_dnd_concurrent_identical_retry_advances_generation_once(dnd_db_url: str) -> None:
     """The durable action ID serializes a race into one committed receipt."""
     mutation_id = str(uuid.uuid4())
     parameters = {
@@ -773,7 +766,7 @@ def test_dnd_concurrent_identical_retry_advances_generation_once(migrated_db_url
     def invoke_same_action():
         start.wait()
         return _execute_as_role(
-            migrated_db_url,
+            dnd_db_url,
             "butler_general_rw",
             _dnd_set_statement(),
             parameters,
@@ -785,7 +778,7 @@ def test_dnd_concurrent_identical_retry_advances_generation_once(migrated_db_url
         first, second = [future.result() for future in futures]
 
     assert first == second
-    engine = create_engine(migrated_db_url)
+    engine = create_engine(dnd_db_url)
     try:
         with engine.connect() as conn:
             generation = conn.execute(

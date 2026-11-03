@@ -28,6 +28,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -46,30 +47,13 @@ _T_WITHIN_24H = datetime.now(UTC) - timedelta(hours=2)  # live: always within ra
 _T_OUTSIDE_24H = datetime.now(UTC) - timedelta(hours=25)  # live: always outside rate-limit window
 
 
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
-
-
 def _make_episode_row(
     *,
     privacy: str = "normal",
     canonical_privacy: str = "normal",
-) -> _Row:
+) -> Record:
     _now = datetime.now(UTC)
-    return _row(
+    return Record(
         {
             "id": _EPISODE_ID,
             "source_name": "work",
@@ -191,7 +175,7 @@ class TestEpisodeExplainHappyPath:
             fetchrow_side_effect=[
                 _make_episode_row(),  # episode lookup
                 None,  # rate-limit check: no existing cache row
-                _row({"cache_built_at": fresh_built_at}),  # final row fetch after write
+                Record({"cache_built_at": fresh_built_at}),  # final row fetch after write
             ],
             fetch_returns=[],  # no linked events, no corrections
         )
@@ -219,7 +203,7 @@ class TestEpisodeExplainHappyPath:
             fetchrow_side_effect=[
                 _make_episode_row(),
                 None,  # no existing rate-limit row
-                _row({"cache_built_at": fresh_built_at}),
+                Record({"cache_built_at": fresh_built_at}),
             ],
             fetch_returns=[],
         )
@@ -248,7 +232,7 @@ class TestEpisodeExplainHappyPath:
             fetchrow_side_effect=[
                 _make_episode_row(),
                 None,
-                _row({"cache_built_at": fresh_built_at}),
+                Record({"cache_built_at": fresh_built_at}),
             ],
             fetch_returns=[],
         )
@@ -282,7 +266,7 @@ class TestEpisodeExplainRateLimit:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 _make_episode_row(),  # episode lookup
-                _row({"cache_built_at": _T_WITHIN_24H}),  # existing recent cache row
+                Record({"cache_built_at": _T_WITHIN_24H}),  # existing recent cache row
             ]
         )
         app = _make_app_no_dispatch(pool)
@@ -306,7 +290,7 @@ class TestEpisodeExplainRateLimit:
         pool = _mock_pool(
             fetchrow_side_effect=[
                 _make_episode_row(),  # episode lookup
-                _row({"cache_built_at": _T_OUTSIDE_24H}),  # old cache row
+                Record({"cache_built_at": _T_OUTSIDE_24H}),  # old cache row
             ]
         )
         app = _make_app_no_dispatch(pool)

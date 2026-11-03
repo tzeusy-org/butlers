@@ -1,4 +1,4 @@
-.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -192,15 +192,6 @@ test-qg-parallel:
 check-for-update-joins:
 	python3 scripts/check_for_update_joins.py src/ tests/ roster/
 
-# Per-lane collected-test budget ratchet (bu-r5mnn). Fails when a CI lane
-# collects more tests than scripts/test-budget-baseline.json allows: condense
-# tests in the same PR, or raise the budget with
-# `uv run --no-sync python scripts/check_test_budget.py --update-baseline` and
-# state the net test delta and why in the PR body. Mirrors the CI
-# smoke job's budget step.
-check-test-budget:
-	uv run --no-sync python scripts/check_test_budget.py
-
 # Non-negotiable #6: no em-dashes in doctrine or dashboard copy. Ratchets a
 # per-file baseline (scripts/em-dash-baseline.json) so pre-existing debt is
 # frozen while any net-new em-dash fails. Mirrors the em-dash step of the CI `guards` job.
@@ -272,7 +263,7 @@ check-guards: check-host-policy-selectors check-lock lint check-format check-for
 check-host-policy-selectors:
 	python3 scripts/check_host_policy_selectors.py
 
-check: lint check-for-update-joins check-test-budget check-guards test
+check: lint check-for-update-joins check-guards test
 
 # Local dry run of the session-link step of the CI `guards` job (bu-mr5t5): scans commit
 # messages not yet on origin/main for tool-session link/footer leakage

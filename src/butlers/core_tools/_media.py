@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 # then disables them on its FastMCP server: not listed, not callable.
 # attachment_page_view is vision input: presenting it also needs a model
 # whose exact-path vision proof (RFC 0036, bu-s1u4br) has passed.
-GOAL_RUNTIME_DARK_TOOLS = frozenset({"attachment_read", "attachment_page_view"})
+# attachment_materialize is Switchboard's (core_tools._switchboard).
+GOAL_RUNTIME_DARK_TOOLS = frozenset(
+    {"attachment_read", "attachment_page_view", "attachment_materialize"}
+)
 
 
 def register_media_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:

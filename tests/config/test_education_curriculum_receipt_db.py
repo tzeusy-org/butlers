@@ -27,9 +27,6 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -63,29 +60,13 @@ def _load_education_router():
 edu = _load_education_router()
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core (public.entities) + education (education schema) chains."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "education"],
-        schemas={"education": "education"},
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def edu_pool(db) -> asyncpg.Pool:
+    """Core (public.entities) + education (education schema) chains."""
+    p = await db("core", "education", schemas={"education": "education"})
     await p.execute("TRUNCATE TABLE education.curriculum_requests CASCADE")
     await p.execute("TRUNCATE TABLE education.mind_maps CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +74,7 @@ async def pool(postgres_container, migrated_db_url: str):
 # ---------------------------------------------------------------------------
 
 
-async def test_receipt_table_exists_after_migration(pool: asyncpg.Pool) -> None:
+async def test_receipt_table_exists_after_migration(edu_pool: asyncpg.Pool) -> None:
     """The chain must create the receipt table with its evidence columns.
 
     ``education_005`` adds the notice-evidence pair (bu-358jk). Asserting the
@@ -102,7 +83,7 @@ async def test_receipt_table_exists_after_migration(pool: asyncpg.Pool) -> None:
     """
     cols = {
         r["column_name"]
-        for r in await pool.fetch(
+        for r in await edu_pool.fetch(
             """
             SELECT column_name
               FROM information_schema.columns
@@ -129,10 +110,10 @@ async def test_receipt_table_exists_after_migration(pool: asyncpg.Pool) -> None:
     }
 
 
-async def test_terminal_status_requires_settled_at(pool: asyncpg.Pool) -> None:
+async def test_terminal_status_requires_settled_at(edu_pool: asyncpg.Pool) -> None:
     """A receipt must not read 'completed' while claiming it never settled."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await edu_pool.execute(
             """
             INSERT INTO education.curriculum_requests (topic, status, settled_at)
             VALUES ('Python', 'completed', NULL)
@@ -140,10 +121,10 @@ async def test_terminal_status_requires_settled_at(pool: asyncpg.Pool) -> None:
         )
 
 
-async def test_failed_status_requires_failure_reason(pool: asyncpg.Pool) -> None:
+async def test_failed_status_requires_failure_reason(edu_pool: asyncpg.Pool) -> None:
     """A failure the owner cannot read is not a receipt."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await edu_pool.execute(
             """
             INSERT INTO education.curriculum_requests (topic, status, settled_at)
             VALUES ('Python', 'failed', now())
@@ -151,10 +132,10 @@ async def test_failed_status_requires_failure_reason(pool: asyncpg.Pool) -> None
         )
 
 
-async def test_open_receipt_must_not_be_settled(pool: asyncpg.Pool) -> None:
+async def test_open_receipt_must_not_be_settled(edu_pool: asyncpg.Pool) -> None:
     """A live receipt carrying a settled_at would fake a terminal outcome."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await edu_pool.execute(
             """
             INSERT INTO education.curriculum_requests (topic, status, settled_at)
             VALUES ('Python', 'running', now())
@@ -162,10 +143,10 @@ async def test_open_receipt_must_not_be_settled(pool: asyncpg.Pool) -> None:
         )
 
 
-async def test_accepted_notice_requires_an_acceptance_timestamp(pool: asyncpg.Pool) -> None:
+async def test_accepted_notice_requires_an_acceptance_timestamp(edu_pool: asyncpg.Pool) -> None:
     """ "Delivered" with no moment is a claim with no evidence behind it."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await edu_pool.execute(
             """
             INSERT INTO education.curriculum_requests
                 (topic, status, calibration_notice_outcome, calibration_notice_accepted_at)
@@ -175,7 +156,7 @@ async def test_accepted_notice_requires_an_acceptance_timestamp(pool: asyncpg.Po
 
 
 async def test_unaccepted_notice_must_not_carry_an_acceptance_timestamp(
-    pool: asyncpg.Pool,
+    edu_pool: asyncpg.Pool,
 ) -> None:
     """The failure direction, which is the one that would overclaim.
 
@@ -186,7 +167,7 @@ async def test_unaccepted_notice_must_not_carry_an_acceptance_timestamp(
     assert outcomes, "no outcomes to check; the loop below would be vacuous"
     for outcome in outcomes:
         with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
+            await edu_pool.execute(
                 """
                 INSERT INTO education.curriculum_requests
                     (topic, status, calibration_notice_outcome, calibration_notice_accepted_at)
@@ -197,11 +178,11 @@ async def test_unaccepted_notice_must_not_carry_an_acceptance_timestamp(
 
 
 async def test_null_notice_outcome_must_not_carry_an_acceptance_timestamp(
-    pool: asyncpg.Pool,
+    edu_pool: asyncpg.Pool,
 ) -> None:
     """ "Never asked" cannot come with an answer attached."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await edu_pool.execute(
             """
             INSERT INTO education.curriculum_requests
                 (topic, status, calibration_notice_outcome, calibration_notice_accepted_at)
@@ -210,10 +191,10 @@ async def test_null_notice_outcome_must_not_carry_an_acceptance_timestamp(
         )
 
 
-async def test_unknown_notice_outcome_is_rejected(pool: asyncpg.Pool) -> None:
+async def test_unknown_notice_outcome_is_rejected(edu_pool: asyncpg.Pool) -> None:
     """The vocabulary is closed, so an invented word cannot reach the UI."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await edu_pool.execute(
             """
             INSERT INTO education.curriculum_requests
                 (topic, status, calibration_notice_outcome)
@@ -223,7 +204,7 @@ async def test_unknown_notice_outcome_is_rejected(pool: asyncpg.Pool) -> None:
 
 
 async def test_every_notice_outcome_the_router_can_write_is_accepted(
-    pool: asyncpg.Pool,
+    edu_pool: asyncpg.Pool,
 ) -> None:
     """The CHECK and the router must agree on the vocabulary.
 
@@ -242,7 +223,7 @@ async def test_every_notice_outcome_the_router_can_write_is_accepted(
     assert outcomes, "no outcomes to check; the loop below would be vacuous"
     for outcome in outcomes:
         accepted_at = datetime.now(UTC) if outcome == "delivered" else None
-        request_id = await pool.fetchval(
+        request_id = await edu_pool.fetchval(
             """
             INSERT INTO education.curriculum_requests
                 (topic, status, settled_at,
@@ -254,7 +235,9 @@ async def test_every_notice_outcome_the_router_can_write_is_accepted(
             accepted_at,
         )
         assert request_id is not None, f"{outcome} was rejected by the notice CHECK"
-        await pool.execute("DELETE FROM education.curriculum_requests WHERE id = $1", request_id)
+        await edu_pool.execute(
+            "DELETE FROM education.curriculum_requests WHERE id = $1", request_id
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -262,42 +245,42 @@ async def test_every_notice_outcome_the_router_can_write_is_accepted(
 # ---------------------------------------------------------------------------
 
 
-async def test_second_open_receipt_is_rejected(pool: asyncpg.Pool) -> None:
+async def test_second_open_receipt_is_rejected(edu_pool: asyncpg.Pool) -> None:
     """The partial unique index is the one-pending-at-a-time guard."""
-    first = await edu._create_receipt(pool, "Python", "web dev")
+    first = await edu._create_receipt(edu_pool, "Python", "web dev")
     assert first is not None
 
-    second = await edu._create_receipt(pool, "Rust", None)
+    second = await edu._create_receipt(edu_pool, "Rust", None)
     assert second is None, "a second open receipt must be refused (409 path)"
 
 
-async def test_new_receipt_allowed_once_previous_is_terminal(pool: asyncpg.Pool) -> None:
+async def test_new_receipt_allowed_once_previous_is_terminal(edu_pool: asyncpg.Pool) -> None:
     """Settling releases the guard — the terminal state IS the release."""
-    first = await edu._create_receipt(pool, "Python", None)
+    first = await edu._create_receipt(edu_pool, "Python", None)
     assert first is not None
 
     settled = await edu._settle_receipt(
-        pool,
+        edu_pool,
         str(first["id"]),
         status="failed",
         failure_reason=edu._FAILURE_SESSION_ERROR,
     )
     assert settled is True
 
-    second = await edu._create_receipt(pool, "Rust", None)
+    second = await edu._create_receipt(edu_pool, "Rust", None)
     assert second is not None, "a terminal receipt must not keep holding the guard"
 
 
-async def test_two_terminal_receipts_coexist(pool: asyncpg.Pool) -> None:
+async def test_two_terminal_receipts_coexist(edu_pool: asyncpg.Pool) -> None:
     """The guard covers only open rows — history is unbounded."""
     for topic in ("Python", "Rust", "Go"):
-        row = await edu._create_receipt(pool, topic, None)
+        row = await edu._create_receipt(edu_pool, topic, None)
         assert row is not None
         await edu._settle_receipt(
-            pool, str(row["id"]), status="failed", failure_reason=edu._FAILURE_TIMED_OUT
+            edu_pool, str(row["id"]), status="failed", failure_reason=edu._FAILURE_TIMED_OUT
         )
 
-    total = await pool.fetchval("SELECT count(*) FROM education.curriculum_requests")
+    total = await edu_pool.fetchval("SELECT count(*) FROM education.curriculum_requests")
     assert total == 3
 
 
@@ -306,9 +289,9 @@ async def test_two_terminal_receipts_coexist(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_receipt_starts_accepted_with_no_evidence(pool: asyncpg.Pool) -> None:
+async def test_receipt_starts_accepted_with_no_evidence(edu_pool: asyncpg.Pool) -> None:
     """The row exists before any detached work — accepted, and honest about it."""
-    row = await edu._create_receipt(pool, "Python", "web dev")
+    row = await edu._create_receipt(edu_pool, "Python", "web dev")
     assert row is not None
     assert row["status"] == "accepted"
     assert row["topic"] == "Python"
@@ -321,27 +304,27 @@ async def test_receipt_starts_accepted_with_no_evidence(pool: asyncpg.Pool) -> N
     assert row["settled_at"] is None
 
 
-async def test_mark_running_stamps_triggered_at(pool: asyncpg.Pool) -> None:
+async def test_mark_running_stamps_triggered_at(edu_pool: asyncpg.Pool) -> None:
     """Handing the request to the session is itself recorded evidence."""
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
     triggered_at = datetime.now(UTC)
-    await edu._mark_receipt_running(pool, str(row["id"]), triggered_at)
+    await edu._mark_receipt_running(edu_pool, str(row["id"]), triggered_at)
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["status"] == "running"
     assert after["triggered_at"] is not None
 
 
-async def test_completed_settle_records_full_evidence(pool: asyncpg.Pool) -> None:
+async def test_completed_settle_records_full_evidence(edu_pool: asyncpg.Pool) -> None:
     """Trigger/session, curriculum, calibration and timestamps land on the receipt."""
-    map_id = await pool.fetchval(
+    map_id = await edu_pool.fetchval(
         "INSERT INTO education.mind_maps (title) VALUES ('Python') RETURNING id"
     )
-    row = await edu._create_receipt(pool, "Python", None)
-    await edu._mark_receipt_running(pool, str(row["id"]), datetime.now(UTC))
+    row = await edu._create_receipt(edu_pool, "Python", None)
+    await edu._mark_receipt_running(edu_pool, str(row["id"]), datetime.now(UTC))
 
     settled = await edu._settle_receipt(
-        pool,
+        edu_pool,
         str(row["id"]),
         status="completed",
         session_id="sess-1",
@@ -350,7 +333,7 @@ async def test_completed_settle_records_full_evidence(pool: asyncpg.Pool) -> Non
     )
     assert settled is True
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["status"] == "completed"
     assert after["session_id"] == "sess-1"
     assert after["mind_map_id"] == map_id
@@ -359,50 +342,50 @@ async def test_completed_settle_records_full_evidence(pool: asyncpg.Pool) -> Non
     assert after["settled_at"] is not None
 
 
-async def test_settle_is_idempotent_first_writer_wins(pool: asyncpg.Pool) -> None:
+async def test_settle_is_idempotent_first_writer_wins(edu_pool: asyncpg.Pool) -> None:
     """A second settle must not rewrite a terminal outcome."""
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
     request_id = str(row["id"])
 
     assert await edu._settle_receipt(
-        pool, request_id, status="failed", failure_reason=edu._FAILURE_TRIGGER_UNREACHABLE
+        edu_pool, request_id, status="failed", failure_reason=edu._FAILURE_TRIGGER_UNREACHABLE
     )
     assert not await edu._settle_receipt(
-        pool, request_id, status="completed", session_id="sess-late"
+        edu_pool, request_id, status="completed", session_id="sess-late"
     )
 
-    after = await edu._get_receipt(pool, request_id)
+    after = await edu._get_receipt(edu_pool, request_id)
     assert after["status"] == "failed"
     assert after["failure_reason"] == edu._FAILURE_TRIGGER_UNREACHABLE
     assert after["session_id"] is None
 
 
-async def test_failed_settle_keeps_session_evidence(pool: asyncpg.Pool) -> None:
+async def test_failed_settle_keeps_session_evidence(edu_pool: asyncpg.Pool) -> None:
     """A failure still names the session that failed, so the owner can open it."""
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
     await edu._settle_receipt(
-        pool,
+        edu_pool,
         str(row["id"]),
         status="failed",
         session_id="sess-boom",
         failure_reason=edu._FAILURE_SESSION_ERROR,
     )
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["status"] == "failed"
     assert after["session_id"] == "sess-boom"
     assert after["failure_reason"] == edu._FAILURE_SESSION_ERROR
 
 
 async def test_settle_records_notice_evidence_from_the_notification_path(
-    pool: asyncpg.Pool,
+    edu_pool: asyncpg.Pool,
 ) -> None:
     """Delivery evidence round-trips as the pair the CHECK requires."""
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
     accepted_at = datetime.now(UTC) - timedelta(seconds=5)
 
     assert await edu._settle_receipt(
-        pool,
+        edu_pool,
         str(row["id"]),
         status="completed",
         session_id="sess-ok",
@@ -412,23 +395,23 @@ async def test_settle_records_notice_evidence_from_the_notification_path(
         notice_accepted_at=accepted_at,
     )
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["calibration_notice_outcome"] == "delivered"
     assert after["calibration_notice_accepted_at"] == accepted_at
 
 
 async def test_settle_records_a_failed_notice_without_claiming_delivery(
-    pool: asyncpg.Pool,
+    edu_pool: asyncpg.Pool,
 ) -> None:
     """The central case: calibration live, notice never delivered.
 
     ``calibration_ready_at`` is set and the notice outcome is ``failed``, so the
     receipt says both true things at once and neither one implies the other.
     """
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
 
     assert await edu._settle_receipt(
-        pool,
+        edu_pool,
         str(row["id"]),
         status="completed",
         session_id="sess-boom",
@@ -437,26 +420,26 @@ async def test_settle_records_a_failed_notice_without_claiming_delivery(
         notice_accepted_at=None,
     )
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["calibration_ready_at"] is not None, "flow reached diagnosing"
     assert after["calibration_notice_outcome"] == "failed"
     assert after["calibration_notice_accepted_at"] is None
 
 
 async def test_settle_without_notice_evidence_leaves_the_columns_untouched(
-    pool: asyncpg.Pool,
+    edu_pool: asyncpg.Pool,
 ) -> None:
     """A settle that has nothing to say about the notice must say nothing."""
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
 
     assert await edu._settle_receipt(
-        pool,
+        edu_pool,
         str(row["id"]),
         status="failed",
         failure_reason=edu._FAILURE_TRIGGER_UNREACHABLE,
     )
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["calibration_notice_outcome"] is None
     assert after["calibration_notice_accepted_at"] is None
 
@@ -467,51 +450,51 @@ async def test_settle_without_notice_evidence_leaves_the_columns_untouched(
 
 
 @pytest.mark.pg_clock
-async def test_sweep_settles_abandoned_receipt_and_releases_guard(pool: asyncpg.Pool) -> None:
+async def test_sweep_settles_abandoned_receipt_and_releases_guard(edu_pool: asyncpg.Pool) -> None:
     """An API restart kills the owning task; the sweep must free the owner."""
-    row = await edu._create_receipt(pool, "Python", None)
+    row = await edu._create_receipt(edu_pool, "Python", None)
     # Simulate a receipt whose owning task died long ago.
-    await pool.execute(
+    await edu_pool.execute(
         "UPDATE education.curriculum_requests SET status = 'running',"
         " triggered_at = $2, requested_at = $2 WHERE id = $1",
         row["id"],
         datetime.now(UTC) - edu._RECEIPT_TIMEOUT - timedelta(minutes=1),
     )
 
-    assert await edu._create_receipt(pool, "Rust", None) is None, "guard held before sweep"
+    assert await edu._create_receipt(edu_pool, "Rust", None) is None, "guard held before sweep"
 
-    swept = await edu._sweep_abandoned_receipts(pool)
+    swept = await edu._sweep_abandoned_receipts(edu_pool)
     assert swept == 1
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["status"] == "failed"
     assert after["failure_reason"] == edu._FAILURE_TIMED_OUT
     assert after["settled_at"] is not None
 
-    assert await edu._create_receipt(pool, "Rust", None) is not None
+    assert await edu._create_receipt(edu_pool, "Rust", None) is not None
 
 
-async def test_sweep_leaves_fresh_receipts_alone(pool: asyncpg.Pool) -> None:
+async def test_sweep_leaves_fresh_receipts_alone(edu_pool: asyncpg.Pool) -> None:
     """A request still in flight must not be declared failed."""
-    row = await edu._create_receipt(pool, "Python", None)
-    assert await edu._sweep_abandoned_receipts(pool) == 0
+    row = await edu._create_receipt(edu_pool, "Python", None)
+    assert await edu._sweep_abandoned_receipts(edu_pool) == 0
 
-    after = await edu._get_receipt(pool, str(row["id"]))
+    after = await edu._get_receipt(edu_pool, str(row["id"]))
     assert after["status"] == "accepted"
 
 
 @pytest.mark.pg_clock
-async def test_sweep_is_idempotent(pool: asyncpg.Pool) -> None:
+async def test_sweep_is_idempotent(edu_pool: asyncpg.Pool) -> None:
     """Running the sweep twice must not re-settle or double-count."""
-    row = await edu._create_receipt(pool, "Python", None)
-    await pool.execute(
+    row = await edu._create_receipt(edu_pool, "Python", None)
+    await edu_pool.execute(
         "UPDATE education.curriculum_requests SET requested_at = $2 WHERE id = $1",
         row["id"],
         datetime.now(UTC) - edu._RECEIPT_TIMEOUT - timedelta(minutes=1),
     )
 
-    assert await edu._sweep_abandoned_receipts(pool) == 1
-    assert await edu._sweep_abandoned_receipts(pool) == 0
+    assert await edu._sweep_abandoned_receipts(edu_pool) == 1
+    assert await edu._sweep_abandoned_receipts(edu_pool) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -520,56 +503,58 @@ async def test_sweep_is_idempotent(pool: asyncpg.Pool) -> None:
 
 
 @pytest.mark.pg_clock
-async def test_correlate_finds_map_created_after_trigger(pool: asyncpg.Pool) -> None:
+async def test_correlate_finds_map_created_after_trigger(edu_pool: asyncpg.Pool) -> None:
     """The curriculum door is correlated by the trigger's creation window."""
     triggered_at = datetime.now(UTC)
-    map_id = await pool.fetchval(
+    map_id = await edu_pool.fetchval(
         "INSERT INTO education.mind_maps (title) VALUES ('Python') RETURNING id"
     )
 
-    found, calibration_ready = await edu._correlate_curriculum(pool, triggered_at)
+    found, calibration_ready = await edu._correlate_curriculum(edu_pool, triggered_at)
     assert found == str(map_id)
     # No teaching flow written -> calibration is not evidenced.
     assert calibration_ready is False
 
 
-async def test_correlate_ignores_maps_predating_the_trigger(pool: asyncpg.Pool) -> None:
+async def test_correlate_ignores_maps_predating_the_trigger(edu_pool: asyncpg.Pool) -> None:
     """A curriculum that already existed is not evidence this request worked."""
-    await pool.fetchval("INSERT INTO education.mind_maps (title) VALUES ('Older') RETURNING id")
+    await edu_pool.fetchval("INSERT INTO education.mind_maps (title) VALUES ('Older') RETURNING id")
     triggered_at = datetime.now(UTC) + timedelta(seconds=1)
 
-    found, calibration_ready = await edu._correlate_curriculum(pool, triggered_at)
+    found, calibration_ready = await edu._correlate_curriculum(edu_pool, triggered_at)
     assert found is None
     assert calibration_ready is False
 
 
 @pytest.mark.pg_clock
-async def test_correlate_reports_calibration_ready_from_flow_state(pool: asyncpg.Pool) -> None:
+async def test_correlate_reports_calibration_ready_from_flow_state(edu_pool: asyncpg.Pool) -> None:
     """Calibration counts as ready only once the teaching flow is diagnosing."""
     from butlers.core.state import state_set
 
     triggered_at = datetime.now(UTC)
-    map_id = await pool.fetchval(
+    map_id = await edu_pool.fetchval(
         "INSERT INTO education.mind_maps (title) VALUES ('Python') RETURNING id"
     )
-    await state_set(pool, f"flow:{map_id}", {"status": "diagnosing", "mind_map_id": str(map_id)})
+    await state_set(
+        edu_pool, f"flow:{map_id}", {"status": "diagnosing", "mind_map_id": str(map_id)}
+    )
 
-    found, calibration_ready = await edu._correlate_curriculum(pool, triggered_at)
+    found, calibration_ready = await edu._correlate_curriculum(edu_pool, triggered_at)
     assert found == str(map_id)
     assert calibration_ready is True
 
 
-async def test_correlate_pending_flow_is_not_calibration_ready(pool: asyncpg.Pool) -> None:
+async def test_correlate_pending_flow_is_not_calibration_ready(edu_pool: asyncpg.Pool) -> None:
     """A flow that never advanced past PENDING has delivered no calibration."""
     from butlers.core.state import state_set
 
     triggered_at = datetime.now(UTC)
-    map_id = await pool.fetchval(
+    map_id = await edu_pool.fetchval(
         "INSERT INTO education.mind_maps (title) VALUES ('Python') RETURNING id"
     )
-    await state_set(pool, f"flow:{map_id}", {"status": "pending", "mind_map_id": str(map_id)})
+    await state_set(edu_pool, f"flow:{map_id}", {"status": "pending", "mind_map_id": str(map_id)})
 
-    _, calibration_ready = await edu._correlate_curriculum(pool, triggered_at)
+    _, calibration_ready = await edu._correlate_curriculum(edu_pool, triggered_at)
     assert calibration_ready is False
 
 
@@ -578,23 +563,23 @@ async def test_correlate_pending_flow_is_not_calibration_ready(pool: asyncpg.Poo
 # ---------------------------------------------------------------------------
 
 
-async def test_latest_receipt_returns_newest(pool: asyncpg.Pool) -> None:
+async def test_latest_receipt_returns_newest(edu_pool: asyncpg.Pool) -> None:
     """The status read follows the most recent request."""
-    first = await edu._create_receipt(pool, "Python", None)
+    first = await edu._create_receipt(edu_pool, "Python", None)
     await edu._settle_receipt(
-        pool, str(first["id"]), status="failed", failure_reason=edu._FAILURE_TIMED_OUT
+        edu_pool, str(first["id"]), status="failed", failure_reason=edu._FAILURE_TIMED_OUT
     )
-    second = await edu._create_receipt(pool, "Rust", None)
+    second = await edu._create_receipt(edu_pool, "Rust", None)
 
-    latest = await edu._latest_receipt(pool)
+    latest = await edu._latest_receipt(edu_pool)
     assert str(latest["id"]) == str(second["id"])
 
 
-async def test_latest_receipt_is_none_when_no_requests(pool: asyncpg.Pool) -> None:
+async def test_latest_receipt_is_none_when_no_requests(edu_pool: asyncpg.Pool) -> None:
     """No request ever made is a real, distinguishable state."""
-    assert await edu._latest_receipt(pool) is None
+    assert await edu._latest_receipt(edu_pool) is None
 
 
-async def test_get_receipt_unknown_id_returns_none(pool: asyncpg.Pool) -> None:
+async def test_get_receipt_unknown_id_returns_none(edu_pool: asyncpg.Pool) -> None:
     """An unknown request ID must read as absent, not as a fabricated receipt."""
-    assert await edu._get_receipt(pool, str(uuid.uuid4())) is None
+    assert await edu._get_receipt(edu_pool, str(uuid.uuid4())) is None

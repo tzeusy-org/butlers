@@ -138,6 +138,7 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
         )
     assert "/api/system/background-jobs" in snapshot["openapi"]["paths"]
     assert "/api/health/baselines" in snapshot["openapi"]["paths"]
+    assert "/api/memory/gaps/demand" in snapshot["openapi"]["paths"]
     assert {"/api/confirms", "/api/confirms/callback", "/api/confirms/{confirm_id}/answer"} <= set(
         snapshot["openapi"]["paths"]
     )

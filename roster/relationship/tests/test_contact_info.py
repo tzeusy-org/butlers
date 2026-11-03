@@ -10,13 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
-
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -49,206 +42,26 @@ def patch_embedding_engine():
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with relationship + contact_info tables."""
-    async with provisioned_postgres_pool() as p:
-        # Create public.entities first so contacts.entity_id FK resolves.
-        # `listed` (BOOLEAN NOT NULL DEFAULT true, core_103) is included so
-        # channel_search can filter `e.listed = true` without a separate join.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+async def rel_pool(db):
+    """Core + memory + relationship + approvals chains, flat (owner gate parks actions)."""
+    return await db("core", "memory", "relationship", "approvals")
 
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES
-                ('has-email', 'contact', 'literal', 'Email address for the entity.'),
-                ('has-phone', 'contact', 'literal', 'Phone number for the entity.'),
-                ('has-handle', 'contact', 'literal', 'Channel-scoped handle.'),
-                ('has-website', 'contact', 'literal', 'Web URL associated with the entity.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                object_kind TEXT NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src TEXT NOT NULL,
-                conf FLOAT NOT NULL DEFAULT 1.0 CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata JSONB,
-                weight INT,
-                verified BOOL NOT NULL DEFAULT false,
-                "primary" BOOL,
-                validity TEXT NOT NULL DEFAULT 'active'
-                    CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
 
-        # Create base relationship tables (from 001 migration)
-        # entity_id column present so _is_owner_contact JOIN works
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                entity_id UUID REFERENCES public.entities(id),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
-        """)
-
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge used by
-        # _entity_resolve and channel_search.  Unqualified: resolves to public
-        # schema under the test pool's default search_path.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-
-        # Create public.contact_info
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contact_info (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL,
-                type VARCHAR NOT NULL,
-                value TEXT NOT NULL,
-                label VARCHAR,
-                is_primary BOOLEAN DEFAULT false,
-                context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_type_value
-                ON public.contact_info (type, value)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_shared_contact_info_contact_id
-                ON public.contact_info (contact_id)
-        """)
-
-        # pending_actions — used by the owner gate in channel_add/update
-        await p.execute(PENDING_ACTIONS.ddl())
-
-        # Predicate registry — columns must match what store_fact() queries
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('interaction', true),
-                ('life_event', true),
-                ('contact_note', true),
-                ('activity', true)
-            ON CONFLICT (name) DO NOTHING
-        """)
-
-        # Facts table (TEXT embedding avoids pgvector dependency in tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-
-        # memory_links table (used by store_fact for supersession links)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
-        yield p
+@pytest.fixture
+async def legacy_contact_info(rel_pool):
+    """The retired ``public.contact_info`` table (dropped by core_115), for the legacy pins."""
+    await rel_pool.execute("""
+        CREATE TABLE public.contact_info (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            contact_id UUID NOT NULL,
+            type VARCHAR NOT NULL,
+            value TEXT NOT NULL,
+            label VARCHAR,
+            is_primary BOOLEAN DEFAULT false,
+            context VARCHAR CHECK (context IN ('personal', 'work', 'other')),
+            created_at TIMESTAMPTZ DEFAULT now()
+        )
+    """)
 
 
 _TYPE_TO_PREDICATE = {
@@ -263,7 +76,7 @@ _TYPE_TO_PREDICATE = {
 
 
 async def _insert_legacy_contact_info(
-    pool,
+    rel_pool,
     contact_id: uuid.UUID,
     type: str,
     value: str,
@@ -272,7 +85,7 @@ async def _insert_legacy_contact_info(
     is_primary: bool = False,
     context: str | None = None,
 ) -> dict[str, Any]:
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         """
         INSERT INTO public.contact_info (contact_id, type, value, label, is_primary, context)
         VALUES ($1, $2, $3, $4, $5, $6)
@@ -289,7 +102,7 @@ async def _insert_legacy_contact_info(
 
 
 async def _insert_entity_fact(
-    pool,
+    rel_pool,
     entity_id: uuid.UUID,
     predicate: str,
     object_value: str,
@@ -302,7 +115,7 @@ async def _insert_entity_fact(
     (``channel_list``, ``channel_search``).  Mirrors what
     ``channel_add`` asserts via the central writer.
     """
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, validity, "primary")
@@ -317,8 +130,8 @@ async def _insert_entity_fact(
     return dict(row)
 
 
-async def _fetch_contact_fact(pool, entity_id: uuid.UUID, type: str, value: str):
-    return await pool.fetchrow(
+async def _fetch_contact_fact(rel_pool, entity_id: uuid.UUID, type: str, value: str):
+    return await rel_pool.fetchrow(
         """
         SELECT *
         FROM relationship.entity_facts
@@ -338,54 +151,54 @@ async def _fetch_contact_fact(pool, entity_id: uuid.UUID, type: str, value: str)
 # ------------------------------------------------------------------
 
 
-async def test_channel_add_email(pool):
+async def test_channel_add_email(rel_pool):
     """channel_add stores an email triple."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "Alice")
-    info = await channel_add(pool, c["id"], "email", "alice@example.com")
+    c = await contact_create(rel_pool, "Alice")
+    info = await channel_add(rel_pool, c["id"], "email", "alice@example.com")
     assert info["status"] == "asserted"
     assert info["type"] == "email"
     assert info["value"] == "alice@example.com"
     assert info["is_primary"] is False
-    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "alice@example.com")
+    fact = await _fetch_contact_fact(rel_pool, c["entity_id"], "email", "alice@example.com")
     assert fact is not None
     assert fact["src"] == "relationship"
 
 
-async def test_channel_add_with_label(pool):
+async def test_channel_add_with_label(rel_pool):
     """channel_add accepts legacy label input but writes a triple."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "Bob")
-    info = await channel_add(pool, c["id"], "phone", "+1-555-0100", label="Work")
+    c = await contact_create(rel_pool, "Bob")
+    info = await channel_add(rel_pool, c["id"], "phone", "+1-555-0100", label="Work")
     assert info["type"] == "phone"
     assert info["value"] == "+1-555-0100"
     assert "label" not in info
-    fact = await _fetch_contact_fact(pool, c["entity_id"], "phone", "+1-555-0100")
+    fact = await _fetch_contact_fact(rel_pool, c["entity_id"], "phone", "+1-555-0100")
     assert fact is not None
 
 
-async def test_channel_add_primary(pool):
+async def test_channel_add_primary(rel_pool):
     """channel_add encodes primary on the triple."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "Charlie")
-    info = await channel_add(pool, c["id"], "email", "c@example.com", is_primary=True)
+    c = await contact_create(rel_pool, "Charlie")
+    info = await channel_add(rel_pool, c["id"], "email", "c@example.com", is_primary=True)
     assert info["is_primary"] is True
-    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "c@example.com")
+    fact = await _fetch_contact_fact(rel_pool, c["entity_id"], "email", "c@example.com")
     assert fact["primary"] is True
 
 
-async def test_channel_add_primary_unsets_previous(pool):
+async def test_channel_add_primary_unsets_previous(rel_pool):
     """Primary is stored per asserted triple after the write-path cut-over."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "Diana")
-    await channel_add(pool, c["id"], "email", "d1@example.com", is_primary=True)
-    await channel_add(pool, c["id"], "email", "d2@example.com", is_primary=True)
+    c = await contact_create(rel_pool, "Diana")
+    await channel_add(rel_pool, c["id"], "email", "d1@example.com", is_primary=True)
+    await channel_add(rel_pool, c["id"], "email", "d2@example.com", is_primary=True)
 
-    rows = await pool.fetch(
+    rows = await rel_pool.fetch(
         """
         SELECT object, "primary"
         FROM relationship.entity_facts
@@ -400,29 +213,29 @@ async def test_channel_add_primary_unsets_previous(pool):
     ]
 
 
-async def test_channel_add_invalid_type(pool):
+async def test_channel_add_invalid_type(rel_pool):
     """channel_add rejects invalid info types."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "Eve")
+    c = await contact_create(rel_pool, "Eve")
     with pytest.raises(ValueError, match="Invalid contact info type"):
-        await channel_add(pool, c["id"], "fax", "555-0101")
+        await channel_add(rel_pool, c["id"], "fax", "555-0101")
 
 
-async def test_channel_add_nonexistent_contact(pool):
+async def test_channel_add_nonexistent_contact(rel_pool):
     """channel_add raises ValueError for nonexistent contact."""
     from butlers.tools.relationship import channel_add
 
     fake_id = uuid.uuid4()
     with pytest.raises(ValueError, match="not found"):
-        await channel_add(pool, fake_id, "email", "nobody@example.com")
+        await channel_add(rel_pool, fake_id, "email", "nobody@example.com")
 
 
-async def test_channel_add_all_types(pool):
+async def test_channel_add_all_types(rel_pool):
     """channel_add accepts all valid types and maps them to contact predicates."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "AllTypes")
+    c = await contact_create(rel_pool, "AllTypes")
     types_values = [
         ("email", "all@example.com"),
         ("phone", "+1-555-0000"),
@@ -433,9 +246,9 @@ async def test_channel_add_all_types(pool):
         ("other", "Signal: +1-555-0001"),
     ]
     for t, v in types_values:
-        await channel_add(pool, c["id"], t, v)
+        await channel_add(rel_pool, c["id"], t, v)
 
-    facts = await pool.fetch(
+    facts = await rel_pool.fetch(
         """
         SELECT predicate, object
         FROM relationship.entity_facts
@@ -458,56 +271,56 @@ async def test_channel_add_all_types(pool):
 # ------------------------------------------------------------------
 
 
-async def test_channel_list_all(pool):
+async def test_channel_list_all(rel_pool):
     """channel_list returns all info for a contact (reads entity_facts)."""
     from butlers.tools.relationship import channel_list, contact_create
 
-    c = await contact_create(pool, "ListAll")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "list@example.com")
-    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-0200")
+    c = await contact_create(rel_pool, "ListAll")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "list@example.com")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-phone", "+1-555-0200")
 
-    infos = await channel_list(pool, c["id"])
+    infos = await channel_list(rel_pool, c["id"])
     assert len(infos) == 2
 
 
-async def test_channel_list_by_type(pool):
+async def test_channel_list_by_type(rel_pool):
     """channel_list filters by type when specified (reads entity_facts)."""
     from butlers.tools.relationship import channel_list, contact_create
 
-    c = await contact_create(pool, "ListByType")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "a@example.com")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "b@example.com")
-    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-0300")
+    c = await contact_create(rel_pool, "ListByType")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "a@example.com")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "b@example.com")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-phone", "+1-555-0300")
 
-    emails = await channel_list(pool, c["id"], type="email")
+    emails = await channel_list(rel_pool, c["id"], type="email")
     assert len(emails) == 2
     assert all(i["type"] == "email" for i in emails)
 
-    phones = await channel_list(pool, c["id"], type="phone")
+    phones = await channel_list(rel_pool, c["id"], type="phone")
     assert len(phones) == 1
 
 
-async def test_channel_list_primary_first(pool):
+async def test_channel_list_primary_first(rel_pool):
     """channel_list returns primary entries first (reads entity_facts)."""
     from butlers.tools.relationship import channel_list, contact_create
 
-    c = await contact_create(pool, "PrimaryFirst")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "secondary@example.com")
+    c = await contact_create(rel_pool, "PrimaryFirst")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "secondary@example.com")
     await _insert_entity_fact(
-        pool, c["entity_id"], "has-email", "primary@example.com", is_primary=True
+        rel_pool, c["entity_id"], "has-email", "primary@example.com", is_primary=True
     )
 
-    emails = await channel_list(pool, c["id"], type="email")
+    emails = await channel_list(rel_pool, c["id"], type="email")
     assert emails[0]["value"] == "primary@example.com"
     assert emails[0]["is_primary"] is True
 
 
-async def test_channel_list_empty(pool):
+async def test_channel_list_empty(rel_pool):
     """channel_list returns empty list when contact has no info."""
     from butlers.tools.relationship import channel_list, contact_create
 
-    c = await contact_create(pool, "NoInfo")
-    infos = await channel_list(pool, c["id"])
+    c = await contact_create(rel_pool, "NoInfo")
+    infos = await channel_list(rel_pool, c["id"])
     assert infos == []
 
 
@@ -516,70 +329,74 @@ async def test_channel_list_empty(pool):
 # ------------------------------------------------------------------
 
 
-async def test_channel_search_exact(pool):
+async def test_channel_search_exact(rel_pool):
     """channel_search finds a contact by exact email value (reads entity_facts)."""
     from butlers.tools.relationship import (
         channel_search,
         contact_create,
     )
 
-    c = await contact_create(pool, "SearchExact")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "searchexact@example.com")
+    c = await contact_create(rel_pool, "SearchExact")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "searchexact@example.com")
 
-    results = await channel_search(pool, "searchexact@example.com")
+    results = await channel_search(rel_pool, "searchexact@example.com")
     assert len(results) >= 1
     assert any(r["id"] == c["id"] for r in results)
 
 
-async def test_channel_search_partial(pool):
+async def test_channel_search_partial(rel_pool):
     """channel_search supports partial matching (ILIKE) via entity_facts."""
     from butlers.tools.relationship import (
         channel_search,
         contact_create,
     )
 
-    c = await contact_create(pool, "SearchPartial")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "partial_unique_xyz@example.com")
+    c = await contact_create(rel_pool, "SearchPartial")
+    await _insert_entity_fact(
+        rel_pool, c["entity_id"], "has-email", "partial_unique_xyz@example.com"
+    )
 
-    results = await channel_search(pool, "partial_unique_xyz")
+    results = await channel_search(rel_pool, "partial_unique_xyz")
     assert len(results) >= 1
     assert any(r["id"] == c["id"] for r in results)
 
 
-async def test_channel_search_with_type_filter(pool):
+async def test_channel_search_with_type_filter(rel_pool):
     """channel_search filters by type (predicate) when specified."""
     from butlers.tools.relationship import (
         channel_search,
         contact_create,
     )
 
-    c = await contact_create(pool, "SearchTyped")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "typed_search_unique@example.com")
-    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-9999")
+    c = await contact_create(rel_pool, "SearchTyped")
+    await _insert_entity_fact(
+        rel_pool, c["entity_id"], "has-email", "typed_search_unique@example.com"
+    )
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-phone", "+1-555-9999")
 
     # Search by email type only (maps to has-email)
-    results = await channel_search(pool, "typed_search_unique", type="email")
+    results = await channel_search(rel_pool, "typed_search_unique", type="email")
     assert len(results) >= 1
     assert any(r["id"] == c["id"] for r in results)
 
     # Search by phone type should not find email value
-    results = await channel_search(pool, "typed_search_unique", type="phone")
+    results = await channel_search(rel_pool, "typed_search_unique", type="phone")
     assert not any(r["id"] == c["id"] for r in results)
 
 
-async def test_channel_search_multiple_contacts(pool):
+async def test_channel_search_multiple_contacts(rel_pool):
     """channel_search finds multiple contacts sharing a domain (entity_facts)."""
     from butlers.tools.relationship import (
         channel_search,
         contact_create,
     )
 
-    c1 = await contact_create(pool, "Multi-A")
-    c2 = await contact_create(pool, "Multi-B")
-    await _insert_entity_fact(pool, c1["entity_id"], "has-email", "a@shareduniquedomain.com")
-    await _insert_entity_fact(pool, c2["entity_id"], "has-email", "b@shareduniquedomain.com")
+    c1 = await contact_create(rel_pool, "Multi-A")
+    c2 = await contact_create(rel_pool, "Multi-B")
+    await _insert_entity_fact(rel_pool, c1["entity_id"], "has-email", "a@shareduniquedomain.com")
+    await _insert_entity_fact(rel_pool, c2["entity_id"], "has-email", "b@shareduniquedomain.com")
 
-    results = await channel_search(pool, "shareduniquedomain.com")
+    results = await channel_search(rel_pool, "shareduniquedomain.com")
     found_ids = {r["id"] for r in results}
     assert c1["id"] in found_ids
     assert c2["id"] in found_ids
@@ -590,72 +407,72 @@ async def test_channel_search_multiple_contacts(pool):
 # ------------------------------------------------------------------
 
 
-async def test_channel_add_work_domain_sets_context_work(pool):
+async def test_channel_add_work_domain_sets_context_work(rel_pool):
     """Legacy context heuristic is not written by channel_add after cut-over."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "WorkPerson")
-    info = await channel_add(pool, c["id"], "email", "owner@example.com")
+    c = await contact_create(rel_pool, "WorkPerson")
+    info = await channel_add(rel_pool, c["id"], "email", "owner@example.com")
 
     assert "context" not in info
-    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "owner@example.com")
+    fact = await _fetch_contact_fact(rel_pool, c["entity_id"], "email", "owner@example.com")
     assert fact is not None
 
 
-async def test_channel_add_personal_domain_leaves_context_null(pool):
+async def test_channel_add_personal_domain_leaves_context_null(rel_pool):
     """channel_add ignores legacy context metadata for non-work domains too."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "PersonalPerson")
-    info = await channel_add(pool, c["id"], "email", "bob@gmail.com")
+    c = await contact_create(rel_pool, "PersonalPerson")
+    info = await channel_add(rel_pool, c["id"], "email", "bob@gmail.com")
 
     assert "context" not in info
 
 
-async def test_channel_add_explicit_context_not_overridden(pool):
+async def test_channel_add_explicit_context_not_overridden(rel_pool):
     """Explicit legacy context is accepted for compatibility and ignored."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "ExplicitContext")
-    info = await channel_add(pool, c["id"], "email", "owner@example.com", context="personal")
+    c = await contact_create(rel_pool, "ExplicitContext")
+    info = await channel_add(rel_pool, c["id"], "email", "owner@example.com", context="personal")
 
     assert "context" not in info
 
 
-async def test_channel_add_non_email_type_no_heuristic(pool):
+async def test_channel_add_non_email_type_no_heuristic(rel_pool):
     """channel_add ignores legacy context metadata for non-email types."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "PhonePerson")
-    info = await channel_add(pool, c["id"], "phone", "+1-555-0200")
+    c = await contact_create(rel_pool, "PhonePerson")
+    info = await channel_add(rel_pool, c["id"], "phone", "+1-555-0200")
 
     assert "context" not in info
 
 
-async def test_channel_add_invalid_context_raises(pool):
+async def test_channel_add_invalid_context_raises(rel_pool):
     """channel_add accepts ignored legacy context values after cut-over."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "InvalidContextPerson")
-    info = await channel_add(pool, c["id"], "email", "x@example.com", context="bogus")
+    c = await contact_create(rel_pool, "InvalidContextPerson")
+    info = await channel_add(rel_pool, c["id"], "email", "x@example.com", context="bogus")
     assert info["status"] == "asserted"
 
 
-async def test_channel_search_case_insensitive(pool):
+async def test_channel_search_case_insensitive(rel_pool):
     """channel_search is case-insensitive (entity_facts ILIKE)."""
     from butlers.tools.relationship import (
         channel_search,
         contact_create,
     )
 
-    c = await contact_create(pool, "CaseTest")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "CaseUnique@Example.COM")
+    c = await contact_create(rel_pool, "CaseTest")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "CaseUnique@Example.COM")
 
-    results = await channel_search(pool, "caseunique@example.com")
+    results = await channel_search(rel_pool, "caseunique@example.com")
     assert any(r["id"] == c["id"] for r in results)
 
 
-async def test_channel_search_excludes_archived(pool):
+async def test_channel_search_excludes_archived(rel_pool):
     """channel_search excludes archived contacts.
 
     contact_archive() now sets entities.listed=false (bu-5nlh6), so
@@ -668,37 +485,37 @@ async def test_channel_search_excludes_archived(pool):
         contact_create,
     )
 
-    c = await contact_create(pool, "ArchivedSearch")
+    c = await contact_create(rel_pool, "ArchivedSearch")
     await _insert_entity_fact(
-        pool, c["entity_id"], "has-email", "archivedsearch_unique@example.com"
+        rel_pool, c["entity_id"], "has-email", "archivedsearch_unique@example.com"
     )
-    await contact_archive(pool, c["id"])
+    await contact_archive(rel_pool, c["id"])
     # contact_archive now propagates the archive to entities.listed (bu-5nlh6);
     # no manual entity update needed here.
 
-    results = await channel_search(pool, "archivedsearch_unique@example.com")
+    results = await channel_search(rel_pool, "archivedsearch_unique@example.com")
     assert not any(r["id"] == c["id"] for r in results)
 
 
-async def test_channel_search_no_results(pool):
+async def test_channel_search_no_results(rel_pool):
     """channel_search returns empty list when nothing matches."""
     from butlers.tools.relationship import channel_search
 
-    results = await channel_search(pool, "nonexistent_unique_value_xyz")
+    results = await channel_search(rel_pool, "nonexistent_unique_value_xyz")
     assert results == []
 
 
-async def test_channel_search_phone(pool):
+async def test_channel_search_phone(rel_pool):
     """channel_search works for phone lookups (entity_facts)."""
     from butlers.tools.relationship import (
         channel_search,
         contact_create,
     )
 
-    c = await contact_create(pool, "PhoneLookup")
-    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-7777-unique")
+    c = await contact_create(rel_pool, "PhoneLookup")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-phone", "+1-555-7777-unique")
 
-    results = await channel_search(pool, "+1-555-7777-unique", type="phone")
+    results = await channel_search(rel_pool, "+1-555-7777-unique", type="phone")
     assert len(results) >= 1
     assert any(r["id"] == c["id"] for r in results)
 
@@ -708,21 +525,21 @@ async def test_channel_search_phone(pool):
 # ------------------------------------------------------------------
 
 
-async def test_multiple_emails_per_contact(pool):
+async def test_multiple_emails_per_contact(rel_pool):
     """A contact can have multiple email addresses (entity_facts)."""
     from butlers.tools.relationship import channel_list, contact_create
 
-    c = await contact_create(pool, "MultiEmail")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "work@example.com")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "personal@example.com")
+    c = await contact_create(rel_pool, "MultiEmail")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "work@example.com")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "personal@example.com")
 
-    emails = await channel_list(pool, c["id"], type="email")
+    emails = await channel_list(rel_pool, c["id"], type="email")
     assert len(emails) == 2
     values = {i["value"] for i in emails}
     assert values == {"work@example.com", "personal@example.com"}
 
 
-async def test_multiple_types_per_contact(pool):
+async def test_multiple_types_per_contact(rel_pool):
     """A contact can have multiple types of contact info (entity_facts).
 
     Telegram stored as has-handle with 'telegram:<id>' prefix; the returned
@@ -730,13 +547,13 @@ async def test_multiple_types_per_contact(pool):
     """
     from butlers.tools.relationship import channel_list, contact_create
 
-    c = await contact_create(pool, "MultiType")
-    await _insert_entity_fact(pool, c["entity_id"], "has-email", "multi@example.com")
-    await _insert_entity_fact(pool, c["entity_id"], "has-phone", "+1-555-0400")
+    c = await contact_create(rel_pool, "MultiType")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-email", "multi@example.com")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-phone", "+1-555-0400")
     # Telegram stored with prefix per the entity_facts convention
-    await _insert_entity_fact(pool, c["entity_id"], "has-handle", "telegram:12345678")
+    await _insert_entity_fact(rel_pool, c["entity_id"], "has-handle", "telegram:12345678")
 
-    infos = await channel_list(pool, c["id"])
+    infos = await channel_list(rel_pool, c["id"])
     assert len(infos) == 3
     types = {i["type"] for i in infos}
     # has-handle with telegram: prefix → "telegram_user_id"; email → "email"; phone → "phone"
@@ -751,7 +568,7 @@ async def test_multiple_types_per_contact(pool):
 # ------------------------------------------------------------------
 
 
-async def test_contact_info_orphan_after_contact_delete(pool):
+async def test_contact_info_orphan_after_contact_delete(rel_pool, legacy_contact_info):
     """public.contact_info rows persist after contact deletion (no DB-level FK cascade).
 
     public.contact_info intentionally has no,
@@ -763,14 +580,14 @@ async def test_contact_info_orphan_after_contact_delete(pool):
     """
     from butlers.tools.relationship import contact_create
 
-    c = await contact_create(pool, "CascadeTest")
-    await _insert_legacy_contact_info(pool, c["id"], "email", "cascade@example.com")
+    c = await contact_create(rel_pool, "CascadeTest")
+    await _insert_legacy_contact_info(rel_pool, c["id"], "email", "cascade@example.com")
 
     # Hard delete the contact — no FK cascade, so public.contact_info rows persist
-    await pool.execute("DELETE FROM contacts WHERE id = $1", c["id"])
+    await rel_pool.execute("DELETE FROM contacts WHERE id = $1", c["id"])
 
     # Rows still exist: application layer must clean them up explicitly
-    rows = await pool.fetch("SELECT * FROM public.contact_info WHERE contact_id = $1", c["id"])
+    rows = await rel_pool.fetch("SELECT * FROM public.contact_info WHERE contact_id = $1", c["id"])
     assert len(rows) == 1, (
         "public.contact_info has no FK cascade; orphan rows persist after contact deletion"
     )
@@ -781,7 +598,7 @@ async def test_contact_info_orphan_after_contact_delete(pool):
 # ------------------------------------------------------------------
 
 
-async def _make_owner_contact(pool):
+async def _make_owner_contact(rel_pool):
     """Create an owner entity + contact and return the contact row.
 
     Inserts a public.entities row with roles=['owner'], then inserts a contacts
@@ -789,22 +606,22 @@ async def _make_owner_contact(pool):
     _entity_resolve can find the entity_id from the contact_id without reading
     public.contacts (contacts-schema retirement, bu-sf8l8).
     """
-    entity_id = await pool.fetchval(
+    entity_id = await rel_pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name, entity_type, roles)
-        VALUES ('Owner', 'Owner', 'person', ARRAY['owner'])
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ('Owner', 'person', ARRAY['owner'])
         RETURNING id
         """
     )
-    contact_id = await pool.fetchval(
+    contact_id = await rel_pool.fetchval(
         """
-        INSERT INTO contacts (first_name, listed, entity_id)
-        VALUES ('Owner', true, $1)
+        INSERT INTO contacts (name, first_name, listed, entity_id)
+        VALUES ('Owner', 'Owner', true, $1)
         RETURNING id
         """,
         entity_id,
     )
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO contact_entity_map (contact_id, entity_id)
         VALUES ($1, $2)
@@ -821,7 +638,7 @@ async def _make_owner_contact(pool):
 # ------------------------------------------------------------------
 
 
-async def test_channel_add_owner_gate_parks_action(pool):
+async def test_channel_add_owner_gate_parks_action(rel_pool, legacy_contact_info):
     """channel_add targeting the owner contact creates a pending_action instead of inserting.
 
     Replays the 2026-04-21 incident shape: runtime LLM calls channel_add
@@ -830,10 +647,10 @@ async def test_channel_add_owner_gate_parks_action(pool):
     """
     from butlers.tools.relationship.channel import channel_add
 
-    owner = await _make_owner_contact(pool)
+    owner = await _make_owner_contact(rel_pool)
 
     result = await channel_add(
-        pool,
+        rel_pool,
         owner["id"],
         "email",
         "owner@example.com",
@@ -846,7 +663,7 @@ async def test_channel_add_owner_gate_parks_action(pool):
     assert "approval" in result["message"].lower()
 
     # No row written to public.contact_info
-    rows = await pool.fetch(
+    rows = await rel_pool.fetch(
         "SELECT * FROM public.contact_info WHERE contact_id = $1",
         owner["id"],
     )
@@ -854,7 +671,7 @@ async def test_channel_add_owner_gate_parks_action(pool):
 
     # pending_actions row created with correct shape
     action_id = result["action_id"]
-    action = await pool.fetchrow(
+    action = await rel_pool.fetchrow(
         "SELECT * FROM pending_actions WHERE id = $1::uuid",
         action_id,
     )
@@ -870,19 +687,19 @@ async def test_channel_add_owner_gate_parks_action(pool):
     assert args["subject"] == str(owner["entity_id"])
 
 
-async def test_channel_add_non_owner_writes_immediately(pool):
+async def test_channel_add_non_owner_writes_immediately(rel_pool):
     """channel_add targeting a non-owner contact writes a fact immediately."""
     from butlers.tools.relationship import channel_add, contact_create
 
-    c = await contact_create(pool, "NonOwner")
-    result = await channel_add(pool, c["id"], "email", "nonowner@example.com")
+    c = await contact_create(rel_pool, "NonOwner")
+    result = await channel_add(rel_pool, c["id"], "email", "nonowner@example.com")
 
     # Returns a real contact_info row, not a pending dict
     assert result.get("status") != "pending_approval"
     assert result["type"] == "email"
     assert result["value"] == "nonowner@example.com"
 
-    fact = await _fetch_contact_fact(pool, c["entity_id"], "email", "nonowner@example.com")
+    fact = await _fetch_contact_fact(rel_pool, c["entity_id"], "email", "nonowner@example.com")
     assert fact is not None
 
 
@@ -891,12 +708,12 @@ async def test_channel_add_non_owner_writes_immediately(pool):
 # ------------------------------------------------------------------
 
 
-async def test_channel_add_rollback_on_insert_failure(pool):
+async def test_channel_add_rollback_on_insert_failure(rel_pool, legacy_contact_info):
     """channel_add propagates central-writer failures without legacy writes."""
     from butlers.tools.relationship import contact_create
     from butlers.tools.relationship.channel import channel_add as _channel_add
 
-    c = await contact_create(pool, "TxnRollbackAdd")
+    c = await contact_create(rel_pool, "TxnRollbackAdd")
 
     with (
         patch(
@@ -906,18 +723,18 @@ async def test_channel_add_rollback_on_insert_failure(pool):
         pytest.raises(RuntimeError, match="simulated central-writer failure"),
     ):
         await _channel_add(
-            pool,
+            rel_pool,
             c["id"],
             "email",
             "new@example.com",
             is_primary=True,
         )
 
-    fact_count = await pool.fetchval(
+    fact_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1",
         c["entity_id"],
     )
-    legacy_count = await pool.fetchval(
+    legacy_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM public.contact_info WHERE contact_id = $1",
         c["id"],
     )

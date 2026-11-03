@@ -36,8 +36,10 @@ from butlers.chronicler.models import (
     SourceAdapterState,
 )
 from butlers.chronicler.storage import (
+    get_carryover,
     get_checkpoint,
     get_checkpoint_subsource,
+    get_cursor,
     get_episode,
     get_source_state,
     insert_override,
@@ -51,6 +53,8 @@ from butlers.chronicler.storage import (
     record_idempotency,
     refresh_episode_evidence_refs,
     register_source,
+    save_carryover,
+    set_cursor,
     upsert_checkpoint,
     upsert_checkpoint_subsource,
     upsert_episode,
@@ -484,6 +488,28 @@ async def test_checkpoint_success_advances_watermark(chronicler_pool) -> None:
     assert cp.watermark == now
     assert cp.rows_projected == 7
     assert cp.last_error is None
+
+
+async def test_cursor_tiebreaker_survives_carryover_rewrites_and_stays_hidden(
+    chronicler_pool,
+) -> None:
+    """bu-f9ob67: the ``(ts, key)`` tiebreaker rides in carryover without leaking."""
+    ts = datetime.now(UTC)
+    assert await get_cursor(chronicler_pool, "core.sessions") is None
+
+    await set_cursor(chronicler_pool, "core.sessions", ts, ["a", "b"])
+    assert await get_cursor(chronicler_pool, "core.sessions") == (ts, ["a", "b"])
+
+    # An adapter rewriting its own carryover neither sees nor drops the cursor.
+    assert await get_carryover(chronicler_pool, "core.sessions") == {}
+    await save_carryover(chronicler_pool, "core.sessions", {"endpoint": {"n": 1}})
+    assert await get_carryover(chronicler_pool, "core.sessions") == {"endpoint": {"n": 1}}
+    assert await get_cursor(chronicler_pool, "core.sessions") == (ts, ["a", "b"])
+
+    # Saving the cursor keeps the adapter's carryover.
+    await set_cursor(chronicler_pool, "core.sessions", ts, ["c"])
+    assert await get_carryover(chronicler_pool, "core.sessions") == {"endpoint": {"n": 1}}
+    assert await get_cursor(chronicler_pool, "core.sessions") == (ts, ["c"])
 
 
 async def test_checkpoint_failure_does_not_advance_watermark(chronicler_pool) -> None:

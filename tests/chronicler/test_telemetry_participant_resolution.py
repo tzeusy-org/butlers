@@ -24,6 +24,8 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
 from butlers.chronicler.models import Episode
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -35,23 +37,13 @@ _NOW = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """asyncpg.Record-like dict subclass."""
-
-    def __getattr__(self, name: str) -> object:
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-
-def _make_row(*, event_title: str = "Meeting") -> _Row:
-    return _Row(
+def _instance_row(*, event_title: str = "Meeting", origin_instance_ref: str = "") -> Record:
+    return Record(
         {
             "id": uuid4(),
             "event_id": uuid4(),
             "source_id": uuid4(),
-            "origin_instance_ref": f"evt:test:{uuid4()}",
+            "origin_instance_ref": origin_instance_ref or f"evt:test:{uuid4()}",
             "starts_at": _NOW - timedelta(hours=1),
             "ends_at": _NOW,
             "status": "confirmed",
@@ -65,23 +57,12 @@ def _make_row(*, event_title: str = "Meeting") -> _Row:
     )
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-
 def _chronicler_pool() -> AsyncMock:
     conn = AsyncMock()
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -111,7 +92,7 @@ async def test_counter_increments_by_participant_count_in_project_run() -> None:
     owner_id = uuid4()
     participant_a = uuid4()
     participant_b = uuid4()
-    row = _make_row(event_title="Team sync")
+    row = _instance_row(event_title="Team sync")
 
     before = _get_counter_value(schema)
 
@@ -165,7 +146,7 @@ async def test_counter_not_incremented_when_no_participants() -> None:
     """
     schema = f"test_schema_{uuid4().hex[:8]}"
     owner_id = uuid4()
-    row = _make_row(event_title="Solo session")
+    row = _instance_row(event_title="Solo session")
 
     before = _get_counter_value(schema)
 
@@ -219,11 +200,9 @@ async def test_counter_increments_by_total_across_multiple_episodes() -> None:
     """
     schema = f"test_schema_{uuid4().hex[:8]}"
     owner_id = uuid4()
-    row1 = _make_row(event_title="Meeting A")
-    row2 = _make_row(event_title="Meeting B")
     # Unique origin refs to bypass dedup.
-    row1["origin_instance_ref"] = f"evt:a:{uuid4()}"
-    row2["origin_instance_ref"] = f"evt:b:{uuid4()}"
+    row1 = _instance_row(event_title="Meeting A", origin_instance_ref=f"evt:a:{uuid4()}")
+    row2 = _instance_row(event_title="Meeting B", origin_instance_ref=f"evt:b:{uuid4()}")
 
     participant_a = uuid4()
     participant_b = uuid4()

@@ -870,3 +870,39 @@ left untouched.
   the **decision loop** (RFC 0021 one-tap approvals, epic bu-24lu6, gated behind
   bu-24lu6.1) with no engine change; only the encoding/route swaps. No new
   migration (overrides/routines exist).
+- **Block interviews (bu-r3fmja):** with no occupation block, the question names
+  the longest uncovered waking block (≥30 min) plus a coordinate-free location
+  context and offers Work/Social/Play/Eat/Rest/Dismiss (rows of 3). The pending
+  state stores `block_start_at`/`block_end_at`; a lane tap writes one
+  `chronicler.owner_answer` `owner_<lane>_block` (activity, high, minute,
+  `source_ref = gap_interview:<id>`). The owner id is read in a savepoint
+  (`_owner_id_in_savepoint`): a failed lookup inside the resolver's transaction
+  would abort it. A lane tap on an occupation interview is refused.
+
+## Situational blocks and anchors (bu-r3fmja)
+
+- `chronicler.situation_inferred` re-derives whole days; its blocks' `source_ref`
+  embeds the block start, so a reshaped day writes new refs and tombstones the
+  old ones (`payload.local_date` scopes the sweep; overridden rows survive). Do not
+  key anything durable on a situation `source_ref`.
+- `adapters/situation.py` is imported directly, not via `adapters/__init__`:
+  `anchors.py` imports from the adapters package, so re-exporting it there is a
+  circular import.
+- `place_episode` is evidence since chronicler_029; anything that summed it as
+  Rest now reads the situational `home_block` instead. Migration 029 tombstoned
+  the old stays and cleared the place-cluster watermark/carryover, so the first
+  run after deploy re-clusters all retained fixes.
+- No anchor at all (no registry row, no geocoded graph address, no env refs, under
+  3 overnight stays) means every stay is an `outing_block`: Social, low
+  confidence. Registering home/work fixes the lanes on the next run.
+- The adapter reads `v_episodes_corrected`, never raw `episodes`: an owner
+  correction to sleep/play/occupation must move the blocks it preempts. Its own
+  overridden blocks are kept and subtracted from new ones (never re-emitted).
+- Anchor loaders degrade only on a structurally absent surface (undefined
+  table/column/schema, no privilege). A transient error fails the run; degrading
+  would re-lane every block for one run and back.
+- Place clustering holds a lone out-of-radius fix that ends a batch after a
+  bridged silence as `pending_departure` in carryover. The next batch decides:
+  back at the place → stray dropped; elsewhere → the stay ends at the held fix.
+- Address hash contract with Relationship: hex `sha256(text.strip())` (UTF-8);
+  `test_anchors.py` pins a shared vector.

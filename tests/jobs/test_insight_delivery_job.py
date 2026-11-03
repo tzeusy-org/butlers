@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.fake_pool import AsyncCtx, FakeConnection
 from butlers.testing.records import row
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -40,22 +40,6 @@ _PINNED_NOW = datetime(2026, 1, 15, 12, 0, tzinfo=UTC)
 def _make_mock_pool() -> AsyncMock:
     """Return a minimal asyncpg.Pool mock."""
     return AsyncMock()
-
-
-class _FakeConn:
-    """Minimal connection stand-in for the post-delivery bookkeeping transaction.
-
-    delivery_cycle()'s deliver_success path acquires a connection and marks
-    candidates delivered on it directly; record_cooldowns()/
-    record_engagement_rows() are patched out wholesale in these tests, so this
-    only needs to support conn.execute() and conn.transaction().
-    """
-
-    def __init__(self) -> None:
-        self.execute = AsyncMock(return_value="UPDATE 3")
-
-    def transaction(self) -> AsyncCtx:
-        return AsyncCtx(None)
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +564,7 @@ class TestBrokerChannelSelectionInNotifyMetadata:
             mock_pool.fetch = mock_fetch
             mock_pool.execute = AsyncMock(return_value="UPDATE 3")
             mock_pool.executemany = AsyncMock()
-            mock_pool.acquire = lambda: AsyncCtx(_FakeConn())
+            mock_pool.acquire = lambda: AsyncCtx(FakeConnection(execute="UPDATE 3"))
 
             await delivery_cycle(mock_pool, notify_fn=_capture_notify, now=_PINNED_NOW)
 
@@ -704,7 +688,7 @@ async def test_actual_insight_cycle_quarantines_partial_through_failed_terminal_
     fresh_id = str(uuid.uuid4())
     fresh = {**candidate, "id": fresh_id, "dedup_key": "controlled:fresh", "message": "fresh"}
     fresh_state = "pending"
-    conn = _FakeConn()
+    conn = FakeConnection(execute="UPDATE 3")
 
     async def fresh_fetch(sql, *_):
         return [fresh] if fresh_state == "pending" else []
@@ -822,7 +806,7 @@ async def test_real_delivery_cycle_rechecks_finance_after_format_and_preserves_u
 
     pool.fetch = fetch
     pool.execute = AsyncMock(return_value="UPDATE 1")
-    pool.acquire = lambda: AsyncCtx(_FakeConn())
+    pool.acquire = lambda: AsyncCtx(FakeConnection(execute="UPDATE 3"))
     read = AsyncMock(side_effect=[True, final_verdict])
     notify = AsyncMock(return_value={"status": "sent"})
     replacements = {
