@@ -229,6 +229,83 @@ describe("useConversationTurn", () => {
     });
   });
 
+  describe("route move between two conversations (bu-p5umi2.6)", () => {
+    function renderMoving(initial: { butler: string; id: string | null }) {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const messagesData = { data: [] as Message[] };
+      return renderHook(
+        (props: { butler: string; id: string | null }) =>
+          useConversationTurn({
+            butlerName: props.butler,
+            activeConversationId: props.id,
+            setActiveConversationId: () => {},
+            messagesData,
+          }),
+        {
+          initialProps: initial,
+          wrapper: ({ children }) => (
+            <MemoryRouter initialEntries={["/"]}>
+              <QueryClientProvider client={queryClient}>
+                <PageContextProvider>{children}</PageContextProvider>
+              </QueryClientProvider>
+            </MemoryRouter>
+          ),
+        },
+      );
+    }
+
+    it("clears A's sendError when the active conversation moves to B", async () => {
+      scriptedEvents = [
+        { event: "error", data: { code: "SWITCHBOARD_UNAVAILABLE", message: "offline" } },
+      ];
+      const { result, rerender } = renderMoving({ butler: "health", id: "A" });
+      await act(async () => {
+        await result.current.sendText("text for A");
+      });
+      expect(result.current.sendError).not.toBeNull();
+
+      rerender({ butler: "switchboard", id: "B" });
+
+      await waitFor(() => expect(result.current.sendError).toBeNull());
+    });
+
+    it("keeps the error when a brand-new conversation merely gains its id", async () => {
+      scriptedEvents = [
+        { event: "error", data: { code: "SWITCHBOARD_UNAVAILABLE", message: "offline" } },
+      ];
+      const { result, rerender } = renderMoving({ butler: "switchboard", id: null });
+      await act(async () => {
+        await result.current.sendText("hello");
+      });
+      rerender({ butler: "switchboard", id: "new-1" });
+      expect(result.current.sendError).not.toBeNull();
+    });
+
+    it("binds Stop for A's in-flight turn to A's owner, not the B-lookup fallback", async () => {
+      scriptedEvents = [];
+      const { result, rerender } = renderMoving({ butler: "health", id: "A" });
+      await act(async () => {
+        await result.current.sendText("text for A");
+      });
+      expect(result.current.streaming?.stopReady).toBe(true);
+
+      rerender({ butler: "switchboard", id: "B" });
+      cancelConversationMessageTurnMock.mockResolvedValue({
+        cancelled: false,
+        already_finished: false,
+        message: "no",
+      });
+      await act(async () => {
+        await result.current.handleStop();
+      });
+
+      expect(cancelConversationMessageTurnMock).toHaveBeenCalledWith(
+        "health",
+        expect.any(String),
+      );
+    });
+  });
+
   it("retry: reusing the same messageId keeps one optimistic bubble, not a duplicate", async () => {
     const { result } = renderTurn();
 

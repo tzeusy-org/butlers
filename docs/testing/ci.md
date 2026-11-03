@@ -85,16 +85,13 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `smoke`, `check-totals`, both Vitest children, `frontend-assurance`, Playwright
    `frontend-e2e` and `go-bridge`. There is no path routing and no scoped mode
    (bu-29wkwj.3). The single required check, `alls-green`, needs every one of
-   those jobs and fails unless each reports success. Until the owner switches the
-   ruleset to `alls-green` alone, its legacy `check` and `frontend` contexts are
-   thin jobs that only mirror `alls-green`.
+   those jobs and fails unless each reports success; the ruleset requires it alone.
    `smoke` takes one fresh `--collect-only` count per lane while the groups run;
    `check-totals` then requires the sum of that lane's pytest-split group counts to match
-   it, and smoke checks the same count against the per-lane
-   collected-test budget in `scripts/test-budget-baseline.json`: a PR that
-   pushes a lane over budget condenses tests in the same PR, or raises the
-   budget with `--update-baseline` and states the net test delta
-   (`Tests: +a ~b -c`) and why in the PR body. `make check-guards` runs every
+   it. There is no collected-test cap (owner decision 2026-11-03); test growth is governed by
+   the CI duration targets in the
+   [testing doctrine](../../about/craft-and-care/testing-and-verification.md#five-minute-routine-lane-target).
+   `make check-guards` runs every
    `guards` step locally before you push, except the hosted-only `knip`, `build`, and node
    `--test` tooling contract. When this branch changed `frontend/` since its fork from the base
    it also runs the hosted frontend lint steps (`npm run lint`, `lint:emdash`,
@@ -150,6 +147,9 @@ No local gate command matches CI's scope; check which command produced a number.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
   The CI lane groups pass `-rs`, so every skip reason (for example a real-PG node's
   "Docker not available") appears in the group log; the group's junit evidence records it too.
+- The integration lane guarantees Docker, so `scripts/ci_lanes.py` sets `BUTLERS_REQUIRE_DOCKER=1`
+  for it and the root `conftest.py` turns a "Docker not available" skip into a failure there.
+  Local runs leave the flag unset, so Docker-less hosts keep skipping real-PG tests.
 
 ## Removing or weakening tests
 
@@ -165,7 +165,7 @@ governing requirement changes in the same PR. Reviewers refuse a missing
 `Tests:` line, an invented survivor, or a protected-check loss with neither. The
 rule and its rationale live in
 [testing doctrine](../../about/craft-and-care/testing-and-verification.md#removing-or-weakening-tests)
-and REQ-testing-053; the test budget is unchanged by it.
+and REQ-testing-053.
 
 ## Gate verdicts and long runs
 
@@ -267,7 +267,6 @@ guidance. The required twenty-natural-push p95 below 30 seconds remains unearned
 ## Cheap standing pre-push checks
 
 ```bash
-make check-test-budget        # fresh collect-only count per lane against scripts/test-budget-baseline.json
 make check-guards             # every `guards` CI step (dashes, spec, names, frontend lint, ...)
 ```
 
@@ -323,7 +322,27 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
     direct baseline edits and to `## REMOVED` blocks.
   - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
     `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
+    A modified heading keeps its existing canonical ID, including an already-synced rename;
+    otherwise same-delta `RENAMED` FROM/TO chains resolve its canonical ancestor. A newly minted
+    replacement ID fails, and an unanchored rename cycle fails rather than looping.
   - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
     merge of two branches adding the same helper produces.
+
+## Route and OpenAPI snapshot
+
+`tests/api/test_router_registry.py` compares the live FastAPI app with
+`tests/api/route_snapshot.txt`: one sorted line per route, OpenAPI operation and component
+schema (short content hash), plus the middleware stack. Adding a route adds lines, so
+independent PRs merge cleanly; unintended drift fails with a line diff. Route table order is
+not pinned; instead the test asserts the frontend mount is last and that no API route is
+shadowed by an earlier route with a different path.
+
+Refresh after an intentional route or schema change, then commit the snapshot:
+
+```bash
+BUTLERS_UPDATE_ROUTE_SNAPSHOT=1 uv run pytest tests/api/test_router_registry.py -n 0 -q
+```
+
+On a merge conflict in the snapshot, rerun the refresh instead of hand-editing hashes.

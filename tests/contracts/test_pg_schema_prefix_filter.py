@@ -12,48 +12,32 @@ import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SCANNED_ROOTS = ("src", "alembic", "roster")
+_SCANNED_ROOTS = ("src", "alembic", "roster", "scripts")
+_SCANNED_SUFFIXES = frozenset({".py", ".sql", ".sh"})
 
-# Unescaped ``pg_`` followed by ``%`` (or the driver-escaped ``%%``) in a LIKE.
-# ``pg\_%`` escapes the underscore and stays allowed.
-_WILDCARD_PREFIX = re.compile(r"\bLIKE\s+E?'pg_%", re.IGNORECASE)
-
-# Core shared-DDL scans still pending in PR #5247 (bu-mrmn5g), which fixes them
-# in place. Drop this allow-list once that PR merges; entries that no longer
-# match are harmless until then.
-_PENDING_IN_5247 = frozenset(
-    f"alembic/versions/core/{name}.py"
-    for name in (
-        "core_246_ha_person_mapping_receipts",
-        "core_247_dashboard_message_citations",
-        "core_261_dashboard_fact_source_attribution",
-        "core_265_conversation_identity_split",
-        "core_266_qa_publication_operations",
-        "core_267_qa_publication_operation_invariants",
-        "core_268_qa_publication_ledger_hardening",
-        "core_290_served_identity_evidence",
-        "core_294_qa_publication_exports",
-        "core_297_dashboard_job_health",
-        "core_298_qa_publication_pr_adoption",
-        "core_300_qa_publication_egress_started_at",
-        "core_301_qa_publication_export_retention",
-        "core_302_qa_publication_refusals",
-        "core_303_owner_places",
-        "core_305_healing_attempts_closed_at_stamp",
-    )
+# A pattern-match operator (LIKE, ILIKE, their ``~~`` spellings, SIMILAR TO)
+# whose literal starts with an unescaped ``pg_``: ``_`` is a wildcard in all
+# of them, so ``'pg_%'``, ``'pg_toast%'`` and friends also match ``pgpeer``-style
+# names. The operator and literal may sit on different lines or in adjacent
+# Python string literals. ``pg\_`` escapes the underscore and stays allowed.
+_WILDCARD_PREFIX = re.compile(
+    r"""(?:\bI?LIKE|~~\*?|\bSIMILAR\s+TO)(?:\s|"\s*[rRfFbBuU]*")*E?'pg_""",
+    re.IGNORECASE,
 )
 
 
 def _offenders() -> list[str]:
     hits = []
     for root in _SCANNED_ROOTS:
-        for path in sorted((_REPO_ROOT / root).rglob("*.py")):
-            rel = path.relative_to(_REPO_ROOT).as_posix()
-            if rel in _PENDING_IN_5247:
+        for path in sorted((_REPO_ROOT / root).rglob("*")):
+            if path.suffix not in _SCANNED_SUFFIXES or not path.is_file():
                 continue
-            for lineno, line in enumerate(path.read_text().splitlines(), start=1):
-                if _WILDCARD_PREFIX.search(line):
-                    hits.append(f"{rel}:{lineno}: {line.strip()}")
+            text = path.read_text()
+            lines = text.splitlines()
+            rel = path.relative_to(_REPO_ROOT).as_posix()
+            for match in _WILDCARD_PREFIX.finditer(text):
+                lineno = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{rel}:{lineno}: {lines[lineno - 1].strip()}")
     return hits
 
 
@@ -62,6 +46,22 @@ def test_wildcard_detector_matches_both_driver_spellings() -> None:
     assert _WILDCARD_PREFIX.search("AND namespace.nspname NOT LIKE 'pg_%%'")
     assert not _WILDCARD_PREFIX.search(r"AND nspname NOT LIKE 'pg\_%'")
     assert not _WILDCARD_PREFIX.search("AND left(nspname, 3) <> 'pg_'")
+
+
+def test_wildcard_detector_covers_every_spelling_of_the_trap() -> None:
+    caught = (
+        "AND nspname NOT ILIKE 'pg_%'",
+        "AND nspname NOT LIKE 'pg_toast%'",
+        "AND nspname LIKE E'pg_temp%'",
+        "AND nspname !~~ 'pg_%'",
+        "AND nspname NOT SIMILAR TO 'pg_%'",
+        "AND nspname NOT LIKE\n      'pg_%'",
+        "AND nspname NOT LIKE \"\n        \"'pg_%'",
+    )
+    for sql in caught:
+        assert _WILDCARD_PREFIX.search(sql), sql
+    assert not _WILDCARD_PREFIX.search("AND nspname NOT ILIKE 'pg\\_toast%'")
+    assert not _WILDCARD_PREFIX.search("AND nspname LIKE 'pgpeer%'")
 
 
 def test_no_like_wildcard_system_schema_filters() -> None:

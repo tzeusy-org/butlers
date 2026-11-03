@@ -361,9 +361,9 @@ or extended. Backdated rows inserted behind a cursor by an old writer require a 
 A dry run is not a stable-snapshot or applied-repair claim.
 
 Evidence stores follow the same rule: OwnTracks `raw_payload` strings, Google Drive cached file
-names and the ActivityWatch `window_title` column are scrubbed before the write, and a detector
-failure skips that evidence write instead of storing raw text. One gap remains: ActivityWatch
-`raw_payload` still stores the raw window title, URL and tab title until `bu-506glj` lands.
+names, and the ActivityWatch `window_title` column and `raw_payload` (window title, web URL and
+tab title) are scrubbed before the write, and a detector failure skips that evidence write instead
+of storing raw text.
 
 ## Related Pages
 

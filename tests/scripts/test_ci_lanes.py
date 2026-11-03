@@ -115,6 +115,15 @@ def test_group_command_selects_its_lane_group_over_the_committed_durations() -> 
         ci_lanes.pytest_command("integration", 7, output=Path("/out"), coverage=False)
 
 
+def test_only_the_integration_lane_requires_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The root conftest fails a "Docker not available" skip under this flag.
+    monkeypatch.delenv(ci_lanes.REQUIRE_DOCKER_ENV, raising=False)
+    paths = {"output": Path("/out"), "count_path": Path("/out/collected.json")}
+
+    assert ci_lanes.lane_environment("integration", **paths)[ci_lanes.REQUIRE_DOCKER_ENV] == "1"
+    assert ci_lanes.REQUIRE_DOCKER_ENV not in ci_lanes.lane_environment("unit", **paths)
+
+
 def test_the_count_plugin_records_each_real_pytest_split_group(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -203,41 +212,14 @@ def test_merged_durations_cover_every_group_and_refuse_a_missing_one(tmp_path: P
     assert not (tmp_path / "refused").exists()
 
 
-def _budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **budgets: int) -> None:
-    import check_test_budget
-
-    path = tmp_path / "budget.json"
-    path.write_text(
-        json.dumps(
-            {lane: {"budget": value, "collected_at_update": 0} for lane, value in budgets.items()}
-        )
-    )
-    monkeypatch.setattr(check_test_budget, "BASELINE_PATH", path)
-
-
-def test_early_count_writes_lane_counts_and_passes_within_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_early_count_writes_lane_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         ci_lanes, "fresh_lane_counts", lambda repo_root: {"unit": 50, "integration": 60}
     )
-    _budget(tmp_path, monkeypatch, unit=50, integration=60)
     output = tmp_path / "counts" / "lane-counts.json"
 
     assert ci_lanes.count(output) == 0
     assert json.loads(output.read_text()) == {"integration": 60, "unit": 50}
-
-
-def test_early_count_fails_fast_when_a_lane_is_over_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        ci_lanes, "fresh_lane_counts", lambda repo_root: {"unit": 51, "integration": 60}
-    )
-    _budget(tmp_path, monkeypatch, unit=50, integration=60)
-
-    assert ci_lanes.count(tmp_path / "lane-counts.json") == 1
-    assert "unit" in capsys.readouterr().err
 
 
 def _write_groups(directory: Path, counts: dict[str, dict[int, int]]) -> None:

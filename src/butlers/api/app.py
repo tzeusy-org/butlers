@@ -74,6 +74,16 @@ from butlers.jobs.backup_facts_snapshot import (
     DEFAULT_SNAPSHOT_INTERVAL_S,
     run_backup_facts_snapshot_loop,
 )
+from butlers.jobs.calendar_overcommitment import (
+    CHECK_INTERVAL_ENV as _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
+)
+from butlers.jobs.calendar_overcommitment import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S,
+)
+from butlers.jobs.calendar_overcommitment import (
+    resolve_lookahead_days as resolve_calendar_overcommitment_lookahead_days,
+)
+from butlers.jobs.calendar_overcommitment import run_calendar_overcommitment_loop
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
@@ -197,6 +207,7 @@ async def lifespan(app: FastAPI):
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
     calendar_deadman_task: asyncio.Task | None = None
+    calendar_overcommitment_task: asyncio.Task | None = None
     backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
@@ -489,6 +500,31 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
+        # Calendar overcommitment (bu-vcjgo8, REQ-owner-condition-ledger-007): the
+        # radar's conflict scan over the owner's forward window, reconciled into the
+        # owner condition ledger. See butlers.jobs.calendar_overcommitment.
+        try:
+            overcommitment_interval_s = _resolve_positive_float_env(
+                _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
+                DEFAULT_CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S,
+            )
+            overcommitment_lookahead_days = resolve_calendar_overcommitment_lookahead_days()
+            calendar_overcommitment_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "calendar_overcommitment",
+                    lambda: run_calendar_overcommitment_loop(
+                        get_db_manager(),
+                        interval_s=overcommitment_interval_s,
+                        lookahead_days=overcommitment_lookahead_days,
+                    ),
+                    health=job_health.recorder(
+                        "calendar_overcommitment", "periodic", overcommitment_interval_s
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start calendar-overcommitment loop", exc_info=True)
+
         # Backup facts snapshot (bu-deqpzd): this process alone mounts the dump
         # volume, so it publishes the content-free facts the QA patrol needs
         # into public.state. Always on: an unset BUTLERS_BACKUP_DIR is itself
@@ -591,6 +627,10 @@ async def lifespan(app: FastAPI):
         calendar_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_deadman_task
+    if calendar_overcommitment_task is not None:
+        calendar_overcommitment_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await calendar_overcommitment_task
     if backup_facts_task is not None:
         backup_facts_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

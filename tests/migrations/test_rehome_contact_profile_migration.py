@@ -21,11 +21,12 @@ Parent: bu-oluyt (retire public.contacts).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -34,14 +35,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "031_rehome_contact_profile_columns.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_migration_rel_031", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +48,7 @@ class TestMigrationStructure:
     parity mismatch, so this source guard is the only proof of the abort)."""
 
     def test_parity_raise_exceptions_present(self):
-        sql = _load_migration()._BACKFILL_AND_PARITY_SQL
+        sql = load_migration(_MIGRATION_PATH, "_migration_rel_031")._BACKFILL_AND_PARITY_SQL
         # Both parity assertions must be able to abort the migration.
         assert sql.count("RAISE EXCEPTION") >= 2
         assert "parity failure (stay_in_touch_days)" in sql
@@ -64,7 +57,7 @@ class TestMigrationStructure:
     def test_to_regclass_guard_and_snapshot_constant(self):
         """Forward-compat to_regclass guard + the snapshot table name the
         downgrade restores from."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "_migration_rel_031")
         assert "to_regclass('public.contacts')" in mod._BACKFILL_AND_PARITY_SQL
         assert mod._SNAPSHOT_TABLE == "public.entities_contact_profile_bak_rel_031"
         assert "entities_contact_profile_bak_rel_031" in mod._DOWNGRADE_SQL
@@ -85,13 +78,13 @@ async def rel_030_pool(db):
 
 
 async def _run_upgrade(pool):
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "_migration_rel_031")
     await pool.execute(mod._ADD_COLUMN_SQL)
     await pool.execute(mod._BACKFILL_AND_PARITY_SQL)
 
 
 async def _run_downgrade(pool):
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "_migration_rel_031")
     await pool.execute(mod._DOWNGRADE_SQL)
     await pool.execute("ALTER TABLE public.entities DROP COLUMN IF EXISTS stay_in_touch_days")
 

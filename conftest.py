@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -465,15 +465,11 @@ def _install_serialized_testcontainers_run() -> None:
 
     def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
         with _serialize_testcontainer_startup():
-            if os.environ.get("GITHUB_ACTIONS") == "true":
-                from scripts.ci_test_images import IMAGES, prepare
+            from scripts.ci_test_images import prepare_alias_on_hosted_runner
 
-                image = args[0] if args else kwargs.get("image")
-                required = [name for name, pin in IMAGES.items() if image == pin["alias"]]
-                if required:
-                    # Only an actual known container consumer acquires content.
-                    # Ryuk reaches this same boundary under its existing policy.
-                    prepare(required)
+            # Only an actual known container consumer acquires content.
+            # Ryuk reaches this same boundary under its existing policy.
+            prepare_alias_on_hosted_runner(args[0] if args else kwargs.get("image"))
             return original_run(self, *args, **kwargs)
 
     _serialized_run.__butlers_serialized_start__ = True
@@ -517,6 +513,64 @@ def _install_resilient_testcontainers_stop() -> None:
 _install_resilient_testcontainers_startup()
 _install_serialized_testcontainers_run()
 _install_resilient_testcontainers_stop()
+
+
+# --- Docker-skip guard for lanes that guarantee Docker (bu-u5euwb.37) ---------
+#
+# Real-PG tests skip with exactly ``DOCKER_UNAVAILABLE_SKIP_REASON`` when the
+# docker CLI is absent, which keeps a Docker-less laptop usable. In a CI lane
+# that guarantees Docker, the same skip would let a broken runner pass green
+# while running none of those tests. ``scripts/ci_lanes.py`` sets
+# ``BUTLERS_REQUIRE_DOCKER=1`` for such lanes, and this hook turns that skip
+# into a failure there. Unset, nothing changes.
+
+DOCKER_UNAVAILABLE_SKIP_REASON = "Docker not available"
+REQUIRE_DOCKER_ENV = "BUTLERS_REQUIRE_DOCKER"
+
+
+def _docker_required() -> bool:
+    return os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_docker_unavailable_skip(report: pytest.TestReport | pytest.CollectReport) -> bool:
+    """True for a plain skip (not an xfail) whose reason is the Docker one."""
+    if not report.skipped or hasattr(report, "wasxfail"):
+        return False
+    longrepr = report.longrepr
+    if not (isinstance(longrepr, tuple) and len(longrepr) == 3):
+        return False
+    reason = str(longrepr[2]).removeprefix("Skipped: ")
+    return reason == DOCKER_UNAVAILABLE_SKIP_REASON
+
+
+def _fail_required_docker_skip(report: pytest.TestReport | pytest.CollectReport) -> None:
+    if _docker_required() and _is_docker_unavailable_skip(report):
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{REQUIRE_DOCKER_ENV}=1, but this skipped with "
+            f"{DOCKER_UNAVAILABLE_SKIP_REASON!r}: this lane guarantees Docker, "
+            "so a real-PG skip here means the runner lost it."
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None]
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report: pytest.TestReport = yield
+    _fail_required_docker_skip(report)
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(
+    collector: pytest.Collector,
+) -> Generator[None, pytest.CollectReport, pytest.CollectReport]:
+    # A module-level ``pytest.skip(..., allow_module_level=True)`` skips at
+    # collection, so it reaches a CollectReport and never a TestReport.
+    report: pytest.CollectReport = yield
+    _fail_required_docker_skip(report)
+    return report
 
 
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
@@ -741,3 +795,25 @@ def fresh_db(postgres_container: PostgresContainer) -> Callable[..., str]:
         return migrated_url(postgres_container, *chains, **kwargs)
 
     return _make
+
+
+@pytest.fixture
+async def booted_daemon(
+    postgres_container: PostgresContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for real daemon boots with no LLM (``butlers.testing.daemon``).
+
+    ``booted = await booted_daemon(config_dir)`` starts the butler in ``config_dir`` on a
+    fresh ``core`` clone (pass more chains after it) under a fake runtime adapter;
+    ``await booted.call_tool("status")`` calls it over HTTP. Teardown shuts down every
+    daemon still running.
+    """
+    from butlers.testing.daemon import DaemonBooter
+
+    booter = DaemonBooter(postgres_container, monkeypatch, tmp_path_factory.mktemp("daemon"))
+    try:
+        yield booter.boot
+    finally:
+        await booter.close()

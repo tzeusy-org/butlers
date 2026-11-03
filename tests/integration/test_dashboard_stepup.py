@@ -33,16 +33,15 @@ from tests.api.test_owner_auth_store import host
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "approvals"]
-    )
+@pytest.fixture
+def authority_db_url(fresh_db) -> str:
+    """The database ``authority`` runs on; importers override it with their own chains."""
+    return fresh_db("core", "approvals")
 
 
 @pytest.fixture
-async def authority(migrated_db_url, postgres_container):
-    parsed = urlparse(migrated_db_url)
+async def authority(authority_db_url, postgres_container):
+    parsed = urlparse(authority_db_url)
     admin_url = migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/"))
     admin = await asyncpg.create_pool(
         admin_url.replace("postgresql+psycopg2", "postgresql"),
@@ -57,7 +56,7 @@ async def authority(migrated_db_url, postgres_container):
     granted_connect = False
     try:
         pool = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=4, init=register_jsonb_codec
+            authority_db_url, min_size=1, max_size=4, init=register_jsonb_codec
         )
         # Generated identifiers/password are synthetic and confined to this DB test.
         await admin.execute(

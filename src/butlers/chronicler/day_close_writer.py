@@ -61,7 +61,7 @@ from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_clo
 from butlers.chronicler.editorial import record_coverage_witness
 from butlers.chronicler.prose_admission import INADMISSIBLE_PROSE, classify_day_close_candidate
 from butlers.chronicler.storage import upsert_tier2_cache
-from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+from butlers.core.tool_call_capture import tool_call_fingerprint_matches
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ def _bound_notify_input(calls: list[dict[str, Any]], fingerprint: Any) -> dict[s
         except TypeError:
             continue
         candidate = dict(bound.arguments)
-        if fingerprint_tool_call_payload(candidate) == fingerprint:
+        if tool_call_fingerprint_matches(candidate, fingerprint):
             matches.append(candidate)
     return matches[0] if len(matches) == 1 else None
 
@@ -813,7 +813,6 @@ def build_day_close_completion_hooks(
     *,
     timezone: str | ZoneInfo = "UTC",
     store_fact_fn: Callable[..., Any] | None = None,
-    propose_enrichment_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Callable[..., Any]]:
     """Return the completion_hooks dict for the chronicler scheduler loop.
 
@@ -827,8 +826,7 @@ def build_day_close_completion_hooks(
     runs the deterministic memory write-back loop after the prose is cached:
     it synthesizes derived insights + self-reminders from the chronicler's OWN
     ``daily_rollups`` and writes them into the chronicler's OWN memory schema,
-    and — when ``propose_enrichment_fn`` is also supplied — proposes recurring
-    companions to relationship over MCP. The write-back is best-effort and adds
+    The write-back is best-effort and adds
     no owner-facing message; a failure never breaks the cache write.
 
     Usage::
@@ -868,15 +866,12 @@ def build_day_close_completion_hooks(
                 day_date=day_date,
                 timezone=str(_coerce_zone(effective_timezone)),
                 store_fact_fn=store_fact_fn,
-                propose_enrichment_fn=propose_enrichment_fn,
             )
             logger.info(
-                "day_close_writer: write-back for %s (%d insights, %d self-reminders, "
-                "%d proposals, %d errors)",
+                "day_close_writer: write-back for %s (%d insights, %d self-reminders, %d errors)",
                 day_date.isoformat(),
                 wb.insights_written,
                 wb.self_reminders_written,
-                wb.proposals_sent,
                 wb.errors,
             )
         except Exception:

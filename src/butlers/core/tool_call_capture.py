@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import hmac
 import json
+import secrets
 import threading
 from collections import defaultdict
 from typing import Any
@@ -67,6 +69,13 @@ _runtime_credential_store_var: contextvars.ContextVar[Any | None] = contextvars.
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
+
+# Keys the tool-input fingerprint of any input the persisted capture view drops.
+# Fingerprints are persisted in ``sessions.tool_calls``; a plain sha256 of a low-entropy
+# argument (an account number, a short identifier) can be brute-forced from that value,
+# an HMAC under a key that is never stored or logged cannot. A lossless view gets the
+# plain form instead (``plain_tool_call_fingerprint``), which a later process can recompute.
+_FINGERPRINT_KEY = secrets.token_bytes(32)
 
 
 def set_current_credential_store(store: Any | None) -> contextvars.Token[Any | None]:
@@ -226,16 +235,42 @@ def _json_safe(value: Any) -> Any:
         return str(value)
 
 
-def fingerprint_tool_call_payload(value: Any) -> str:
-    """Return a stable, non-reversible fingerprint for a tool input payload."""
-    safe_value = _json_safe(value)
-    encoded = json.dumps(
-        safe_value,
+def _encode_fingerprint_payload(value: Any) -> bytes:
+    return json.dumps(
+        _json_safe(value),
         sort_keys=True,
         separators=(",", ":"),
         default=str,
     ).encode("utf-8", errors="replace")
-    return hashlib.sha256(encoded).hexdigest()
+
+
+def fingerprint_tool_call_payload(value: Any) -> str:
+    """Return a keyed, stable-within-process fingerprint for a tool input payload.
+
+    The key is random per process, so the value cannot be recomputed or brute-forced
+    from a persisted record, and it is not comparable across processes.
+    """
+    return hmac.new(
+        _FINGERPRINT_KEY, _encode_fingerprint_payload(value), hashlib.sha256
+    ).hexdigest()
+
+
+def plain_tool_call_fingerprint(value: Any) -> str:
+    """Return the unkeyed sha256 fingerprint of a tool input payload.
+
+    Only for an input the persisted record already holds in full (its capture view loses
+    nothing): the hash then reveals nothing new, and any process can recompute it.
+    """
+    return hashlib.sha256(_encode_fingerprint_payload(value)).hexdigest()
+
+
+def tool_call_fingerprint_matches(value: Any, fingerprint: Any) -> bool:
+    """Whether ``fingerprint`` is the plain or this process's keyed fingerprint of ``value``."""
+    if not isinstance(fingerprint, str) or not fingerprint:
+        return False
+    return hmac.compare_digest(
+        fingerprint, plain_tool_call_fingerprint(value)
+    ) or hmac.compare_digest(fingerprint, fingerprint_tool_call_payload(value))
 
 
 def capture_tool_call(

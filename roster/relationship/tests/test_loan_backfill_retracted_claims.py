@@ -18,7 +18,6 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.relationship.loans import backfill_loan_cost_claims
 
 _FACT = uuid.UUID("00000000-0000-0000-0000-0000000000f1")
@@ -82,33 +81,24 @@ async def test_a_settled_loan_fact_is_never_projected():
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
-async def test_retract_then_backfill_leaves_the_claim_retracted(postgres_container):
+async def test_retract_then_backfill_leaves_the_claim_retracted(fresh_db):
     from butlers.core.cost_claims import retract_claim
 
-    # create_migrated_test_db runs Alembic through asyncio.run, which cannot be called from
-    # this running loop; a worker thread gets its own loop.
-    db_url = await asyncio.to_thread(
-        create_migrated_test_db, postgres_container, migration_db_name(), chains=["core"]
-    )
+    # fresh_db runs Alembic through asyncio.run, which cannot be called from this
+    # running loop; a worker thread gets its own loop.
+    db_url = await asyncio.to_thread(fresh_db, "core", "memory")
     admin = await asyncpg.connect(db_url)
     pool = None
     try:
-        await admin.execute(
-            """
-            CREATE TABLE facts (
-                id uuid PRIMARY KEY DEFAULT gen_random_uuid(), predicate text, scope text,
-                validity text, valid_at timestamptz, content text, metadata jsonb, entity_id uuid
-            )
-            """
-        )
         await admin.execute("GRANT SELECT ON facts TO butler_relationship_rw")
         entity = await admin.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type) "
             "VALUES ('Sample Person', 'person') RETURNING id"
         )
         await admin.execute(
-            "INSERT INTO facts (predicate, scope, validity, valid_at, content, metadata, entity_id)"
-            " VALUES ('loan', 'relationship', 'active', now(), 'Synthetic loan',"
+            "INSERT INTO facts (subject, predicate, scope, validity, valid_at, content, metadata,"
+            " entity_id)"
+            " VALUES ('entity:' || $1::uuid::text, 'loan', 'relationship', 'active', now(), 'Synthetic loan',"
             ' \'{"currency": "SGD", "amount_cents": 1200, "direction": "lent"}\', $1)',
             entity,
         )
@@ -135,8 +125,9 @@ async def test_retract_then_backfill_leaves_the_claim_retracted(postgres_contain
 
         # loan_settle: supersede the loan fact, store a settled successor, retract the old claim.
         second = await admin.fetchval(
-            "INSERT INTO facts (predicate, scope, validity, valid_at, content, metadata, entity_id)"
-            " VALUES ('loan', 'relationship', 'active', now(), 'Second loan',"
+            "INSERT INTO facts (subject, predicate, scope, validity, valid_at, content, metadata,"
+            " entity_id)"
+            " VALUES ('entity:' || $1::uuid::text, 'loan', 'relationship', 'active', now(), 'Second loan',"
             ' \'{"currency": "SGD", "amount_cents": 500, "direction": "lent"}\', $1)'
             " RETURNING id",
             entity,
@@ -147,8 +138,9 @@ async def test_retract_then_backfill_leaves_the_claim_retracted(postgres_contain
         )
         await admin.execute("UPDATE facts SET validity = 'superseded' WHERE id = $1", second)
         await admin.execute(
-            "INSERT INTO facts (predicate, scope, validity, valid_at, content, metadata, entity_id)"
-            " VALUES ('loan', 'relationship', 'active', now(), 'Second loan',"
+            "INSERT INTO facts (subject, predicate, scope, validity, valid_at, content, metadata,"
+            " entity_id)"
+            " VALUES ('entity:' || $1::uuid::text, 'loan', 'relationship', 'active', now(), 'Second loan',"
             ' \'{"currency": "SGD", "amount_cents": 500, "direction": "lent",'
             ' "settled": true}\', $1)',
             entity,
