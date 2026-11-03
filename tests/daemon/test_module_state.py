@@ -195,10 +195,22 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     # daemon code paths (e.g. contact_info resolution). Provide a context
     # manager that yields a no-op connection so those paths don't crash.
     mock_conn = AsyncMock()
+    transaction_depth = 0
+
+    async def enter_transaction() -> None:
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc: object) -> bool:
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
     transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(return_value=None)
-    transaction.__aexit__ = AsyncMock(return_value=False)
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
     mock_conn.transaction = MagicMock(return_value=transaction)
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])

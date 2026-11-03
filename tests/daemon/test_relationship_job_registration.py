@@ -135,3 +135,36 @@ async def test_meeting_debrief_handler_injects_the_insight_proposer(
 
     assert result == {"prompted": 0}
     assert calls == {"pool": "pool", "proposer": propose_insight_candidate}
+
+
+@pytest.mark.asyncio
+async def test_owner_address_geocoding_is_an_hourly_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """bu-r3fmja.3: a deterministic hourly job-mode schedule whose handler runs the job."""
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+    (schedule,) = [
+        s
+        for s in _load_relationship_schedules()
+        if s.get("job_name") == "relationship_geocode_owner_addresses"
+    ]
+    assert schedule["name"] == "relationship_geocode_owner_addresses"
+    assert schedule["dispatch_mode"] == "job"
+    minute, hour, *rest = schedule["cron"].split()
+    assert minute.isdigit() and hour == "*" and rest == ["*", "*", "*"]
+    assert "prompt" not in schedule
+
+    calls: dict[str, Any] = {}
+
+    async def fake_run(pool: Any) -> dict[str, Any]:
+        calls["pool"] = pool
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        "butlers.tools.relationship.owner_address_geocoding.run_owner_address_geocoding", fake_run
+    )
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["relationship"][
+        "relationship_geocode_owner_addresses"
+    ]
+
+    assert await handler("pool", None) == {"status": "ok"}
+    assert calls == {"pool": "pool"}

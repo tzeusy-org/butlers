@@ -30,16 +30,19 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.models.schedule import (
+    DeadlineRecord,
     Schedule,
     ScheduleCreate,
     ScheduleToggleRequest,
     ScheduleToggleResult,
     ScheduleUpdate,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
+from butlers.core.temporal.deadlines_db import supersession_fields
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,7 @@ def _row_to_schedule(row) -> Schedule:
         if str(raw_mode).strip().lower() in {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
         else _DISPATCH_MODE_PROMPT
     )
+    job_args = _normalize_job_args(_row_value(row, "job_args"))
     return Schedule(
         id=row["id"],
         name=row["name"],
@@ -125,7 +129,8 @@ def _row_to_schedule(row) -> Schedule:
         dispatch_mode=dispatch_mode,
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
-        job_args=_normalize_job_args(_row_value(row, "job_args")),
+        job_args=job_args,
+        **supersession_fields(job_args),
         complexity=_coerce_complexity(_row_value(row, "complexity")),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),
@@ -272,6 +277,49 @@ async def list_schedules(
     rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/butlers/{name}/deadlines/{deadline_id} — owner single-record reader
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{name}/deadlines/{deadline_id}",
+    response_model=ApiResponse[DeadlineRecord],
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_deadline(
+    name: str,
+    deadline_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[DeadlineRecord]:
+    """Return one deadline task's identity and status, owner only.
+
+    Project links resolve deadlines through this reader.  An unknown butler or
+    a task that is not a deadline reads as not found; the prompt and alert
+    configuration are never returned.
+    """
+    if name not in db.butler_names:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    try:
+        pool = db.pool(name)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        ) from exc
+    row = await pool.fetchrow(
+        "SELECT id, name, display_title, target_date, deadline_status, enabled "
+        "FROM scheduled_tasks WHERE id = $1 AND task_type = 'deadline' "
+        "AND target_date IS NOT NULL",
+        deadline_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    return ApiResponse[DeadlineRecord](data=DeadlineRecord(butler=name, **dict(row)))
 
 
 # ---------------------------------------------------------------------------

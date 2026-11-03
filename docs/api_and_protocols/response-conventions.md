@@ -212,6 +212,23 @@ writer regression is not serving-deployment evidence.
 
 ## Implementation Notes
 
+- Canonical `audit.append` records `butlers.audit.log.appended` after acknowledged SQL commit.
+  Every owning mutation uses `butlers.core.audit_transaction.audit_transaction(connection)` at
+  its original transaction boundary, including the explicit audit-owned stepup path. Append
+  returns the integer row receipt inside that scope; it does not commit the caller's mutation.
+  Nested audit scopes use real savepoints: release merges action-only pending records into the
+  outer scope; child rollback drops only child records and outer rollback drops all records.
+  Existing unmanaged transactions and inherited child-task ownership are refused before insert.
+  Do not manually change transaction boundaries or put canonical appends inside raw savepoints.
+  Pool/nontransactional connection appends retain their successful implicit-commit boundary.
+  The bounded `metric_action` override is buffered instead of request-derived action text;
+  actor, row content and identifiers are never buffered. Before commit, a same-connection health
+  probe refuses a swallowed SQL error whose aborted transaction would otherwise roll back.
+  Commit failure/cancellation records nothing, but in-flight commit durability can be unknown:
+  a missing metric never proves no durable row and never authorizes replay. Recorder failure
+  after commit is an explicit content-blind telemetry failure, not rollback or retry. Existing
+  best-effort shims and the inside-append issue-listener timing remain unchanged.
+
 - Connector summaries are owned by `ApiResponse[ConnectorSummaryResponse]` and its explicit nested
   wire models in `api/routers/ingestion_connectors.py`. Keep the existing derivation helpers as the
   authority for liveness, operational roles and source availability. This route excludes unset

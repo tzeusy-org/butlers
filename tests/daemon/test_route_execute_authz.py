@@ -879,11 +879,20 @@ def _patch_infra():
     mock_pool.fetchrow.side_effect = fetchrow
     mock_connection = AsyncMock()
     # The runtime row agrees with Git: no conditional update or audit append.
+    # Runtime-config still enters its unconditional audit_transaction scope.
     mock_connection.fetchrow.return_value = None
+
+    transaction_depth = 0
+    mock_connection.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
 
     @asynccontextmanager
     async def transaction():
-        yield
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield
+        finally:
+            transaction_depth -= 1
 
     mock_connection.transaction = MagicMock(side_effect=transaction)
 

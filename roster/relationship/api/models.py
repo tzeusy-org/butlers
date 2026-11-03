@@ -1524,6 +1524,10 @@ class ActivityResponse(BaseModel):
     ``degraded`` is true when the Chronicler contribution could not be read.
     ``degraded_reason`` is a fixed content-blind discriminator, never an
     upstream exception or payload.
+
+    ``chronicler_truncated`` is true when the Chronicler read returned a full
+    500-episode page, so older episodes may be missing from ``total`` and bins.
+    It is false when Chronicler is unavailable (``degraded`` carries that).
     """
 
     items: list[ActivityEntry]
@@ -1532,6 +1536,7 @@ class ActivityResponse(BaseModel):
     offset: int
     degraded: bool = False
     degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
+    chronicler_truncated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1617,6 +1622,7 @@ class ActivityBinsResponse(BaseModel):
     bins: list[ActivityBin]
     degraded: bool = False
     degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
+    chronicler_truncated: bool = False
 
 
 # ---------------------------------------------------------------------------

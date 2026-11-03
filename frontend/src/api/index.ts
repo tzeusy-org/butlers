@@ -252,6 +252,8 @@ export {
   closeGeneralProject,
   addGeneralProjectLink,
   removeGeneralProjectLink,
+  getGeneralDriveFile,
+  getButlerDeadline,
   getGeneralCollections,
   getGeneralEntities,
 } from "./client.ts";

@@ -1198,7 +1198,12 @@ class ContactBackfillEngine:
         )
 
     async def _reappearing_anchor(self, contact: CanonicalContact) -> uuid.UUID | None:
-        """A positive Telegram reappearance resumes only its exact inactive local anchor."""
+        """A positive reappearance resumes only its exact inactive local anchor.
+
+        Keyed on (provider, account, external id), so it holds for every provider. Whether a
+        provider (e.g. Google) ever restores the same external id is unconfirmed; if it does not,
+        this never matches and is a no-op.
+        """
         row = await self._pool.fetchrow(
             "SELECT sl.local_entity_id, EXISTS(SELECT 1 FROM public.entities e "
             "WHERE e.id=sl.local_entity_id AND e.entity_type='person' "
@@ -1230,11 +1235,7 @@ class ContactBackfillEngine:
             raise
 
     async def _apply(self, contact: CanonicalContact) -> None:
-        reappearing = (
-            await self._reappearing_anchor(contact)
-            if self._provider == "telegram" and not contact.deleted
-            else None
-        )
+        reappearing = None if contact.deleted else await self._reappearing_anchor(contact)
         if reappearing is not None:
             local_id, strategy = reappearing, "source_link"
         else:
