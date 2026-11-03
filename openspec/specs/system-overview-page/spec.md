@@ -346,6 +346,9 @@ the "your data has been seen by these endpoints" surface.
     within the audit window
   - `data_types: string[]` -- array of coarse data type labels observed in the
     egress events (e.g., `["session_prompt", "calendar_event", "message_text"]`)
+  - `audit_action: string | null` -- the exact `public.audit_log` `action` the actor
+    stands for (e.g., `"llm_api_call"`); every listed actor is registered, so it is
+    always set
 - **AND** the response wraps in the standard `ApiResponse<EgressCatalog>` envelope
 
 #### Scenario: Egress catalog is derived from the audit log
@@ -388,6 +391,18 @@ the "your data has been seen by these endpoints" surface.
   `"other"` bucket with a display name of `"Other / Unrecognized"`
 - **AND** the actor registry is the authoritative list of actor identifiers and
   display names; the implementation bead is responsible for populating it
+
+#### Scenario: Egress actors link to their audit log rows
+
+- **WHEN** the System page renders the data-egress tile and an actor carries a non-null
+  `audit_action`
+- **THEN** that actor's row is a link to
+  `/audit-log?action=<audit_action>&noise=all`, with the action URL-encoded, so the
+  audit log opens filtered to exactly the events behind that actor
+- **AND** the client reads the action from the response and never re-derives the actor
+  registry
+- **AND** an actor whose `audit_action` is `null` renders as plain text rather than a
+  link with no single predicate
 
 ### Requirement: System Verdict Source Settlement
 
@@ -692,6 +707,28 @@ duplicate panel.
 - **THEN** that row never computes or displays a QA-dispatch suppression
   count (owner conditions have no QA-dispatch suppression concept), while
   infra-ledger rows retain the existing suppression-count behavior
+
+#### Scenario: Sphere filter narrows owner-ledger commitments server-side
+
+- **WHEN** `GET /api/system/conditions?ledger=owner&sphere=<work|personal|undeclared>`
+  is called
+- **THEN** only owner-ledger commitment rows (`metadata.class = 'commitment'`)
+  are returned: `work` and `personal` match `metadata.sphere` exactly, and
+  `undeclared` matches commitment rows with no `sphere` key
+- **AND** the predicate runs in SQL, so `total` counts the filtered set rather
+  than the fetched page
+- **AND** a `sphere` with `ledger=infra`, or any other value, returns HTTP 400
+  naming the allowed values; omitting `sphere` leaves the response unchanged
+- **AND** no sphere is ever inferred (REQ-commitment-lifecycle-010)
+
+#### Scenario: Panel offers a sphere control only for commitments
+
+- **WHEN** the Standing Conditions panel shows owner-ledger commitment rows
+- **THEN** it offers an All spheres / Work / Personal / Undeclared control that
+  refetches the owner ledger with the chosen `sphere`, leaving the infra
+  query and infra rows unchanged
+- **AND** the control stays visible while a sphere is chosen, with an explicit
+  empty message when that sphere has no commitments
 
 ### Requirement: Supervised Dashboard Background Work Health
 

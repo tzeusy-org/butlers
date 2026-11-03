@@ -38,9 +38,9 @@ def boundary(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     return mocks
 
 
-async def _send() -> str:
+async def _send(**kwargs) -> str:
     return await send_owner_telegram(
-        MagicMock(), origin_butler="relationship", message="hello", log_context="test.job"
+        MagicMock(), origin_butler="relationship", message="hello", log_context="test.job", **kwargs
     )
 
 
@@ -105,7 +105,7 @@ async def test_deliver_error_is_recorded_once_and_not_retried(boundary, raised, 
 
 
 async def test_delivered_sends_notify_v1_to_owner_and_records_ref(boundary):
-    assert await _send() == owner_notify.DELIVERED
+    assert await _send(dedup_key="job:attempt") == owner_notify.DELIVERED
 
     tool, args = boundary["client"].call_tool.await_args.args
     assert tool == "deliver"
@@ -121,5 +121,162 @@ async def test_delivered_sends_notify_v1_to_owner_and_records_ref(boundary):
     }
     row = _only_ledger_row(boundary)
     assert (row["outcome"], row["notification_ref"]) == ("delivered", "n-1")
+    assert row["dedup_key"] == "job:attempt"
     boundary["suppression"].assert_awaited_once()
     assert boundary["suppression"].await_args.kwargs == {"log_context": "test.job"}
+
+
+@pytest.mark.parametrize(
+    ("job_args", "message"),
+    [
+        (
+            {
+                "kind": "due",
+                "issuer": "SP Group",
+                "deadline": {"target_date": "2026-10-28", "days_remaining": 3},
+            },
+            "Paperwork reminder (SP Group): payment due Wed 28 Oct 2026, in 3 days.",
+        ),
+        (
+            {
+                "kind": "cancel_by",
+                "issuer": "<b>AXA</b> http://x.io",
+                "deadline": {"target_date": "2026-11-03", "days_remaining": 1},
+            },
+            "Paperwork reminder (bAXAb httpxio): cancel by Tue 3 Nov 2026, tomorrow.",
+        ),
+        (
+            # A row stored before the tighter sanitizer is re-reduced when rendered.
+            {
+                "kind": "due",
+                "issuer": "call 9123 4567 to avoid penalty",
+                "deadline": {"target_date": "2026-10-28", "days_remaining": 3},
+            },
+            "Paperwork reminder (call to avoid penalty): payment due Wed 28 Oct 2026, in 3 days.",
+        ),
+        (
+            {
+                "kind": "expiry",
+                "issuer": None,
+                "deadline": {"target_date": "2026-11-02", "days_remaining": 0},
+            },
+            "Paperwork reminder: expires Mon 2 Nov 2026, today.",
+        ),
+        ({"kind": "pay_now", "issuer": "Evil", "deadline": {"target_date": "2026-11-02"}}, None),
+    ],
+    ids=["due", "inert_issuer", "phone_in_issuer", "no_issuer", "unknown_kind"],
+)
+async def test_paperwork_deadline_notice_sends_only_a_fixed_template_to_the_owner(
+    boundary, job_args, message
+):
+    """Every butler's registry runs the notice job under its own origin; text is templated."""
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    handler = get_deterministic_schedule_job_registry()["finance"]["paperwork_deadline_notify"]
+
+    result = await handler(MagicMock(), job_args)
+
+    if message is None:
+        assert result == {"outcome": "skipped", "reason": "invalid_kind"}
+        boundary["client"].call_tool.assert_not_awaited()
+        return
+    assert result == {"outcome": owner_notify.DELIVERED}
+    request = boundary["client"].call_tool.await_args.args[1]["notify_request"]
+    assert request["origin_butler"] == "finance"
+    assert request["delivery"]["message"] == message
+
+
+@pytest.mark.parametrize(
+    "seam",
+    ["suppression", "client_getter"],
+    ids=["suppressed_defers_without_ledger_row", "failed_raises"],
+)
+async def test_undelivered_paperwork_notice_raises_so_the_threshold_stays_unfired(boundary, seam):
+    """A deadline threshold has no next run: a dropped notice must fail the dispatch."""
+    from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    if seam == "suppression":
+        boundary["suppression"].return_value = "quiet_hours"
+    else:
+        boundary["client_getter"].return_value = None
+    handler = get_deterministic_schedule_job_registry()["finance"]["paperwork_deadline_notify"]
+    job_args = {"kind": "due", "deadline": {"target_date": "2026-10-28", "days_remaining": 1}}
+
+    expected = DeadlineDispatchDeferred if seam == "suppression" else RuntimeError
+    with pytest.raises(expected):
+        await handler(MagicMock(), job_args)
+
+    boundary["client"].call_tool.assert_not_awaited()
+    if seam == "suppression":
+        # Retried every tick while quiet hours last: no ledger row per attempt.
+        boundary["ledger"].assert_not_awaited()
+    else:
+        boundary["ledger"].assert_awaited_once()
+        row = boundary["ledger"].await_args.kwargs
+        assert (row["origin_butler"], row["reason"]) == (
+            "finance",
+            "switchboard_client_unavailable",
+        )
+
+
+@pytest.mark.parametrize(
+    ("failures", "since_last_min", "sends"),
+    [
+        (0, None, True),
+        (1, 4, False),
+        (1, 5, True),
+        (3, 19, False),
+        (3, 20, True),
+        (40, 59, False),
+        (40, 60, True),
+    ],
+    ids=["first", "1_waiting", "1_due", "3_waiting", "3_due", "capped_waiting", "capped_due"],
+)
+async def test_failed_paperwork_notice_backs_off_per_threshold(
+    boundary, monkeypatch, failures, since_last_min, sends
+):
+    """A Switchboard outage writes one failed row per backoff step, not one per tick.
+
+    Failed attempts share a per-(deadline, threshold) dedup key; the wait doubles from
+    5 minutes per failure up to an hour, measured from the newest failed row.
+    """
+    from datetime import timedelta
+
+    from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    since_last = None if since_last_min is None else timedelta(minutes=since_last_min)
+    attempts = AsyncMock(return_value=(failures, since_last))
+    monkeypatch.setattr("butlers.jobs.document_deadlines.failed_attempts", attempts)
+    registry = get_deterministic_schedule_job_registry()
+    handler = registry["finance"]["paperwork_deadline_notify"]
+
+    def args(doc: str = "s3://b/bill.pdf", days_before: int = 3) -> dict:
+        return {
+            "document_id": doc,
+            "kind": "due",
+            "deadline": {
+                "target_date": "2026-10-28",
+                "days_remaining": 2,
+                "fired_threshold": {"days_before": days_before, "severity": "warning"},
+            },
+        }
+
+    if not sends:
+        with pytest.raises(DeadlineDispatchDeferred, match="retry_backoff"):
+            await handler(MagicMock(), args())
+        boundary["client"].call_tool.assert_not_awaited()
+        boundary["ledger"].assert_not_awaited()
+        return
+    assert await handler(MagicMock(), args()) == {"outcome": owner_notify.DELIVERED}
+    key = boundary["ledger"].await_args.kwargs["dedup_key"]
+    assert attempts.await_args.kwargs == {"dedup_key": key}
+    # One key per (butler, document, kind, date, threshold): the ledger is cross-butler,
+    # so another butler, threshold or document starts fresh.
+    await handler(MagicMock(), args(days_before=7))
+    await handler(MagicMock(), args(doc="s3://b/other.pdf"))
+    await registry["general"]["paperwork_deadline_notify"](MagicMock(), args())
+    keys = [c.kwargs["dedup_key"] for c in boundary["ledger"].await_args_list]
+    assert len(set(keys)) == 4 and all(k.startswith("paperwork_deadline_notify:") for k in keys)
+    assert "bill.pdf" not in key

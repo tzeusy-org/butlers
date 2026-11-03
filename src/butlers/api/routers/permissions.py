@@ -20,6 +20,7 @@ from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
 from butlers.api.security import validate_no_secrets
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.permissions import ENFORCED_PERMISSIONS, PERMISSION_DEFAULT_GRANTED
 
 logger = logging.getLogger(__name__)
@@ -202,7 +203,7 @@ async def set_permission(
         if not registered:
             raise HTTPException(status_code=422, detail={"error": "butler_not_registered"})
 
-        async with conn.transaction():
+        async with audit_transaction(conn):
             await conn.execute(
                 "INSERT INTO public.permissions (butler, permission, granted, reason, updated_at) "
                 "VALUES ($1, $2, $3, $4, $5) "

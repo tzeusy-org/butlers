@@ -29,6 +29,7 @@ import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.testing.approval_parking_fake import record_pending_action
@@ -375,7 +376,7 @@ class TestAC4DashboardAudit:
         """
         from butlers.api.audit_emit import emit_dashboard_audit
 
-        pool = AsyncMock()
+        pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         pool.fetchval = AsyncMock(return_value=1)
         db_manager = MagicMock()
         db_manager.pool = MagicMock(return_value=pool)

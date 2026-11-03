@@ -95,11 +95,12 @@ General SHALL hold owner projects: owner-authored, time-bounded charters that gr
 
 #### Scenario: Typed links reference records without copying them
 - **WHEN** the owner links a record to a draft
-- **THEN** the link stores only its kind (`deadline`, `owner_condition`, `trip`, `drive_file` or `calendar_event`) and an opaque record id (a canonical UUID for owner conditions, trips and calendar events), never a URL or record content, at most 50 per project
+- **THEN** the link stores only its kind (`deadline`, `owner_condition`, `trip`, `drive_file` or `calendar_event`) and an opaque record id (a canonical UUID for owner conditions, trips and calendar events, `<butler>:<canonical UUID>` for a deadline, a bare Drive file id for a Drive file), never a URL or record content, at most 50 per project
 - **AND** adding an existing link is a no-op, and removing a link or closing the project never changes the referenced record
 
 #### Scenario: The projects page resolves links through canonical readers
 - **WHEN** the owner opens a project on the General butler's Projects tab
-- **THEN** each link group resolves through that record's own owner-authorized reader (trips through the Travel trip reader, calendar events through the calendar workspace entry reader, owner conditions through the owner condition ledger), never General cross-schema SQL
-- **AND** a failing reader marks only its own group unavailable while the project and other groups stay visible, an unknown or deleted record reads as not found, and a kind with no per-record reader yet (deadlines, Drive files) says so rather than rendering empty
+- **THEN** each link group resolves through that record's own owner-authorized reader (trips through the Travel trip reader, calendar events through the calendar workspace entry reader, owner conditions through the owner condition ledger, deadlines through the owning butler's owner-only deadline reader, Drive files through General's owner-only Drive file reader), never General cross-schema SQL
+- **AND** a failing reader marks only its own group unavailable while the project and other groups stay visible, and an unknown or deleted record reads as not found
+- **AND** the deadline reader never returns the task prompt, and the Drive file reader returns only the file's name, type and modified time (no link, owners, sharing or content) through General's own Drive module, with Drive legitimately absent (no Drive module or no connected account) answered as a calm not-connected state rather than a degraded reader, and any genuine Drive failure answered as a content-blind unavailable
 - **AND** record text renders as inert data, and the page has no Arm or Run control

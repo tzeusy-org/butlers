@@ -15,8 +15,8 @@ no-op) — bake the batch pointer into the script (`DEFAULT_BATCH`) before resum
 `resumeFromRunId` and no args. Completed 2026-07-25.
 
 **Data:** full per-agent structured output in
-`git show b23d5b76afab:docs/redesigns/2026-07-25-jarvis-pursuit-data.json`.
-Access pattern: `git show b23d5b76afab:docs/redesigns/2026-07-25-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="<label>")'`
+`git show 1f3e7f551533:docs/redesigns/2026-07-25-jarvis-pursuit-data.json`.
+Access pattern: `git show 1f3e7f551533:docs/redesigns/2026-07-25-jarvis-pursuit-data.json | jq '.audits[] | select(.page=="<label>")'`
 (labels: `qc:*`, `page:*`, `cross:*`, `eco:*`); synthesis under `.synthesis`.
 
 ## North star

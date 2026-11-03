@@ -22,7 +22,7 @@
               "datasourceUid": "prometheus",
               "model": {
                 "editorMode": "code",
-                "expr": "sum by(source_butler, destination_butler, reason) ((butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"} unless max_over_time(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[1h] offset 15m)) or increase(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[15m]))",
+                "expr": "sum by(source_butler, destination_butler, reason) (increase(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[15m]))",
                 "intervalMs": 1000,
                 "maxDataPoints": 43200,
                 "range": true,
@@ -108,7 +108,7 @@
             "no_data": "The configured NoData policy takes effect only after an owner explicitly enables evaluation; it then keeps a missing series visible rather than treating it as healthy.",
             "exec_error": "The configured Error policy takes effect only after an owner explicitly enables evaluation; it then surfaces rule execution failures.",
             "reset": "increase() treats an exporter counter reset as zero rather than a new delivery failure.",
-            "first_event": "A route series is created by its first failure, so increase() has no prior sample to compare. For 15 minutes a series with no sample in the hour before that also counts with its own value. Ingest gaps shorter than 1h therefore cannot replay old failures. Trade-off: after a daemon restart, increase() misses the first failure on a route whose last sample was 20 to 75 minutes earlier. The series is not pre-created at zero because two daemons (butlers up and the Switchboard) emit identical label sets, and the zeros of one would interleave with the other's count.",
+            "first_event": "Each emitting daemon creates its route series at zero on startup, so increase() sees a route's first-ever failure. The emitter_butler label keeps the fan-out daemon's count and the Switchboard sweep's count on separate series; the query sums it away.",
             "deduplication": "The query preserves source_butler, destination_butler, and reason; Grafana creates one alert instance per label tuple.",
             "disabled": "isPaused=true: Grafana performs no evaluation and creates no alert instances, receiver, notification policy, or route."
           },

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.testing.records import row as record_row
 
 pytestmark = [
@@ -23,31 +24,6 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_pool(
-    *,
-    fetchrow_side_effect=None,
-    fetchrow_return=None,
-    fetch_return=None,
-    fetch_side_effect=None,
-) -> AsyncMock:
-    """Build a mock asyncpg pool with configurable fetchrow/fetch returns."""
-    pool = AsyncMock()
-    if fetchrow_side_effect is not None:
-        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    elif fetchrow_return is not None:
-        pool.fetchrow = AsyncMock(return_value=fetchrow_return)
-    else:
-        pool.fetchrow = AsyncMock(return_value=record_row(**{"total": Decimal("0")}))
-
-    if fetch_side_effect is not None:
-        pool.fetch = AsyncMock(side_effect=fetch_side_effect)
-    elif fetch_return is not None:
-        pool.fetch = AsyncMock(return_value=fetch_return)
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-    return pool
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +293,7 @@ class TestSpendingTrendsValidation:
         """Invalid comparison mode raises ValueError."""
         from butlers.tools.finance.budgets import spending_trends
 
-        pool = _make_pool()
+        pool = fake_pool()
         with pytest.raises(ValueError, match="comparison"):
             await spending_trends(pool, comparison="invalid")
 

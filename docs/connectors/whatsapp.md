@@ -427,3 +427,9 @@ docker compose build connector-whatsapp-user
   strict bulk lookup succeeds.
 - Lifecycle logs (endpoint resolution, startup, credential resolution, checkpoint load/save,
   backfill) carry booleans, counts and failure class only, never values or raw exceptions.
+- Dropped batches carry a frozen `drop_context.classification` as Gmail's do (snapshot of
+  priority-contact `has-phone` facts, same TTL and loaded/failed/stale states). A known 1:1 chat is
+  marked `important_dropped`; a group or broadcast batch records `not_applicable` (certain, never
+  counted); a 1:1 chat whose peer phone cannot be resolved records no classification and counts as
+  uncertain. Google Drive does the same for the file's sharer (`sharingUser`, else the first
+  non-self owner), publishing one process-wide snapshot on its manager heartbeat row.

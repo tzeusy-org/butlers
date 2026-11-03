@@ -426,6 +426,8 @@ import type {
   GeneralProjectCreateRequest,
   GeneralProjectDetail,
   GeneralProjectLinkKind,
+  GeneralDriveFile,
+  DeadlineRecord,
   GeneralProjectSummary,
   GeneralStats,
   HourlyActivity,
@@ -2537,6 +2539,23 @@ export function removeGeneralProjectLink(
   return apiFetch<ApiResponse<GeneralProjectDetail>>(
     `/general/projects/${encodeURIComponent(projectId)}/links/${encodeURIComponent(linkId)}`,
     { method: "DELETE" },
+  );
+}
+
+/** GET /api/general/drive-files/{fileId} — one Drive file's name and type (owner only). */
+export function getGeneralDriveFile(fileId: string): Promise<ApiResponse<GeneralDriveFile>> {
+  return apiFetch<ApiResponse<GeneralDriveFile>>(
+    `/general/drive-files/${encodeURIComponent(fileId)}`,
+  );
+}
+
+/** GET /api/butlers/{butler}/deadlines/{deadlineId} — one deadline (owner only). */
+export function getButlerDeadline(
+  butler: string,
+  deadlineId: string,
+): Promise<ApiResponse<DeadlineRecord>> {
+  return apiFetch<ApiResponse<DeadlineRecord>>(
+    `/butlers/${encodeURIComponent(butler)}/deadlines/${encodeURIComponent(deadlineId)}`,
   );
 }
 
@@ -6237,6 +6256,11 @@ export interface SystemConditionsParams {
   source?: string;
   /** "open" | "aging" | "resolved" */
   state?: string;
+  /**
+   * "work" | "personal" | "undeclared" -- owner ledger only (400 otherwise).
+   * Narrows to commitments by the sphere the owner declared.
+   */
+  sphere?: string;
   offset?: number;
   limit?: number;
 }
@@ -6260,6 +6284,7 @@ export function getSystemConditions(
   if (params.ledger) query.set("ledger", params.ledger);
   if (params.source) query.set("source", params.source);
   if (params.state) query.set("state", params.state);
+  if (params.sphere) query.set("sphere", params.sphere);
   if (params.offset !== undefined) query.set("offset", String(params.offset));
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   const qs = query.toString();

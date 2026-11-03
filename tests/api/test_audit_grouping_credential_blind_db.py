@@ -48,8 +48,6 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_butler_configs, get_db_optional, get_mcp_manager
 from butlers.api.routers import audit as audit_router
 from butlers.core.audit import PROBE_FAILURE_VOCABULARY
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -64,30 +62,15 @@ BASE_URL = "http://test"
 ISSUES_PATH = "/api/issues?window=all"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def audit_pool(db) -> asyncpg.Pool:
+    p = await db("core", "switchboard")
     await clear_audit_log_for_test(p)
-    yield p
-    await p.close()
+    return p
 
 
 @pytest.fixture
-def issues_app(pool: asyncpg.Pool) -> FastAPI:
+def issues_app(audit_pool: asyncpg.Pool) -> FastAPI:
     """Mount the real Issues router over the migrated DB with no butlers to probe.
 
     ``get_butler_configs`` is overridden to an empty roster so the live
@@ -98,7 +81,7 @@ def issues_app(pool: asyncpg.Pool) -> FastAPI:
     overridden too.
     """
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
     application = create_app()
     application.dependency_overrides[get_db_optional] = lambda: mock_db
     application.dependency_overrides[get_butler_configs] = lambda: []
@@ -153,7 +136,7 @@ async def _summaries(pool: asyncpg.Pool) -> list[str]:
     ["u:google", "user:google", "s:BUTLER_TELEGRAM_TOKEN", "system:X", "c:claude", "cli:claude"],
 )
 async def test_no_credential_spelling_publishes_its_provider_text(
-    pool: asyncpg.Pool, target: str
+    audit_pool: asyncpg.Pool, target: str
 ) -> None:
     """Every scope spelling that can appear in the column is covered.
 
@@ -163,13 +146,13 @@ async def test_no_credential_spelling_publishes_its_provider_text(
     """
     sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
     await _insert_failure(
-        pool,
+        audit_pool,
         target=target,
         error=sentinel,
         note=f"Probe failed: {sentinel}; probe_status=live_failed:401",
     )
 
-    summaries = await _summaries(pool)
+    summaries = await _summaries(audit_pool)
     assert summaries, "the credential failure vanished from the feed entirely"
     assert all(sentinel not in s for s in summaries), (
         f"provider text survived as a group title for target={target}"
@@ -179,27 +162,29 @@ async def test_no_credential_spelling_publishes_its_provider_text(
     )
 
 
-async def test_two_credentials_remain_two_distinguishable_groups(pool: asyncpg.Pool) -> None:
+async def test_two_credentials_remain_two_distinguishable_groups(audit_pool: asyncpg.Pool) -> None:
     """The fix must not collapse the credential namespace into one group.
 
     Blanking the summary would have made every credential failure in the fleet
     share one identity — one row in the feed, one occurrence count, and one
     acknowledgement covering unrelated broken credentials.
     """
-    await _insert_failure(pool, target="u:google", error=f"a-{uuid.uuid4().hex}")
-    await _insert_failure(pool, target="u:notion", error=f"b-{uuid.uuid4().hex}")
+    await _insert_failure(audit_pool, target="u:google", error=f"a-{uuid.uuid4().hex}")
+    await _insert_failure(audit_pool, target="u:notion", error=f"b-{uuid.uuid4().hex}")
 
-    summaries = await _summaries(pool)
+    summaries = await _summaries(audit_pool)
     assert len(set(summaries)) == 2, f"credential groups collapsed together: {summaries}"
 
-    issues = [issue_from_audit_group_row(r) for r in await pool.fetch(build_audit_group_query())]
+    issues = [
+        issue_from_audit_group_row(r) for r in await audit_pool.fetch(build_audit_group_query())
+    ]
     assert len({i.issue_key for i in issues}) == 2, (
         "two credentials share one issue_key; acking one would ack the other"
     )
 
 
 async def test_differing_provider_text_on_one_uncategorised_credential_is_one_group(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """Uncategorised rows still group by credential alone, and must keep doing so.
 
@@ -212,10 +197,10 @@ async def test_differing_provider_text_on_one_uncategorised_credential_is_one_gr
     ``test_distinct_causes_on_one_credential_are_distinct_groups`` — but only
     when the cause was persisted at write time.
     """
-    await _insert_failure(pool, target="u:google", error=f"401-{uuid.uuid4().hex}")
-    await _insert_failure(pool, target="u:google", error=f"429-{uuid.uuid4().hex}")
+    await _insert_failure(audit_pool, target="u:google", error=f"401-{uuid.uuid4().hex}")
+    await _insert_failure(audit_pool, target="u:google", error=f"429-{uuid.uuid4().hex}")
 
-    rows = await pool.fetch(build_audit_group_query())
+    rows = await audit_pool.fetch(build_audit_group_query())
     assert len(rows) == 1, f"one credential produced {len(rows)} groups"
     assert int(rows[0]["occurrences"]) == 2
 
@@ -226,7 +211,7 @@ async def test_differing_provider_text_on_one_uncategorised_credential_is_one_gr
 
 
 async def test_distinct_causes_on_one_credential_are_distinct_groups(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """AC2, executed: one credential, two causes, two groups.
 
@@ -238,19 +223,19 @@ async def test_distinct_causes_on_one_credential_are_distinct_groups(
     vocabulary member.
     """
     await _insert_failure(
-        pool,
+        audit_pool,
         target="u:google",
         error=f"synthetic-withheld-{uuid.uuid4().hex}",
         failure_category="rejected",
     )
     await _insert_failure(
-        pool,
+        audit_pool,
         target="u:google",
         error=f"synthetic-withheld-{uuid.uuid4().hex}",
         failure_category="rate_limited",
     )
 
-    rows = await pool.fetch(build_audit_group_query())
+    rows = await audit_pool.fetch(build_audit_group_query())
     assert len(rows) == 2, (
         f"two causes on one credential produced {len(rows)} group(s); the cause "
         "is not part of the identity"
@@ -261,7 +246,7 @@ async def test_distinct_causes_on_one_credential_are_distinct_groups(
     )
 
 
-async def test_same_cause_on_one_credential_stays_one_group(pool: asyncpg.Pool) -> None:
+async def test_same_cause_on_one_credential_stays_one_group(audit_pool: asyncpg.Pool) -> None:
     """The split is by cause, not by row: repeats must still aggregate.
 
     Without this the previous test passes just as well against an identity that
@@ -270,38 +255,38 @@ async def test_same_cause_on_one_credential_stays_one_group(pool: asyncpg.Pool) 
     """
     for _ in range(3):
         await _insert_failure(
-            pool,
+            audit_pool,
             target="u:google",
             error=f"synthetic-withheld-{uuid.uuid4().hex}",
             failure_category="rejected",
         )
 
-    rows = await pool.fetch(build_audit_group_query())
+    rows = await audit_pool.fetch(build_audit_group_query())
     assert len(rows) == 1, f"three occurrences of one cause produced {len(rows)} groups"
     assert int(rows[0]["occurrences"]) == 3
 
 
-async def test_the_category_reaches_the_group_title(pool: asyncpg.Pool) -> None:
+async def test_the_category_reaches_the_group_title(audit_pool: asyncpg.Pool) -> None:
     """The published title says which cause, so the split is legible to a human.
 
     Two groups that differ only in an invisible way would be a worse feed than
     one: the operator sees two identical rows and cannot tell which to act on.
     """
     await _insert_failure(
-        pool,
+        audit_pool,
         target="u:google",
         error=f"synthetic-withheld-{uuid.uuid4().hex}",
         failure_category="rate_limited",
     )
 
-    summaries = await _summaries(pool)
+    summaries = await _summaries(audit_pool)
     assert summaries == ["Credential failed: u:google [rate_limited] (diagnostic withheld)"], (
         f"unexpected categorised group title: {summaries}"
     )
 
 
 async def test_uncategorised_rows_keep_the_byte_identical_pre_change_title(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """The stated decision for historic rows, asserted as an exact string.
 
@@ -312,16 +297,18 @@ async def test_uncategorised_rows_keep_the_byte_identical_pre_change_title(
     identity and ``issue_key`` is its hash: any drift silently orphans every
     existing acknowledgement.
     """
-    await _insert_failure(pool, target="u:google", error=f"synthetic-withheld-{uuid.uuid4().hex}")
+    await _insert_failure(
+        audit_pool, target="u:google", error=f"synthetic-withheld-{uuid.uuid4().hex}"
+    )
 
-    summaries = await _summaries(pool)
+    summaries = await _summaries(audit_pool)
     assert summaries == ["Credential failed: u:google (diagnostic withheld)"], (
         f"a historic uncategorised row no longer groups as it did: {summaries}"
     )
 
 
 async def test_a_categorised_row_does_not_join_its_credential_s_legacy_group(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """The transition, made explicit rather than left to be discovered.
 
@@ -331,15 +318,17 @@ async def test_a_categorised_row_does_not_join_its_credential_s_legacy_group(
     group stops growing and ages out of the window. Pinning it here means the
     behaviour is a decision on record, not a surprise in someone's feed.
     """
-    await _insert_failure(pool, target="u:google", error=f"synthetic-withheld-{uuid.uuid4().hex}")
     await _insert_failure(
-        pool,
+        audit_pool, target="u:google", error=f"synthetic-withheld-{uuid.uuid4().hex}"
+    )
+    await _insert_failure(
+        audit_pool,
         target="u:google",
         error=f"synthetic-withheld-{uuid.uuid4().hex}",
         failure_category="rejected",
     )
 
-    summaries = sorted(await _summaries(pool))
+    summaries = sorted(await _summaries(audit_pool))
     assert summaries == [
         "Credential failed: u:google (diagnostic withheld)",
         "Credential failed: u:google [rejected] (diagnostic withheld)",
@@ -352,7 +341,7 @@ async def test_a_categorised_row_does_not_join_its_credential_s_legacy_group(
 
 
 async def test_the_check_constraint_allows_exactly_the_live_vocabulary(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """core_202 inlines the vocabulary; this is what keeps the copy honest.
 
@@ -362,7 +351,7 @@ async def test_the_check_constraint_allows_exactly_the_live_vocabulary(
     that fails in production and nowhere else. Failing here instead makes the
     missing migration the thing that blocks the merge.
     """
-    clause = await pool.fetchval(
+    clause = await audit_pool.fetchval(
         """
         SELECT pg_get_constraintdef(oid)
         FROM pg_constraint
@@ -378,7 +367,7 @@ async def test_the_check_constraint_allows_exactly_the_live_vocabulary(
     )
 
 
-async def test_the_database_refuses_a_raw_probe_token(pool: asyncpg.Pool) -> None:
+async def test_the_database_refuses_a_raw_probe_token(audit_pool: asyncpg.Pool) -> None:
     """The structural half of owner Option C, not just the application clamp.
 
     ``clamp_failure_category`` collapses a stray value to ``other`` on the way
@@ -389,7 +378,7 @@ async def test_the_database_refuses_a_raw_probe_token(pool: asyncpg.Pool) -> Non
     """
     with pytest.raises(asyncpg.CheckViolationError):
         await _insert_failure(
-            pool,
+            audit_pool,
             target="u:google",
             error="synthetic-withheld",
             failure_category="live_failed:403",
@@ -397,7 +386,7 @@ async def test_the_database_refuses_a_raw_probe_token(pool: asyncpg.Pool) -> Non
 
 
 async def test_append_clamps_a_non_member_instead_of_dropping_the_row(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """A mislabelled category must cost the label, never the audit row.
 
@@ -407,7 +396,7 @@ async def test_append_clamps_a_non_member_instead_of_dropping_the_row(
     an honest bucket.
     """
     row_id = await audit_router.append(
-        pool,
+        audit_pool,
         "owner",
         "failed",
         target="u:google",
@@ -415,26 +404,28 @@ async def test_append_clamps_a_non_member_instead_of_dropping_the_row(
         result="error",
         failure_category="live_failed:403",
     )
-    stored = await pool.fetchval(
+    stored = await audit_pool.fetchval(
         "SELECT failure_category FROM public.audit_log WHERE id = $1", row_id
     )
     assert stored == "other", f"a non-vocabulary category was stored as {stored!r}"
 
 
 async def test_non_credential_rows_keep_their_error_summary_verbatim(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """A namespace carve-out, not a blanket gag on operator diagnostics."""
-    await _insert_failure(pool, target="butler:qa", error="DB connection timeout")
-    await _insert_failure(pool, target=None, actor="health", action="session", error="Boom\ndetail")
+    await _insert_failure(audit_pool, target="butler:qa", error="DB connection timeout")
+    await _insert_failure(
+        audit_pool, target=None, actor="health", action="session", error="Boom\ndetail"
+    )
 
-    summaries = await _summaries(pool)
+    summaries = await _summaries(audit_pool)
     assert "DB connection timeout" in summaries
     assert "Boom" in summaries, f"first-line normalization changed: {summaries}"
 
 
 async def test_drill_down_resolves_the_credential_group_it_published(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """The occurrences query binds the published summary as ``$1``.
 
@@ -443,11 +434,11 @@ async def test_drill_down_resolves_the_credential_group_it_published(
     shown — the exact disagreement the shared CTE exists to prevent.
     """
     sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
-    await _insert_failure(pool, target="u:google", error=sentinel)
+    await _insert_failure(audit_pool, target="u:google", error=sentinel)
 
-    group = (await pool.fetch(build_audit_group_query()))[0]
+    group = (await audit_pool.fetch(build_audit_group_query()))[0]
     issue = issue_from_audit_group_row(group)
-    rows = await pool.fetch(
+    rows = await audit_pool.fetch(
         build_audit_group_occurrences_query(), issue.error_message, issue.butlers, 50, 0
     )
     assert len(rows) == 1, "the drill-down lost its own group"
@@ -462,7 +453,7 @@ async def test_drill_down_resolves_the_credential_group_it_published(
 
 
 async def test_issues_response_body_contains_no_provider_text(
-    pool: asyncpg.Pool, issues_app: FastAPI
+    audit_pool: asyncpg.Pool, issues_app: FastAPI
 ) -> None:
     """The acceptance criterion, asserted on the serialized response.
 
@@ -476,7 +467,7 @@ async def test_issues_response_body_contains_no_provider_text(
     sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
     for category in (None, "rejected"):
         await _insert_failure(
-            pool,
+            audit_pool,
             target="u:google",
             error=sentinel,
             note=f"Probe failed: {sentinel}; probe_status=live_failed:401",
@@ -494,7 +485,7 @@ async def test_issues_response_body_contains_no_provider_text(
 
 
 async def test_occurrences_response_body_contains_no_provider_text(
-    pool: asyncpg.Pool, issues_app: FastAPI
+    audit_pool: asyncpg.Pool, issues_app: FastAPI
 ) -> None:
     """The drill-down one door past the feed carries no provider text either.
 
@@ -505,13 +496,13 @@ async def test_occurrences_response_body_contains_no_provider_text(
     """
     sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
     await _insert_failure(
-        pool,
+        audit_pool,
         target="u:google",
         error=sentinel,
         note=f"Probe failed: {sentinel}; probe_status=live_failed:401",
     )
 
-    group = (await pool.fetch(build_audit_group_query()))[0]
+    group = (await audit_pool.fetch(build_audit_group_query()))[0]
     issue_key = issue_from_audit_group_row(group).issue_key
 
     transport = httpx.ASGITransport(app=issues_app)

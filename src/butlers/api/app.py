@@ -730,6 +730,7 @@ def create_app(
                     ".*key.*",
                     ".*secret.*",
                     ".*password.*",
+                    ".*capture-intake.*",
                 ],
             )
             logger.info("FastAPI OTel instrumentation enabled")

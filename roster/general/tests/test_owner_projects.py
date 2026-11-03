@@ -175,22 +175,143 @@ async def test_crafted_or_invalid_create_is_refused_without_pool(seams, payload:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("ref_kind", "ref_id"),
+    ("ref_kind", "ref_id", "accepted"),
     [
-        ("trip", "https://example.test/trip"),
-        ("trip", "not-a-uuid"),
-        ("calendar_event", _TRIP_ID.upper()),
-        ("goal", _TRIP_ID),
-        ("drive_file", "folder/file"),
+        ("trip", "https://example.test/trip", False),
+        ("trip", "not-a-uuid", False),
+        ("calendar_event", _TRIP_ID.upper(), False),
+        ("goal", _TRIP_ID, False),
+        ("drive_file", "folder/file", False),
+        ("drive_file", "a.b", False),
+        ("deadline", _TRIP_ID, False),
+        ("deadline", f"Finance:{_TRIP_ID}", False),
+        ("deadline", "finance:not-a-uuid", False),
+        ("deadline", f"finance:{_TRIP_ID}", True),
+        ("drive_file", "1AbC_def-9", True),
     ],
 )
-async def test_links_take_typed_opaque_ids_only(seams, ref_kind: str, ref_id: str) -> None:
+async def test_links_take_typed_opaque_ids_only(
+    seams, ref_kind: str, ref_id: str, accepted: bool
+) -> None:
+    """Each kind takes only the id shape its reader resolves; valid ids reach the pool."""
     async with _client(_mounted(seams.manager, session=True)) as http:
         response = await http.post(
             f"{_ROUTE}/{_FIXED_ID}/links", json={"ref_kind": ref_kind, "ref_id": ref_id}
         )
-    assert response.status_code == 422
+    assert response.status_code == (503 if accepted else 422)
+    assert seams.manager.calls == (1 if accepted else 0)
+
+
+class _DriveModule:
+    """General's MCP seam: answers drive_get_file_metadata with a fixed payload.
+
+    ``tools`` is what General lists; ``raises`` makes the tool call itself fail,
+    as an unknown tool does when the Drive module is not loaded.
+    """
+
+    def __init__(
+        self,
+        payload=None,
+        *,
+        unreachable: bool = False,
+        raises: bool = False,
+        tools: tuple[str, ...] = ("drive_get_file_metadata", "notify"),
+    ) -> None:
+        self.payload = payload
+        self.unreachable = unreachable
+        self.raises = raises
+        self.tools = tools
+        self.calls: list[tuple[str, dict]] = []
+
+    async def get_client(self, name: str):
+        assert name == "general"
+        if self.unreachable:
+            raise ConnectionRefusedError("synthetic")
+        return self
+
+    async def call_tool(self, tool: str, arguments: dict):
+        self.calls.append((tool, arguments))
+        if self.raises:
+            raise RuntimeError(f"Unknown tool: {tool}")
+        return [SimpleNamespace(text=json.dumps(self.payload))]
+
+    async def list_tools(self):
+        return [SimpleNamespace(name=name) for name in self.tools]
+
+
+_DRIVE_ID = "1AbC_def-9"
+_DRIVE_META = {
+    "id": _DRIVE_ID,
+    "name": "<b>Lease</b>.pdf",
+    "mimeType": "application/pdf",
+    "modifiedTime": "2026-10-30T08:00:00.000Z",
+    "webViewLink": "https://drive.example.test/file",
+    "owners": [{"emailAddress": "someone@example.test"}],
+}
+_NOT_CONFIGURED = {"status": "error", "error": "Google Drive not connected. Connect a Google..."}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("module", "path_id", "expected"),
+    [
+        (_DriveModule(_DRIVE_META), _DRIVE_ID, (200, "resolved")),
+        (_DriveModule({"status": "not_found", "file": None}), _DRIVE_ID, (404, None)),
+        (
+            _DriveModule({"status": "error", "error": "Drive API error (HTTP 500)"}),
+            _DRIVE_ID,
+            (503, None),
+        ),
+        (_DriveModule({**_DRIVE_META, "id": "other"}), _DRIVE_ID, (503, None)),
+        (_DriveModule(unreachable=True), _DRIVE_ID, (503, None)),
+        (_DriveModule(_DRIVE_META), "a.b", (404, None)),
+        # Classify before flagging: Drive legitimately absent is calm, not degraded.
+        (_DriveModule(raises=True, tools=("notify",)), _DRIVE_ID, (200, "not_connected")),
+        (_DriveModule(_NOT_CONFIGURED), _DRIVE_ID, (200, "not_connected")),
+        # A failing call while General still lists the Drive tool is a real failure.
+        (_DriveModule(raises=True), _DRIVE_ID, (503, None)),
+    ],
+)
+async def test_drive_file_reader_returns_name_and_type_only(
+    seams, module: _DriveModule, path_id: str, expected: tuple[int, str | None]
+) -> None:
+    """The owner reads one file's identity through General's Drive module, nothing more."""
+    from butlers.api.deps import get_mcp_manager
+
+    app = _mounted(seams.manager)
+    app.dependency_overrides[get_mcp_manager] = lambda: module
+    async with _client(app) as http:
+        response = await http.get(f"/api/general/drive-files/{path_id}")
+    status, state = expected
+    assert response.status_code == status
+    if state == "resolved":
+        assert response.json()["data"] == {
+            "state": "resolved",
+            "file": {
+                "id": _DRIVE_ID,
+                "name": "<b>Lease</b>.pdf",
+                "mime_type": "application/pdf",
+                "modified_time": "2026-10-30T08:00:00Z",
+            },
+        }
+    elif state == "not_connected":
+        assert response.json()["data"] == {"state": "not_connected", "file": None}
+    else:
+        assert "Drive API" not in response.text
+        assert "Unknown tool" not in response.text
+    # A malformed id never reaches Drive; nothing touches the project pool.
+    assert len(module.calls) == (0 if path_id == "a.b" or module.unreachable else 1)
     assert seams.manager.calls == 0
+
+    # A non-owner is refused before the Drive module is asked.
+    no_owner = _mounted(seams.manager, create_app(api_key=_OWNER_KEY))
+    no_owner.state.owner_auth_service = _DomainOwnerState(_OWNER_KEY)
+    no_owner.dependency_overrides[get_mcp_manager] = lambda: module
+    before = len(module.calls)
+    async with _client(no_owner) as http:
+        refused = await http.get(f"/api/general/drive-files/{_DRIVE_ID}")
+    assert refused.status_code == 401
+    assert len(module.calls) == before
 
 
 # ---------------------------------------------------------------------------

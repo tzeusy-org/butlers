@@ -94,6 +94,9 @@ The health butler SHALL store measurements, symptoms, medication doses, medicati
 - **WHEN** `medication_log_dose` is called
 - **THEN** it MUST internally call `store_fact` with `predicate='took_dose'`, `valid_at=taken_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={medication_id, skipped, notes}`
 - **AND** `medication_history` MUST query facts with `predicate='took_dose'`
+- **AND** a medication's course MUST be every `medication` fact of its subject, across all validities, created after the subject's latest retraction before it and up to and including the first retraction at or after it; an edit (which supersedes the fact with a new id) continues the course, and a delete ends it so a re-add starts a new course
+- **AND** every dose read for one medication (`medication_history`, `trend_report` adherence, the adherence-dip insight scan, and the dashboard `GET /medications/{id}/doses`) MUST match doses whose `medication_id` is any fact of the medication's course; dose records MUST NOT be rewritten
+- **AND** the expected-dose denominator (`trend_report` and `GET /medications/{id}/adherence`) MUST cap the window at the course start (its earliest fact's `created_at`), not the current fact's `created_at`, so adherence never exceeds 100% after an edit
 
 #### Scenario: Medication property fact wrappers
 - **WHEN** `medication_add` is called

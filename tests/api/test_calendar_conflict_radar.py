@@ -23,6 +23,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
+from butlers.api.read_models.calendar_workspace import query_calendar_conflicts
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     detect_conflict_issues,
@@ -329,7 +330,42 @@ async def test_conflicts_endpoint_empty_on_clean_window(app):
     assert data["issues"] == []
 
 
-async def test_conflicts_endpoint_attaches_pending_proposal(app):
+async def test_conflicts_proposal_stays_attached_when_resync_rotates_surviving_copy(app):
+    """bu-nd32y3: each calendar schema holds its own copy of a provider event and the
+    origin_ref collapse keeps the freshest, so a resync can make another schema's copy
+    survive. The overlap's pair_id (and the proposal stored under it) must not rotate."""
+    a_general = _ws_row(entry_id="a-general", title="Design review", start=_DAY)
+    a_relationship = _ws_row(entry_id="a-relationship", title="Design review", start=_DAY)
+    for row in (a_general, a_relationship):
+        row["origin_ref"] = "provider-a"
+    b = _ws_row(entry_id="b", title="1:1", start=_DAY + timedelta(minutes=30))
+    a_general["instance_updated_at"] = _DAY
+    a_relationship["instance_updated_at"] = _DAY - timedelta(hours=1)
+    proposals: list[dict] = []
+    _, db = _build_app(
+        app,
+        workspace_rows={"general": [a_general, b], "relationship": [a_relationship]},
+        proposal_rows={"general": proposals},
+    )
+    window = {"start": _DAY - timedelta(hours=9), "end": _DAY + timedelta(hours=15)}
+
+    before = await query_calendar_conflicts(db, **window)
+    (overlap,) = [i for i in before.issues if i.kind == "overlap"]
+    assert {e.entry_id for e in overlap.events} == {"a-general", "b"}
+    pid = uuid4()
+    proposals.append(
+        _proposal_row(proposal_id=pid, source_event_id=str(overlap.pair_id), start=_DAY)
+    )
+
+    a_relationship["instance_updated_at"] = _DAY + timedelta(hours=1)  # resync: other copy wins
+    after = await query_calendar_conflicts(db, **window)
+    (overlap,) = [i for i in after.issues if i.kind == "overlap"]
+    assert {e.entry_id for e in overlap.events} == {"a-relationship", "b"}
+    assert overlap.proposal_ids == [str(pid)]
+
+
+async def test_conflicts_endpoint_attaches_proposal_stored_under_legacy_instance_pair_id(app):
+    """Proposals written before bu-nd32y3 carry the instance-based pair id; they still join."""
     a = _ws_row(entry_id="a", title="Design review", start=_DAY)
     b = _ws_row(entry_id="b", title="1:1", start=_DAY + timedelta(minutes=30))
     pair_id = str(overlap_pair_id("a", "b"))

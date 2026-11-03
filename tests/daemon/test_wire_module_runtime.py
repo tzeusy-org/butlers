@@ -89,9 +89,17 @@ def _patch_infra():
     mock_connection.fetch = AsyncMock(return_value=[])
     mock_connection.execute = AsyncMock(return_value=None)
 
+    transaction_depth = 0
+    mock_connection.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
+
     @asynccontextmanager
     async def transaction():
-        yield
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield
+        finally:
+            transaction_depth -= 1
 
     mock_connection.transaction = MagicMock(side_effect=transaction)
 

@@ -21,6 +21,15 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 
+class DeadlineDispatchDeferred(Exception):
+    """Raised by a job-mode deadline's job when it chose not to act yet.
+
+    The deadline pass leaves the threshold unfired and logs at info, so the next
+    tick tries again; a deadline threshold has no later run to catch up on. Any
+    other exception is a dispatch failure with the same retry semantics.
+    """
+
+
 def validate_deadline_input(
     *,
     target_date: date,

@@ -543,6 +543,8 @@ BEGIN
     --   relationship.entity_facts       — CoreSessionsAdapter contact resolution
     --                                      (bu-hjo3i) + comms.message_bursts
     --                                      participant resolution (bu-jc6htw.1)
+    --   relationship.address_geocodes   — owner anchor-address coordinates
+    --                                      (bu-r3fmja.3)
     --
     -- Planned (PLANNED compatibility; tables may not yet exist):
     --   connectors.steam_play_history
@@ -617,6 +619,18 @@ BEGIN
         ) THEN
             EXECUTE format(
                 'GRANT SELECT ON TABLE %I.entity_facts TO butler_chronicler_rw',
+                _schema
+            );
+        END IF;
+        -- address_geocodes (owner anchor-address coordinates, bu-r3fmja.3 /
+        -- chronicler-situational-inference; relationship schema only). rel_038 grants
+        -- it on creation; this keeps reruns convergent.
+        IF _schema = 'relationship' AND EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = _schema AND table_name = 'address_geocodes'
+        ) THEN
+            EXECUTE format(
+                'GRANT SELECT ON TABLE %I.address_geocodes TO butler_chronicler_rw',
                 _schema
             );
         END IF;
