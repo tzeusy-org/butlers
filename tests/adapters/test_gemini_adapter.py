@@ -56,7 +56,8 @@ def test_binary_filter_env_and_system_prompt(tmp_path: Path):
 
 
 def test_build_config_file_and_tool_call_formats(tmp_path: Path):
-    """build_config_file() writes gemini_mcp.json; both args/arguments functionCall keys work."""
+    """build_config_file() writes gemini_mcp.json; both args/arguments functionCall keys work;
+    only ``mcp_``-prefixed names (the CLI's MCP naming) escape the ``builtin`` tag."""
     config_path = GeminiAdapter().build_config_file(
         mcp_servers={"my-butler": {"url": "http://localhost:9100/mcp"}}, tmp_dir=tmp_path
     )
@@ -69,16 +70,15 @@ def test_build_config_file_and_tool_call_formats(tmp_path: Path):
         {
             "type": "functionCall",
             "id": "fc1",
-            "functionCall": {"name": "my_tool", "args": {"arg1": "val1"}},
+            "functionCall": {"name": "mcp_my-butler_my_tool", "args": {"arg1": "val1"}},
         }
     )
     _, tool_calls = _parse_gemini_output(line, "")
-    assert len(tool_calls) == 1 and tool_calls[0]["id"] == "fc1"
-    assert tool_calls[0]["name"] == "my_tool" and tool_calls[0]["input"] == {"arg1": "val1"}
+    assert tool_calls == [{"id": "fc1", "name": "mcp_my-butler_my_tool", "input": {"arg1": "val1"}}]
 
     # args and arguments both supported
     tc1 = _extract_tool_call({"id": "fc1", "functionCall": {"name": "tool_a", "args": {"a": 1}}})
-    assert tc1["name"] == "tool_a" and tc1["input"] == {"a": 1}
+    assert tc1["name"] == "tool_a" and tc1["input"] == {"a": 1} and tc1["builtin"] is True
     tc2 = _extract_tool_call(
         {"id": "fc2", "functionCall": {"name": "tool_b", "arguments": {"b": 2}}}
     )
@@ -338,7 +338,7 @@ async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() ->
     }
     tool_use = {
         "type": "tool_use",
-        "tool_name": "state_get",
+        "tool_name": "mcp_general_state_get",
         "tool_id": "c1",
         "parameters": {"key": "bar"},
     }
@@ -357,7 +357,9 @@ async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() ->
     assert isinstance(error, TerminalResultError)
     assert str(error).startswith("Gemini CLI exited with code 53: ")
     assert error.usage["input_tokens"] == 5 and error.usage["cache_read_input_tokens"] == 100
-    assert error.tool_calls == [{"id": "c1", "name": "state_get", "input": {"key": "bar"}}]
+    assert error.tool_calls == [
+        {"id": "c1", "name": "mcp_general_state_get", "input": {"key": "bar"}}
+    ]
     assert error.served["executions"][0]["error"]["code"] == "max_turns"
     assert info["is_pre_tool_call"] is False and info["exit_code"] == 53
 
@@ -403,6 +405,7 @@ async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -
             "id": "list_directory__list_directory_1793569777410_0",
             "name": "list_directory",
             "input": {"dir_path": "."},
+            "builtin": True,
         }
     ]
     assert usage == {
