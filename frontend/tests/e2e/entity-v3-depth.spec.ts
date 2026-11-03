@@ -121,7 +121,7 @@ function activityBins(): ResponseOf<"getEntityActivityBins"> {
       count: i % 17 === 0 ? 3 : 0,
     });
   }
-  return { bins, degraded: false, degraded_reason: null };
+  return { bins, degraded: false, degraded_reason: null, chronicler_truncated: false };
 }
 
 function activityStream(): ResponseOf<"getEntityActivity"> {
@@ -153,6 +153,7 @@ function activityStream(): ResponseOf<"getEntityActivity"> {
     offset: 0,
     degraded: false,
     degraded_reason: null,
+    chronicler_truncated: false,
   };
 }
 
