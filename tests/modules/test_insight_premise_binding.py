@@ -527,6 +527,103 @@ class TestPremiseBoundDelivery:
         assert "Since last digest: Resolved" in sent
         assert await premise_pool.fetchval("SELECT state FROM insight_amendments") == "folded"
 
+    @pytest.mark.parametrize(
+        ("resolved", "status", "expected_states"),
+        [
+            (("b3",), "edited", ["applied"]),
+            (("b3", "b4"), "edited", ["applied", "applied"]),
+            (("b3",), "rejected", ["fold"]),
+            (("b3", "b4"), "two-cycles", ["applied", "applied"]),
+        ],
+        ids=["one-line", "two-lines-one-edit", "rejected-folds", "second-cycle-keeps-first"],
+    )
+    async def test_a_resolved_digest_line_is_struck_inside_the_delivered_digest(
+        self, premise_pool, resolved, status, expected_states
+    ):
+        from butlers.core.condition_ledger import Observation, compute_fingerprint
+        from butlers.core.owner_conditions import reconcile_snapshot
+
+        source = "finance:bill-overdue"
+        prints = {k: compute_fingerprint(source, 1, {"bill_id": k}) for k in ("b3", "b4")}
+        await reconcile_snapshot(
+            premise_pool,
+            source=source,
+            observations=[Observation(fingerprint=f, summary=k) for k, f in prints.items()],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+        for key, name in (("b3", "Water"), ("b4", "Rent")):
+            await broker.propose_insight_candidate(
+                premise_pool,
+                origin_butler="finance",
+                priority=92,
+                category="bill-overdue",
+                dedup_key=f"finance:bill-overdue:{key}:2026-08-21",
+                message=f"{name} bill is overdue",
+                expires_at=_future(),
+                premise=owner_condition_premise(source, prints[key]),
+                now=_PINNED_NOW,
+            )
+        # Both candidates must share one digest: lift the per-cycle budget.
+        await premise_pool.execute("UPDATE insight_settings SET custom_budget = 3 WHERE id = 1")
+        notify = AsyncMock(return_value=_TELEGRAM_SENT)
+        await broker.delivery_cycle(premise_pool, notify_fn=notify, now=_PINNED_NOW)
+        sent = notify.await_args.args[0]
+        assert "Water bill is overdue" in sent and "Rent bill is overdue" in sent
+
+        two_cycles = status == "two-cycles"
+        if two_cycles:
+            status = "edited"
+            resolved = ("b3",)
+        remaining = [k for k in ("b3", "b4") if k not in resolved]
+        observations = [Observation(fingerprint=prints[k], summary=k) for k in remaining]
+        await reconcile_snapshot(
+            premise_pool,
+            source=source,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+
+        amend = AsyncMock(return_value={"status": status})
+        later = _PINNED_NOW + timedelta(minutes=5)
+        for step in (0, 1):  # the second cycle is a replay
+            await broker.delivery_cycle(
+                premise_pool,
+                notify_fn=notify,
+                amend_fn=amend,
+                now=later + timedelta(minutes=5 * step),
+            )
+
+        if two_cycles:
+            await reconcile_snapshot(
+                premise_pool,
+                source=source,
+                observations=[],
+                snapshot_complete=True,
+                initial_grace_seconds=3600,
+            )
+            await broker.delivery_cycle(
+                premise_pool, notify_fn=notify, amend_fn=amend, now=later + timedelta(hours=1)
+            )
+            assert amend.await_count == 2
+            final = amend.await_args.args[1]
+            assert "~~Water bill is overdue~~ Resolved" in final  # earlier strike kept
+            assert "~~Rent bill is overdue~~ Resolved" in final
+            resolved = ("b3", "b4")
+        rows = await premise_pool.fetch("SELECT state FROM insight_amendments")
+        assert sorted(r["state"] for r in rows) == sorted(expected_states)
+        if not two_cycles:
+            amend.assert_awaited_once()  # the replayed cycle issues no second edit
+        text = amend.await_args_list[0].args[1]
+        if not two_cycles:
+            assert text.count("~~") == 2 * len(resolved)
+        assert "~~Water bill is overdue~~ Resolved" in text
+        if not two_cycles:
+            assert ("~~Rent bill is overdue~~ Resolved" in text) is ("b4" in resolved)
+        if status == "edited":
+            assert text.startswith(sent.split("\n")[0])  # other lines untouched
+
 
 async def _delivered_owner_condition_candidate(pool, name: str) -> tuple[str, str, object]:
     """An open owner condition plus a delivered candidate whose premise it is."""

@@ -904,8 +904,13 @@ When a delivered candidate's `owner_condition` premise resolves, the delivered m
 - **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
 - **THEN** the cycle edits that message to a struck-through original plus `Resolved HH:MM UTC`, marks the amendment `applied`, and records one `outcome="amended"` ledger row
 
+#### Scenario: A resolved digest line is struck inside the delivered Telegram digest
+- **WHEN** pending amendments' candidates were delivered as lines of one Telegram digest with a stored chat id, provider message id and sent text
+- **THEN** the cycle edits that one message once, striking every resolved line (earlier applied strikes kept) with its `Resolved HH:MM UTC` note and leaving other lines untouched, marks those amendments `applied`, and sends no new notification
+- **AND** a replayed cycle issues no second edit
+
 #### Scenario: An uneditable delivery folds into the next digest
-- **WHEN** the delivery was a digest line, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
+- **WHEN** the delivery was a digest whose sent text was not recorded, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
 - **THEN** the amendment becomes `fold` and the next delivery that happens anyway SHALL carry a `Since last digest: Resolved ...` line, after which it is `folded`
 - **AND** a correction SHALL NEVER be sent as its own standalone message
 
