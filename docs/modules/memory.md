@@ -81,7 +81,14 @@ unknown authority yields `mixed`). Steering memory is gated on that stamp:
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
-- **Profile Facts** admit only owner-class facts. Every other rendered fact,
+- **Profile Facts** admit only owner-class, durable facts. Event and transaction
+  predicates (purchases, doses, meals, sleep sessions, interactions) are excluded
+  even when owner-authored; they stay stored and recallable. A fact is event-class
+  when its predicate is registered `predicate_registry.is_temporal` (seeded, and
+  set automatically for any predicate first stored with `valid_at`), so legacy rows
+  need no backfill and no second list exists. A predicate missing from the registry
+  is treated as durable.
+  Every other rendered fact,
   whoever it is about (the owner or Bob), is a Task-Relevant Fact qualified as
   `reported by <sender>` (`third_party`), `partly reported by <sender>` (`mixed`)
   or `source unverified` (NULL). An unresolvable sender name renders as
