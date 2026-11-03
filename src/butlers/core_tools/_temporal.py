@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import Field
 
@@ -14,7 +14,18 @@ from butlers.core.temporal.deadlines_db import deadline_create as _deadline_crea
 from butlers.core.temporal.deadlines_db import deadline_delete as _deadline_delete
 from butlers.core.temporal.deadlines_db import deadline_list as _deadline_list
 from butlers.core.temporal.deadlines_db import deadline_update as _deadline_update
+from butlers.core.temporal.document_deadlines import (
+    DEFAULT_PRESET,
+    DocumentDeadlineRefused,
+    document_deadline_set,
+    plan_document_deadline,
+)
 from butlers.core_tools._base import ToolContext
+
+# Declared catalog capabilities kept off today's classify-and-route session
+# listing until the RFC 0038 goal-runtime cutover presents them (dark build);
+# see GOAL_RUNTIME_DARK_TOOLS in _media.py for the mechanism.
+TEMPORAL_DARK_TOOLS = frozenset({"paperwork_deadline_set"})
 
 
 def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -248,6 +259,60 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
                 return {"id": task_id, "status": "deleted"}
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
+
+        @_core_tool("temporal")
+        async def paperwork_deadline_set(
+            document_id: Annotated[
+                str,
+                Field(
+                    description=(
+                        "The document the date was read from: its storage_ref or source ref. "
+                        "One deadline exists per (document_id, kind)."
+                    )
+                ),
+            ],
+            kind: Annotated[
+                Literal["due", "renewal", "cancel_by", "expiry", "return_by"],
+                Field(description="What the date is: a payment due date, renewal, etc."),
+            ],
+            target_date: Annotated[
+                str, Field(description="The date in YYYY-MM-DD format. Must be after today.")
+            ],
+            preset: Annotated[
+                Literal["two_weeks", "one_month", "three_days"],
+                Field(description="Reminder lead: 14/3/1, 30/7/1 or 3/1 days before."),
+            ] = DEFAULT_PRESET,
+            issuer: Annotated[
+                str | None,
+                Field(description="Who issued the document, e.g. 'SP Group'. Shown as text."),
+            ] = None,
+        ) -> dict:
+            """Remind the owner of a date read from a document; starts no session.
+
+            Creates or updates one reminder-only deadline for this document and
+            kind. When a reminder threshold is reached, the owner receives a
+            fixed-template notice naming the issuer and date. Setting the same
+            date again changes nothing; a new date replaces the old one. A past
+            or unreadable date returns ``{"status": "refused", "reason": ...}``.
+            """
+            try:
+                plan = plan_document_deadline(
+                    document_id=document_id,
+                    kind=kind,
+                    target_date=target_date,
+                    preset=preset,
+                    issuer=issuer,
+                )
+                result = await document_deadline_set(pool, plan)
+            except DocumentDeadlineRefused as exc:
+                return {"status": "refused", "reason": exc.reason, "detail": exc.detail}
+            return {
+                **result,
+                "kind": kind,
+                "target_date": plan.target_date.isoformat(),
+                "preset": plan.preset,
+                "alert_thresholds": plan.alert_thresholds,
+            }
 
         @_core_tool("temporal")
         async def event_chain_create(

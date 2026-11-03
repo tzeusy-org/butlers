@@ -1375,6 +1375,7 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
         from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
+        from butlers.core_tools._temporal import TEMPORAL_DARK_TOOLS
 
         # Registration owns this snapshot state. Some focused integration
         # seams construct a daemon without calling __init__, so initialise it
@@ -1449,7 +1450,9 @@ class ButlerDaemon:
         register_all_core_tools(ctx, mcp, _core_tool)
         # Dark build (RFC 0038): _finalize_tool_catalog catalogs these, then
         # hides them from today's classify-and-route sessions.
-        self._goal_runtime_dark_tools = GOAL_RUNTIME_DARK_TOOLS & mcp._registered_tool_names
+        self._goal_runtime_dark_tools = (
+            GOAL_RUNTIME_DARK_TOOLS | TEMPORAL_DARK_TOOLS
+        ) & mcp._registered_tool_names
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
