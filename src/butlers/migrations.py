@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -360,17 +361,16 @@ def _chain_heads(chain: str, chain_dir: Path) -> tuple[tuple[str, ...], frozense
 
 
 def _applied_revisions(db_url: str, schema: str | None) -> set[str] | None:
-    """Every row of the version table Alembic would use, or ``None`` if it is absent.
+    """Every row of the version table Alembic would use, read by Alembic itself.
 
-    ``None`` also when the read fails, so the full Alembic path raises its own error.
+    Empty when the table is absent. ``None`` when the read fails, so the full
+    Alembic path raises its own error.
     """
-    table = "alembic_version" if schema is None else f'"{schema}".alembic_version'
     engine = create_engine(db_url, poolclass=NullPool)
+    opts = {} if schema is None else {"version_table_schema": schema}
     try:
         with engine.connect() as conn:
-            if conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar() is None:
-                return None
-            return {row[0] for row in conn.execute(text(f"SELECT version_num FROM {table}"))}
+            return set(MigrationContext.configure(conn, opts=opts).get_current_heads())
     except SQLAlchemyError:
         return None
     finally:
