@@ -1289,7 +1289,7 @@ async def _active_budget_condition(pool, fp: str):
 
 
 async def test_insight_scan_budget_warning_opens_then_exceeded_confirms_same_episode(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A warning opens one budget-threshold condition carrying only the owner
     surface (category, period, utilisation, spent, budget); escalating to
@@ -1298,7 +1298,7 @@ async def test_insight_scan_budget_warning_opens_then_exceeded_confirms_same_epi
     fj = _fj_module()
     run_insight_scan = fj.run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="dining", amount="500.00")
         await _insert_transaction(
@@ -1350,16 +1350,14 @@ async def test_insight_scan_budget_warning_opens_then_exceeded_confirms_same_epi
 
 
 @pytest.mark.parametrize("change", ["lower_total", "budget_removed", "new_period"])
-async def test_insight_scan_budget_condition_resolves_on_complete_snapshot(
-    provisioned_postgres_pool, change
-):
+async def test_insight_scan_budget_condition_resolves_on_complete_snapshot(finance_clone, change):
     """A later complete scan that no longer observes the crossing resolves it:
     a deleted transaction, a deactivated budget (empty budget_status result is
     a complete snapshot), or the period rolling over."""
     fj = _fj_module()
     run_insight_scan = fj.run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="dining", amount="500.00")
         await _insert_transaction(
@@ -1388,7 +1386,7 @@ async def test_insight_scan_budget_condition_resolves_on_complete_snapshot(
 
 
 async def test_insight_scan_budget_status_failure_skips_only_budget_source(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """budget_status() raising never resolves an active budget condition, and
     the rest of the scan (overdue-bill ledger source, later candidates) runs."""
@@ -1397,7 +1395,7 @@ async def test_insight_scan_budget_status_failure_skips_only_budget_source(
     owner_condition_fingerprint = fj.owner_condition_fingerprint
     run_insight_scan = fj.run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="dining", amount="500.00")
         await _insert_transaction(
@@ -1444,7 +1442,7 @@ async def test_insight_scan_budget_status_failure_skips_only_budget_source(
 
 
 async def test_insight_scan_budget_reconciliation_failure_does_not_break_scan(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A ledger failure for the budget source is logged and swallowed: the
     budget candidate is still submitted and the scan completes."""
@@ -1459,7 +1457,7 @@ async def test_insight_scan_budget_reconciliation_failure_does_not_break_scan(
             raise RuntimeError("ledger down")
         return await real_reconcile(pool, source=source, **kwargs)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="dining", amount="500.00")
         await _insert_transaction(
