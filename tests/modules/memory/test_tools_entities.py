@@ -91,7 +91,7 @@ def _entity_mock_row(
 
 
 @pytest.fixture()
-def pool() -> AsyncMock:
+def mock_pool() -> AsyncMock:
     return AsyncMock()
 
 
@@ -101,34 +101,34 @@ def pool() -> AsyncMock:
 
 
 class TestEntityCreate:
-    async def test_returns_entity_id_string(self, pool: AsyncMock) -> None:
-        pool.fetchval = AsyncMock(return_value=ENTITY_UUID)
-        result = await entity_create(pool, "Alice", "person")
+    async def test_returns_entity_id_string(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchval = AsyncMock(return_value=ENTITY_UUID)
+        result = await entity_create(mock_pool, "Alice", "person")
         assert result == {"entity_id": ENTITY_STR}
 
-    async def test_invalid_type_raises(self, pool: AsyncMock) -> None:
+    async def test_invalid_type_raises(self, mock_pool: AsyncMock) -> None:
         with pytest.raises(ValueError, match="Invalid entity_type"):
-            await entity_create(pool, "Ghost", "ghost")
-        pool.fetchval.assert_not_awaited()
+            await entity_create(mock_pool, "Ghost", "ghost")
+        mock_pool.fetchval.assert_not_awaited()
 
-    async def test_unique_constraint_raises_value_error(self, pool: AsyncMock) -> None:
-        pool.fetchval = AsyncMock(
+    async def test_unique_constraint_raises_value_error(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchval = AsyncMock(
             side_effect=[Exception("duplicate key value violates unique constraint"), None]
         )
         with pytest.raises(ValueError, match="already exists"):
-            await entity_create(pool, "Alice", "person")
+            await entity_create(mock_pool, "Alice", "person")
 
-    async def test_tombstoned_entity_allows_retry(self, pool: AsyncMock) -> None:
+    async def test_tombstoned_entity_allows_retry(self, mock_pool: AsyncMock) -> None:
         tombstone_id = uuid.uuid4()
         new_id = uuid.uuid4()
-        pool.fetchval = AsyncMock(
+        mock_pool.fetchval = AsyncMock(
             side_effect=[
                 Exception("duplicate key value violates unique constraint"),
                 tombstone_id,
                 new_id,
             ]
         )
-        result = await entity_create(pool, "Alice", "person")
+        result = await entity_create(mock_pool, "Alice", "person")
         assert result == {"entity_id": str(new_id)}
 
 
@@ -138,23 +138,23 @@ class TestEntityCreate:
 
 
 class TestEntityFindByCanonical:
-    async def test_returns_serialized_live_entity(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value=_entity_row())
+    async def test_returns_serialized_live_entity(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(return_value=_entity_row())
 
-        result = await entity_find_by_canonical(pool, "Alice", "person")
+        result = await entity_find_by_canonical(mock_pool, "Alice", "person")
 
         assert result is not None
         assert result["id"] == ENTITY_STR
         assert result["canonical_name"] == "Alice"
         assert isinstance(result["created_at"], str)
-        sql = pool.fetchrow.await_args.args[0]
+        sql = mock_pool.fetchrow.await_args.args[0]
         assert "LOWER(canonical_name) = LOWER($1)" in sql
         assert "(metadata->>'merged_into') IS NULL" in sql
 
-    async def test_returns_none_when_not_found(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value=None)
+    async def test_returns_none_when_not_found(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(return_value=None)
 
-        result = await entity_find_by_canonical(pool, "Alice", "person")
+        result = await entity_find_by_canonical(mock_pool, "Alice", "person")
 
         assert result is None
 
@@ -165,16 +165,16 @@ class TestEntityFindByCanonical:
 
 
 class TestEntityGet:
-    async def test_returns_serialized_entity(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value=_entity_row())
-        result = await entity_get(pool, ENTITY_STR)
+    async def test_returns_serialized_entity(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(return_value=_entity_row())
+        result = await entity_get(mock_pool, ENTITY_STR)
         assert result["id"] == ENTITY_STR
         assert result["canonical_name"] == "Alice"
         assert isinstance(result["created_at"], str)
 
-    async def test_returns_none_when_not_found(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value=None)
-        assert await entity_get(pool, ENTITY_STR) is None
+    async def test_returns_none_when_not_found(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        assert await entity_get(mock_pool, ENTITY_STR) is None
 
 
 # ---------------------------------------------------------------------------
@@ -183,18 +183,18 @@ class TestEntityGet:
 
 
 class TestEntityUpdate:
-    async def test_returns_none_when_not_found(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(return_value=None)
-        assert await entity_update(pool, ENTITY_STR) is None
+    async def test_returns_none_when_not_found(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(return_value=None)
+        assert await entity_update(mock_pool, ENTITY_STR) is None
 
-    async def test_updates_and_returns_serialized(self, pool: AsyncMock) -> None:
-        pool.fetchrow = AsyncMock(
+    async def test_updates_and_returns_serialized(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchrow = AsyncMock(
             side_effect=[
                 {"id": ENTITY_UUID, "metadata": {}},
                 _entity_row(name="New Name"),
             ]
         )
-        result = await entity_update(pool, ENTITY_STR, canonical_name="New Name")
+        result = await entity_update(mock_pool, ENTITY_STR, canonical_name="New Name")
         assert result is not None
         assert result["canonical_name"] == "New Name"
 
@@ -215,71 +215,71 @@ class TestEntityResolve:
         ],
     )
     async def test_empty_or_missing_input_raises_before_query(
-        self, pool: AsyncMock, kwargs: dict
+        self, mock_pool: AsyncMock, kwargs: dict
     ) -> None:
         with pytest.raises(ValueError, match="non-empty"):
             if "name" in kwargs and kwargs["name"] == "" and "identifier" not in kwargs:
-                await entity_resolve(pool, "")
+                await entity_resolve(mock_pool, "")
             else:
-                await entity_resolve(pool, **kwargs)
-        pool.fetch.assert_not_called()
+                await entity_resolve(mock_pool, **kwargs)
+        mock_pool.fetch.assert_not_called()
 
-    async def test_normal_identifier_still_works(self, pool: AsyncMock) -> None:
+    async def test_normal_identifier_still_works(self, mock_pool: AsyncMock) -> None:
         row = _entity_mock_row(uuid.UUID(str(uuid.uuid4())), "Mah Rock", match_type="exact")
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await entity_resolve(pool, identifier="Mah Rock")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(mock_pool, identifier="Mah Rock")
         assert results
         assert results[0]["canonical_name"] == "Mah Rock"
 
-    async def test_exact_match_returns_score_exact_name(self, pool: AsyncMock) -> None:
+    async def test_exact_match_returns_score_exact_name(self, mock_pool: AsyncMock) -> None:
         row = _entity_mock_row(uuid.UUID(str(uuid.uuid4())), "Alice", match_type="exact")
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await entity_resolve(pool, "Alice")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(mock_pool, "Alice")
         assert results[0]["score"] == _SCORE_EXACT_NAME
         assert results[0]["name_match"] == "exact"
 
-    async def test_results_sorted_by_score_desc(self, pool: AsyncMock) -> None:
+    async def test_results_sorted_by_score_desc(self, mock_pool: AsyncMock) -> None:
         e1 = _entity_mock_row(uuid.UUID(str(uuid.uuid4())), "Alice", match_type="exact")
         e2 = _entity_mock_row(uuid.UUID(str(uuid.uuid4())), "Alicia", match_type="prefix")
-        pool.fetch = AsyncMock(return_value=[e2, e1])
-        results = await entity_resolve(pool, "Alice")
+        mock_pool.fetch = AsyncMock(return_value=[e2, e1])
+        results = await entity_resolve(mock_pool, "Alice")
         scores = [r["score"] for r in results]
         assert scores == sorted(scores, reverse=True)
 
-    async def test_identifier_and_name_raises(self, pool: AsyncMock) -> None:
+    async def test_identifier_and_name_raises(self, mock_pool: AsyncMock) -> None:
         with pytest.raises(ValueError, match="not both"):
-            await entity_resolve(pool, "Alice", identifier="Owner")
+            await entity_resolve(mock_pool, "Alice", identifier="Owner")
 
-    async def test_two_exact_candidates_unequal_fact_count(self, pool: AsyncMock) -> None:
+    async def test_two_exact_candidates_unequal_fact_count(self, mock_pool: AsyncMock) -> None:
         e1 = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Alice", match_type="exact", fact_count=5
         )
         e2 = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Alice Corp", match_type="exact", fact_count=20
         )
-        pool.fetch = AsyncMock(return_value=[e1, e2])
-        results = await entity_resolve(pool, "alice")
+        mock_pool.fetch = AsyncMock(return_value=[e1, e2])
+        results = await entity_resolve(mock_pool, "alice")
         by_name = {r["canonical_name"]: r for r in results}
         assert by_name["Alice Corp"]["score"] == _SCORE_EXACT_NAME
         assert by_name["Alice"]["score"] == _SCORE_EXACT_DEMOTED
 
-    async def test_tied_fact_count_both_score_100(self, pool: AsyncMock) -> None:
+    async def test_tied_fact_count_both_score_100(self, mock_pool: AsyncMock) -> None:
         e1 = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Eve A", match_type="exact", fact_count=8
         )
         e2 = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Eve B", match_type="exact", fact_count=8
         )
-        pool.fetch = AsyncMock(return_value=[e1, e2])
-        results = await entity_resolve(pool, "eve")
+        mock_pool.fetch = AsyncMock(return_value=[e1, e2])
+        results = await entity_resolve(mock_pool, "eve")
         assert all(r["score"] == _SCORE_EXACT_NAME for r in results)
 
-    async def test_fact_count_in_return_shape(self, pool: AsyncMock) -> None:
+    async def test_fact_count_in_return_shape(self, mock_pool: AsyncMock) -> None:
         row = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Dave", match_type="exact", fact_count=3
         )
-        pool.fetch = AsyncMock(return_value=[row])
-        results = await entity_resolve(pool, "Dave")
+        mock_pool.fetch = AsyncMock(return_value=[row])
+        results = await entity_resolve(mock_pool, "Dave")
         assert "fact_count" in results[0]
         assert isinstance(results[0]["fact_count"], int)
 
@@ -557,15 +557,15 @@ class TestRePointEpisodeEntities:
 
 
 class TestEntityNeighbors:
-    async def test_raises_for_nonexistent_entity(self, pool: AsyncMock) -> None:
-        pool.fetchval = AsyncMock(return_value=None)
+    async def test_raises_for_nonexistent_entity(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchval = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="does not exist"):
-            await entity_neighbors(pool, ENTITY_STR)
+            await entity_neighbors(mock_pool, ENTITY_STR)
 
-    async def test_result_shape(self, pool: AsyncMock) -> None:
-        pool.fetchval = AsyncMock(return_value=1)
+    async def test_result_shape(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchval = AsyncMock(return_value=1)
         neighbor_id = uuid.uuid4()
-        pool.fetch = AsyncMock(
+        mock_pool.fetch = AsyncMock(
             return_value=[
                 {
                     "entity_id": neighbor_id,
@@ -580,7 +580,7 @@ class TestEntityNeighbors:
                 }
             ]
         )
-        result = await entity_neighbors(pool, ENTITY_STR)
+        result = await entity_neighbors(mock_pool, ENTITY_STR)
         assert len(result) == 1
         assert {"entity", "predicate", "direction", "content", "depth", "fact_id", "path"} == set(
             result[0].keys()
@@ -776,7 +776,7 @@ class TestEntityRebindReceipts:
             status="skipped_no_table",
             error_class="UndefinedTableError",
         )
-        pool = self._pending_pool(receipt.rebind_id, "finance")
+        mock_pool = self._pending_pool(receipt.rebind_id, "finance")
         with (
             patch.object(
                 _rebind,
@@ -786,7 +786,7 @@ class TestEntityRebindReceipts:
             patch.object(_rebind, "_write_receipt", new=AsyncMock(return_value=receipt)) as write,
         ):
             result = await _rebind.rebind_entity_references(
-                pool,
+                mock_pool,
                 rebind_id=receipt.rebind_id,
                 source_entity_id=SOURCE_UUID,
                 target_entity_id=TARGET_UUID,
