@@ -5,8 +5,10 @@
  * The API module is mocked at its boundary (ApiError stays real) so the link
  * resolution hook runs for real: each linked record resolves through its own
  * reader, a failing trip reader degrades only the Trips region, a deleted
- * calendar entry reads as not found, a kind without a reader says so, and the
- * page exposes no Arm or Run control.  Unlinking calls only the General
+ * calendar entry reads as not found, deadlines resolve through their butler's
+ * schedule and Drive files through General's Drive reader (bu-jv1moa.44; Drive
+ * not connected reads calm, not degraded), and the page exposes no Arm or Run
+ * control.  Unlinking calls only the General
  * unlink endpoint, never a linked record's API.
  */
 
@@ -30,6 +32,8 @@ vi.mock("@/api/index.ts", async () => {
     getTravelTripSummary: vi.fn(),
     getCalendarWorkspaceEntry: vi.fn(),
     getSystemConditions: vi.fn(),
+    getButlerDeadline: vi.fn(),
+    getGeneralDriveFile: vi.fn(),
   };
 });
 
@@ -45,6 +49,7 @@ const TRIP_OK = "bbbbbbbb-0000-4000-8000-000000000001";
 const TRIP_DOWN = "bbbbbbbb-0000-4000-8000-000000000002";
 const EVENT_GONE = "cccccccc-0000-4000-8000-000000000001";
 const CONDITION = "dddddddd-0000-4000-8000-000000000001";
+const DEADLINE = "eeeeeeee-0000-4000-8000-000000000001";
 
 function link(id: string, ref_kind: string, ref_id: string) {
   return { id, ref_kind, ref_id, created_at: "2026-11-01T00:00:00Z" };
@@ -58,7 +63,7 @@ const SUMMARY = {
   current_charter_version: 2,
   horizon_end: "2026-12-15T00:00:00Z",
   closed_at: null,
-  link_count: 5,
+  link_count: 6,
   created_at: "2026-11-01T00:00:00Z",
   updated_at: "2026-11-01T00:00:00Z",
 };
@@ -82,10 +87,11 @@ const DETAIL = {
     link("l3", "calendar_event", EVENT_GONE),
     link("l4", "drive_file", "1AbC_def-9"),
     link("l5", "owner_condition", CONDITION),
+    link("l6", "deadline", `finance:${DEADLINE}`),
   ],
 };
 
-function renderTab(search = `?tab=projects&project=${PROJECT_ID}`) {
+function renderTab(search = `?tab=projects&project=${PROJECT_ID}`, driveConnected = true) {
   vi.mocked(api.getGeneralProjects).mockResolvedValue({
     data: [SUMMARY],
     meta: { total: 1, offset: 0, limit: 200 },
@@ -114,6 +120,28 @@ function renderTab(search = `?tab=projects&project=${PROJECT_ID}`) {
     },
     meta: {},
   } as never);
+  vi.mocked(api.getButlerDeadline).mockResolvedValue({
+    data: {
+      id: DEADLINE,
+      butler: "finance",
+      name: "deposit",
+      display_title: "Deposit due",
+      target_date: "2026-12-01",
+      deadline_status: "pending",
+      enabled: true,
+    },
+    meta: {},
+  } as never);
+  if (driveConnected) {
+    vi.mocked(api.getGeneralDriveFile).mockRejectedValue(
+      new api.ApiError("DRIVE_UNAVAILABLE", "The Drive reader is unavailable.", 503),
+    );
+  } else {
+    vi.mocked(api.getGeneralDriveFile).mockResolvedValue({
+      data: { state: "not_connected", file: null },
+      meta: {},
+    } as never);
+  }
   vi.mocked(api.removeGeneralProjectLink).mockResolvedValue({
     data: { ...DETAIL, links: DETAIL.links.filter((l) => l.id !== "l4") },
     meta: {},
@@ -149,11 +177,14 @@ describe("ButlerGeneralProjectsTab", () => {
     const events = screen.getByTestId("link-region-calendar_event");
     await within(events).findByText("Not found: deleted or never existed");
     expect(within(events).queryByRole("alert")).toBeNull();
-    expect(
-      within(screen.getByTestId("link-region-drive_file")).getByText(
-        "No reader for this record kind yet",
-      ),
-    ).toBeTruthy();
+    const deadlines = screen.getByTestId("link-region-deadline");
+    await within(deadlines).findByText("Deposit due");
+    expect(within(deadlines).getByText("finance · due 2026-12-01 · pending")).toBeTruthy();
+    expect(api.getButlerDeadline).toHaveBeenCalledWith("finance", DEADLINE);
+    const files = screen.getByTestId("link-region-drive_file");
+    await within(files).findByText("Unavailable: reader failed");
+    expect(within(files).getByRole("alert").textContent).toContain("Drive files: reader unavailable");
+    expect(api.getGeneralDriveFile).toHaveBeenCalledWith("1AbC_def-9");
     await within(screen.getByTestId("link-region-owner_condition")).findByText("Deposit unpaid");
 
     // The project itself is intact and its record text renders inert.
@@ -168,6 +199,14 @@ describe("ButlerGeneralProjectsTab", () => {
     );
     expect(api.getTravelTripSummary).toHaveBeenCalledTimes(2);
     expect(api.getTravelTripSummary).toHaveBeenCalledWith(TRIP_OK);
+  });
+  it("shows Drive not connected calmly, without a degraded-reader alarm", async () => {
+    renderTab(undefined, false);
+
+    const files = await screen.findByTestId("link-region-drive_file");
+    await within(files).findByText("Drive is not connected for General");
+    expect(within(files).queryByRole("alert")).toBeNull();
+    expect(within(files).queryByText(/Unavailable/)).toBeNull();
   });
   it("keeps the form and says so when a create deduplicates onto an existing draft", async () => {
     renderTab("?tab=projects");
