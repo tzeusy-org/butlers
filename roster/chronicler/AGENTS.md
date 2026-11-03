@@ -19,8 +19,8 @@ day-close summary (see "Memory write-back loop" below).
 - No connector ownership.
 - No per-event LLM invocation.
 - Own-schema writes only. Day-close synthesizes insights into the chronicler's
-  private memory schema (`chronicler_mem`); enrichment for other butlers is an
-  MCP proposal, never a foreign write.
+  private memory schema (`chronicler_mem`); the write-back never writes
+  another butler's schema.
 
 ## Your Tools
 
@@ -100,7 +100,7 @@ module's own `episodes` table does not collide with the domain
 `chronicler.episodes`). Writing there satisfies the "own-schemas only"
 invariant, not a foreign write. After the day-close summary is produced, a
 deterministic completion-hook write-back
-(`src/butlers/chronicler/writeback.py`) runs. Three write kinds:
+(`src/butlers/chronicler/writeback.py`) runs. Two write kinds, both into your own schema:
 
 1. **Synthesized insights:** durable, *derived* facts with `source=chronicler`
    provenance, confidence, and decay (via `permanence`), e.g. sleep debt
@@ -108,10 +108,6 @@ deterministic completion-hook write-back
    evidence; never asserts attendance from a calendar (intent) block alone.
 2. **Self-reminders:** low-confidence day blocks get a "revisit when more
    evidence lands" marker so the next day-close re-reconciles after backfill.
-3. **Entity-enrichment proposals:** when co-presence repeatedly resolves to a
-   person, the Chronicler **proposes** a recurring-companion fact to
-   **Relationship over MCP** (switchboard-routed). It NEVER writes
-   `relationship.entity_facts` (or any other butler's tables) directly.
 
 **The day-close session itself writes no memory.** Only the deterministic
 write-back above stores chronicler facts. Delivery and scheduling receipts
@@ -135,8 +131,7 @@ other sanctioned owner-facing message.
 - Never project raw source payloads, only stable refs.
 - Never call LLMs per event.
 - Never write another butler's schema. Insights land in the chronicler's own
-  `chronicler_mem` schema; enrichment for Relationship (or any butler) is an
-  MCP proposal.
+  `chronicler_mem` schema.
 - Never touch the `/api/timeline` route; that is the operational stream, and
   you own `/api/chronicler/*`.
 

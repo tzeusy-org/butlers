@@ -731,6 +731,29 @@ BEGIN
         END LOOP;
     END IF;
 
+    -- public.consolidation_runs is an append-only audit: each memory-enabled
+    -- butler daemon inserts its own rows as butler_<name>_rw, and nothing may
+    -- rewrite or erase them. Keep core_308's fence after the broad public grant
+    -- so a bootstrap replay cannot restore UPDATE/DELETE (or connector INSERT).
+    IF to_regclass('public.consolidation_runs') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_optional_calendar_role] LOOP
+            IF _role = _connector_role THEN
+                EXECUTE format(
+                    'REVOKE INSERT, UPDATE, DELETE ON TABLE public.consolidation_runs FROM %I',
+                    _role
+                );
+                EXECUTE format('GRANT SELECT ON TABLE public.consolidation_runs TO %I', _role);
+            ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
+                EXECUTE format(
+                    'REVOKE UPDATE, DELETE ON TABLE public.consolidation_runs FROM %I', _role
+                );
+                EXECUTE format(
+                    'GRANT SELECT, INSERT ON TABLE public.consolidation_runs TO %I', _role
+                );
+            END IF;
+        END LOOP;
+    END IF;
+
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
 END
 $$;
