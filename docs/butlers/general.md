@@ -175,10 +175,73 @@ unversioned contents. Unsupported specialist ownership refuses before any writer
 unknown lineages retain their operation and cannot be retried into a fresh target.
 
 Admission and dispatch default **false**, independently. No capture MCP registration,
-HTTP/chat intake, classifier or processing loop is enabled. These remain later units.
+classifier or processing loop is enabled. These remain later units; the owner HTTP
+intake below only admits held captures.
 The nonsecret epoch manifest lives outside the repository and database; missing,
 malformed or mismatched epoch/control refuses admission and dispatch. Restore rotates
 its generation and original-occurrence cutoff while keeping both flags disabled.
 Exact read-only outcome verification is available during recovery, but does not
 rebase old operations or re-enable delivery. Rollback removes an empty boundary only;
 stored inputs/operations/control authority require forward remediation.
+
+## Owner Capture API
+
+`src/butlers/api/routers/captures.py` exposes the ledger to the authenticated owner
+(RFC0037, REQ-general-capture-001/-006). All routes are owner-only; the outer owner
+middleware checks authentication, Origin and CSRF before any body octet is read.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/general/capture-intake-context?door=dashboard\|chat[&conversation_id=]` | Issue an intake context |
+| `POST /api/general/captures` | Dashboard admission |
+| `POST /api/general/capture-chat` | Explicit chat capture bridge |
+| `GET /api/general/captures?limit=&cursor=` | Owner's captures, newest first (`Page`) |
+| `GET /api/general/captures/{capture_id}` | One capture's status |
+
+**Intake context.** Both POST routes require `X-Capture-Intake`, a server-issued
+context checked before the body is read. It is an expiring (10 minute) owner action
+grant bound to its door, the verified session (or API-key authority), an optional
+owner-verified conversation and the current host epoch. It carries no source payload
+and no model, session or target-operation authority. It is HMAC-signed with a
+process-held key, so an API restart retires outstanding contexts. A context minted
+before an epoch rotation (restore) is refused before any target effect. Never log it.
+
+**Source binding and retries.** The ledger principal is derived from the authenticated
+owner; requests cannot assert an actor, owner, source, target, schema, table or role
+(`extra="forbid"`). With a `mutation_id`, the source occurrence is bound to the
+context's digest, so an identical retry under the same context returns the original
+receipt and changed content refuses with `409 CAPTURE_CONFLICT`. Without one, each
+request is a fresh occurrence. A fresh context is a new explicit owner action and a
+new occurrence: it never retries or relabels an old, possibly in-doubt lineage. The
+raw context is never stored; the ledger mutation key records only the door and a
+digest of the `mutation_id`.
+
+**Admission.** Each request runs one General-role transaction (`SET LOCAL ROLE
+butler_general_rw`, `search_path` public) on the dashboard's General pool and calls
+the internal service, whose own transaction is a savepoint inside it. `202` with
+`disposition: held` is returned only after the outer commit. Nothing classifies or
+routes yet, so new intake truthfully stays `held/pending` until processing is
+enabled. The login role must be able to `SET ROLE butler_general_rw`; otherwise every
+route answers `503 CAPTURE_UNAVAILABLE`. The epoch manifest path comes from
+`BUTLERS_CAPTURE_EPOCH_PATH`; missing or mismatched epoch/control is also `503`.
+
+**Projection.** Responses carry the opaque capture id, disposition, fixed category,
+source door (`dashboard`, `chat` or `internal`), the typed General target receipt
+(owner, operation id, item id, version) once routed, and timestamps. Original intake
+text and reference handles are never returned. Reads use the General role too, so an
+unreadable ledger is `503`, never a false empty list.
+
+**Content-blind audit and errors.** `DashboardAuditMiddleware` selects a server-owned
+no-body policy for the two exact POST routes before it would read a body; no caller
+header or field can select or bypass it. It still writes the normal audit row with
+the owner actor, a fixed operation (`general_capture_admit` / `general_capture_chat`),
+the outcome category and the opaque capture id, on success, error, timeout and
+cancellation. The capture route class maps malformed JSON, validation, service and
+unexpected errors and timeouts to fixed codes before generic handlers can log
+`str(exc)` or validation input. A cancelled request propagates after the transaction
+rolls back and the audit row is written; it never reports success. OTel header
+capture sanitizes `X-Capture-Intake`.
+
+The chat bridge is a distinct route: it never submits an ordinary conversation turn
+or changes a conversation's privacy policy. The held-capture UI and consolidation
+endpoints (bu-2jtfw.9.6) consume this contract unchanged.
