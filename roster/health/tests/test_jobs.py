@@ -1625,7 +1625,7 @@ async def test_visit_brief(health_pool, case):
             assert "Health brief for Dr Tan follow-up," in text
             assert "BUTLER:" not in text and "https://" not in text
             assert (
-                "Metformin: 5 doses logged against 11 scheduled, 6 missed (tracked since Oct 5)"
+                "Metformin: 5 doses logged against 10 scheduled, 5 missed (tracked since Oct 5)"
             ) in text
             assert re.search(r"usual range 69\.[01] to 71\.[56] kg, latest is within it", text)
             assert "+/-" not in text
@@ -1639,9 +1639,9 @@ async def test_visit_brief(health_pool, case):
             assert set(figures[("measurements", "Weight")]["fact_ids"]) == {weights[-1]}
             assert figures[("conditions", "Hypertension")]["fact_ids"] == [cond]
             assert figures[("medications", "Metformin")]["value"] == {
-                "scheduled": 11,
+                "scheduled": 10,
                 "taken": 5,
-                "missed": 6,
+                "missed": 5,
             }
             assert figures[("measurements", "Weight")]["value"]["baseline"]["state"] == "within"
             # A stale feed is a note with no readings, never a zero reading.

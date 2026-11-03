@@ -36,7 +36,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
 
 import asyncpg
@@ -337,7 +337,8 @@ async def _adherence_lines(
           AND d.valid_at >= $1 AND d.valid_at <= $2
           AND COALESCE((d.metadata->>'skipped')::boolean, false) = false
         """,
-        start,
+        # The first window day owes a full day of doses, so count the whole day.
+        datetime.combine(_day(start, zone), time.min, tzinfo=zone),
         end,
     )
     taken: dict[tuple[str, date], list[str]] = defaultdict(list)

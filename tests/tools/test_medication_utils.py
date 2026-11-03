@@ -9,11 +9,15 @@ with insight job", bu-ve69q).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from butlers.tools.health._medication_utils import (
     _FREQUENCY_DOSES_PER_DAY,
+    expected_dose_count,
     frequency_to_doses_per_day,
+    scheduled_doses_per_day,
 )
 
 pytestmark = pytest.mark.unit
@@ -68,6 +72,25 @@ def test_return_value_always_positive() -> None:
     """Result is always > 0 so callers never divide by zero."""
     for freq in list(_FREQUENCY_DOSES_PER_DAY) + ["unknown", "", "   "]:
         assert frequency_to_doses_per_day(freq) > 0
+
+
+@pytest.mark.parametrize(
+    "frequency, expected",
+    [
+        ("prn", 0.0),
+        ("As Needed", 0.0),
+        ("as needed for pain", 0.0),
+        ("daily", 1.0),
+        ("twice daily", 2.0),
+    ],
+)
+def test_as_needed_contributes_no_scheduled_doses(frequency: str, expected: float) -> None:
+    """PRN has zero expected doses, so adherence is null, never a penalty (bu-2yeqd1)."""
+    per_day = scheduled_doses_per_day(frequency)
+    assert per_day == pytest.approx(expected)
+    window = {"window_start": datetime(2026, 10, 1), "window_end": datetime(2026, 10, 31)}
+    count = expected_dose_count(doses_per_day=per_day, **window)
+    assert (count == 0) == (expected == 0.0)
 
 
 # ---------------------------------------------------------------------------
