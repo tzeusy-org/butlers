@@ -29,7 +29,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -42,29 +41,11 @@ pytestmark = [
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain (public.healing_attempts + qa_findings)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):  # type: ignore[no-untyped-def]
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    await p.execute("TRUNCATE TABLE public.healing_attempts CASCADE")
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-def doors_app(pool: asyncpg.Pool) -> FastAPI:
+def doors_app(db_pool: asyncpg.Pool) -> FastAPI:
     """Wire the QA router's shared credential pool to the migrated DB."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = db_pool
     application = create_app()
     application.dependency_overrides[get_db] = lambda: mock_db
     return application
@@ -103,12 +84,12 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
 
 
 async def test_case_dossier_projects_session_doors_from_real_schema(
-    doors_app: FastAPI, pool: asyncpg.Pool
+    doors_app: FastAPI, db_pool: asyncpg.Pool
 ) -> None:
     healing_session_id = uuid.uuid4()
     session_ids = [uuid.uuid4(), uuid.uuid4()]
     attempt_id = await _insert_attempt(
-        pool, healing_session_id=healing_session_id, session_ids=session_ids
+        db_pool, healing_session_id=healing_session_id, session_ids=session_ids
     )
 
     response = await _get(doors_app, f"/api/qa/cases/{attempt_id}")
@@ -120,9 +101,9 @@ async def test_case_dossier_projects_session_doors_from_real_schema(
 
 
 async def test_case_dossier_session_doors_null_safe_from_real_schema(
-    doors_app: FastAPI, pool: asyncpg.Pool
+    doors_app: FastAPI, db_pool: asyncpg.Pool
 ) -> None:
-    attempt_id = await _insert_attempt(pool, healing_session_id=None, session_ids=[])
+    attempt_id = await _insert_attempt(db_pool, healing_session_id=None, session_ids=[])
 
     response = await _get(doors_app, f"/api/qa/cases/{attempt_id}")
 
@@ -133,12 +114,12 @@ async def test_case_dossier_session_doors_null_safe_from_real_schema(
 
 
 async def test_case_list_projects_session_doors_from_real_schema(
-    doors_app: FastAPI, pool: asyncpg.Pool
+    doors_app: FastAPI, db_pool: asyncpg.Pool
 ) -> None:
     """The rail summary carries trace ids before its dossier is requested."""
     healing_session_id = uuid.uuid4()
     session_ids = [uuid.uuid4(), uuid.uuid4()]
-    await _insert_attempt(pool, healing_session_id=healing_session_id, session_ids=session_ids)
+    await _insert_attempt(db_pool, healing_session_id=healing_session_id, session_ids=session_ids)
 
     response = await _get(doors_app, "/api/qa/cases?since=all")
 
@@ -149,10 +130,10 @@ async def test_case_list_projects_session_doors_from_real_schema(
 
 
 async def test_case_list_session_doors_null_safe_from_real_schema(
-    doors_app: FastAPI, pool: asyncpg.Pool
+    doors_app: FastAPI, db_pool: asyncpg.Pool
 ) -> None:
     """A rail row without session ids exposes no false trace affordance."""
-    await _insert_attempt(pool, healing_session_id=None, session_ids=[])
+    await _insert_attempt(db_pool, healing_session_id=None, session_ids=[])
 
     response = await _get(doors_app, "/api/qa/cases?since=all")
 
