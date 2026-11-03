@@ -211,8 +211,10 @@ class ResolveGapInterviewRequest(BaseModel):
     """Body for the gap-interview one-tap resolve endpoint (bu-whhll.12).
 
     Posted by the ``telegram_bot`` connector when the owner taps an inline
-    button (``cgi:<interview_id>:<answer>``). ``answer`` is one of
-    ``confirm`` / ``correct`` / ``dismiss``.
+    button (``cgi:<interview_id>:<answer>``). ``answer`` is ``confirm`` /
+    ``correct`` / ``dismiss`` for an occupation interview, or a lane (``work`` /
+    ``social`` / ``play`` / ``eat`` / ``rest``) or ``dismiss`` for a block
+    interview (bu-r3fmja).
     """
 
     interview_id: str

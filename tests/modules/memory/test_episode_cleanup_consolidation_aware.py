@@ -18,6 +18,8 @@ batching loop. The contract under test:
 from __future__ import annotations
 
 import shutil
+import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -32,37 +34,26 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-# Minimal subset of the memory ``episodes`` schema that run_episode_cleanup
-# touches: the reap predicate reads expires_at + consolidation_status, the
-# capacity step reads consolidated + created_at.
-_EPISODES_SQL = """
-DROP TABLE IF EXISTS episodes;
-CREATE TABLE episodes (
-    content_authority TEXT, authority_entity_id UUID,
-    id                   BIGSERIAL PRIMARY KEY,
-    consolidated         BOOLEAN NOT NULL DEFAULT false,
-    consolidation_status TEXT    NOT NULL DEFAULT 'pending',
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at           TIMESTAMPTZ
-);
-"""
+
+@asynccontextmanager
+async def _memory_pool(db):
+    """``episodes`` comes from the real memory chain."""
+    yield await db("core", "memory")
 
 
-async def _insert(pool, *, status: str, consolidated: bool, expires_sql: str) -> int:
+async def _insert(pool, *, status: str, consolidated: bool, expires_sql: str) -> uuid.UUID:
     """Insert one episode with an ``expires_at`` given as a raw SQL expression."""
     return await pool.fetchval(
-        "INSERT INTO episodes (consolidation_status, consolidated, expires_at) "
-        f"VALUES ($1, $2, {expires_sql}) RETURNING id",
+        "INSERT INTO episodes (butler, content, consolidation_status, consolidated, expires_at) "
+        f"VALUES ('memory', 'episode', $1, $2, {expires_sql}) RETURNING id",
         status,
         consolidated,
     )
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_cleanup_is_consolidation_aware(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_EPISODES_SQL)
-
+async def test_cleanup_is_consolidation_aware(db) -> None:
+    async with _memory_pool(db) as pool:
         # Expired, pending, within grace → RETAINED (give consolidation a chance).
         keep_pending_grace = await _insert(
             pool, status="pending", consolidated=False, expires_sql="now() - interval '1 day'"
@@ -108,15 +99,13 @@ async def test_cleanup_is_consolidation_aware(provisioned_postgres_pool) -> None
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_cleanup_drains_backlog_larger_than_one_batch(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_EPISODES_SQL)
-
+async def test_cleanup_drains_backlog_larger_than_one_batch(db) -> None:
+    async with _memory_pool(db) as pool:
         # 2 300 expired, consolidated episodes — reapable and well over one
         # batch, so the loop must iterate to drain them all.
         await pool.execute(
-            "INSERT INTO episodes (consolidation_status, consolidated, expires_at) "
-            "SELECT 'consolidated', true, now() - interval '1 day' "
+            "INSERT INTO episodes (butler, content, consolidation_status, consolidated, expires_at) "
+            "SELECT 'memory', 'episode', 'consolidated', true, now() - interval '1 day' "
             "FROM generate_series(1, 2300)"
         )
 
@@ -128,22 +117,22 @@ async def test_cleanup_drains_backlog_larger_than_one_batch(provisioned_postgres
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_capacity_trims_only_consolidated_in_batches(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_EPISODES_SQL)
-
+async def test_capacity_trims_only_consolidated_in_batches(db) -> None:
+    async with _memory_pool(db) as pool:
         # 50 consolidated + 10 pending, none expired. With max_entries=20 the
         # capacity step must delete 40 of the oldest *consolidated* rows and
         # never touch a pending (unconsolidated) episode.
         await pool.execute(
-            "INSERT INTO episodes (consolidation_status, consolidated, expires_at, created_at) "
-            "SELECT 'consolidated', true, now() + interval '5 days', "
+            "INSERT INTO episodes "
+            "(butler, content, consolidation_status, consolidated, expires_at, created_at) "
+            "SELECT 'memory', 'episode', 'consolidated', true, now() + interval '5 days', "
             "       now() - (g || ' minutes')::interval "
             "FROM generate_series(1, 50) AS g"
         )
         await pool.execute(
-            "INSERT INTO episodes (consolidation_status, consolidated, expires_at) "
-            "SELECT 'pending', false, now() + interval '5 days' FROM generate_series(1, 10)"
+            "INSERT INTO episodes (butler, content, consolidation_status, consolidated, expires_at) "
+            "SELECT 'memory', 'episode', 'pending', false, now() + interval '5 days' "
+            "FROM generate_series(1, 10)"
         )
 
         result = await run_episode_cleanup(pool=pool, max_entries=20, batch_size=8)

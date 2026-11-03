@@ -90,9 +90,11 @@ def test_large_unaccounted_gap_triggers_prompt():
     assert decision is not None
     assert "unaccounted_gap" in decision.reasons
     assert decision.unaccounted_seconds > DEFAULT_UNACCOUNTED_THRESHOLD_SECONDS
-    # No occupation block → no target episode, generic question.
+    # No occupation block → no target episode; the question names the longest
+    # uncovered block instead of asking about a work day (bu-r3fmja).
     assert decision.occupation_episode_id is None
-    assert "unaccounted waking time" in decision.question
+    assert "work day" not in decision.question
+    assert decision.question.startswith("Yesterday 10:00–22:00 isn't accounted for")
 
 
 def test_low_confidence_occupation_block_triggers_prompt():

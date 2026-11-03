@@ -571,7 +571,7 @@ treated as `normal`.
 
 ### Requirement: Recall Entity and Predicate Filters Apply Before Ranking
 
-The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it.
+The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it. `recall` and `search` SHALL refuse a `filters` key outside `scope`, `entity_id`, `predicate`, `source_butler`, `time_from`, `time_to`, `retention_class` and `sensitivity`, naming the unknown key and the allowed keys, before any read, rather than ignore it.
 
 ID: REQ-module-memory-015
 Source: bu-s11n0s.19 (run-16 move #11 slice S1); RFC 0038 D15
@@ -591,6 +591,10 @@ Scope: v1-mandatory
 - **WHEN** a low-relevance fact with predicate P exists beyond the unfiltered top results
 - **AND** `recall` is called with `filters={"predicate": P}`
 - **THEN** that fact is returned
+
+#### Scenario: An unrecognized filter key is refused
+- **WHEN** `recall` or `search` is called with a `filters` key outside `scope`, `entity_id`, `predicate`, `source_butler`, `time_from`, `time_to`, `retention_class` and `sensitivity` (for example the misspelling `entity_idd`)
+- **THEN** the call MUST raise an error that names the unknown key and lists the allowed keys, before any query runs, rather than ignoring the key and returning an unfiltered result set
 
 ### Requirement: Registry-relational edges are out of scope for the memory facts store
 
@@ -636,7 +640,10 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
   `memory_context` Active Rules, and the discovery catalog (they are not written
   to it, and any existing catalog row is staled). Profile Facts SHALL admit only
-  owner-class facts; an owner-anchored fact of any other authority SHALL be
+  owner-class, durable facts: a fact whose predicate is registered
+  `is_temporal` in `predicate_registry` (event-class; a predicate absent from the
+  registry is durable) SHALL NOT appear in Profile Facts
+  even when owner-authored, and SHALL remain available to recall and search; an owner-anchored fact of any other authority SHALL be
   eligible only for Task-Relevant Facts. Every rendered local fact whose authority
   is `third_party`, `mixed` or NULL SHALL carry an attribution regardless of its
   subject: naming its sender (`reported by` / `partly reported by`) when the

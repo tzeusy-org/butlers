@@ -159,6 +159,14 @@ cron = "20 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_project_occupation_inferred"
 
+# Situational blocks (bu-r3fmja): offset from the */30 place-cluster and
+# activity projections so each run sees their fresh rows.
+[[butler.schedule]]
+name = "chronicler_project_situation_inferred"
+cron = "10,40 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_situation_inferred"
+
 [[butler.schedule]]
 name = "chronicler_project_spotify"
 cron = "*/30 * * * *"

@@ -24,9 +24,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.scheduled_jobs import _run_education_compute_analytics_snapshots_job
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.education.mind_maps import mind_map_update_status
 
 _docker_available = shutil.which("docker") is not None
@@ -44,32 +42,10 @@ _REPLAN_TARGET = "butlers.tools.education.curriculum.curriculum_replan"
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + education migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "education"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool; truncate education tables between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    # Child tables first so FK cascades are satisfied.
-    await p.execute(
-        "TRUNCATE TABLE education.quiz_responses, education.analytics_snapshots, "
-        "education.mind_map_edges, education.mind_map_nodes, education.mind_maps CASCADE"
-    )
-    yield p
-    await p.close()
+async def education_pool(db):
+    """A fresh core + education migrated clone per test."""
+    return await db("core", "education")
 
 
 # ---------------------------------------------------------------------------
@@ -143,23 +119,23 @@ async def _insert_reviews(
 # ---------------------------------------------------------------------------
 
 
-async def test_feedback_loop_fires_when_struggling_nodes_reach_threshold(pool):
+async def test_feedback_loop_fires_when_struggling_nodes_reach_threshold(education_pool):
     """3+ struggling nodes -> the nightly job invokes curriculum_replan for that map.
 
     Reviews are placed 30 days in the past so ``retention_rate_7d`` is None (no
     reviews in the 7-day window); the trigger here is the struggling-node count
     alone, isolating the first branch of the spec's OR condition.
     """
-    map_id = await _insert_map(pool)
+    map_id = await _insert_map(education_pool)
     for i in range(3):
-        node_id = await _insert_node(pool, map_id, label=f"concept-{i}")
+        node_id = await _insert_node(education_pool, map_id, label=f"concept-{i}")
         # last-5 review avg = 1.0 (< 2.5) with cnt == 5 -> struggling
-        await _insert_reviews(pool, map_id, node_id, [1, 1, 1, 1, 1], days_ago=30)
+        await _insert_reviews(education_pool, map_id, node_id, [1, 1, 1, 1, 1], days_ago=30)
 
-    await _activate_populated_map(pool, map_id)
+    await _activate_populated_map(education_pool, map_id)
 
     with patch(_REPLAN_TARGET, new=AsyncMock()) as mock_replan:
-        result = await _run_education_compute_analytics_snapshots_job(pool, None)
+        result = await _run_education_compute_analytics_snapshots_job(education_pool, None)
 
     assert result["snapshots_computed"] == 1
     assert result["replans_triggered"] == 1
@@ -169,18 +145,18 @@ async def test_feedback_loop_fires_when_struggling_nodes_reach_threshold(pool):
     assert call.args[1] == map_id
 
 
-async def test_feedback_loop_fires_when_retention_below_threshold(pool):
+async def test_feedback_loop_fires_when_retention_below_threshold(education_pool):
     """retention_rate_7d < 0.60 with <3 struggling nodes still fires the loop."""
-    map_id = await _insert_map(pool)
-    node_id = await _insert_node(pool, map_id, label="concept-0")
+    map_id = await _insert_map(education_pool)
+    node_id = await _insert_node(education_pool, map_id, label="concept-0")
     # Recent reviews (within 7d): passed (q>=3) = 1 of 5 -> retention 0.2 < 0.60.
     # mean quality 1.8 (< 2.5) -> this is the ONLY struggling node (count == 1 < 3).
-    await _insert_reviews(pool, map_id, node_id, [1, 2, 2, 1, 3], days_ago=1)
+    await _insert_reviews(education_pool, map_id, node_id, [1, 2, 2, 1, 3], days_ago=1)
 
-    await _activate_populated_map(pool, map_id)
+    await _activate_populated_map(education_pool, map_id)
 
     with patch(_REPLAN_TARGET, new=AsyncMock()) as mock_replan:
-        result = await _run_education_compute_analytics_snapshots_job(pool, None)
+        result = await _run_education_compute_analytics_snapshots_job(education_pool, None)
 
     assert result["replans_triggered"] == 1
     mock_replan.assert_awaited_once()
@@ -194,37 +170,37 @@ async def test_feedback_loop_fires_when_retention_below_threshold(pool):
     assert "retention_rate_7d=0.2" in reason
 
 
-async def test_feedback_loop_does_not_fire_when_thresholds_not_breached(pool):
+async def test_feedback_loop_does_not_fire_when_thresholds_not_breached(education_pool):
     """Healthy map (no struggling nodes, no failing retention) computes a snapshot
     but does NOT invoke curriculum_replan."""
-    map_id = await _insert_map(pool)
-    node_id = await _insert_node(pool, map_id, label="concept-0")
+    map_id = await _insert_map(education_pool)
+    node_id = await _insert_node(education_pool, map_id, label="concept-0")
     # 5 strong recent reviews: struggling avg 4.4 (>= 2.5), retention 1.0 (>= 0.60).
-    await _insert_reviews(pool, map_id, node_id, [4, 5, 4, 5, 4], days_ago=1)
+    await _insert_reviews(education_pool, map_id, node_id, [4, 5, 4, 5, 4], days_ago=1)
 
-    await _activate_populated_map(pool, map_id)
+    await _activate_populated_map(education_pool, map_id)
 
     with patch(_REPLAN_TARGET, new=AsyncMock()) as mock_replan:
-        result = await _run_education_compute_analytics_snapshots_job(pool, None)
+        result = await _run_education_compute_analytics_snapshots_job(education_pool, None)
 
     assert result["snapshots_computed"] == 1
     assert result["replans_triggered"] == 0
     mock_replan.assert_not_awaited()
 
 
-async def test_replan_failure_does_not_abort_remaining_maps(pool):
+async def test_replan_failure_does_not_abort_remaining_maps(education_pool):
     """A curriculum_replan error for one map is swallowed so the job still completes
     (and reports zero successful replans) rather than crashing the nightly run."""
-    map_id = await _insert_map(pool)
+    map_id = await _insert_map(education_pool)
     for i in range(3):
-        node_id = await _insert_node(pool, map_id, label=f"concept-{i}")
-        await _insert_reviews(pool, map_id, node_id, [1, 1, 1, 1, 1], days_ago=30)
+        node_id = await _insert_node(education_pool, map_id, label=f"concept-{i}")
+        await _insert_reviews(education_pool, map_id, node_id, [1, 1, 1, 1, 1], days_ago=30)
 
-    await _activate_populated_map(pool, map_id)
+    await _activate_populated_map(education_pool, map_id)
 
     boom = AsyncMock(side_effect=RuntimeError("replan blew up"))
     with patch(_REPLAN_TARGET, new=boom):
-        result = await _run_education_compute_analytics_snapshots_job(pool, None)
+        result = await _run_education_compute_analytics_snapshots_job(education_pool, None)
 
     # Snapshot still computed; failed replan counted as not-triggered, no exception.
     assert result["snapshots_computed"] == 1

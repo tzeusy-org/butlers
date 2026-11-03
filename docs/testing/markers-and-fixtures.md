@@ -69,6 +69,38 @@ Parameters:
 - `min_pool_size` (default: 1)
 - `max_pool_size` (default: 3)
 
+### `booted_daemon` (function scope)
+
+An async factory that boots a real butler daemon with no LLM
+(`src/butlers/testing/daemon.py`, bu-rvgzmf.2). It builds on the shared DB factory
+(`db`/`fresh_db`, bu-rvgzmf.1): each boot gets its own template clone.
+
+```python
+booted = await booted_daemon(config_dir)          # more chains: (config_dir, "core", "x")
+status = await booted.call_tool("status")         # over the daemon's real HTTP MCP endpoint
+await booted.shutdown()                           # optional; teardown shuts down the rest
+```
+
+- `ButlerDaemon.start()` runs every production startup phase with the real
+  `ModuleRegistry`, real FastMCP and the real `Spawner`. Only the runtime is
+  fake: `FakeRuntime` is registered as the default adapter for the test and
+  records invocations (`booted.runtime.invocations`) instead of starting a CLI.
+- No lifecycle internal is patched. The kit injects a connected `Database`,
+  pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
+  sets environment seams: file logs under a temp root, MCP warmup off (it is an
+  untracked task that would outlive shutdown).
+- `butler.toml` must use the one-db topology with a schema that has a runtime
+  role, for example `[butler.db] name = "butlers"` and `schema = "general"`. Each
+  chain migrates into that schema.
+- Boot registration needs the Switchboard chain's `public.register_butler_boot`
+  and a registry row. Without them, `_accepting_connections` stays `False` and a
+  retry task runs until shutdown cancels it.
+- Startup's `configure_logging` replaces root-logger handlers process-wide. The
+  kit restores them after shutdown so pytest's capture keeps working.
+- Async tests that use it carry `pytest.mark.asyncio(loop_scope="session")`.
+  `tests/testing/test_kit_booted_daemon.py` reports the cost of one boot as
+  `DAEMON-BOOT-SECONDS`.
+
 ## Shared Fixtures Module
 
 `src/butlers/testing/shared_fixtures.py` exports reusable types for testing spawner behavior.

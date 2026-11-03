@@ -61,6 +61,7 @@ from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
+from butlers.routing_guidance import build_attachments_block
 from butlers.telegram_api import TelegramPartialDeliveryError
 from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
@@ -282,37 +283,7 @@ def _build_route_runtime_context(
     elif isinstance(input_context, str):
         context_parts.append(f"\nINPUT CONTEXT:\n{input_context}")
     if attachments:
-        att_lines: list[str] = []
-        for att in attachments:
-            filename = att.get("filename", "unnamed")
-            media_type = att.get("media_type", "unknown")
-            size_kb = (att.get("size_bytes") or 0) / 1024
-            storage_ref = att.get("storage_ref")
-            if storage_ref:
-                att_lines.append(
-                    f"  - filename={filename}, media_type={media_type}, "
-                    f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
-                )
-            else:
-                # No retrieval tool exists for a storage_ref-less attachment yet
-                # (bu-2jtfw.7 S4, attachment_materialize, is unimplemented) — say
-                # so honestly instead of promising an "on-demand retrieval" verb
-                # that does not exist.
-                att_lines.append(
-                    f"  - filename={filename}, media_type={media_type}, "
-                    "status=unavailable (could not be fetched; no storage_ref)"
-                )
-        context_parts.append(
-            f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
-            + "\n".join(att_lines)
-            + "\n\nTo view an IMAGE attachment, call "
-            "`attachment_view(storage_ref=<storage_ref>)` using the EXACT storage_ref "
-            "value shown above (starts with 's3://') — it returns the image itself. "
-            "For a non-image attachment with a storage_ref, call "
-            "`get_attachment(storage_ref=<storage_ref>)` instead. Do NOT pass the "
-            "filename as storage_ref. An attachment shown as status=unavailable has "
-            "no retrieval tool yet — do not guess at its contents; say so plainly."
-        )
+        context_parts.append(build_attachments_block(attachments))
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(
         source_channel, addressed=addressed
     )

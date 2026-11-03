@@ -25,6 +25,7 @@ from butlers.chronicler.adapters.owntracks_ssid import (
     parse_ssid_places,
 )
 from butlers.chronicler.models import Confidence, Layer, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -32,18 +33,7 @@ _NOW = datetime(2026, 7, 15, 1, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
-class _TrackingAsyncCtx(_AsyncCtx):
+class _TrackingAsyncCtx(AsyncCtx):
     def __init__(self, obj: object) -> None:
         super().__init__(obj)
         self.entered = False
@@ -268,7 +258,7 @@ async def test_legacy_timestamp_checkpoint_replays_from_start() -> None:
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
     pool = MagicMock(spec=asyncpg.Pool)
-    pool.acquire.return_value = _AsyncCtx(conn)
+    pool.acquire.side_effect = lambda: AsyncCtx(conn)
 
     await adapter._fetch_points(pool, _NOW, since_uuid=None)
 
@@ -283,7 +273,7 @@ async def test_uuid_checkpoint_uses_deterministic_tuple_boundary() -> None:
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
     pool = MagicMock(spec=asyncpg.Pool)
-    pool.acquire.return_value = _AsyncCtx(conn)
+    pool.acquire.side_effect = lambda: AsyncCtx(conn)
     since_uuid = UUID("00000000-0000-0000-0000-000000000002")
 
     await adapter._fetch_points(pool, _NOW, since_uuid=since_uuid)

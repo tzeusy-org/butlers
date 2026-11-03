@@ -315,7 +315,8 @@ bootstrap change and disposable-PG validation of first install, retained-table
 replay, repeated convergence and the same positive/negative role controls.
 It is a proposal, not an adopted owner change or a verified repair. No applied
 core_255 rewrite, new core allocation, broad grant, DROP or runtime owner privilege
-is authorized here. Function-owner convergence remains open (`bu-jjv2du`).
+is authorized here. Function-owner convergence landed separately (`bu-jjv2du`; see
+Managed amendment-owner convergence below).
 
 A bounded core_255-to-core_254 rollback intentionally retains complete amendment
 rows in all four states, while their referenced candidates remain. It removes
@@ -341,8 +342,9 @@ so it would change nothing for runtime callers). The definer also pins TimeZone/
 (session-independent dedup keys) and ignores the caller's summary. Function-owner
 convergence is not part of that scope, but `core_312` no longer hides it: its upgrade
 asserts that the replacement, the dropped key and the widened CHECK took effect and raises
-otherwise, so a database whose definer is bootstrap-owned fails `core_312` until `bu-jjv2du`
-converges ownership. This investigation adds no authority or waiver for that choice.
+otherwise, so a database whose definer is bootstrap-owned fails `core_312` until the
+privileged bootstrap converges its owner (`bu-jjv2du`, below). This investigation adds no
+authority or waiver for that choice.
 
 The real-PG controls live in
 `tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
@@ -373,7 +375,18 @@ owned-sequence ownership follows the table. These expected effects are measured 
 unchanged row values, logical definitions, FK, runtime effective privileges/grant options,
 policies and RLS flags. The trusted migration owner bypasses the current non-FORCE RLS as an
 owner; actual runtime `SET ROLE` acquisitions must retain their own row and write restrictions.
-Table ownership does not converge the separately installed function owners or caller authority.
+The same atomic block then converges the table's two core_255 SECURITY DEFINER functions,
+`public.enqueue_premise_amendments(text, text, timestamptz, text)` and
+`public.resolve_finance_bill_status(uuid)` (`bu-jjv2du`). The rule is the table's: an absent
+function or one the target already owns is a no-op, only the bootstrap owner is transferred
+(`ALTER FUNCTION ... OWNER TO`, which keeps the body, `proconfig` and EXECUTE grants; owner
+references in the ACL follow the new owner), and a third owner refuses in the read-only preflight
+and again in the block. They converge only while the table exists, because core_255 installs them
+with it. Without this, a bootstrap-owned definer runs as the superuser and blocks every ordinary
+`CREATE OR REPLACE`, and `core_312` fails loud. Run the bootstrap before migrating: dev's
+`bootstrap-dev` does it on every deploy; prod's operator runs `scripts/init-db.sql` before
+`deploy-prod` ([kubernetes-deployment.md](../operations/kubernetes-deployment.md)). Ownership is
+not caller authority: the definer still verifies its caller's claim (core_312).
 
 The existing real-PG node preserves its 43-row/45-role/six-variant/two-replay historical failure
 by neutralizing only the uniquely delimited owner block in a complete source-bound fixture. Its

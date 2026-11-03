@@ -32,58 +32,35 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-async def _make_pool(postgres_container, *chains: str):
-    """Create a fresh database, run real Alembic migrations, and return a pool.
+@pytest.fixture
+async def general_pool(db):
+    """Core migrated into the ``general`` butler schema, searched first."""
+    return await db("core", schemas={"core": "general"}, schema="general")
 
-    Uses the same migration runner as the production daemon so the schema
-    automatically stays in sync with future migration additions.
 
-    Args:
-        postgres_container: A running testcontainers PostgresContainer.
-        *chains: One or more Alembic chain names to run (e.g. ``"core"``,
-            ``"switchboard"``). Defaults to just ``"core"`` when omitted.
-    """
-    from butlers.testing.migration import create_migrated_test_pool
-
-    if not chains:
-        chains = ("core",)
-
-    # The "switchboard" chain lands in the real ``switchboard`` schema (matching
-    # production one-db/multi-schema topology), so the pool's search_path must
-    # include it — otherwise resolve_routing_target()'s schema-qualified
-    # ``switchboard.butler_registry`` query and this fixture's bare/unqualified
-    # references disagree on where the tables live.
-    schema = "switchboard" if "switchboard" in chains else "general"
-    schemas = {"switchboard": "switchboard"} if "switchboard" in chains else {"core": "general"}
-
-    return await create_migrated_test_pool(
-        postgres_container,
-        chains=list(chains),
-        schemas=schemas,
-        pool_schema=schema,
-        min_pool_size=1,
-        max_pool_size=3,
+@pytest.fixture
+async def switchboard_pool(db):
+    """Core in public plus the real ``switchboard`` schema, searched first, so
+    resolve_routing_target()'s schema-qualified queries and bare references agree."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_generic_core_pool_stages_trusted_restore_bootstrap(postgres_container) -> None:
+async def test_generic_core_pool_stages_trusted_restore_bootstrap(general_pool) -> None:
     """The generic migration fixture must stage the privileged bootstrap first."""
-    pool = await _make_pool(postgres_container, "core")
-    try:
-        assert (
-            await pool.fetchval("SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user")
-            is False
+    assert (
+        await general_pool.fetchval("SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user")
+        is False
+    )
+    assert await general_pool.fetchval("SELECT restore_drill_executor.latest_result()") is None
+    assert (
+        await general_pool.fetchval(
+            "SELECT has_schema_privilege(current_user, 'restore_drill_executor_admin', 'USAGE')"
         )
-        assert await pool.fetchval("SELECT restore_drill_executor.latest_result()") is None
-        assert (
-            await pool.fetchval(
-                "SELECT has_schema_privilege(current_user, 'restore_drill_executor_admin', 'USAGE')"
-            )
-            is False
-        )
-    finally:
-        await pool.close()
+        is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -98,16 +75,9 @@ async def test_generic_core_pool_stages_trusted_restore_bootstrap(postgres_conta
 class TestButlerStartupIntegration:
     """Integration test for the complete butler core subsystem lifecycle."""
 
-    @pytest.fixture
-    async def pool(self, postgres_container):
-        """Create a fresh DB with all core tables via real Alembic migrations."""
-        p = await _make_pool(postgres_container, "core")
-        yield p
-        await p.close()
-
-    async def test_core_tables_exist(self, pool):
+    async def test_core_tables_exist(self, general_pool):
         """Core migrations create the state, scheduled_tasks, and sessions tables."""
-        tables = await pool.fetch(
+        tables = await general_pool.fetch(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'general' ORDER BY tablename"
         )
         table_names = {row["tablename"] for row in tables}
@@ -115,52 +85,54 @@ class TestButlerStartupIntegration:
         assert "scheduled_tasks" in table_names
         assert "sessions" in table_names
 
-    async def test_state_store_crud(self, pool):
+    async def test_state_store_crud(self, general_pool):
         """State store get/set/delete/list work with a real database."""
         from butlers.core.state import state_delete, state_get, state_list, state_set
 
         # Set a value
-        await state_set(pool, "butler.name", "test-butler")
-        val = await state_get(pool, "butler.name")
+        await state_set(general_pool, "butler.name", "test-butler")
+        val = await state_get(general_pool, "butler.name")
         assert val == "test-butler"
 
         # Set a complex value
-        await state_set(pool, "butler.config", {"port": 9100, "active": True})
-        val = await state_get(pool, "butler.config")
+        await state_set(general_pool, "butler.config", {"port": 9100, "active": True})
+        val = await state_get(general_pool, "butler.config")
         assert val == {"port": 9100, "active": True}
 
         # List with prefix (returns key strings by default)
-        keys = await state_list(pool, prefix="butler.")
+        keys = await state_list(general_pool, prefix="butler.")
         assert "butler.name" in keys
         assert "butler.config" in keys
 
         # Delete
-        await state_delete(pool, "butler.name")
-        val = await state_get(pool, "butler.name")
+        await state_delete(general_pool, "butler.name")
+        val = await state_get(general_pool, "butler.name")
         assert val is None
 
         # List after delete
-        keys = await state_list(pool, prefix="butler.")
+        keys = await state_list(general_pool, prefix="butler.")
         assert "butler.name" not in keys
         assert "butler.config" in keys
         assert "butler.name" not in keys
         assert "butler.config" in keys
 
-    async def test_scheduler_crud_and_tick(self, pool):
+    async def test_scheduler_crud_and_tick(self, general_pool):
         """Scheduler create/list/tick work with a real database."""
         from butlers.core.scheduler import schedule_create, schedule_list, tick
 
         # Create a scheduled task
-        task_id = await schedule_create(pool, "daily-check", "*/5 * * * *", "Run daily check")
+        task_id = await schedule_create(
+            general_pool, "daily-check", "*/5 * * * *", "Run daily check"
+        )
         assert isinstance(task_id, uuid.UUID)
 
         # List tasks
-        tasks = await schedule_list(pool)
+        tasks = await schedule_list(general_pool)
         names = [t["name"] for t in tasks]
         assert "daily-check" in names
 
         # Force next_run_at to the past so tick picks it up
-        await pool.execute(
+        await general_pool.execute(
             "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
             task_id,
             datetime.now(UTC) - timedelta(minutes=10),
@@ -172,17 +144,17 @@ class TestButlerStartupIntegration:
         async def dispatch_fn(**kwargs):
             dispatch_calls.append(kwargs)
 
-        count = await tick(pool, dispatch_fn)
+        count = await tick(general_pool, dispatch_fn)
         assert count == 1
         assert len(dispatch_calls) == 1
         assert dispatch_calls[0]["prompt"] == "Run daily check"
 
-    async def test_scheduler_job_mode_crud_and_tick(self, pool):
+    async def test_scheduler_job_mode_crud_and_tick(self, general_pool):
         """Scheduler supports job-mode create/list/tick with real DB persistence."""
         from butlers.core.scheduler import schedule_create, schedule_list, tick
 
         task_id = await schedule_create(
-            pool,
+            general_pool,
             "job-check",
             "*/5 * * * *",
             dispatch_mode="job",
@@ -191,14 +163,14 @@ class TestButlerStartupIntegration:
         )
         assert isinstance(task_id, uuid.UUID)
 
-        tasks = await schedule_list(pool)
+        tasks = await schedule_list(general_pool)
         task = next(t for t in tasks if t["name"] == "job-check")
         assert task["dispatch_mode"] == "job"
         assert task["prompt"] is None
         assert task["job_name"] == "eligibility_sweep"
         assert task["job_args"] == {"batch_size": 10}
 
-        await pool.execute(
+        await general_pool.execute(
             "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
             task_id,
             datetime.now(UTC) - timedelta(minutes=10),
@@ -210,7 +182,7 @@ class TestButlerStartupIntegration:
             dispatch_calls.append(kwargs)
             return {"status": "ok", "job_name": kwargs.get("job_name")}
 
-        count = await tick(pool, dispatch_fn)
+        count = await tick(general_pool, dispatch_fn)
         assert count == 1
         assert len(dispatch_calls) == 1
         assert dispatch_calls[0]["job_name"] == "eligibility_sweep"
@@ -218,21 +190,21 @@ class TestButlerStartupIntegration:
         assert dispatch_calls[0]["trigger_source"] == "schedule:job-check"
         assert "prompt" not in dispatch_calls[0]
 
-        row = await pool.fetchrow(
+        row = await general_pool.fetchrow(
             "SELECT last_result FROM scheduled_tasks WHERE id = $1",
             task_id,
         )
         assert row is not None
         assert row["last_result"] is not None
 
-    async def test_scheduler_job_mode_tick_avoids_spawner_sessions(self, pool, tmp_path):
+    async def test_scheduler_job_mode_tick_avoids_spawner_sessions(self, general_pool, tmp_path):
         """Job-mode schedules dispatch through deterministic handlers without session spawn."""
         from butlers.config import ButlerConfig
         from butlers.core.scheduler import schedule_create, tick
         from butlers.daemon import ButlerDaemon
 
         task_id = await schedule_create(
-            pool,
+            general_pool,
             "native-job-check",
             "*/5 * * * *",
             dispatch_mode="job",
@@ -240,18 +212,18 @@ class TestButlerStartupIntegration:
             job_args={"dry_run": True},
         )
 
-        await pool.execute(
+        await general_pool.execute(
             "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1",
             task_id,
             datetime.now(UTC) - timedelta(minutes=10),
         )
 
-        initial_session_count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
+        initial_session_count = await general_pool.fetchval("SELECT COUNT(*) FROM sessions")
 
         daemon = ButlerDaemon(tmp_path)
         daemon.config = ButlerConfig(name="switchboard", port=41100)
         daemon.db = MagicMock()
-        daemon.db.pool = pool
+        daemon.db.pool = general_pool
         daemon.spawner = MagicMock()
         daemon.spawner.trigger = AsyncMock()
 
@@ -262,23 +234,25 @@ class TestButlerStartupIntegration:
             {"switchboard": {"eligibility_sweep": mock_native_job}},
             clear=False,
         ):
-            dispatched = await tick(pool, daemon._dispatch_scheduled_task)
+            dispatched = await tick(general_pool, daemon._dispatch_scheduled_task)
 
         assert dispatched == 1
-        mock_native_job.assert_awaited_once_with(pool, {"dry_run": True})
+        mock_native_job.assert_awaited_once_with(general_pool, {"dry_run": True})
         daemon.spawner.trigger.assert_not_awaited()
 
-        final_session_count = await pool.fetchval("SELECT COUNT(*) FROM sessions")
+        final_session_count = await general_pool.fetchval("SELECT COUNT(*) FROM sessions")
         assert final_session_count == initial_session_count
 
-        row = await pool.fetchrow("SELECT last_result FROM scheduled_tasks WHERE id = $1", task_id)
+        row = await general_pool.fetchrow(
+            "SELECT last_result FROM scheduled_tasks WHERE id = $1", task_id
+        )
         assert row is not None
         stored_result = row["last_result"]
         if isinstance(stored_result, str):
             stored_result = json.loads(stored_result)
         assert stored_result == native_result
 
-    async def test_sessions_crud(self, pool):
+    async def test_sessions_crud(self, general_pool):
         """Sessions create/list/get work with a real database."""
         from butlers.core.sessions import (
             session_complete,
@@ -289,18 +263,18 @@ class TestButlerStartupIntegration:
 
         # Create a session
         session_id = await session_create(
-            pool, "Hello butler", "trigger", trace_id="abc123", request_id=str(uuid.uuid4())
+            general_pool, "Hello butler", "trigger", trace_id="abc123", request_id=str(uuid.uuid4())
         )
         assert isinstance(session_id, uuid.UUID)
 
         # List sessions
-        sessions = await sessions_list(pool)
+        sessions = await sessions_list(general_pool)
         assert len(sessions) >= 1
         ids = [s["id"] for s in sessions]
         assert session_id in ids
 
         # Get specific session
-        session = await sessions_get(pool, session_id)
+        session = await sessions_get(general_pool, session_id)
         assert session is not None
         assert session["prompt"] == "Hello butler"
         assert session["trigger_source"] == "trigger"
@@ -309,7 +283,7 @@ class TestButlerStartupIntegration:
 
         # Complete the session
         await session_complete(
-            pool,
+            general_pool,
             session_id,
             output="Done",
             tool_calls=[{"tool": "state_get", "args": {"key": "x"}}],
@@ -318,7 +292,7 @@ class TestButlerStartupIntegration:
             cost={"input_tokens": 100, "output_tokens": 50},
         )
 
-        session = await sessions_get(pool, session_id)
+        session = await sessions_get(general_pool, session_id)
         assert session["result"] == "Done"
         assert session["duration_ms"] == 150
         assert session["completed_at"] is not None
@@ -327,30 +301,36 @@ class TestButlerStartupIntegration:
         assert session["tool_calls"] == [{"tool": "state_get", "args": {"key": "x"}}]
         assert session["cost"] == {"input_tokens": 100, "output_tokens": 50}
 
-    async def test_all_subsystems_share_pool(self, pool):
+    async def test_all_subsystems_share_pool(self, general_pool):
         """State, scheduler, and sessions all work together on the same pool."""
         from butlers.core.scheduler import schedule_create
         from butlers.core.sessions import session_create
         from butlers.core.state import state_get, state_set
 
         # Use all three subsystems on the same pool
-        await state_set(pool, "integration.status", "running")
-        task_id = await schedule_create(pool, "integ-task", "0 9 * * *", "integration prompt")
+        await state_set(general_pool, "integration.status", "running")
+        task_id = await schedule_create(
+            general_pool, "integ-task", "0 9 * * *", "integration prompt"
+        )
         session_id = await session_create(
-            pool, "integration test", "trigger", request_id=str(uuid.uuid4())
+            general_pool, "integration test", "trigger", request_id=str(uuid.uuid4())
         )
 
         # Verify all operations succeeded
-        val = await state_get(pool, "integration.status")
+        val = await state_get(general_pool, "integration.status")
         assert val == "running"
 
-        task_row = await pool.fetchrow("SELECT name FROM scheduled_tasks WHERE id = $1", task_id)
+        task_row = await general_pool.fetchrow(
+            "SELECT name FROM scheduled_tasks WHERE id = $1", task_id
+        )
         assert task_row["name"] == "integ-task"
 
-        session_row = await pool.fetchrow("SELECT prompt FROM sessions WHERE id = $1", session_id)
+        session_row = await general_pool.fetchrow(
+            "SELECT prompt FROM sessions WHERE id = $1", session_id
+        )
         assert session_row["prompt"] == "integration test"
 
-    async def test_daemon_tool_registration_logic(self, pool):
+    async def test_daemon_tool_registration_logic(self, general_pool):
         """Verify that the daemon registers the expected set of core tools."""
         from unittest.mock import MagicMock
 
@@ -374,7 +354,7 @@ class TestButlerStartupIntegration:
 
         # Create a mock DB with a real pool reference
         daemon.db = MagicMock()
-        daemon.db.pool = pool
+        daemon.db.pool = general_pool
 
         # Create a mock FastMCP that captures tool registrations
         registered_tools: list[str] = []
@@ -427,20 +407,13 @@ class TestButlerStartupIntegration:
 class TestSchedulerTickIntegration:
     """Integration test for scheduler tick + dispatch + session logging."""
 
-    @pytest.fixture
-    async def pool(self, postgres_container):
-        """Create a fresh DB with core tables via real Alembic migrations."""
-        p = await _make_pool(postgres_container, "core")
-        yield p
-        await p.close()
-
-    async def test_tick_dispatches_due_task(self, pool):
+    async def test_tick_dispatches_due_task(self, general_pool):
         """tick() dispatches a task with next_run_at in the past and advances next_run_at."""
         from butlers.core.scheduler import tick
 
         # Insert a scheduled task with next_run_at in the past
         past = datetime.now(UTC) - timedelta(minutes=30)
-        task_id = await pool.fetchval(
+        task_id = await general_pool.fetchval(
             """
             INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
             VALUES ($1, $2, $3, 'toml', true, $4)
@@ -459,7 +432,7 @@ class TestSchedulerTickIntegration:
             dispatch_calls.append(kwargs)
 
         # Call tick
-        count = await tick(pool, dispatch_fn)
+        count = await tick(general_pool, dispatch_fn)
 
         # Verify dispatch was called with the correct prompt
         assert count == 1
@@ -468,21 +441,21 @@ class TestSchedulerTickIntegration:
         assert dispatch_calls[0]["trigger_source"] == "schedule:due-task"
 
         # Verify next_run_at was advanced to the future
-        row = await pool.fetchrow(
+        row = await general_pool.fetchrow(
             "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1",
             task_id,
         )
         assert row["next_run_at"] > datetime.now(UTC) - timedelta(seconds=5)
         assert row["last_run_at"] is not None
 
-    async def test_session_log_after_dispatch(self, pool):
+    async def test_session_log_after_dispatch(self, general_pool):
         """After tick dispatches a task, a session log entry can be created and retrieved."""
         from butlers.core.scheduler import tick
         from butlers.core.sessions import session_complete, session_create, sessions_get
 
         # Insert a due task
         past = datetime.now(UTC) - timedelta(minutes=5)
-        await pool.execute(
+        await general_pool.execute(
             """
             INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
             VALUES ($1, $2, $3, 'runtime', true, $4)
@@ -498,17 +471,20 @@ class TestSchedulerTickIntegration:
 
         async def dispatch_fn(**kwargs):
             sid = await session_create(
-                pool, kwargs["prompt"], kwargs["trigger_source"], request_id=str(uuid.uuid4())
+                general_pool,
+                kwargs["prompt"],
+                kwargs["trigger_source"],
+                request_id=str(uuid.uuid4()),
             )
             session_ids.append(sid)
 
-        count = await tick(pool, dispatch_fn)
+        count = await tick(general_pool, dispatch_fn)
         assert count == 1
         assert len(session_ids) == 1
 
         # Complete the session
         await session_complete(
-            pool,
+            general_pool,
             session_ids[0],
             output="Report generated",
             tool_calls=[],
@@ -517,7 +493,7 @@ class TestSchedulerTickIntegration:
         )
 
         # Verify the session was stored correctly
-        session = await sessions_get(pool, session_ids[0])
+        session = await sessions_get(general_pool, session_ids[0])
         assert session is not None
         assert session["prompt"] == "Generate report"
         assert session["trigger_source"] == "schedule:log-test-task"
@@ -527,7 +503,7 @@ class TestSchedulerTickIntegration:
         assert session["error"] is None
         assert session["completed_at"] is not None
 
-    async def test_tick_skips_future_and_disabled_tasks(self, pool):
+    async def test_tick_skips_future_and_disabled_tasks(self, general_pool):
         """tick() only dispatches enabled tasks that are due."""
         from butlers.core.scheduler import tick
 
@@ -535,7 +511,7 @@ class TestSchedulerTickIntegration:
         future = datetime.now(UTC) + timedelta(hours=1)
 
         # Due + enabled (should dispatch)
-        await pool.execute(
+        await general_pool.execute(
             """
             INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
             VALUES ($1, $2, $3, 'runtime', true, $4)
@@ -546,7 +522,7 @@ class TestSchedulerTickIntegration:
             past,
         )
         # Due + disabled (should NOT dispatch)
-        await pool.execute(
+        await general_pool.execute(
             """
             INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
             VALUES ($1, $2, $3, 'runtime', false, $4)
@@ -557,7 +533,7 @@ class TestSchedulerTickIntegration:
             past,
         )
         # Future + enabled (should NOT dispatch)
-        await pool.execute(
+        await general_pool.execute(
             """
             INSERT INTO scheduled_tasks (name, cron, prompt, source, enabled, next_run_at)
             VALUES ($1, $2, $3, 'runtime', true, $4)
@@ -573,7 +549,7 @@ class TestSchedulerTickIntegration:
         async def dispatch_fn(**kwargs):
             dispatch_calls.append(kwargs)
 
-        count = await tick(pool, dispatch_fn)
+        count = await tick(general_pool, dispatch_fn)
 
         assert count == 1
         assert len(dispatch_calls) == 1
@@ -602,23 +578,16 @@ class TestSwitchboardRoutingIntegration:
         provider.shutdown()
         _reset_otel_global_state()
 
-    @pytest.fixture
-    async def pool(self, postgres_container):
-        """Create a fresh DB with core + switchboard tables via real Alembic migrations."""
-        p = await _make_pool(postgres_container, "core", "switchboard")
-        yield p
-        await p.close()
-
-    async def test_register_list_and_route_known_butler(self, pool):
+    async def test_register_list_and_route_known_butler(self, switchboard_pool):
         """Register butlers; list returns all; route() calls with correct endpoint/tool/args and logs success."""
         from butlers.tools.switchboard import list_butlers, register_butler, route
 
         await register_butler(
-            pool, "health", "http://localhost:41101/sse", "Health butler", ["email"]
+            switchboard_pool, "health", "http://localhost:41101/sse", "Health butler", ["email"]
         )
-        await register_butler(pool, "target-butler", "http://localhost:9200/sse")
+        await register_butler(switchboard_pool, "target-butler", "http://localhost:9200/sse")
 
-        butlers = await list_butlers(pool)
+        butlers = await list_butlers(switchboard_pool)
         names = [b["name"] for b in butlers]
         assert "health" in names and "target-butler" in names
 
@@ -628,7 +597,9 @@ class TestSwitchboardRoutingIntegration:
             call_log.append({"endpoint_url": endpoint_url, "tool_name": tool_name, "args": args})
             return {"status": "ok"}
 
-        result = await route(pool, "target-butler", "state_get", {"key": "test"}, call_fn=mock_call)
+        result = await route(
+            switchboard_pool, "target-butler", "state_get", {"key": "test"}, call_fn=mock_call
+        )
         assert len(call_log) == 1
         # Legacy ``/sse`` registry URLs are canonicalized to ``/mcp`` before dispatch.
         assert call_log[0]["endpoint_url"] == "http://localhost:9200/mcp"
@@ -638,42 +609,50 @@ class TestSwitchboardRoutingIntegration:
         # Additive typed transport evidence (bu-0uqgo.3, REQ-core-notify-027).
         assert result["transport"] == {"outcome": "confirmed", "retryable": False}
 
-        rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'target-butler'")
+        rows = await switchboard_pool.fetch(
+            "SELECT * FROM routing_log WHERE target_butler = 'target-butler'"
+        )
         assert len(rows) == 1
         assert rows[0]["success"] is True
         assert rows[0]["tool_name"] == "state_get"
         assert rows[0]["source_butler"] == "switchboard"
 
-    async def test_route_unknown_butler_error_and_logs(self, pool):
+    async def test_route_unknown_butler_error_and_logs(self, switchboard_pool):
         """route() returns error dict for unregistered butler and creates failure routing_log."""
         from butlers.tools.switchboard import route
 
-        result = await route(pool, "nonexistent-butler", "some_tool", {})
+        result = await route(switchboard_pool, "nonexistent-butler", "some_tool", {})
         assert "error" in result and "not found" in result["error"]
 
-        await route(pool, "ghost-butler", "anything", {})
-        rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'ghost-butler'")
+        await route(switchboard_pool, "ghost-butler", "anything", {})
+        rows = await switchboard_pool.fetch(
+            "SELECT * FROM routing_log WHERE target_butler = 'ghost-butler'"
+        )
         assert (
             len(rows) == 1
             and rows[0]["success"] is False
             and "not found" in rows[0]["error"].lower()
         )
 
-    async def test_route_failure_logs_error(self, pool):
+    async def test_route_failure_logs_error(self, switchboard_pool):
         """When call_fn raises, route() logs the error and returns error dict."""
         from butlers.tools.switchboard import register_butler, route
 
-        await register_butler(pool, "error-butler", "http://localhost:9400/sse")
+        await register_butler(switchboard_pool, "error-butler", "http://localhost:9400/sse")
 
         async def failing_call(endpoint_url, tool_name, args):
             raise ConnectionError("Connection refused")
 
-        result = await route(pool, "error-butler", "broken_tool", {}, call_fn=failing_call)
+        result = await route(
+            switchboard_pool, "error-butler", "broken_tool", {}, call_fn=failing_call
+        )
 
         assert "error" in result
         assert "ConnectionError" in result["error"]
 
-        rows = await pool.fetch("SELECT * FROM routing_log WHERE target_butler = 'error-butler'")
+        rows = await switchboard_pool.fetch(
+            "SELECT * FROM routing_log WHERE target_butler = 'error-butler'"
+        )
         assert len(rows) == 1
         assert rows[0]["success"] is False
         assert "Connection refused" in rows[0]["error"]

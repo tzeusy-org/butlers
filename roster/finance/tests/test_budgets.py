@@ -13,8 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.testing.records import row as record_row
 
 pytestmark = [
@@ -662,94 +660,36 @@ class TestSpendingForecastResponseShape:
 
 
 # =============================================================================
-# Budget CRUD integration tests (require provisioned_postgres_pool fixture)
+# Budget CRUD integration tests (real migrated schema via the `db` factory)
 # These tests run against a real in-process Postgres instance and are NOT marked
 # "unit" so they are excluded from the mock-only test run.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Schema helpers (CRUD tests provision their own tables)
+# Fixtures (real core+finance schema)
 # ---------------------------------------------------------------------------
-
-_CREATE_BUDGETS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS budgets (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    category         TEXT NOT NULL,
-    period           TEXT NOT NULL
-                         CHECK (period IN ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
-    amount           NUMERIC(14, 2) NOT NULL,
-    currency         CHAR(3) NOT NULL DEFAULT 'USD',
-    warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
-    alert_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 1.0000,
-    is_active        BOOLEAN NOT NULL DEFAULT true,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-# Includes deleted_at column per finance-transaction-schema spec contract
-_CREATE_TRANSACTIONS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS transactions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id        UUID,
-    source_message_id TEXT,
-    posted_at         TIMESTAMPTZ NOT NULL,
-    merchant          TEXT NOT NULL,
-    description       TEXT,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    category          TEXT NOT NULL,
-    payment_method    TEXT,
-    receipt_url       TEXT,
-    external_ref      TEXT,
-    deleted_at        TIMESTAMPTZ,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 
 @pytest.fixture
-async def budget_pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance budgets and transactions tables."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(_CREATE_BUDGETS_TABLE_SQL)
-        await p.execute(_CREATE_TRANSACTIONS_TABLE_SQL)
-        yield p
+async def budget_pool(db):
+    """A core+finance clone; seeds the non-system categories budgeted below."""
+    pool = await db("core", "finance")
+    await pool.execute(
+        "INSERT INTO categories (name, display_name) VALUES ('gifts', 'gifts'), ('food', 'food') "
+        "ON CONFLICT DO NOTHING"
+    )
+    return pool
+
+
+@pytest.fixture
+async def migrated_budget_pool(db):
+    """Real finance schema in its own schema, including the category and cost-claim FKs."""
+    return await db("core", "finance", schemas={"finance": "finance"}, schema="finance")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def migrated_budget_db(postgres_container):
-    """Real finance schema, including the category and shared cost-claim FKs."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-        schemas={"finance": "finance"},
-    )
-
-
-@pytest.fixture
-async def migrated_budget_pool(migrated_budget_db):
-    pool = await asyncpg.create_pool(
-        migrated_budget_db,
-        min_size=1,
-        max_size=3,
-        server_settings={"search_path": "finance,public"},
-        init=register_jsonb_codec,
-    )
-    await pool.execute("TRUNCATE finance.budgets")
-    try:
-        yield pool
-    finally:
-        await pool.close()
 
 
 async def _insert_tx(
@@ -766,6 +706,11 @@ async def _insert_tx(
     """Insert a transaction row directly for test setup."""
     if posted_at is None:
         posted_at = datetime.now(UTC)
+    # The real schema keys transactions.category to categories(name).
+    await pool.execute(
+        "INSERT INTO categories (name, display_name) VALUES ($1, $1) ON CONFLICT DO NOTHING",
+        category,
+    )
     await pool.execute(
         """
         INSERT INTO transactions

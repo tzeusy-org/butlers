@@ -53,8 +53,8 @@ implementation is authorized by it.
   no overwrite risk).
 - Affected capability at adoption: `infrastructure-reliability`. REQ-infrastructure-reliability-001
   enumerates the dashboard lifespan's supervised loops, so the new calendar loop requires
-  amending that list (the RFC 0007 `supervisors` readiness projection consumes it). No MODIFIED
-  block is added by this draft; the amendment lands with the Calendar follow-up (task 1.3).
+  amending that list (the RFC 0007 `supervisors` readiness projection consumes it). The Calendar
+  follow-up (task 1.3, bu-vcjgo8) adds that one MODIFIED block.
 - Affected roster and code surfaces once adopted: Calendar scan in the dashboard-api process
   (`src/butlers/jobs`, reusing `query_calendar_conflicts`), `src/butlers/jobs/home.py`,
   `roster/finance/jobs/finance_jobs.py`.

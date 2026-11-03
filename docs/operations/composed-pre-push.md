@@ -57,13 +57,12 @@ origin/main refuses.
 | SQL join hygiene | existing for-update-joins predicate |
 | Strict spec grammar | explicit `openspec validate --all --strict` |
 | Commit attribution | exact base..HEAD existing session-link scanner |
-| Current budget | `scripts/check_test_budget.py`, one fresh collection per lane against `scripts/test-budget-baseline.json` |
 
 Every push currently collects the complete actual default selected membership.
 Imports and parametrization can read documentation, spec or frontend assets; no
 unproved path skip is admitted. Unknown paths and deletions retain collection.
 No planner, static count, weight, cache or stale receipt certifies membership.
-CI independently collects, budget-checks and executes under its current event
+CI independently collects and executes under its current event
 modes. No CI step is removed. This conservative envelope does not establish the
 hard under-30-second metric; missed natural timing keeps the parent phase open.
 
