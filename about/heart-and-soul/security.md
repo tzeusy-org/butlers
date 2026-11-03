@@ -77,7 +77,11 @@ specifies the mechanism. The rules it must satisfy:
   undeterminable one, is not the owner.
 - **No goal spends.** `transact` capabilities (spend, pay, book) are disabled
   for every goal, including as prepared actions, until the owner enables them
-  through an amendment to RFC 0038.
+  through an amendment to RFC 0038. A reservation request is a message:
+  asking a venue to hold a table or slot through an approval-gated message
+  is `communicate`; any step that accepts a fee, deposit, card hold or
+  cancellation charge is `book` and stays disabled (owner decision,
+  2026-10-20).
 - **Grants only narrow.** A lead's grant is at most its goal's ceiling. A
   child's grant is a subset of its lead's, without `administer`. Discovery,
   skills, and task prompts never grant anything.
@@ -316,13 +320,25 @@ These two are the only approved uses.
 
 Identity resolution maps channel-specific identifiers (Telegram chat ID, email
 address, Discord user ID) to a known entity and their roles. The canonical
-reverse-lookup (`resolve_contact_by_channel` in `src/butlers/identity.py`) reads
-`relationship.entity_facts` RDF triples (predicates `has-handle`, `has-email`,
-`has-phone`) joined to `public.entities`. Under the seam law (RFC 0004
-Amendment 3), `relationship.entity_facts` is the single source of truth for all
-non-secret identifiers and relationships, while `public.entity_info` holds only
-secured credentials. Telegram handles are stored canonically with a `telegram:`
-prefix. This enables:
+reverse-lookup (`resolve_contact_by_channel` in `src/butlers/identity.py`) is
+required by RFC 0004 Amendment 4 to read only
+`public.identity_channel_projection` joined to `public.entities`. Relationship
+atomically maintains the derived projection from its eligible channel facts;
+it remains the sole canonical writer. Public placement does not mean public
+access: named runtime readers receive only read access, Relationship alone
+receives runtime write access, and bootstrap replay must preserve the exact
+ACL and forced row-policy contract. Missing, ambiguous or unavailable projected
+identity cannot confer owner authority; inbound misses follow the existing
+unknown-sender flow without a private-schema fallback. The implementation and
+environment-specific backfill/cutover require separate evidence after adoption
+of the amendment; this document does not assert that they have shipped.
+
+Under the seam law (RFC 0004 Amendment 3), `relationship.entity_facts` remains
+the single source of truth for all non-secret identifiers and relationships,
+while `public.entity_info` holds secured credentials and its existing narrow
+technical-configuration whitelist. Neither credentials nor private attribution
+or evidence packets enter the channel projection. Telegram handles retain their
+canonical `telegram:` prefix. This enables:
 
 - **Sender recognition:** Knowing who sent a message regardless of channel.
 - **Cross-channel context:** The relationship butler knows that the person who

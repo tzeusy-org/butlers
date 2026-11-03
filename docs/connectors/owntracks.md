@@ -133,6 +133,20 @@ governs only the `public.ingestion_events` audit rows.
 
 ## Implementation Notes
 
+- The Chronicler `owntracks.points` adapter tracks ingestion progress by arrival order, not
+  device time: it pages `(recorded_at, id)` and keeps `{version, recorded_at, id}` under the
+  carryover key `"_ingest_cursor"` (`src/butlers/chronicler/adapters/owntracks.py`), so an
+  offline-queued fix uploaded after a newer one is still projected (bu-e6lrho). Rows that arrived
+  within the last 60 s wait for the next run, which keeps the cursor behind slow-committing
+  inserts. Episodes still use device `ts`, and the relational `watermark` still reports the
+  newest device `ts`. A legacy ts-only checkpoint cuts over at the earliest-arrived row with
+  `ts > watermark` (re-reading only rows that arrived since, idempotently), not a history rescan.
+  A late fix (device `ts` at or before its endpoint's open-episode `end_at`) always gets its point
+  event but never replaces that carryover, and it writes no episode when it lies within the movement
+  gap of an open or stored movement episode; only a late span more than the gap away from every
+  episode becomes its own episode.
+  Index: `connectors.idx_owntracks_points_recorded_at_id` (core_309).
+
 - The Chronicler `owntracks.ssid_presence` adapter keeps its cursor as `{watermark, uuid}` under the
   checkpoint-carryover key `"_source_cursor"`
   (`src/butlers/chronicler/adapters/owntracks_ssid.py::_SOURCE_CURSOR_KEY`) (OwnTracks ids are

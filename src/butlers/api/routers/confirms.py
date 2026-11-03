@@ -39,13 +39,17 @@ def _owner():
         raise HTTPException(403, detail="owner_required")
 
 
+REDACTED_TEXT = "Question removed after the retention period."
+
+
 def _card(row):
     # Never expose signing material, internal routing/sink references or raw quoted links.
     prompt = row["prompt"]
+    redacted = bool(prompt.get("redacted"))
     return {
         "id": str(row["id"]),
-        "text": prompt["text"],
-        "options": prompt["options"],
+        "text": REDACTED_TEXT if redacted else prompt["text"],
+        "options": [] if redacted else prompt["options"],
         "status": row["status"],
         "answer_index": row["answer_index"],
         "application_status": row["application_status"],

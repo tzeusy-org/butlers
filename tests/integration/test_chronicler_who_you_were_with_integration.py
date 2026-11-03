@@ -35,8 +35,6 @@ from butlers.api.deps import get_db
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -46,30 +44,17 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
+
+@pytest.fixture
+async def chronicler_pool(db) -> asyncpg.Pool:
+    pool = await db("chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
 _ENDPOINT = "/api/chronicler/who-you-were-with"
 _T0 = datetime(2026, 7, 5, 0, 0, 0, tzinfo=UTC)
 _T1 = datetime(2026, 7, 6, 0, 0, 0, tzinfo=UTC)
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE episode_entities, episodes CASCADE")
-    await p.execute("TRUNCATE TABLE source_adapter_state, projection_checkpoints CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
 
 
 async def _seed_social_episode(
@@ -131,17 +116,17 @@ async def _get(app, params: dict) -> httpx.Response:
         return await client.get(_ENDPOINT, params=params)
 
 
-async def test_resolved_participant_seen_through_real_episode_entities_join(pool):
+async def test_resolved_participant_seen_through_real_episode_entities_join(chronicler_pool):
     entity_id = uuid4()
     await _seed_social_episode(
-        pool,
+        chronicler_pool,
         source_ref="wywr-1",
         start_at=_T0.replace(hour=10),
         end_at=_T0.replace(hour=10, minute=30),
         channel="telegram_bot",
         entity_id=entity_id,
     )
-    app = _build_app(pool)
+    app = _build_app(chronicler_pool)
     resp = await _get(app, {"start_at": _T0.isoformat(), "end_at": _T1.isoformat()})
     assert resp.status_code == 200
     data = resp.json()["data"]
@@ -153,16 +138,16 @@ async def test_resolved_participant_seen_through_real_episode_entities_join(pool
     assert companion["co_present_seconds"] == pytest.approx(1800.0)
 
 
-async def test_owner_role_excluded_unattributed_participant_kept(pool):
+async def test_owner_role_excluded_unattributed_participant_kept(chronicler_pool):
     await _seed_social_episode(
-        pool,
+        chronicler_pool,
         source_ref="wywr-2",
         start_at=_T0.replace(hour=11),
         end_at=_T0.replace(hour=11, minute=15),
         channel="email",
         entity_id=None,
     )
-    app = _build_app(pool)
+    app = _build_app(chronicler_pool)
     resp = await _get(app, {"start_at": _T0.isoformat(), "end_at": _T1.isoformat()})
     data = resp.json()["data"]
     assert len(data["companions"]) == 1
@@ -172,52 +157,52 @@ async def test_owner_role_excluded_unattributed_participant_kept(pool):
     assert companion["channel"] == "email"
 
 
-async def test_restricted_episode_excluded(pool):
+async def test_restricted_episode_excluded(chronicler_pool):
     entity_id = uuid4()
     await _seed_social_episode(
-        pool,
+        chronicler_pool,
         source_ref="wywr-3",
         start_at=_T0.replace(hour=12),
         end_at=_T0.replace(hour=12, minute=15),
         entity_id=entity_id,
         privacy=Privacy.RESTRICTED,
     )
-    app = _build_app(pool)
+    app = _build_app(chronicler_pool)
     resp = await _get(app, {"start_at": _T0.isoformat(), "end_at": _T1.isoformat()})
     assert resp.json()["data"]["companions"] == []
 
 
-async def test_episode_outside_window_excluded(pool):
+async def test_episode_outside_window_excluded(chronicler_pool):
     entity_id = uuid4()
     await _seed_social_episode(
-        pool,
+        chronicler_pool,
         source_ref="wywr-4",
         start_at=_T0 - timedelta(days=5),
         end_at=_T0 - timedelta(days=5) + timedelta(minutes=30),
         entity_id=entity_id,
     )
-    app = _build_app(pool)
+    app = _build_app(chronicler_pool)
     resp = await _get(app, {"start_at": _T0.isoformat(), "end_at": _T1.isoformat()})
     assert resp.json()["data"]["companions"] == []
 
 
-async def test_two_episodes_same_entity_union_duration(pool):
+async def test_two_episodes_same_entity_union_duration(chronicler_pool):
     entity_id = uuid4()
     await _seed_social_episode(
-        pool,
+        chronicler_pool,
         source_ref="wywr-5a",
         start_at=_T0.replace(hour=9),
         end_at=_T0.replace(hour=9, minute=30),
         entity_id=entity_id,
     )
     await _seed_social_episode(
-        pool,
+        chronicler_pool,
         source_ref="wywr-5b",
         start_at=_T0.replace(hour=10),
         end_at=_T0.replace(hour=10, minute=30),
         entity_id=entity_id,
     )
-    app = _build_app(pool)
+    app = _build_app(chronicler_pool)
     resp = await _get(app, {"start_at": _T0.isoformat(), "end_at": _T1.isoformat()})
     companions = resp.json()["data"]["companions"]
     assert len(companions) == 1

@@ -11,18 +11,14 @@ data (``daily_rollups``, ``daily_rollup_flags``, ``episode_entities``) and:
    facts ``confidence`` column and mirrored in metadata), and decay (via
    ``permanence``);
 2. writes self-reminder facts marking low-confidence day blocks for
-   re-reconciliation once more evidence lands;
-3. PROPOSES recurring-companion enrichment through an injected
-   ``propose_enrichment_fn`` (no production transport is wired today) — never a
-   direct cross-schema write.
+   re-reconciliation once more evidence lands.
 
 Invariants (the §8.6 acceptance contract):
 
 - Every fact write targets the chronicler's OWN schema only. This module is
   handed a ``store_fact_fn`` already bound to the chronicler pool; it never
   receives, and cannot construct, a foreign-schema pool.
-- Enrichment leaves the chronicler ONLY as an MCP proposal via the injected
-  ``propose_enrichment_fn`` — it never touches ``relationship.entity_facts``.
+- It never touches ``relationship.entity_facts`` or any other butler's schema.
 - The write-back adds NO owner-facing message. This module has no ``notify``
   collaborator; the once-daily day-close summary (sent by the prompt) remains
   the single sanctioned owner-facing message.
@@ -37,11 +33,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from butlers.chronicler.aggregations import LANES, lane_for_activity, sources_for_lane
+from butlers.chronicler.aggregations import LANES, sources_for_lane
 from butlers.chronicler.balance import (
     DEFAULT_BASELINE_LOOKBACK_DAYS,
     LaneBalance,
@@ -52,7 +48,6 @@ from butlers.chronicler.balance import (
 logger = logging.getLogger(__name__)
 
 SOURCE_BUTLER = "chronicler"
-RELATIONSHIP_BUTLER = "relationship"
 
 # Sleep debt: cumulative deficit (baseline − actual) over the trailing window,
 # counting only days that fell short. Fire an insight once the running debt
@@ -68,15 +63,10 @@ SLEEP_DEBT_MIN_SHORTFALL_DAYS = 2
 INSIGHT_CONFIDENCE_FLOOR = 0.4
 INSIGHT_CONFIDENCE_CEILING = 0.9
 
-# Recurring companion: co-present on at least this many distinct local days
-# across the trailing window before it is worth proposing to relationship.
-COMPANION_MIN_DISTINCT_DAYS = 3
-
 # Predicate strings for chronicler-owned insight facts.
 PREDICATE_LANE_SKEW = "lane-skew"
 PREDICATE_SLEEP_DEBT = "sleep-debt"
 PREDICATE_SELF_REMINDER = "revisit-low-confidence-block"
-PREDICATE_RECURRING_COMPANION = "recurring-companion"
 
 # daily_rollup_flag types that mean "this day may be revised once more evidence
 # lands" — the exact signal a self-reminder is for. Other flag types
@@ -107,39 +97,6 @@ class InsightFact:
     tags: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-
-@dataclass(frozen=True)
-class CompanionCopresence:
-    """Chronicler-owned co-presence observation for one companion entity.
-
-    Derived from ``episode_entities`` on the chronicler's own social-lane
-    episodes over a trailing window — no cross-schema read.
-    """
-
-    entity_id: str
-    distinct_days: int
-    episode_count: int
-    last_seen_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class EnrichmentProposal:
-    """A recurring-companion enrichment PROPOSED to relationship over MCP.
-
-    Carries the companion's resolved ``entity_id`` (owned by chronicler via
-    ``episode_entities``) and the observation that justifies the proposal. The
-    chronicler never writes ``relationship.entity_facts``; the proposer merely
-    hands this to the relationship butler, which decides on its own terms.
-    """
-
-    entity_id: str
-    predicate: str
-    distinct_days: int
-    episode_count: int
-    window_start: date
-    window_end: date
-    dedup_key: str
-    message: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -149,12 +106,10 @@ class WriteBackResult:
 
     insights_written: int = 0
     self_reminders_written: int = 0
-    proposals_sent: int = 0
     errors: int = 0
 
 
 StoreFactFn = Callable[..., Awaitable[Any]]
-ProposeEnrichmentFn = Callable[[EnrichmentProposal], Awaitable[Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -326,50 +281,6 @@ def synthesize_self_reminders(day: date, flags: Iterable[Any]) -> list[InsightFa
     return out
 
 
-def synthesize_enrichment_proposals(
-    companions: Iterable[CompanionCopresence],
-    *,
-    window_start: date,
-    window_end: date,
-    min_distinct_days: int = COMPANION_MIN_DISTINCT_DAYS,
-) -> list[EnrichmentProposal]:
-    """Recurring-companion enrichment proposals, one per qualifying companion.
-
-    A companion qualifies once it is co-present on ``min_distinct_days`` or more
-    distinct local days across ``[window_start, window_end]``.
-    """
-    window_days = (window_end - window_start).days + 1
-    out: list[EnrichmentProposal] = []
-    for c in sorted(companions, key=lambda x: str(x.entity_id)):
-        if not c.entity_id or c.distinct_days < min_distinct_days:
-            continue
-        dedup_key = (
-            f"{PREDICATE_RECURRING_COMPANION}:{c.entity_id}:"
-            f"{window_start.isoformat()}_{window_end.isoformat()}"
-        )
-        message = (
-            f"Recurring companion: co-present on {c.distinct_days} of the last "
-            f"{window_days} days ({c.episode_count} social episodes)."
-        )
-        out.append(
-            EnrichmentProposal(
-                entity_id=str(c.entity_id),
-                predicate=PREDICATE_RECURRING_COMPANION,
-                distinct_days=c.distinct_days,
-                episode_count=c.episode_count,
-                window_start=window_start,
-                window_end=window_end,
-                dedup_key=dedup_key,
-                message=message,
-                metadata={
-                    "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
-                    "source": SOURCE_BUTLER,
-                },
-            )
-        )
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Orchestrator (injected collaborators)
 # ---------------------------------------------------------------------------
@@ -379,9 +290,7 @@ async def execute_writeback(
     *,
     insights: Sequence[InsightFact],
     self_reminders: Sequence[InsightFact],
-    proposals: Sequence[EnrichmentProposal],
     store_fact_fn: StoreFactFn,
-    propose_enrichment_fn: ProposeEnrichmentFn | None,
 ) -> WriteBackResult:
     """Dispatch synthesized write-backs to their injected collaborators.
 
@@ -424,19 +333,6 @@ async def execute_writeback(
         if await _store(fact):
             result.self_reminders_written += 1
 
-    if propose_enrichment_fn is not None:
-        for proposal in proposals:
-            try:
-                await propose_enrichment_fn(proposal)
-            except Exception:
-                logger.exception(
-                    "chronicler writeback: failed to propose enrichment for entity %s",
-                    proposal.entity_id,
-                )
-                result.errors += 1
-                continue
-            result.proposals_sent += 1
-
     return result
 
 
@@ -458,98 +354,6 @@ def _coerce_zone(tz: str | ZoneInfo | None) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def _local_window_utc(
-    start_date: date, end_date: date, tz: str | ZoneInfo
-) -> tuple[datetime, datetime]:
-    """UTC bounds of ``[start_date 00:00, (end_date + 1 day) 00:00)`` local."""
-    zone = _coerce_zone(tz)
-    start_local = datetime(start_date.year, start_date.month, start_date.day, tzinfo=zone)
-    end_exclusive = end_date + timedelta(days=1)
-    end_local = datetime(end_exclusive.year, end_exclusive.month, end_exclusive.day, tzinfo=zone)
-    return start_local.astimezone(UTC), end_local.astimezone(UTC)
-
-
-async def fetch_companion_copresence(
-    pool: Any,
-    *,
-    start_date: date,
-    end_date: date,
-    timezone: str,
-) -> list[CompanionCopresence]:
-    """Aggregate distinct-day co-presence per companion from OWN episodes.
-
-    Reads only chronicler-owned tables (``v_episodes_corrected`` +
-    ``episode_entities``, role != 'owner'), mirroring the ``/who-you-were-with``
-    handler's social-lane filter (``lane_for_activity(...) == "social"``) so the
-    two surfaces agree on what counts as company. Days are bucketed in the
-    owner's local timezone.
-    """
-    window_start_utc, window_end_utc = _local_window_utc(start_date, end_date, timezone)
-    zone = _coerce_zone(timezone)
-    try:
-        rows = await pool.fetch(
-            """
-            SELECT
-                e.source_name,
-                e.episode_type,
-                e.start_at,
-                e.end_at,
-                e.payload,
-                ee.entity_id
-            FROM v_episodes_corrected e
-            JOIN episode_entities ee
-                ON ee.episode_id = e.id AND ee.role != 'owner'
-            WHERE e.layer = 'activity'
-              AND e.tombstone_at IS NULL
-              AND e.privacy IN ('normal', 'sensitive')
-              AND e.start_at < $2
-              AND (e.end_at IS NULL OR e.end_at > $1)
-              AND ee.entity_id IS NOT NULL
-            """,
-            window_start_utc,
-            window_end_utc,
-        )
-    except Exception:
-        logger.exception(
-            "chronicler writeback: companion co-presence query failed for %s..%s",
-            start_date,
-            end_date,
-        )
-        return []
-
-    days_by_entity: dict[str, set[date]] = {}
-    count_by_entity: dict[str, int] = {}
-    last_seen_by_entity: dict[str, datetime] = {}
-    for row in rows:
-        payload = row["payload"] if isinstance(row["payload"], dict) else {}
-        lane = lane_for_activity(
-            "activity",
-            row["source_name"],
-            row["episode_type"],
-            trigger_source=payload.get("trigger_source"),
-        )
-        if lane != "social":
-            continue
-        entity_id = str(row["entity_id"])
-        ep_start: datetime = row["start_at"]
-        local_day = ep_start.astimezone(zone).date()
-        days_by_entity.setdefault(entity_id, set()).add(local_day)
-        count_by_entity[entity_id] = count_by_entity.get(entity_id, 0) + 1
-        prev = last_seen_by_entity.get(entity_id)
-        if prev is None or ep_start > prev:
-            last_seen_by_entity[entity_id] = ep_start
-
-    return [
-        CompanionCopresence(
-            entity_id=entity_id,
-            distinct_days=len(days),
-            episode_count=count_by_entity[entity_id],
-            last_seen_at=last_seen_by_entity.get(entity_id),
-        )
-        for entity_id, days in days_by_entity.items()
-    ]
-
-
 # ---------------------------------------------------------------------------
 # Top-level day-close write-back
 # ---------------------------------------------------------------------------
@@ -561,15 +365,13 @@ async def run_day_close_writeback(
     day_date: date,
     timezone: str,
     store_fact_fn: StoreFactFn,
-    propose_enrichment_fn: ProposeEnrichmentFn | None = None,
     baseline_lookback_days: int = DEFAULT_BASELINE_LOOKBACK_DAYS,
 ) -> WriteBackResult:
     """Synthesize and persist the day-close write-back for ``day_date``.
 
     Reads the chronicler's OWN ``daily_rollups`` / ``daily_rollup_flags`` for
     the closed day plus a trailing baseline window, synthesizes insights +
-    self-reminders + (when a proposer is wired) recurring-companion proposals,
-    and dispatches them via the injected collaborators. Returns outcome counts;
+    self-reminders, and dispatches them via the injected collaborator. Returns outcome counts;
     never raises for data/collaborator failures (best-effort, like the tier2
     cache writer it runs beside).
     """
@@ -655,21 +457,10 @@ async def run_day_close_writeback(
 
     self_reminders = synthesize_self_reminders(day_date, flags)
 
-    proposals: list[EnrichmentProposal] = []
-    if propose_enrichment_fn is not None:
-        companions = await fetch_companion_copresence(
-            pool, start_date=baseline_start, end_date=day_date, timezone=timezone
-        )
-        proposals = synthesize_enrichment_proposals(
-            companions, window_start=baseline_start, window_end=day_date
-        )
-
     return await execute_writeback(
         insights=insights,
         self_reminders=self_reminders,
-        proposals=proposals,
         store_fact_fn=store_fact_fn,
-        propose_enrichment_fn=propose_enrichment_fn,
     )
 
 
@@ -717,25 +508,19 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
 
 
 __all__ = [
-    "COMPANION_MIN_DISTINCT_DAYS",
     "INSIGHT_CONFIDENCE_CEILING",
     "INSIGHT_CONFIDENCE_FLOOR",
     "PREDICATE_LANE_SKEW",
-    "PREDICATE_RECURRING_COMPANION",
     "PREDICATE_SELF_REMINDER",
     "PREDICATE_SLEEP_DEBT",
     "SLEEP_DEBT_THRESHOLD_SECONDS",
     "SOURCE_BUTLER",
-    "CompanionCopresence",
-    "EnrichmentProposal",
     "InsightFact",
     "WriteBackResult",
     "build_chronicler_fact_writer",
     "evidence_confidence",
     "execute_writeback",
-    "fetch_companion_copresence",
     "run_day_close_writeback",
-    "synthesize_enrichment_proposals",
     "synthesize_lane_skew_insights",
     "synthesize_self_reminders",
     "synthesize_sleep_debt_insight",
