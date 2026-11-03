@@ -240,7 +240,7 @@ changes infrastructure or historical data.
 | --- | --- | --- |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
 | [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | `ci.yml`, Make, `pre_push.py` | Confirms archived OpenSpec requirements reached their canonical specs, honouring `archived-capability-homes.json`. |
-| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition. |
+| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition, and that no ID names two different requirement headings. |
 | [`check_countable_tasks.py`](check_countable_tasks.py) | `ci.yml`, `make check-countable-tasks`, `pre_push.py` | Fails when an unarchived change's tasks cannot be counted by the archive gate. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
 | [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |
