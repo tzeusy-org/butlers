@@ -426,6 +426,8 @@ import type {
   GeneralProjectCreateRequest,
   GeneralProjectDetail,
   GeneralProjectLinkKind,
+  GeneralDriveFile,
+  DeadlineRecord,
   GeneralProjectSummary,
   GeneralStats,
   HourlyActivity,
@@ -2537,6 +2539,23 @@ export function removeGeneralProjectLink(
   return apiFetch<ApiResponse<GeneralProjectDetail>>(
     `/general/projects/${encodeURIComponent(projectId)}/links/${encodeURIComponent(linkId)}`,
     { method: "DELETE" },
+  );
+}
+
+/** GET /api/general/drive-files/{fileId} — one Drive file's name and type (owner only). */
+export function getGeneralDriveFile(fileId: string): Promise<ApiResponse<GeneralDriveFile>> {
+  return apiFetch<ApiResponse<GeneralDriveFile>>(
+    `/general/drive-files/${encodeURIComponent(fileId)}`,
+  );
+}
+
+/** GET /api/butlers/{butler}/deadlines/{deadlineId} — one deadline (owner only). */
+export function getButlerDeadline(
+  butler: string,
+  deadlineId: string,
+): Promise<ApiResponse<DeadlineRecord>> {
+  return apiFetch<ApiResponse<DeadlineRecord>>(
+    `/butlers/${encodeURIComponent(butler)}/deadlines/${encodeURIComponent(deadlineId)}`,
   );
 }
 

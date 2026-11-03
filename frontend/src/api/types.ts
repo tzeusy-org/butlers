@@ -1156,6 +1156,9 @@ export interface Schedule {
   complexity?: string | null;
   source: string;
   enabled: boolean;
+  /** Id of the deadline that replaced this one; null unless superseded. */
+  superseded_by?: string | null;
+  superseded_at?: string | null;
   next_run_at: string | null;
   last_run_at: string | null;
   created_at: string;
@@ -2504,6 +2507,32 @@ export interface GeneralProjectCreateRequest extends GeneralProjectCharterInput 
   kind: GeneralProjectKind;
   idempotency_key: string;
 }
+
+/** GET /api/butlers/{name}/deadlines/{id} — one deadline's identity and status (owner only). */
+export interface DeadlineRecord {
+  id: string;
+  butler: string;
+  name: string;
+  display_title: string | null;
+  target_date: string;
+  deadline_status: string | null;
+  enabled: boolean;
+}
+
+interface GeneralDriveFileRecord {
+  id: string;
+  name: string;
+  mime_type: string | null;
+  modified_time: string | null;
+}
+
+/**
+ * GET /api/general/drive-files/{id} — one Drive file's name and type (owner only).
+ * `not_connected`: General runs without Drive; a calm state, not a failed reader.
+ */
+export type GeneralDriveFile =
+  | { state: "resolved"; file: GeneralDriveFileRecord }
+  | { state: "not_connected"; file: null };
 
 // ---------------------------------------------------------------------------
 // Health — new endpoints (bu-iuol4.24)
