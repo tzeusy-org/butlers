@@ -108,6 +108,11 @@ The owner can save, edit, inspect and revoke typed standing-reply template draft
   `approval_rules` and no `active` field (requests carrying one are refused with 422).
   Activation, broker enforcement, per-window limits and receipts belong to bu-jv1moa.28.
 
+The dashboard's `/approvals` page carries the editor (the "Standing-reply drafts" section,
+`frontend/src/components/approvals/reply-template-drafts-panel.tsx`): author, edit, inspect,
+revoke (explicit confirm) and preview. Every preview shows `authority: none`, and the
+section has no activation control.
+
 Every route requires the owner's verified dashboard session; API-key, connector-callback and
 runtime callers get 403 `owner_dashboard_session_required`, and no MCP tool exposes drafts.
 Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); edits have no

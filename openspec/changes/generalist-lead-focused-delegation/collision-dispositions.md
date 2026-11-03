@@ -71,7 +71,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `repair-whatsapp-identity-reconciliation` | connector-base-spec, conversation-decomposition, switchboard-identity | re-scope | Speaker attribution stays. Model decomposition and fan-out become deterministic span preservation into one goal. | `bu-wda3im` |
 | `restore-butler-control-plane-liveness` | butler-base-spec, butler-switchboard, staffer-qa | re-scope | Route eligibility becomes service eligibility. Domains report no reasoning-session health, and region operator views belong to D19. | `bu-fvw4ap` |
 | `restore-drill-recovery-truthfulness` | core-notify, testing | archive-first | Restore-drill truth is database evidence that a goal receipt cannot upgrade. | `bu-viat6h` |
-| `restore-qa-remediation-loop` | qa-investigation-dispatch, staffer-qa | re-scope | QA launches, lineage and budgets become staffer goals with invocation-bound evidence. Incident admission maps onto goal admission. | `bu-6a9xxw` |
+| `restore-qa-remediation-loop` | qa-investigation-dispatch, staffer-qa | re-scope | Re-scoped by `bu-6a9xxw.8`. Investigation launches stay D18 engineering executors with QA lineage, invocation-bound evidence and the QA incident budget. Incident admission stays deterministic QA infrastructure. Only `qa_triage_v1` judgment is a staffer goal, on its own D10 budget. | `bu-6a9xxw` |
 | `scrub-before-hash-dedupe-keys` | connector-base-spec | archive-first | Ingest derives dedupe keys deterministically. | `bu-u5euwb` |
 | `specify-host-authorized-dashboard-enrollment` | butler-health | re-scope | Enrollment stays. The Health voice briefing becomes an obligation or owner goal. | `bu-7y7z2` |
 | `specify-improvement-proposal-spine` | core-skills | fold-in | The whole AGENTS.md Read/Write Access block (`REQ-core-skills-004`) is folded here and removed from the source delta. The eight-name scenario union preserves pure tooling helpers, content/workflow boundaries, the goal/sandbox ban, and direct/thin-wrapper MCP prevention. Future tracked-roster amendments remain explicit-owner-accepted proposals through `propose_amendment` and the corresponding target adapter, distinct from D2 guidance-notes `record`. The source remains active with its other 20 requirements, 41 scenarios and historical/pending tasks; no archive or runtime completion is claimed. | `bu-u5euwb.20`; outstanding proposal-spine delivery `bu-8cdl1.15` |
@@ -113,7 +113,7 @@ surviving scenarios unless this change removes the requirement.
 | `restore-butler-control-plane-liveness` | butler-base-spec | Butler as Architectural Primitive | modifies |
 | `restore-butler-control-plane-liveness` | butler-base-spec | Instance Facts Internal Interface | modifies |
 | `restore-butler-control-plane-liveness` | butler-base-spec | Staffers vs Domain Butlers | modifies |
-| `restore-qa-remediation-loop` | staffer-qa | Patrol Loop Lifecycle | modifies |
+| `restore-qa-remediation-loop` | staffer-qa | Patrol Loop Lifecycle | modifies; settled, the QA block carries this change's relay sentence, `RFC 0038 D7` source and relay scenario, so either archive order keeps them (`bu-6a9xxw.8`) |
 | `specify-roster-identity-owner-operations-overlay` | butler-base-spec | CLAUDE.md as System Prompt Entry Point | modifies |
 | `specify-roster-identity-owner-operations-overlay` | core-spawner | System Prompt Composition | modifies |
 | `specify-telegram-continuity-routed-context-contract` | butler-switchboard | Misroute Correction Re-dispatch | removes |

@@ -1307,14 +1307,18 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 43  # owner RLS bypass
     repeated_success = asyncio.run(psql(production_path))
     assert snapshot(admin_url) == after_transfer
+    # The bootstrap converged the table owner, not the two definers it recreated. core_312
+    # must replace enqueue_premise_amendments, so an ordinary replay without the definer
+    # ownership convergence (bu-jjv2du) fails loudly instead of recording core_312 as
+    # applied over the forgeable core_255 body.
     for schema in ("health", "general"):
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-        engine = create_engine(db_url)
-        try:
-            with engine.connect() as conn:
-                assert_at_chain_head(conn, chain="core", schema=schema)
-        finally:
-            engine.dispose()
+        with pytest.raises(DBAPIError, match="enqueue_premise_amendments was not replaced"):
+            asyncio.run(run_migrations(db_url, chain="core", schema=schema))
+        assert "owner_conditions" not in _run(
+            admin_url,
+            "SELECT prosrc FROM pg_proc WHERE oid = "
+            "'public.enqueue_premise_amendments(text, text, timestamptz, text)'::regprocedure",
+        )
         assert _amendment_rows(admin_url) == original_rows
 
     # Actual runtime execution remains distinct from the trusted migration owner.
@@ -1739,6 +1743,14 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
         f' "fingerprint": "f"}}\'::jsonb WHERE id = \'{candidate}\' RETURNING 1',
     )
     resolved = "'2099-01-01T00:00:00Z'::timestamptz"
+    # The replay above took the shared definer to the head body, which enqueues only
+    # against the resolved ledger row it is told about (core_312), so record that witness.
+    _run(
+        db_url,
+        "INSERT INTO public.owner_conditions (source, fingerprint, episode, state,"
+        f" resolved_at, recovered_after_s) VALUES ('s', 'f', 1, 'resolved', {resolved}, 0)"
+        " RETURNING 1",
+    )
     enqueue = f"SELECT public.enqueue_premise_amendments('s', 'f', {resolved}, NULL)"
     assert _run(db_url, enqueue) == 1
     assert _run(db_url, enqueue) == 0  # the same resolution never queues twice
@@ -1868,7 +1880,10 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
                 _expect_permission_denied(conn, runpy.run_path(str(_CORE_255))[source_name])
     finally:
         engine.dispose()
-    asyncio.run(run_migrations(db_url, chain="core", schema="health"))
+    # The replay reaches core_312, which must replace the bootstrap-owned enqueue definer:
+    # it fails loudly (bu-jjv2du) rather than recording core_312 over the core_255 body.
+    with pytest.raises(DBAPIError, match="enqueue_premise_amendments was not replaced"):
+        asyncio.run(run_migrations(db_url, chain="core", schema="health"))
     assert _amendment_catalog(db_url)["functions"] == bootstrap_functions
     command.downgrade(config, "core_254")
     assert _amendment_rows(db_url) == before
