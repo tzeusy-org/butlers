@@ -59,6 +59,22 @@
       "scenario": null
     }
   ],
+  "chronicler-situational-inference/chronicler-api/Chronicler Corrections": [
+    {
+      "digest": "8ae39b007c4f",
+      "excerpt": "- **THEN** the API SHALL delegate to the shared gap-interview resolver so the override/reinforce write is identical a...",
+      "kind": "clause",
+      "scenario": "Gap-interview one-tap answer resolved"
+    }
+  ],
+  "chronicler-situational-inference/chronicler-intent-evidence-activity/Activity Lane Taxonomy": [
+    {
+      "digest": "e7bca125199c",
+      "excerpt": "| Existing episode type / source | Lane | |---|---| | `google_health` sleep | `sleep` | | `google_health` workout, in...",
+      "kind": "prose",
+      "scenario": null
+    }
+  ],
   "confine-qa-publication-authority/qa-investigation-dispatch/Anonymization-on-Egress Guarantee": [
     {
       "digest": "9133b93da72e",
