@@ -40,7 +40,7 @@ _LIVES = "5 Demo Road, Singapore 111222"
 
 
 @pytest.fixture
-async def pool(db):
+async def rel_pool(db):
     return await db(
         "core",
         "memory",
@@ -50,8 +50,8 @@ async def pool(db):
     )
 
 
-async def _entity(pool, name: str, entity_type: str = "person", *, owner: bool = False):
-    return await pool.fetchval(
+async def _entity(rel_pool, name: str, entity_type: str = "person", *, owner: bool = False):
+    return await rel_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ($1, $2, $3::text[]) RETURNING id
@@ -62,8 +62,8 @@ async def _entity(pool, name: str, entity_type: str = "person", *, owner: bool =
     )
 
 
-async def _fact(pool, subject, predicate: str, obj, *, kind: str = "literal") -> uuid.UUID:
-    return await pool.fetchval(
+async def _fact(rel_pool, subject, predicate: str, obj, *, kind: str = "literal") -> uuid.UUID:
+    return await rel_pool.fetchval(
         """
         INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src)
         VALUES ($1, $2, $3, $4, 'test') RETURNING id
@@ -75,8 +75,8 @@ async def _fact(pool, subject, predicate: str, obj, *, kind: str = "literal") ->
     )
 
 
-async def _retract(pool, fact_id) -> None:
-    await pool.execute(
+async def _retract(rel_pool, fact_id) -> None:
+    await rel_pool.execute(
         "UPDATE relationship.entity_facts SET validity = 'retracted' WHERE id = $1", fact_id
     )
 
@@ -126,10 +126,10 @@ async def _no_sleep(_seconds: float) -> None:
     return None
 
 
-async def _run(pool, provider: _Provider, *, now: datetime = _NOW, limit: int = 20):
+async def _run(rel_pool, provider: _Provider, *, now: datetime = _NOW, limit: int = 20):
     async with provider.client() as client:
         return await run_owner_address_geocoding(
-            pool,
+            rel_pool,
             credential_store=_NoCredentials(),
             http_client=client,
             now=now,
@@ -138,45 +138,45 @@ async def _run(pool, provider: _Provider, *, now: datetime = _NOW, limit: int = 
         )
 
 
-async def _graph(pool) -> dict[str, uuid.UUID]:
+async def _graph(rel_pool) -> dict[str, uuid.UUID]:
     """Owner with all three anchor kinds, plus every near-miss that must stay unsent."""
-    owner = await _entity(pool, "Owner", owner=True)
-    employer = await _entity(pool, "Employer Org", "organization")
-    rental = await _entity(pool, "Rental Flat", "place")
-    home = await _entity(pool, "Family Home", "place")
-    friend = await _entity(pool, "Friend", "person")
-    old_employer = await _entity(pool, "Old Employer", "organization")
-    not_a_place = await _entity(pool, "Landlord Co", "organization")
-    friend_employer = await _entity(pool, "Friend Employer", "organization")
+    owner = await _entity(rel_pool, "Owner", owner=True)
+    employer = await _entity(rel_pool, "Employer Org", "organization")
+    rental = await _entity(rel_pool, "Rental Flat", "place")
+    home = await _entity(rel_pool, "Family Home", "place")
+    friend = await _entity(rel_pool, "Friend", "person")
+    old_employer = await _entity(rel_pool, "Old Employer", "organization")
+    not_a_place = await _entity(rel_pool, "Landlord Co", "organization")
+    friend_employer = await _entity(rel_pool, "Friend Employer", "organization")
 
     ids = {
-        "owner_home": await _fact(pool, owner, "has-address", _HOME),
-        "employer": await _fact(pool, employer, "has-address", _OFFICE),
-        "rental": await _fact(pool, rental, "has-address", _RENTAL),
-        "lives": await _fact(pool, home, "has-address", _LIVES),
+        "owner_home": await _fact(rel_pool, owner, "has-address", _HOME),
+        "employer": await _fact(rel_pool, employer, "has-address", _OFFICE),
+        "rental": await _fact(rel_pool, rental, "has-address", _RENTAL),
+        "lives": await _fact(rel_pool, home, "has-address", _LIVES),
         # Not anchors:
-        "friend": await _fact(pool, friend, "has-address", "9 Friend Lane, Singapore 222333"),
-        "old_employer": await _fact(pool, old_employer, "has-address", "Old Office, SG"),
-        "not_a_place": await _fact(pool, not_a_place, "has-address", "Landlord HQ, SG"),
-        "friend_employer": await _fact(pool, friend_employer, "has-address", "FE Tower, SG"),
-        "retracted_home": await _fact(pool, owner, "has-address", "Old Home, Singapore"),
+        "friend": await _fact(rel_pool, friend, "has-address", "9 Friend Lane, Singapore 222333"),
+        "old_employer": await _fact(rel_pool, old_employer, "has-address", "Old Office, SG"),
+        "not_a_place": await _fact(rel_pool, not_a_place, "has-address", "Landlord HQ, SG"),
+        "friend_employer": await _fact(rel_pool, friend_employer, "has-address", "FE Tower, SG"),
+        "retracted_home": await _fact(rel_pool, owner, "has-address", "Old Home, Singapore"),
     }
-    await _fact(pool, owner, "has-email", "owner@example.test")
-    ids["works_at"] = await _fact(pool, owner, "works-at", employer, kind="entity")
-    await _fact(pool, owner, "rental-location", rental, kind="entity")
-    await _fact(pool, owner, "lives-at", home, kind="entity")
-    await _fact(pool, owner, "rental-location", not_a_place, kind="entity")
-    await _fact(pool, owner, "friend-of", friend, kind="entity")
-    await _fact(pool, friend, "works-at", friend_employer, kind="entity")
-    await _retract(pool, await _fact(pool, owner, "works-at", old_employer, kind="entity"))
-    await _retract(pool, ids["retracted_home"])
+    await _fact(rel_pool, owner, "has-email", "owner@example.test")
+    ids["works_at"] = await _fact(rel_pool, owner, "works-at", employer, kind="entity")
+    await _fact(rel_pool, owner, "rental-location", rental, kind="entity")
+    await _fact(rel_pool, owner, "lives-at", home, kind="entity")
+    await _fact(rel_pool, owner, "rental-location", not_a_place, kind="entity")
+    await _fact(rel_pool, owner, "friend-of", friend, kind="entity")
+    await _fact(rel_pool, friend, "works-at", friend_employer, kind="entity")
+    await _retract(rel_pool, await _fact(rel_pool, owner, "works-at", old_employer, kind="entity"))
+    await _retract(rel_pool, ids["retracted_home"])
     return ids
 
 
-async def test_selects_only_the_owner_anchor_addresses(pool) -> None:
-    ids = await _graph(pool)
+async def test_selects_only_the_owner_anchor_addresses(rel_pool) -> None:
+    ids = await _graph(rel_pool)
 
-    async with pool.acquire() as conn:
+    async with rel_pool.acquire() as conn:
         facts = await select_anchor_address_facts(conn)
 
     assert {f.fact_id for f in facts} == {
@@ -189,23 +189,23 @@ async def test_selects_only_the_owner_anchor_addresses(pool) -> None:
     assert by_id[ids["employer"]] == _OFFICE
 
 
-async def test_no_owner_means_no_anchors(pool) -> None:
-    place = await _entity(pool, "Somewhere", "place")
-    await _fact(pool, place, "has-address", _HOME)
+async def test_no_owner_means_no_anchors(rel_pool) -> None:
+    place = await _entity(rel_pool, "Somewhere", "place")
+    await _fact(rel_pool, place, "has-address", _HOME)
 
-    async with pool.acquire() as conn:
+    async with rel_pool.acquire() as conn:
         assert await select_anchor_address_facts(conn) == []
 
 
-async def test_run_stores_keyed_geocodes_and_logs_nothing_private(pool, caplog) -> None:
+async def test_run_stores_keyed_geocodes_and_logs_nothing_private(rel_pool, caplog) -> None:
     caplog.set_level("DEBUG")
-    ids = await _graph(pool)
+    ids = await _graph(rel_pool)
     provider = _Provider(
         onemap={_HOME: ("1.3000012345", "103.8000067891"), _OFFICE: ("1.28", "103.85")},
         nominatim={_RENTAL: ("51.5000049", "-0.1200051")},
     )
 
-    summary = await _run(pool, provider)
+    summary = await _run(rel_pool, provider)
 
     assert summary == {
         "status": "ok",
@@ -222,7 +222,7 @@ async def test_run_stores_keyed_geocodes_and_logs_nothing_private(pool, caplog) 
     assert sorted(provider.queried) == sorted([_HOME, _OFFICE, _RENTAL, _LIVES, _LIVES])
 
     rows = {
-        r["fact_id"]: r for r in await pool.fetch("SELECT * FROM relationship.address_geocodes")
+        r["fact_id"]: r for r in await rel_pool.fetch("SELECT * FROM relationship.address_geocodes")
     }
     assert set(rows) == {ids["owner_home"], ids["employer"], ids["rental"], ids["lives"]}
 
@@ -253,68 +253,68 @@ async def test_run_stores_keyed_geocodes_and_logs_nothing_private(pool, caplog) 
     assert str(ids["owner_home"]) in caplog.text
 
 
-async def test_a_settled_run_sends_nothing(pool) -> None:
-    await _graph(pool)
+async def test_a_settled_run_sends_nothing(rel_pool) -> None:
+    await _graph(rel_pool)
     first = _Provider(
         onemap={_HOME: ("1.3", "103.8"), _OFFICE: ("1.28", "103.85"), _LIVES: ("1.4", "103.9")},
         nominatim={_RENTAL: ("51.5", "-0.12")},
     )
-    await _run(pool, first)
+    await _run(rel_pool, first)
 
     second = _Provider()
-    summary = await _run(pool, second, now=_NOW + timedelta(hours=1))
+    summary = await _run(rel_pool, second, now=_NOW + timedelta(hours=1))
 
     assert second.requests == []
     assert (summary["due"], summary["attempted"]) == (0, 0)
 
 
-async def test_changed_address_text_is_geocoded_again(pool) -> None:
-    ids = await _graph(pool)
-    await _run(pool, _Provider(onemap={_HOME: ("1.3", "103.8")}))
+async def test_changed_address_text_is_geocoded_again(rel_pool) -> None:
+    ids = await _graph(rel_pool)
+    await _run(rel_pool, _Provider(onemap={_HOME: ("1.3", "103.8")}))
 
     moved = "2 Example Avenue, Singapore 123457"
-    await pool.execute(
+    await rel_pool.execute(
         "UPDATE relationship.entity_facts SET object = $2 WHERE id = $1", ids["owner_home"], moved
     )
     provider = _Provider(onemap={moved: ("1.31", "103.81")})
-    await _run(pool, provider, now=_NOW + timedelta(minutes=5))
+    await _run(rel_pool, provider, now=_NOW + timedelta(minutes=5))
 
     assert moved in provider.queried
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         "SELECT * FROM relationship.address_geocodes WHERE fact_id = $1", ids["owner_home"]
     )
     assert row["address_sha256"] == address_sha256(moved)
     assert (row["status"], row["lat"], row["attempts"]) == ("resolved", Decimal("1.31000"), 1)
 
 
-async def test_not_found_and_failed_back_off(pool) -> None:
-    owner = await _entity(pool, "Owner", owner=True)
-    fact = await _fact(pool, owner, "has-address", _RENTAL)
+async def test_not_found_and_failed_back_off(rel_pool) -> None:
+    owner = await _entity(rel_pool, "Owner", owner=True)
+    fact = await _fact(rel_pool, owner, "has-address", _RENTAL)
 
     async def row():
-        return await pool.fetchrow(
+        return await rel_pool.fetchrow(
             "SELECT * FROM relationship.address_geocodes WHERE fact_id = $1", fact
         )
 
-    await _run(pool, _Provider(nominatim_status=503))
+    await _run(rel_pool, _Provider(nominatim_status=503))
     first = await row()
     assert (first["status"], first["attempts"]) == ("failed", 1)
     assert first["next_attempt_at"] == _NOW + timedelta(hours=1)
 
     early = _Provider()
-    await _run(pool, early, now=_NOW + timedelta(minutes=59))
+    await _run(rel_pool, early, now=_NOW + timedelta(minutes=59))
     assert early.requests == []
 
     t = _NOW + timedelta(hours=1)
     expected = [timedelta(hours=6), timedelta(hours=24), timedelta(hours=48)]
     for attempts, delay in enumerate(expected, start=2):
-        await _run(pool, _Provider(), now=t)
+        await _run(rel_pool, _Provider(), now=t)
         current = await row()
         assert (current["status"], current["attempts"]) == ("not_found", attempts)
         assert current["next_attempt_at"] == t + delay
         t = t + delay
 
-    await _run(pool, _Provider(nominatim={_RENTAL: ("51.5", "-0.12")}), now=t)
+    await _run(rel_pool, _Provider(nominatim={_RENTAL: ("51.5", "-0.12")}), now=t)
     resolved = await row()
     assert (resolved["status"], resolved["attempts"], resolved["next_attempt_at"]) == (
         "resolved",
@@ -323,13 +323,13 @@ async def test_not_found_and_failed_back_off(pool) -> None:
     )
 
 
-async def test_work_per_run_is_capped(pool) -> None:
-    owner = await _entity(pool, "Owner", owner=True)
+async def test_work_per_run_is_capped(rel_pool) -> None:
+    owner = await _entity(rel_pool, "Owner", owner=True)
     for n in range(5):
-        await _fact(pool, owner, "has-address", f"{n} Cap Street, London, United Kingdom")
+        await _fact(rel_pool, owner, "has-address", f"{n} Cap Street, London, United Kingdom")
 
     provider = _Provider()
-    summary = await _run(pool, provider, limit=2)
+    summary = await _run(rel_pool, provider, limit=2)
 
     assert len(provider.requests) == 2
     assert (summary["anchor_facts"], summary["due"], summary["attempted"], summary["deferred"]) == (
@@ -339,36 +339,36 @@ async def test_work_per_run_is_capped(pool) -> None:
         3,
     )
     second = _Provider()
-    await _run(pool, second, limit=2)
+    await _run(rel_pool, second, limit=2)
     assert len(second.requests) == 2
     assert not set(provider.queried) & set(second.queried)
 
 
-async def test_an_address_that_stops_being_an_anchor_is_pruned(pool) -> None:
-    ids = await _graph(pool)
-    await _run(pool, _Provider(onemap={_OFFICE: ("1.28", "103.85")}))
-    assert await pool.fetchval(
+async def test_an_address_that_stops_being_an_anchor_is_pruned(rel_pool) -> None:
+    ids = await _graph(rel_pool)
+    await _run(rel_pool, _Provider(onemap={_OFFICE: ("1.28", "103.85")}))
+    assert await rel_pool.fetchval(
         "SELECT count(*) FROM relationship.address_geocodes WHERE fact_id = $1", ids["employer"]
     )
 
-    await _retract(pool, ids["works_at"])
-    summary = await _run(pool, _Provider(), now=_NOW + timedelta(minutes=1))
+    await _retract(rel_pool, ids["works_at"])
+    summary = await _run(rel_pool, _Provider(), now=_NOW + timedelta(minutes=1))
 
     assert summary["pruned"] == 1
-    assert not await pool.fetchval(
+    assert not await rel_pool.fetchval(
         "SELECT count(*) FROM relationship.address_geocodes WHERE fact_id = $1", ids["employer"]
     )
 
 
-async def test_a_concurrent_run_is_skipped(pool) -> None:
-    owner = await _entity(pool, "Owner", owner=True)
-    await _fact(pool, owner, "has-address", _RENTAL)
+async def test_a_concurrent_run_is_skipped(rel_pool) -> None:
+    owner = await _entity(rel_pool, "Owner", owner=True)
+    await _fact(rel_pool, owner, "has-address", _RENTAL)
 
-    async with pool.acquire() as holder:
+    async with rel_pool.acquire() as holder:
         await holder.execute("SELECT pg_advisory_lock(hashtext($1))", LOCK_NAME)
         try:
             provider = _Provider()
-            summary = await _run(pool, provider)
+            summary = await _run(rel_pool, provider)
         finally:
             await holder.execute("SELECT pg_advisory_unlock(hashtext($1))", LOCK_NAME)
 
