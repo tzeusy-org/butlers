@@ -987,6 +987,24 @@ TOOL_PRESENTATION_INVENTORY = (
     ),
     *_declare(
         "core",
+        "switchboard_routing",
+        "attachment_materialize",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("message_id", "attachment_id"),
+        # Not D7 owner selections: the tool itself admits only the lazy refs of
+        # the calling session's routed request (bu-jv1moa.59).
+        selection_bound={"message_id": False, "attachment_id": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("attachment_refs",),
+        write_stores=("attachment_refs",),
+        recipient_params=RecipientParameters(),
+    ),
+    *_declare(
+        "core",
         "media",
         "attachment_page_view",
         effect_class="read",

@@ -55,7 +55,7 @@ privilege change or metric-based required-gate decision.
 
 | Metric | Definition |
 | --- | --- |
-| Required completion | Run `created_at` to max `completed_at` of `check`, `guards`, `frontend` |
+| Required completion | Run `created_at` to max `completed_at` of `alls-green`, `guards` (runs from before the cutover, which still carry `check`: `check`, `guards`, `frontend`) |
 | Workflow completion | Run `created_at` to latest job `completed_at`, excluding later API `updated_at` changes |
 | Workflow tail | Workflow completion minus required completion, computed per run |
 | Execution | Job `completed_at` minus `started_at` |

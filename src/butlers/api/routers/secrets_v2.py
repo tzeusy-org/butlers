@@ -1982,6 +1982,9 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     # Finance payment-destination fingerprint key (bu-s11n0s.21) — HMAC key resolved
     # once at FinanceModule startup; absent means bill destinations read as unverifiable.
     "FINANCE_PAYMENT_DESTINATION_KEY": ("finance",),
+    # Owner-outbound dedup HMAC key (bu-szrvwu) — resolved once at user-client
+    # connector startup; absent means no owner-outbound point events are recorded.
+    "OWNER_OUTBOUND_DEDUP_KEY": ("telegram_user_client", "whatsapp_user_client"),
     # S3-compatible blob storage — core infra wired at butler startup
     # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
     "BLOB_S3_ENDPOINT_URL": ("blob_storage",),

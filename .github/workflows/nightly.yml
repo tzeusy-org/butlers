@@ -535,7 +535,7 @@ jobs:
         with:
           pattern: ci-*-test-evidence
           path: ${{ runner.temp }}/ci-test-receipts
-      - name: Check the covered lane groups add up and stay within the test budget
+      - name: Check the covered lane groups add up
         run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
       - name: Smoke tests (fast gate + release evidence)
         id: smoke

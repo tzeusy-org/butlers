@@ -14,11 +14,12 @@ Spec anchor: Brief §6b Amendment 1.1.A.6 + Amendment 1.1.C bead 10.
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -27,14 +28,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_115_drop_contact_info.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_migration_core_115", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -46,14 +39,19 @@ def _load_migration():
 class TestMigrationStructure:
     def test_accepted_unmapped_default_includes_google_health(self, monkeypatch):
         monkeypatch.delenv("CONTACT_INFO_DROP_ACCEPTED_UNMAPPED_TYPES", raising=False)
-        assert "google_health" in _load_migration()._accepted_unmapped_types()
+        assert (
+            "google_health"
+            in load_migration(_MIGRATION_PATH, "_migration_core_115")._accepted_unmapped_types()
+        )
 
     def test_accepted_unmapped_env_override(self, monkeypatch):
         monkeypatch.setenv("CONTACT_INFO_DROP_ACCEPTED_UNMAPPED_TYPES", "fax, pager ,")
-        assert _load_migration()._accepted_unmapped_types() == ["fax", "pager"]
+        assert load_migration(
+            _MIGRATION_PATH, "_migration_core_115"
+        )._accepted_unmapped_types() == ["fax", "pager"]
 
     def test_parity_sql_has_zero_loss_guards(self):
-        sql = _load_migration()._PARITY_SWEEP_SQL.text
+        sql = load_migration(_MIGRATION_PATH, "_migration_core_115")._PARITY_SWEEP_SQL.text
         # Secured rows are carved out to public.entity_info, never blocking.
         assert "secured = false" in sql
         # Orphan + tombstone guards.
@@ -119,7 +117,7 @@ async def _add_fact(pool, subject, predicate: str, obj: str):
 
 
 async def _parity_gap(pool, accepted: list[str]) -> dict[str, int]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "_migration_core_115")
     sql = mod._PARITY_SWEEP_SQL.text.replace(":accepted_unmapped", "$1::text[]")
     rows = await pool.fetch(sql, accepted)
     return {r["ci_type"]: r["n"] for r in rows}

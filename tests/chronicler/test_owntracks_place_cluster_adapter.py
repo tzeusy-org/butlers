@@ -39,6 +39,7 @@ from butlers.chronicler.adapters.owntracks_place_cluster import (
     parse_place_references,
 )
 from butlers.chronicler.models import Episode
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
@@ -401,34 +402,23 @@ def test_label_for_returns_place_unknown_with_no_reference_points_configured() -
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
 def _pool_table_missing() -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -438,10 +428,10 @@ def _make_mock_row(r: dict) -> MagicMock:
 
 def _chronicler_pool(point_event_ids: list | None = None) -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetch = AsyncMock(return_value=[{"id": i} for i in (point_event_ids or [])])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -938,3 +928,164 @@ def test_away_span_boundaries() -> None:
     spans, _ = detect_away_spans([far(0), far(40)], **common)
     assert len(spans) == 2
     assert detect_away_spans([far(0), far(5)], **{**common, "homes": ()}) == ([], {})
+
+
+# ---------------------------------------------------------------------------
+# Sparse-report bridging (bu-r3fmja, REQ-butler-chronicler-014)
+# ---------------------------------------------------------------------------
+
+_BRIDGE = timedelta(hours=16)
+_GAP = timedelta(minutes=DEFAULT_MAX_GAP_MINUTES)
+
+
+def _bridged(rows: list[dict], carry: dict | None = None) -> tuple[list[ClusterSpan], dict]:
+    return cluster_points(
+        rows,
+        radius_m=DEFAULT_RADIUS_METERS,
+        max_gap=_GAP,
+        prior_carryover=carry,
+        bridge_max=_BRIDGE,
+    )
+
+
+def test_silent_gap_between_same_place_fixes_is_one_bridged_stay() -> None:
+    """Nov 2 shape: home at 02:54, silent, home again ten hours later."""
+    spans, _ = _bridged([_row(_NOW), _row(_NOW + timedelta(hours=10))])
+    assert len(spans) == 1
+    assert spans[0].dwell == timedelta(hours=10)
+    assert spans[0].bridged is True
+    assert spans[0].departure_bridged is False
+
+
+def test_silent_stay_ends_at_the_departure_fix() -> None:
+    rows = [
+        _row(_NOW),
+        _row(_NOW + timedelta(hours=9, minutes=50), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(hours=9, minutes=52), lat=_AWAY_LAT + 0.01, lon=_AWAY_LON),
+    ]
+    spans, _ = _bridged(rows)
+    assert spans[0].start_at == _NOW
+    assert spans[0].end_at == _NOW + timedelta(hours=9, minutes=50)
+    assert (spans[0].bridged, spans[0].departure_bridged) == (True, True)
+    assert spans[0].point_count == 1
+
+
+def test_silence_longer_than_the_bridge_cap_is_never_a_stay() -> None:
+    spans, _ = _bridged([_row(_NOW), _row(_NOW + timedelta(hours=17))])
+    assert [s.dwell for s in spans] == [timedelta(0), timedelta(0)]
+    away = [_row(_NOW), _row(_NOW + timedelta(hours=17), lat=_AWAY_LAT, lon=_AWAY_LON)]
+    spans, _ = _bridged(away)
+    assert spans[0].end_at == _NOW
+    assert spans[0].bridged is False
+
+
+def test_dense_departure_keeps_the_last_in_place_fix_as_the_end() -> None:
+    rows = [
+        _row(_NOW),
+        _row(_NOW + timedelta(minutes=30)),
+        _row(_NOW + timedelta(minutes=40), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(minutes=45), lat=_AWAY_LAT, lon=_AWAY_LON),
+    ]
+    spans, _ = _bridged(rows)
+    assert spans[0].end_at == _NOW + timedelta(minutes=30)
+    assert spans[0].bridged is False
+
+
+def test_carried_stay_is_widened_to_a_later_batch_departure() -> None:
+    """The common live case: the stay's last fix and the departure arrive in
+    different projection runs. The carried stay is re-emitted (same start, so
+    the same source_ref) ending at the departure fix."""
+    _, carry = _bridged([_row(_NOW)])
+    later = [
+        _row(_NOW + timedelta(hours=9, minutes=50), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(hours=9, minutes=52), lat=_AWAY_LAT + 0.0005, lon=_AWAY_LON),
+    ]
+    spans, new_carry = _bridged(later, carry)
+    assert spans[0].start_at == _NOW
+    assert spans[0].end_at == _NOW + timedelta(hours=9, minutes=50)
+    assert spans[0].departure_bridged is True
+    assert spans[0].source_ref() == _bridged([_row(_NOW)])[0][0].source_ref()
+    assert new_carry[_ENDPOINT]["start_at"] == later[0]["ts"].isoformat()
+
+
+def test_carried_stay_bridges_into_a_later_batch_at_the_same_place() -> None:
+    _, carry = _bridged([_row(_NOW)])
+    spans, new_carry = _bridged([_row(_NOW + timedelta(hours=8))], carry)
+    assert len(spans) == 1
+    assert (spans[0].start_at, spans[0].end_at) == (_NOW, _NOW + timedelta(hours=8))
+    assert spans[0].bridged is True
+    assert new_carry[_ENDPOINT]["bridged"] is True
+
+
+def test_carried_stay_skips_a_single_glitch_at_the_batch_start() -> None:
+    _, carry = _bridged([_row(_NOW)])
+    rows = [
+        _row(_NOW + timedelta(hours=3), lat=_AWAY_LAT, lon=_AWAY_LON, row_id="glitch"),
+        _row(_NOW + timedelta(hours=3, minutes=1)),
+    ]
+    spans, _ = _bridged(rows, carry)
+    assert len(spans) == 1
+    assert (spans[0].start_at, spans[0].point_count) == (_NOW, 2)
+
+
+def test_carryover_is_consumed_once_per_endpoint() -> None:
+    """A later cluster in the same batch must never re-resume the carried one."""
+    _, carry = _bridged([_row(_NOW)])
+    rows = [
+        _row(_NOW + timedelta(minutes=5), lat=_AWAY_LAT, lon=_AWAY_LON),
+        _row(_NOW + timedelta(minutes=6), lat=_AWAY_LAT + 0.01, lon=_AWAY_LON),
+        _row(_NOW + timedelta(minutes=10)),
+    ]
+    spans, _ = _bridged(rows, carry)
+    assert [s.start_at for s in spans].count(_NOW) == 0
+
+
+def test_a_lone_fix_ending_the_batch_after_silence_is_held_not_a_departure() -> None:
+    stray_at = _NOW + timedelta(hours=6)
+    spans, carry = _bridged([_row(_NOW), _row(stray_at, lat=_AWAY_LAT, lon=_AWAY_LON)])
+
+    assert len(spans) == 1
+    assert (spans[0].end_at, spans[0].departure_bridged) == (_NOW, False)
+    assert carry[_ENDPOINT]["start_at"] == _NOW.isoformat()
+    assert carry[_ENDPOINT]["pending_departure"]["ts"] == stray_at.isoformat()
+
+
+def test_a_held_stray_fix_is_dropped_when_the_owner_is_back_next_batch() -> None:
+    _, carry = _bridged([_row(_NOW), _row(_NOW + timedelta(hours=6), lat=_AWAY_LAT)])
+
+    spans, new_carry = _bridged([_row(_NOW + timedelta(hours=9))], carry)
+
+    assert len(spans) == 1
+    assert (spans[0].start_at, spans[0].end_at) == (_NOW, _NOW + timedelta(hours=9))
+    assert (spans[0].point_count, spans[0].departure_bridged) == (2, False)
+    assert "pending_departure" not in new_carry[_ENDPOINT]
+
+
+def test_a_held_fix_becomes_the_departure_when_the_owner_does_not_return() -> None:
+    held_at = _NOW + timedelta(hours=6)
+    _, carry = _bridged([_row(_NOW), _row(held_at, lat=_AWAY_LAT, lon=_AWAY_LON)])
+
+    later = [_row(held_at + timedelta(minutes=40), lat=_AWAY_LAT + 0.0005, lon=_AWAY_LON)]
+    spans, new_carry = _bridged(later, carry)
+
+    assert (spans[0].start_at, spans[0].end_at) == (_NOW, held_at)
+    assert spans[0].departure_bridged is True
+    # The held fix starts the next cluster, which the later fix continues.
+    assert (spans[1].start_at, spans[1].end_at) == (held_at, later[0]["ts"])
+    assert new_carry[_ENDPOINT]["start_at"] == held_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_place_stay_is_evidence_and_records_bridging() -> None:
+    rows = [
+        _row(_NOW, row_id="a"),
+        _row(_NOW + timedelta(hours=6), lat=_AWAY_LAT, lon=_AWAY_LON, row_id="b"),
+        _row(_NOW + timedelta(hours=6, minutes=2), lat=_AWAY_LAT + 0.01, lon=_AWAY_LON, row_id="c"),
+    ]
+    upserted, _ = await _project_place(rows, OwnTracksPlaceClusterAdapter())
+    places = [ep for ep in upserted if ep.episode_type == EPISODE_TYPE_PLACE]
+    assert len(places) == 1
+    assert places[0].layer.value == "evidence"
+    assert places[0].precision.value == "minute"
+    assert places[0].payload["bridged"] is True
+    assert places[0].end_at == _NOW + timedelta(hours=6)

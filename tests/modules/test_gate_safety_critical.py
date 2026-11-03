@@ -31,6 +31,7 @@ from butlers.modules.approvals.gate import (
 )
 from butlers.modules.base import ToolMeta
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.mcp import tool_fn
 
 pytestmark = pytest.mark.unit
@@ -66,12 +67,9 @@ def _rule(arg_constraints: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _make_pool(rules: list[dict[str, Any]]) -> AsyncMock:
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=rules)
-    pool.fetchrow = AsyncMock(return_value={"id": uuid.uuid4()})  # use claimed
-    pool.execute = AsyncMock(return_value=None)
-    return pool
+def _rules_pool(rules: list[dict[str, Any]]) -> FakePool:
+    # fetchrow returns a claimed standing-rule use.
+    return fake_pool(fetch=rules, fetchrow={"id": uuid.uuid4()}, execute=None)
 
 
 def _original_fn() -> AsyncMock:
@@ -96,7 +94,7 @@ async def _call_gate(
         "_evidence": [],
         **tool_args,
     }
-    pool = _make_pool(rules)
+    pool = _rules_pool(rules)
 
     wrapper = _make_gate_wrapper(
         tool_name=TOOL,
@@ -232,7 +230,7 @@ class TestGateArgumentSerialization:
         """Datetime and UUID arguments must park instead of crashing the gate."""
         scheduled_for = datetime(2026, 7, 16, 9, 30, tzinfo=UTC)
         request_id = uuid.uuid4()
-        pool = _make_pool([])
+        pool = _rules_pool([])
         wrapper = _make_gate_wrapper(
             tool_name=TOOL,
             original_fn=_original_fn(),
@@ -284,7 +282,7 @@ class TestApplyApprovalGatesThreadsMetadata:
             enabled=True,
             gated_tools={TOOL: GatedToolConfig(risk_tier=ApprovalRiskTier.MEDIUM)},
         )
-        pool = _make_pool([_rule({"to": {"type": "any"}})])
+        pool = _rules_pool([_rule({"to": {"type": "any"}})])
 
         with (
             patch(
@@ -331,7 +329,7 @@ class TestApplyApprovalGatesThreadsMetadata:
             enabled=True,
             gated_tools={TOOL: GatedToolConfig(risk_tier=ApprovalRiskTier.MEDIUM)},
         )
-        await apply_approval_gates(mcp, config, _make_pool([]), "messenger")
+        await apply_approval_gates(mcp, config, _rules_pool([]), "messenger")
 
         tool = await mcp.get_tool(TOOL)
         properties = tool.parameters["properties"]

@@ -40,7 +40,13 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    KeyCols,
+    ProjectionAdapter,
+    cursor_key,
+    keyset_page,
+)
 from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
@@ -64,6 +70,8 @@ class SpotifySessionAdapter(ProjectionAdapter):
     Fine-grained per-track events are deferred (bu-pa4e0.10).
     """
 
+    keyset_cols: KeyCols = (("id", "uuid"),)
+
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
@@ -75,10 +83,12 @@ class SpotifySessionAdapter(ProjectionAdapter):
         chronicler_pool: asyncpg.Pool,
         since: datetime | None,
         since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> AdapterResult:
+        del since_id  # UUID PK: the tiebreaker is ``since_key``, not the BIGINT watermark_id.
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_sessions(pool, since, since_id)
+        rows = await self._fetch_sessions(pool, since, since_key)
         if rows is None:
             result.skipped = True
             result.skipped_reason = (
@@ -105,32 +115,29 @@ class SpotifySessionAdapter(ProjectionAdapter):
                     latest_watermark = candidate
 
         result.watermark = latest_watermark
-        # ``projection_checkpoints.watermark_id`` is BIGINT, but the Spotify
-        # evidence table primary key is UUID. Keep timestamp-only semantics for
-        # this adapter, matching other UUID-backed sources.
-        result.watermark_id = None
+        # ``watermark_id`` is BIGINT but the evidence PK is UUID, so the
+        # ``(recorded_at, id)`` tiebreaker travels as ``watermark_key``.
+        if rows:
+            result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
 
     async def _fetch_sessions(
         self,
         pool: asyncpg.Pool,
         since: datetime | None,
-        since_id: int | None = None,
+        since_key: list[str] | None = None,
     ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        """Fetch the next page of evidence rows after ``(since, since_key)``.
 
         Watermarks on ``recorded_at`` so in-progress sessions that the
         connector upserts on every active poll are re-projected and their
         ``end_at`` extends in ``chronicler.episodes`` via the idempotent
-        ``upsert_episode``. The evidence table's ``id`` column is a UUID,
-        while the shared checkpoint ``watermark_id`` column is BIGINT for
-        integer-backed sources, so this adapter keeps timestamp-only
-        watermarks.
+        ``upsert_episode``. Pages by ``(recorded_at, id) > cursor`` so a run of
+        sessions sharing one ``recorded_at`` is never skipped at a batch edge.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
         """
-        del since_id
         try:
             async with pool.acquire() as conn:
                 exists = await conn.fetchval(
@@ -145,34 +152,20 @@ class SpotifySessionAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
-                if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, endpoint_identity,
-                               spotify_user_id, started_at, ended_at,
-                               duration_seconds, track_count, track_names,
-                               context_uri, context_name, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY recorded_at ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, endpoint_identity,
-                               spotify_user_id, started_at, ended_at,
-                               duration_seconds, track_count, track_names,
-                               context_uri, context_name, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE recorded_at > $1
-                        ORDER BY recorded_at ASC, id ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
-                    )
+                sql, args = keyset_page(
+                    columns=(
+                        "id, idempotency_key, endpoint_identity, spotify_user_id, started_at, "
+                        "ended_at, duration_seconds, track_count, track_names, context_uri, "
+                        "context_name, recorded_at"
+                    ),
+                    table=_EVIDENCE_TABLE,
+                    ts_col="recorded_at",
+                    key_cols=self.keyset_cols,
+                    since=since,
+                    since_key=since_key,
+                    batch_limit=self.batch_limit,
+                )
+                rows = await conn.fetch(sql, *args)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

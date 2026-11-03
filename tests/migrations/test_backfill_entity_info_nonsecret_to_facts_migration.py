@@ -16,13 +16,14 @@ Parent epic: bu-oluyt — retire the contact schema (one graph for identity).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -33,14 +34,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("rel_028", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required
 # ---------------------------------------------------------------------------
@@ -49,14 +42,14 @@ def _load_migration():
 @pytest.mark.unit
 class TestSqlShape:
     def test_technical_config_types_not_projected(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_028")
         for t in mod._TECHNICAL_CONFIG_TYPES:
             assert t not in mod._TYPE_TO_PREDICATE, (
                 f"technical-config type {t!r} must not be in the projection map"
             )
 
     def test_projection_predicate_mapping(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_028")
         m = mod._TYPE_TO_PREDICATE
         assert m["email"] == "has-email"
         assert m["phone"] == "has-phone"
@@ -66,22 +59,22 @@ class TestSqlShape:
         assert m["telegram_chat_id"] == "has-handle"
 
     def test_projection_insert_is_idempotent(self):
-        sql = _load_migration().projection_insert_sql()
+        sql = load_migration(_MIGRATION_PATH, "rel_028").projection_insert_sql()
         assert "ON CONFLICT (subject, predicate, object) WHERE validity = 'active'" in sql
         assert "DO NOTHING" in sql
 
     def test_projection_applies_telegram_prefix(self):
-        sql = _load_migration().projection_insert_sql()
+        sql = load_migration(_MIGRATION_PATH, "rel_028").projection_insert_sql()
         assert "'telegram:' ||" in sql
         assert "regexp_replace(ei.value, '^telegram:', '')" in sql
 
     def test_projection_only_reads_non_secret_rows(self):
-        sql = _load_migration().projection_insert_sql()
+        sql = load_migration(_MIGRATION_PATH, "rel_028").projection_insert_sql()
         assert "ei.secured = false" in sql
         assert "ei.entity_id IS NOT NULL" in sql
 
     def test_downgrade_is_noop_does_not_touch_db(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_028")
         executed: list[str] = []
         fake_op = MagicMock()
         fake_op.execute.side_effect = lambda sql: executed.append(str(sql))
@@ -105,21 +98,21 @@ class TestUpgradeGuards:
         return fake_op
 
     def test_raises_on_unexpected_type(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_028")
         fake_op = self._fake_op(unexpected=["myspace"], missing=0)
         with patch.object(mod, "op", fake_op):
             with pytest.raises(RuntimeError, match="unmapped type"):
                 mod.upgrade()
 
     def test_raises_on_parity_gap(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_028")
         fake_op = self._fake_op(unexpected=None, missing=3)
         with patch.object(mod, "op", fake_op):
             with pytest.raises(RuntimeError, match="parity FAILED"):
                 mod.upgrade()
 
     def test_clean_run_does_not_raise(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_028")
         fake_op = self._fake_op(unexpected=None, missing=0)
         with patch.object(mod, "op", fake_op):
             mod.upgrade()  # must not raise
@@ -175,7 +168,7 @@ pytestmark_integration = [
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_projection_produces_correct_triples(db) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_028")
     pool = await _pre_state(db)
 
     owner = await _new_entity(pool, owner=True)
@@ -248,7 +241,7 @@ async def test_projection_produces_correct_triples(db) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_parity_and_idempotency(db) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_028")
     pool = await _pre_state(db)
     person = await _new_entity(pool)
     await _add_info(pool, person, "email", "p@q.com")
@@ -276,7 +269,7 @@ async def test_parity_and_idempotency(db) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_unexpected_type_surfaced_by_guard(db) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_028")
     pool = await _pre_state(db)
     person = await _new_entity(pool)
     await _add_info(pool, person, "myspace", "tom")  # non-secret, unmapped
@@ -290,7 +283,7 @@ async def test_unexpected_type_surfaced_by_guard(db) -> None:
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_owner_seed_subsumed_no_duplicate(db) -> None:
     """A pre-existing owner-bootstrap triple is not duplicated by the backfill."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_028")
     pool = await _pre_state(db)
     owner = await _new_entity(pool, owner=True)
     await _add_info(pool, owner, "telegram_chat_id", "555")

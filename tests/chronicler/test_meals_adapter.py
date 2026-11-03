@@ -26,6 +26,8 @@ from butlers.chronicler.adapters.meals import (
     MealsAdapter,
 )
 from butlers.chronicler.models import PointEvent, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
 _MEAL_ID = str(uuid.uuid4())
@@ -36,7 +38,7 @@ _MEAL_ID = str(uuid.uuid4())
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _meal_row(
     row_id: str = _MEAL_ID,
     meal_type: str = "lunch",
     description: str = "Grilled chicken salad",
@@ -56,18 +58,13 @@ def _make_row(
     }
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    """Build a MagicMock that supports dict-style access via __getitem__."""
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     """Build a mock asyncpg pool that returns the given row dicts for fetch()."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -77,21 +74,8 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
-
-
-class _AsyncCtx:
-    """Async context manager that yields ``obj``."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 def _chronicler_pool() -> AsyncMock:
@@ -101,7 +85,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchrow = AsyncMock(return_value=None)
 
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -153,7 +137,7 @@ def test_no_llm_imports_in_meals_adapter() -> None:
 @pytest.mark.asyncio
 async def test_single_meal_produces_one_point_event() -> None:
     """A single meal row must produce exactly one eating_event point event."""
-    row = _make_row()
+    row = _meal_row()
     adapter = MealsAdapter()
     upserted: list[PointEvent] = []
 
@@ -179,7 +163,7 @@ async def test_single_meal_event_fields() -> None:
     """Point event fields must reflect the meal row correctly."""
     row_id = str(uuid.uuid4())
     eaten_at = datetime(2026, 4, 25, 13, 30, 0, tzinfo=UTC)
-    row = _make_row(
+    row = _meal_row(
         row_id=row_id,
         meal_type="lunch",
         description="Grilled chicken salad",
@@ -211,7 +195,7 @@ async def test_single_meal_event_fields() -> None:
 @pytest.mark.asyncio
 async def test_meal_title_format() -> None:
     """Title should be '{type}: {description}' when both are present."""
-    row = _make_row(meal_type="breakfast", description="Oatmeal with berries")
+    row = _meal_row(meal_type="breakfast", description="Oatmeal with berries")
     adapter = MealsAdapter()
     upserted: list[PointEvent] = []
 
@@ -231,7 +215,7 @@ async def test_meal_title_format() -> None:
 @pytest.mark.asyncio
 async def test_meal_payload_omits_null_nutrition_and_notes() -> None:
     """Payload must omit nutrition and notes keys when they are None."""
-    row = _make_row(nutrition=None, notes=None)
+    row = _meal_row(nutrition=None, notes=None)
     adapter = MealsAdapter()
     upserted: list[PointEvent] = []
 
@@ -260,8 +244,8 @@ async def test_watermark_advances_to_max_eaten_at() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=6)
     rows = [
-        _make_row(eaten_at=t1, seq=1),
-        _make_row(eaten_at=t2, seq=2),
+        _meal_row(eaten_at=t1, seq=1),
+        _meal_row(eaten_at=t2, seq=2),
     ]
     adapter = MealsAdapter()
 
@@ -305,7 +289,7 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
         side_effect=asyncpg.exceptions.UndefinedTableError('relation "health.meals" does not exist')
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     adapter = MealsAdapter()
     cp = _chronicler_pool()
