@@ -16,12 +16,13 @@ Spec: openspec/changes/entity-keyed-preferred-channel/specs/relationship-facts/s
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -39,16 +40,8 @@ _REGISTRY_PATH = (
 )
 
 
-def _load_migration(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_sqls(fn_name: str) -> list[str]:
-    mod = _load_migration(_MIGRATION_PATH, "rel_022")
+    mod = load_migration(_MIGRATION_PATH, "rel_022")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)

@@ -469,10 +469,12 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         Deterministic ask-side of bu-whhll.12. When the closed day left more than
         two hours of waking time unaccounted, or carries a low-confidence
         ``occupation_block`` the pipeline was never sure about, the owner is
-        worth **one** confirmation prompt. This tool does the whole ask:
+        worth **one** prompt. This tool does the whole ask:
         evaluate → max-one-per-day dedupe (KV state) → quiet-hours /
         delivery-preferences gate → deliver a Telegram inline-button message
-        (✅ Work day / ✏️ Not work / 🚫 Dismiss) whose taps route back to
+        (an occupation block: ✅ Work day / ✏️ Not work / 🚫 Dismiss; otherwise the
+        longest unexplained block with Work / Social / Play / Eat / Rest /
+        Dismiss) whose taps route back to
         :func:`chronicler_resolve_gap_interview`. The 09:00 ``chronicler_gap_interview``
         job-mode schedule calls the same service,
         :func:`butlers.chronicler.gap_interview_job.ask_gap_interview`.
@@ -510,13 +512,15 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         The deterministic answer-side: turns ``confirm`` / ``correct`` /
         ``dismiss`` into a durable ``chronicler.overrides`` row (the first real
         tenant of the corrections machinery) and a reinforce/decay nudge on the
-        matching routine, idempotently. This is the seam the telegram
+        matching routine, and a lane answer (``work`` / ``social`` / ``play`` /
+        ``eat`` / ``rest``) into one owner-attested activity block over the
+        interviewed interval, idempotently. This is the seam the telegram
         inline-button callback (via the ``telegram_bot`` connector) and the
         future decision-loop transport (RFC 0021) both call.
 
         Args:
             interview_id: The id handed out by ``chronicler_gap_interview``.
-            answer: One of ``confirm`` / ``correct`` / ``dismiss``.
+            answer: One of the interview's offered answers.
 
         Returns the apply summary, or ``{"status": "error"|"already_answered"}``.
         """

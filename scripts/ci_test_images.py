@@ -41,6 +41,15 @@ IMAGES = {
         "config": "sha256:81bd698b4594e751a3269e4dcd3e03a4a0ec0daf7b72e7aa1abd43cce9887542",
         "pg_major": "16",
     },
+    # The PG17 client that integration tests `docker run` directly (pg_dump.sh /
+    # pg_restore.sh). Read from Docker Hub's public index on 2026-11-03.
+    "postgres-client": {
+        "alias": "postgres:17",
+        "repository": "library/postgres",
+        "manifest": "sha256:0b81cec82228160abfa753aeaad0609b709eb26eeb950f2e404ad2326e1cc370",
+        "config": "sha256:81edcaa5ff2923f7be9c1f43d3e5076f29c6c9c216c86964b5fd038959404429",
+        "pg_major": "17",
+    },
 }
 TOTAL_SECONDS = 360
 CLEANUP_SECONDS = 3
@@ -173,6 +182,20 @@ def prepare(names: list[str], *, execute=run, now=time.monotonic) -> dict:
             row.update(state="failed", failure_kind=kind)
             raise AcquisitionError(json.dumps({"complete": False, "images": rows})) from None
     return {"complete": True, "images": rows}
+
+
+def prepare_alias_on_hosted_runner(alias: str) -> None:
+    """Acquire a pinned image before a time-boxed consumer starts it on hosted CI.
+
+    A bare ``docker run`` pulls a missing image inside the caller's own timeout,
+    so on a busy runner the pull alone can spend a test's whole budget. Off
+    GitHub Actions, and for aliases this module does not pin, this does nothing.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    required = [name for name, pin in IMAGES.items() if pin["alias"] == alias]
+    if required:
+        prepare(required)
 
 
 def main() -> int:

@@ -12,7 +12,6 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.finance import claim_reconciliation
 from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
 
@@ -24,13 +23,8 @@ pytestmark = [
 
 
 @pytest.fixture
-def db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-        schemas={"finance": "finance"},
-    )
+def db_url(fresh_db) -> str:
+    return fresh_db("core", "finance", schemas={"finance": "finance"})
 
 
 async def _finance_pool(db_url: str) -> asyncpg.Pool:

@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+
 # The roster job modules are loaded dynamically via the root conftest using
 # _load_roster_jobs(); they are registered in sys.modules under the key
 # "butlers.jobs._roster.relationship_jobs" but are NOT accessible as
@@ -78,16 +80,6 @@ def _outgoing_hour() -> int:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_pool() -> MagicMock:
-    """Return a pool mock suitable for most test scenarios."""
-    pool = MagicMock()
-    pool.fetch = AsyncMock(return_value=[])
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=None)
-    pool.execute = AsyncMock()
-    return pool
 
 
 def _make_inbox_row(
@@ -218,7 +210,7 @@ async def _run_with_mocked_deps(
 
 async def test_stats_contains_all_required_keys():
     """Return dict must include both old and new stat keys."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     stats, _ = await _run_with_mocked_deps(pool)
     required_keys = {
         "scan_window_start",
@@ -245,7 +237,7 @@ async def test_stats_contains_all_required_keys():
 
 async def test_empty_inbox_logs_nothing():
     """No inbox rows → interaction_log is never called."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     stats, mock_log = await _run_with_mocked_deps(pool, inbox_rows=[])
     mock_log.assert_not_called()
     assert stats["logged"] == 0
@@ -254,7 +246,7 @@ async def test_empty_inbox_logs_nothing():
 
 async def test_checkpoint_read_failure_uses_default_window_without_raising(caplog):
     """Checkpoint read failures are reported in stats instead of escaping to scheduler."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     pool.fetch = AsyncMock(side_effect=[[], [], []])
 
     mod = _get_rjobs()
@@ -299,7 +291,7 @@ async def test_checkpoint_read_failure_uses_default_window_without_raising(caplo
 
 async def test_checkpoint_write_failure_returns_error_stats_without_raising(caplog):
     """Checkpoint write failures do not make deterministic dispatch fail."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     pool.fetch = AsyncMock(side_effect=[[], [], []])
 
     mod = _get_rjobs()
@@ -348,7 +340,7 @@ async def test_checkpoint_write_failure_returns_error_stats_without_raising(capl
 
 async def test_interaction_eligible_false_excluded():
     """Rows filtered by interaction_eligible=false produce no interactions."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     # The SQL excludes interaction_eligible=false before aggregation; we
     # simulate this by providing an empty inbox result (as the DB would).
     stats, mock_log = await _run_with_mocked_deps(pool, inbox_rows=[])
@@ -364,7 +356,7 @@ async def test_interaction_eligible_false_excluded():
 
 async def test_participant_count_gate_skips_large_groups():
     """Groups with participant_count > 20 are skipped; skipped_group_too_large is incremented."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["alice", "bob"],
@@ -385,7 +377,7 @@ async def test_participant_count_gate_skips_large_groups():
 
 async def test_participant_count_gate_boundary_20_is_allowed():
     """Groups with exactly 20 participants are NOT skipped (threshold is > 20)."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["alice"],
@@ -402,7 +394,7 @@ async def test_participant_count_gate_boundary_20_is_allowed():
 
 async def test_participant_count_falls_back_to_distinct_sender_count():
     """When participant_count is None, fall back to distinct sender count."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     # participant_count=None → fallback to len(sender_identities)
     inbox_rows = [
         _make_inbox_row(
@@ -421,7 +413,7 @@ async def test_participant_count_falls_back_to_distinct_sender_count():
 
 async def test_participant_count_fallback_triggers_gate():
     """Fallback sender count > 20 still triggers the gate."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     # 21 distinct senders, no participant_count in context
     senders = [f"sender-{i}" for i in range(21)]
     inbox_rows = [_make_inbox_row(sender_identities=senders, participant_count=None)]
@@ -440,7 +432,7 @@ async def test_participant_count_fallback_triggers_gate():
 
 async def test_dm_group_size_is_1():
     """DM (single non-owner sender) must pass group_size=1 in metadata."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [_make_inbox_row(sender_identities=["alice"], participant_count=1)]
     contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     _, mock_log = await _run_with_mocked_deps(
@@ -458,7 +450,7 @@ async def test_dm_group_size_is_1():
 
 async def test_incoming_only_when_owner_not_present():
     """When no owner sender is in the group, only incoming facts are logged."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["alice"],
@@ -483,7 +475,7 @@ async def test_incoming_only_when_owner_not_present():
 
 async def test_incoming_and_outgoing_when_owner_sent():
     """When the owner is among the senders, each non-owner gets incoming AND outgoing."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["owner-handle", "alice"],
@@ -510,7 +502,7 @@ async def test_incoming_and_outgoing_when_owner_sent():
 
 async def test_outgoing_uses_plus12_hour_offset():
     """Outgoing facts use hour = incoming_hour + 12 for dedup separation."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["owner-handle", "alice"],
@@ -542,7 +534,7 @@ async def test_outgoing_uses_plus12_hour_offset():
 
 async def test_group_size_in_metadata_for_group_chat():
     """group_size from participant_count is present in metadata for both fact directions."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["owner-handle", "alice"],
@@ -571,7 +563,7 @@ async def test_group_size_in_metadata_for_group_chat():
 
 async def test_owner_not_logged_as_contact():
     """Owner contact is skipped during contact resolution; skipped_owner incremented."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["owner-handle"],
@@ -600,7 +592,7 @@ async def test_owner_not_logged_as_contact():
 
 async def test_unresolved_sender_skipped():
     """Senders with no contact_info match are counted in skipped_unresolved."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["unknown-handle"],
@@ -620,7 +612,7 @@ async def test_unresolved_sender_skipped():
 
 async def test_multiple_non_owner_senders_each_get_facts():
     """Each non-owner sender in a group gets at least one incoming fact."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["alice", "bob"],
@@ -641,7 +633,7 @@ async def test_multiple_non_owner_senders_each_get_facts():
 
 async def test_multiple_non_owner_senders_with_owner():
     """Each non-owner in a group with owner gets incoming + outgoing = 2 facts each."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["owner-handle", "alice", "bob"],
@@ -667,7 +659,7 @@ async def test_multiple_non_owner_senders_with_owner():
 
 async def test_duplicate_does_not_increment_logged():
     """When interaction_log returns skipped=duplicate, logged is NOT incremented."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [_make_inbox_row(sender_identities=["alice"], participant_count=1)]
     contact_rows = [_make_entity_row(ci_value="alice", entity_id=_ENTITY_A)]
     stats, _ = await _run_with_mocked_deps(
@@ -691,7 +683,7 @@ async def test_group_size_uses_participant_count_when_only_one_sender_resolves()
     participant_count: a group with participant_count=5 but only one resolving sender
     must still yield group_size=5, not 1.
     """
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     # 5 senders in the chat, but only alice resolves to a contact.
     inbox_rows = [
         _make_inbox_row(
@@ -714,7 +706,7 @@ async def test_bidirectional_dm_group_size_is_1():
     Regression guard: participant_count=2 (owner + 1 contact) should yield
     group_size=1, not 2.
     """
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     inbox_rows = [
         _make_inbox_row(
             sender_identities=["owner-handle", "alice"],
@@ -799,7 +791,7 @@ async def _run_with_knows_scenario(
       2. calendar rows → []  (contact resolution step is skipped — no lookup_pairs)
       3. knows-count rows → knows_count_rows
     """
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     pool.fetch = AsyncMock(side_effect=[[], [], knows_count_rows])
     pool.fetchrow = AsyncMock(return_value=_make_owner_entity_row(_ENTITY_OWNER))
 
@@ -894,7 +886,7 @@ async def test_zero_resolutions_flags_degradation():
     known contact". Reporting that as a clean zero-fact run is the exact silent
     failure this job exists to prevent.
     """
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     _make_state_get_none(pool)
 
     stats, mock_log = await _run_with_mocked_deps(
@@ -910,7 +902,7 @@ async def test_zero_resolutions_flags_degradation():
 
 
 async def test_successful_resolution_does_not_flag_degradation():
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     _make_state_get_none(pool)
 
     stats, _ = await _run_with_mocked_deps(
@@ -924,7 +916,7 @@ async def test_successful_resolution_does_not_flag_degradation():
 
 async def test_owner_sender_identity_drives_direction_without_role_lookup():
     """The connector-reported owner id works with no owner entity resolved."""
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], fetchrow=None, fetchval=None, execute=None)
     _make_state_get_none(pool)
 
     stats, mock_log = await _run_with_mocked_deps(

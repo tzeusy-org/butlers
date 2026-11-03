@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # Create or update the `main-merge-queue` repository ruleset (bu-r5mnn).
 #
-# The ruleset requires the single `alls-green` status (bu-29wkwj.3), which only
-# exists once .github/workflows/ci.yml carries that job. A required context
-# that no run reports stalls every queue entry, so change the required set and
-# the workflow together: apply this just before the PR that renames the
-# fan-in enters the queue, when no older merge group is building.
+# The ruleset requires the single `alls-green` status (bu-29wkwj.3), reported by
+# GitHub Actions (integration 15368). A required context that no run reports
+# stalls every queue entry, so rename that job only together with this script.
 #
 # What it configures on refs/heads/main:
-#   - merge_queue: SQUASH merges, ALLGREEN grouping, up to 5 concurrent
+#   - merge_queue: SQUASH merges, ALLGREEN grouping, up to 9 concurrent
 #     merge_group builds. Independently, merge 1 to 5 ready entries together
 #     with a 5 minute minimum-group wait and 120 minute check response timeout.
 #   - required_status_checks: alls-green (non-strict, so a PR does
@@ -59,7 +57,7 @@ payload=$(cat <<JSON
       "parameters": {
         "merge_method": "SQUASH",
         "grouping_strategy": "ALLGREEN",
-        "max_entries_to_build": 5,
+        "max_entries_to_build": 9,
         "max_entries_to_merge": 5,
         "min_entries_to_merge": 1,
         "min_entries_to_merge_wait_minutes": 5,
@@ -72,7 +70,7 @@ payload=$(cat <<JSON
         "strict_required_status_checks_policy": false,
         "do_not_enforce_on_create": false,
         "required_status_checks": [
-          { "context": "alls-green" }
+          { "context": "alls-green", "integration_id": 15368 }
         ]
       }
     }

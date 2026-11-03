@@ -196,7 +196,7 @@ class IngestAttachment(BaseModel):
     Eager-fetched attachments have a ``storage_ref`` pointing to blob storage.
     Lazy-fetched attachments (e.g. large CSVs) have ``storage_ref=None`` and
     carry ``source_message_id`` / ``source_attachment_id`` for on-demand
-    retrieval via the connector's ``fetch_attachment()`` method.
+    retrieval through Switchboard's ``attachment_materialize``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)

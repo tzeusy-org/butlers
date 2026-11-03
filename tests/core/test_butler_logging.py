@@ -13,13 +13,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.core.butler_logging import ButlerLogger, _level_rank
 from butlers.core.logging import _butler_context
-from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.fake_pool import FakeConnection, FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -39,17 +39,11 @@ def _restore_butler_context() -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(*, raise_on_execute: Exception | None = None) -> MagicMock:
-    """Return a mock asyncpg pool with a working acquire() async context manager."""
-    conn = AsyncMock()
-    if raise_on_execute is not None:
-        conn.execute = AsyncMock(side_effect=raise_on_execute)
-    else:
-        conn.execute = AsyncMock(return_value=None)
-
-    pool = MagicMock()
-    pool.acquire = MagicMock(side_effect=lambda *_args, **_kwargs: AsyncCtx(conn))
-    return pool, conn
+def _pool_and_conn(*, raise_on_execute: Exception | None = None) -> tuple[FakePool, FakeConnection]:
+    """Return a fake pool whose acquire() yields a connection with only execute()."""
+    execute = AsyncMock(side_effect=raise_on_execute) if raise_on_execute else None
+    pool = fake_pool(execute=execute)
+    return pool, pool.connection
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +63,7 @@ def test_level_rank_ordering_and_unknown():
 
 def test_min_level_validation() -> None:
     """All four documented levels accepted; an invalid min_level raises ValueError."""
-    pool, _ = _make_pool()
+    pool, _ = _pool_and_conn()
     for level in ("DEBUG", "INFO", "WARN", "ERROR"):
         assert ButlerLogger(pool=pool, schema="general", min_level=level) is not None
     with pytest.raises(ValueError, match="Invalid min_level"):
@@ -83,7 +77,7 @@ def test_min_level_validation() -> None:
 
 async def test_log_info_writes_and_uppercases_level() -> None:
     """INFO message is inserted via the pool; lowercase level is uppercased on write."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general", min_level="INFO")
     await bl.log("info", "hello world", source="spawner")
     conn.execute.assert_called_once()
@@ -102,7 +96,7 @@ async def test_log_info_writes_and_uppercases_level() -> None:
 )
 async def test_log_level_gating(min_level: str, level: str, expect_write: bool) -> None:
     """min_level gating: below-min and unknown levels are dropped; at/above is written."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general", min_level=min_level)
     await bl.log(level, "a line")
     if expect_write:
@@ -123,7 +117,7 @@ async def test_log_forwards_request_id_metadata_and_timestamp() -> None:
 
     req_id = uuid4()
     ts = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general")
     await bl.log("WARN", "something odd", request_id=req_id, metadata={"key": "value"}, ts=ts)
     conn.execute.assert_called_once()
@@ -136,7 +130,7 @@ async def test_log_forwards_request_id_metadata_and_timestamp() -> None:
 
 async def test_log_db_error_does_not_propagate() -> None:
     """A pool failure is swallowed and does not raise to the caller."""
-    pool, conn = _make_pool(raise_on_execute=RuntimeError("db exploded"))
+    pool, conn = _pool_and_conn(raise_on_execute=RuntimeError("db exploded"))
     bl = ButlerLogger(pool=pool, schema="general")
     # Should not raise:
     await bl.log("ERROR", "error message")
@@ -149,7 +143,7 @@ async def test_log_db_error_does_not_propagate() -> None:
 
 async def test_log_nowait_schedules_task() -> None:
     """log_nowait creates an asyncio task; the write eventually executes."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general")
     bl.log_nowait("INFO", "fire and forget")
     # Give the event loop a chance to run the task
@@ -171,7 +165,7 @@ async def test_metadata_with_non_json_native_value_is_stringified_not_dropped() 
     the whole metadata dict, while still guaranteeing the value bound to the
     JSONB parameter is a plain dict (never a pre-serialized string).
     """
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general")
 
     class _Stringifiable:
@@ -186,7 +180,7 @@ async def test_metadata_with_non_json_native_value_is_stringified_not_dropped() 
 
 async def test_metadata_serialisation_failure_drops_field() -> None:
     """A genuinely unserialisable value (circular reference) drops the whole field."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general")
 
     circular: dict[str, object] = {}
@@ -220,7 +214,7 @@ def test_map_pylog_level_buckets():
     assert _map_pylog_level(logging.NOTSET) is None
 
 
-def _make_record(
+def _log_record(
     name: str = "test", level: int = logging.INFO, msg: str = "hi"
 ) -> logging.LogRecord:
     return logging.LogRecord(
@@ -230,12 +224,12 @@ def _make_record(
 
 async def test_db_handler_writes_when_context_matches() -> None:
     """A record emitted in the butler's context is written via ButlerLogger."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
     handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
 
     set_butler_context("general")
-    handler.emit(_make_record(msg="hello db"))
+    handler.emit(_log_record(msg="hello db"))
     await asyncio.sleep(0)
 
     conn.execute.assert_called_once()
@@ -254,12 +248,12 @@ async def test_db_handler_writes_when_context_matches() -> None:
 )
 async def test_db_handler_drops_record(butler_ctx, record_name, reason) -> None:
     """The DB handler drops records that must not be persisted, for each drop reason."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
     handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general")
 
     set_butler_context(butler_ctx)  # type: ignore[arg-type]
-    handler.emit(_make_record(name=record_name, msg="dropped"))
+    handler.emit(_log_record(name=record_name, msg="dropped"))
     await asyncio.sleep(0)
 
     conn.execute.assert_not_called()
@@ -267,14 +261,14 @@ async def test_db_handler_drops_record(butler_ctx, record_name, reason) -> None:
 
 async def test_db_handler_respects_python_log_level() -> None:
     """A DEBUG record is dropped by the handler when its level is INFO."""
-    pool, conn = _make_pool()
+    pool, conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general", min_level="DEBUG")
     handler = ButlerDBLogHandler(butler_logger=bl, butler_name="general", level=logging.INFO)
 
     set_butler_context("general")
     # Logger.handle() applies level filtering, but emit() may still be called
     # directly in tests; emulate the Logger.handle() check.
-    record = _make_record(level=logging.DEBUG, msg="debug noise")
+    record = _log_record(level=logging.DEBUG, msg="debug noise")
     if handler.level <= record.levelno:
         handler.emit(record)
     await asyncio.sleep(0)
@@ -284,7 +278,7 @@ async def test_db_handler_respects_python_log_level() -> None:
 
 def test_db_handler_emit_does_not_raise_on_logger_failure() -> None:
     """emit() never propagates exceptions from the underlying ButlerLogger."""
-    pool, _conn = _make_pool()
+    pool, _conn = _pool_and_conn()
     bl = ButlerLogger(pool=pool, schema="general")
 
     def _boom(*_a, **_kw):
@@ -295,4 +289,4 @@ def test_db_handler_emit_does_not_raise_on_logger_failure() -> None:
 
     set_butler_context("general")
     # Should not raise.
-    handler.emit(_make_record(msg="bad"))
+    handler.emit(_log_record(msg="bad"))

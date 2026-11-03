@@ -35,9 +35,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -61,29 +58,14 @@ def router_mod():
     return _relationship_router_module()
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + memory + relationship chains (flat public topology)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def rel_pool(db) -> asyncpg.Pool:
+    """Core + memory + relationship chains (flat public topology)."""
+    p = await db("core", "memory", "relationship")
     await p.execute("TRUNCATE TABLE relationship.merge_reviews CASCADE")
     await p.execute("TRUNCATE TABLE relationship.entity_facts CASCADE")
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -203,33 +185,33 @@ async def _classify(pool: asyncpg.Pool, router_mod, entity_id: uuid.UUID) -> str
 
 
 @pytest.mark.parametrize("ordering", ["entity_a_first", "entity_b_first"])
-async def test_dismissed_pair_drops_from_queue(pool, router_mod, ordering):
+async def test_dismissed_pair_drops_from_queue(rel_pool, router_mod, ordering):
     """A dismissed A-B pair stops appearing in the queue (both column orderings).
 
     Covers ``relationship-merge-review`` "the queue MUST stop listing that pair"
     and asserts ordering-independence: who is stored as ``entity_a`` vs
     ``entity_b`` in the dismissal row must not matter.
     """
-    a = await _make_entity(pool, "Alice")
-    b = await _make_entity(pool, "Bob")
-    await _add_fact(pool, subject=a, predicate="has-email", object_value="ab@example.com")
-    await _add_fact(pool, subject=b, predicate="has-email", object_value="ab@example.com")
+    a = await _make_entity(rel_pool, "Alice")
+    b = await _make_entity(rel_pool, "Bob")
+    await _add_fact(rel_pool, subject=a, predicate="has-email", object_value="ab@example.com")
+    await _add_fact(rel_pool, subject=b, predicate="has-email", object_value="ab@example.com")
 
     # Before dismissal: both are duplicate-candidates.
-    assert await _classify(pool, router_mod, a) == "duplicate-candidate"
-    assert await _classify(pool, router_mod, b) == "duplicate-candidate"
-    assert await _queue_dup_entity_ids(pool, router_mod) == {a, b}
+    assert await _classify(rel_pool, router_mod, a) == "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, b) == "duplicate-candidate"
+    assert await _queue_dup_entity_ids(rel_pool, router_mod) == {a, b}
 
     shared = [{"predicate": "has-email", "object": "ab@example.com"}]
     if ordering == "entity_a_first":
-        await _dismiss_pair(pool, entity_a=a, entity_b=b, shared_facts=shared)
+        await _dismiss_pair(rel_pool, entity_a=a, entity_b=b, shared_facts=shared)
     else:
-        await _dismiss_pair(pool, entity_a=b, entity_b=a, shared_facts=shared)
+        await _dismiss_pair(rel_pool, entity_a=b, entity_b=a, shared_facts=shared)
 
     # After dismissal: the pair is fully suppressed regardless of column ordering.
-    assert await _classify(pool, router_mod, a) != "duplicate-candidate"
-    assert await _classify(pool, router_mod, b) != "duplicate-candidate"
-    assert await _queue_dup_entity_ids(pool, router_mod) == set()
+    assert await _classify(rel_pool, router_mod, a) != "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, b) != "duplicate-candidate"
+    assert await _queue_dup_entity_ids(rel_pool, router_mod) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -237,36 +219,36 @@ async def test_dismissed_pair_drops_from_queue(pool, router_mod, ordering):
 # ---------------------------------------------------------------------------
 
 
-async def test_dismissed_pair_re_raises_on_new_evidence(pool, router_mod):
+async def test_dismissed_pair_re_raises_on_new_evidence(rel_pool, router_mod):
     """A dismissed pair re-appears when a shared value NOT in the snapshot arises.
 
     Covers ``relationship-entity-lifecycle`` "Dismissed pair re-raises only on
     new evidence": the dismissal snapshot covered the email but not a later
     shared phone, so the new phone evidence re-raises the pair.
     """
-    a = await _make_entity(pool, "Alice")
-    b = await _make_entity(pool, "Bob")
-    await _add_fact(pool, subject=a, predicate="has-email", object_value="ab@example.com")
-    await _add_fact(pool, subject=b, predicate="has-email", object_value="ab@example.com")
+    a = await _make_entity(rel_pool, "Alice")
+    b = await _make_entity(rel_pool, "Bob")
+    await _add_fact(rel_pool, subject=a, predicate="has-email", object_value="ab@example.com")
+    await _add_fact(rel_pool, subject=b, predicate="has-email", object_value="ab@example.com")
 
     # Dismiss the email-shared pair; snapshot covers ONLY the email.
     await _dismiss_pair(
-        pool,
+        rel_pool,
         entity_a=a,
         entity_b=b,
         shared_facts=[{"predicate": "has-email", "object": "ab@example.com"}],
     )
-    assert await _queue_dup_entity_ids(pool, router_mod) == set()
-    assert await _classify(pool, router_mod, a) != "duplicate-candidate"
+    assert await _queue_dup_entity_ids(rel_pool, router_mod) == set()
+    assert await _classify(rel_pool, router_mod, a) != "duplicate-candidate"
 
     # New shared evidence appears: both now also share a phone NOT in the snapshot.
-    await _add_fact(pool, subject=a, predicate="has-phone", object_value="+15550001234")
-    await _add_fact(pool, subject=b, predicate="has-phone", object_value="+15550001234")
+    await _add_fact(rel_pool, subject=a, predicate="has-phone", object_value="+15550001234")
+    await _add_fact(rel_pool, subject=b, predicate="has-phone", object_value="+15550001234")
 
     # The pair re-raises on the new (uncovered) phone evidence.
-    assert await _queue_dup_entity_ids(pool, router_mod) == {a, b}
-    assert await _classify(pool, router_mod, a) == "duplicate-candidate"
-    assert await _classify(pool, router_mod, b) == "duplicate-candidate"
+    assert await _queue_dup_entity_ids(rel_pool, router_mod) == {a, b}
+    assert await _classify(rel_pool, router_mod, a) == "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, b) == "duplicate-candidate"
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +256,7 @@ async def test_dismissed_pair_re_raises_on_new_evidence(pool, router_mod):
 # ---------------------------------------------------------------------------
 
 
-async def test_xz_survives_xy_dismissal_same_value(pool, router_mod):
+async def test_xz_survives_xy_dismissal_same_value(rel_pool, router_mod):
     """Synthetic-red for the edge bug: X-Y dismissal must not suppress X-Z.
 
     X shares email V with BOTH Y and Z. Only X-Y is dismissed. The old SQL keyed
@@ -288,58 +270,58 @@ async def test_xz_survives_xy_dismissal_same_value(pool, router_mod):
     (The "all peers dismissed → suppress" path is covered separately by
     ``test_all_peers_dismissed_suppresses_row``.)
     """
-    x = await _make_entity(pool, "Xavier")
-    y = await _make_entity(pool, "Yolanda")
-    z = await _make_entity(pool, "Zane")
+    x = await _make_entity(rel_pool, "Xavier")
+    y = await _make_entity(rel_pool, "Yolanda")
+    z = await _make_entity(rel_pool, "Zane")
     shared_value = "shared@example.com"
     for ent in (x, y, z):
-        await _add_fact(pool, subject=ent, predicate="has-email", object_value=shared_value)
+        await _add_fact(rel_pool, subject=ent, predicate="has-email", object_value=shared_value)
 
     # Dismiss ONLY X-Y for that shared value.
     await _dismiss_pair(
-        pool,
+        rel_pool,
         entity_a=x,
         entity_b=y,
         shared_facts=[{"predicate": "has-email", "object": shared_value}],
     )
 
-    surfaced = await _queue_dup_entity_ids(pool, router_mod)
+    surfaced = await _queue_dup_entity_ids(rel_pool, router_mod)
 
     # X stays: it still has an undismissed peer (Z) on the same value.
     assert x in surfaced, "X-Z is undismissed; X must remain a duplicate-candidate"
     # Z stays: its peers X and Y are both undismissed against Z.
     assert z in surfaced, "Z has undismissed peers; Z must remain a duplicate-candidate"
     # Classification agrees on the per-entity helper call site too.
-    assert await _classify(pool, router_mod, x) == "duplicate-candidate"
-    assert await _classify(pool, router_mod, z) == "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, x) == "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, z) == "duplicate-candidate"
 
     # Y also stays: it still shares V with Z (Y-Z is undismissed). Only the
     # specific X-Y pair was dismissed, which must not suppress any other pair.
     assert y in surfaced, "Y-Z is undismissed; Y must remain a duplicate-candidate"
-    assert await _classify(pool, router_mod, y) == "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, y) == "duplicate-candidate"
 
 
-async def test_all_peers_dismissed_suppresses_row(pool, router_mod):
+async def test_all_peers_dismissed_suppresses_row(rel_pool, router_mod):
     """When every sharing peer is dismissed, the row is suppressed (control case).
 
     Complements the edge-bug test: X shares V with Y and Z, and BOTH X-Y and X-Z
     are dismissed (snapshots cover V). X must then drop out entirely — confirming
     the pair-keyed clause still suppresses once no undismissed peer remains.
     """
-    x = await _make_entity(pool, "Xavier")
-    y = await _make_entity(pool, "Yolanda")
-    z = await _make_entity(pool, "Zane")
+    x = await _make_entity(rel_pool, "Xavier")
+    y = await _make_entity(rel_pool, "Yolanda")
+    z = await _make_entity(rel_pool, "Zane")
     shared_value = "shared@example.com"
     for ent in (x, y, z):
-        await _add_fact(pool, subject=ent, predicate="has-email", object_value=shared_value)
+        await _add_fact(rel_pool, subject=ent, predicate="has-email", object_value=shared_value)
 
     snap = [{"predicate": "has-email", "object": shared_value}]
-    await _dismiss_pair(pool, entity_a=x, entity_b=y, shared_facts=snap)
-    await _dismiss_pair(pool, entity_a=z, entity_b=x, shared_facts=snap)  # reversed ordering
+    await _dismiss_pair(rel_pool, entity_a=x, entity_b=y, shared_facts=snap)
+    await _dismiss_pair(rel_pool, entity_a=z, entity_b=x, shared_facts=snap)  # reversed ordering
 
-    surfaced = await _queue_dup_entity_ids(pool, router_mod)
+    surfaced = await _queue_dup_entity_ids(rel_pool, router_mod)
     assert x not in surfaced, "All of X's peers on V are dismissed; X must be suppressed"
-    assert await _classify(pool, router_mod, x) != "duplicate-candidate"
+    assert await _classify(rel_pool, router_mod, x) != "duplicate-candidate"
     # Y and Z still share V with each other (undismissed Y-Z), so they remain.
     assert {y, z} <= surfaced
 
@@ -400,7 +382,7 @@ async def _queue_entity_ids(pool: asyncpg.Pool, router_mod) -> set[uuid.UUID]:
     return {item.entity_id for item in resp.items}
 
 
-async def test_single_dismiss_drops_stale_entity_from_queue(pool, router_mod):
+async def test_single_dismiss_drops_stale_entity_from_queue(rel_pool, router_mod):
     """A ``queue.dismissed`` triple removes a stale entity from the queue.
 
     Regression: the stale entity has no fresh fact (NULL/absent last_seen), so it
@@ -408,32 +390,32 @@ async def test_single_dismiss_drops_stale_entity_from_queue(pool, router_mod):
     ``queue.dismissed`` marker, it must disappear from both the queue list and
     ``_classify_entity_state`` (which shares the queue's semantics).
     """
-    await _register_owner(pool)
-    stale = await _make_entity(pool, "Allan Patrick Uy")
+    await _register_owner(rel_pool)
+    stale = await _make_entity(rel_pool, "Allan Patrick Uy")
 
     # Before dismissal: surfaces as stale (no fresh fact at all).
-    assert await _classify(pool, router_mod, stale) == "stale"
-    assert stale in await _queue_entity_ids(pool, router_mod)
+    assert await _classify(rel_pool, router_mod, stale) == "stale"
+    assert stale in await _queue_entity_ids(rel_pool, router_mod)
 
-    await _add_queue_dismissed(pool, subject=stale)
+    await _add_queue_dismissed(rel_pool, subject=stale)
 
     # After dismissal: gone from the queue and classified healthy.
-    assert stale not in await _queue_entity_ids(pool, router_mod)
-    assert await _classify(pool, router_mod, stale) == "healthy"
+    assert stale not in await _queue_entity_ids(rel_pool, router_mod)
+    assert await _classify(rel_pool, router_mod, stale) == "healthy"
 
 
-async def test_single_dismiss_drops_unidentified_entity_from_queue(pool, router_mod):
+async def test_single_dismiss_drops_unidentified_entity_from_queue(rel_pool, router_mod):
     """A ``queue.dismissed`` triple also suppresses an unidentified entity."""
-    await _register_owner(pool)
-    ent = await pool.fetchval(
+    await _register_owner(rel_pool)
+    ent = await rel_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, metadata) "
         "VALUES ('Mystery', 'person', '{\"unidentified\": \"true\"}'::jsonb) RETURNING id",
     )
 
-    assert await _classify(pool, router_mod, ent) == "unidentified"
-    assert ent in await _queue_entity_ids(pool, router_mod)
+    assert await _classify(rel_pool, router_mod, ent) == "unidentified"
+    assert ent in await _queue_entity_ids(rel_pool, router_mod)
 
-    await _add_queue_dismissed(pool, subject=ent)
+    await _add_queue_dismissed(rel_pool, subject=ent)
 
-    assert ent not in await _queue_entity_ids(pool, router_mod)
-    assert await _classify(pool, router_mod, ent) == "healthy"
+    assert ent not in await _queue_entity_ids(rel_pool, router_mod)
+    assert await _classify(rel_pool, router_mod, ent) == "healthy"

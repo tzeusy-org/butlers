@@ -40,25 +40,20 @@ from butlers.core.scheduler.update import schedule_toggle, schedule_update
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._scheduling import register_scheduling_tools
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.owner_auth_fixtures import ORIGIN, RP
 from tests.integration.test_dashboard_stepup import authority as authority
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-        schemas={"core": "general", "approvals": "general"},
-    )
+@pytest.fixture
+def authority_db_url(fresh_db) -> str:
+    """The general-schema database shared by the imported ``authority`` and ``attention_env``."""
+    return fresh_db("core", "approvals", schemas={"core": "general", "approvals": "general"})
 
 
 @pytest.fixture
-async def attention_env(authority, migrated_db_url):
+async def attention_env(authority, authority_db_url):
     migration, service, key, handle, session, admin = authority
 
     async def initialize(connection):
@@ -67,7 +62,7 @@ async def attention_env(authority, migrated_db_url):
 
     application_name = "attention_owner_" + uuid4().hex
     domain = await asyncpg.create_pool(
-        migrated_db_url,
+        authority_db_url,
         min_size=1,
         max_size=3,
         init=initialize,
@@ -813,7 +808,7 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
 
 
 async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal(
-    postgres_container,
+    postgres_container, fresh_db
 ):
     from urllib.parse import urlparse
 
@@ -826,14 +821,8 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         migration_bootstrap_db_url,
     )
 
-    name = migration_db_name()
-    url = await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        name,
-        chains=["core"],
-        revisions={"core": "core_277"},
-    )
+    url = await asyncio.to_thread(fresh_db, "core", revisions={"core": "core_277"})
+    name = urlparse(url).path.lstrip("/")
     config = _build_alembic_config(url, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, name)
     admin = await asyncpg.connect(bootstrap_url.replace("postgresql+psycopg2", "postgresql"))

@@ -19,7 +19,6 @@ schemas in production: the only path between them is the MCP call.
 from __future__ import annotations
 
 import shutil
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -38,9 +37,7 @@ from butlers.chronicler.models import Episode, Layer, Precision
 from butlers.chronicler.storage import upsert_episode
 from butlers.core.commitments import create_commitment, resolve_commitment
 from butlers.core.owner_conditions import Observation, reconcile_snapshot
-from butlers.db import register_jsonb_codec
 from butlers.roster_imports import roster_module
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -53,38 +50,21 @@ pytestmark = [
 _T0 = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
 
 
-@pytest.fixture(scope="module")
-def core_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture(scope="module")
-def chronicler_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["chronicler"])
-
-
 @pytest.fixture
-async def core_pool(core_db_url: str) -> AsyncIterator[asyncpg.Pool]:
-    pool = await asyncpg.create_pool(core_db_url, min_size=1, max_size=4)
-    if not await pool.fetchval("SELECT 1 FROM public.entities WHERE 'owner' = ANY(roles)"):
-        await pool.execute(
-            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
-            "VALUES ('Owner', 'person', '{owner}')"
-        )
-    yield pool
-    await pool.close()
-
-
-@pytest.fixture
-async def chronicler_pool(chronicler_db_url: str) -> AsyncIterator[asyncpg.Pool]:
-    pool = await asyncpg.create_pool(
-        chronicler_db_url, min_size=1, max_size=4, init=register_jsonb_codec
+async def core_pool(db) -> asyncpg.Pool:
+    pool = await db("core", max_size=4)
+    await pool.execute(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ('Owner', 'person', '{owner}')"
     )
-    await pool.execute("TRUNCATE TABLE episode_entities, episodes CASCADE")
-    await pool.execute("TRUNCATE TABLE source_adapter_state, projection_checkpoints CASCADE")
+    return pool
+
+
+@pytest.fixture
+async def chronicler_pool(db) -> asyncpg.Pool:
+    pool = await db("chronicler", max_size=4)
     await seed_source_registry(pool, sources=INITIAL_SOURCES)
-    yield pool
-    await pool.close()
+    return pool
 
 
 async def _new_entity(pool: asyncpg.Pool, name: str) -> UUID:

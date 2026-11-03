@@ -106,7 +106,7 @@ calls the registered handler directly with no ephemeral LLM session:
 ### Reference and Import Skills
 
 - **`tool-reference`**: Detailed parameter documentation for all finance butler MCP tools
-- **`transaction-csv-extraction`**: Parse a CSV export from a bank or card statement and bulk-ingest transactions via `bulk_record_transactions`
+- **`transaction-csv-extraction`**: Import a stored bank or card CSV export via `import_transactions(storage_ref)`: dry-run preview, explicit `column_map` when needed, then one import call
 - **`historical-data-import`**: Multi-format bank CSV import with format detection, deduplication, progress reporting, and post-import baseline computation
 - **`memory-classification`**: Finance domain subject/predicate taxonomy and example facts
 - **`butler-notifications`**: `notify()` required parameters and intent usage

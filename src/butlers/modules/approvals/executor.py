@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import (
     ApprovalExecutionContext,
@@ -32,6 +33,10 @@ from butlers.modules.approvals.execution_context import (
     set_approval_execution_context,
 )
 from butlers.modules.approvals.models import ActionStatus
+from butlers.modules.calendar_approval import (
+    CALENDAR_APPROVAL_TOOLS,
+    retire_legacy_calendar_approval_args,
+)
 
 if TYPE_CHECKING:
     from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
@@ -121,7 +126,9 @@ def _parse_execution_result(raw_payload: Any) -> ExecutionResult | None:
 
 
 @asynccontextmanager
-async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
+async def _approval_write_transaction(
+    pool: Any, *, audit_owned: bool = False
+) -> AsyncIterator[Any]:
     """Yield a write target with a transaction when the runtime exposes one.
 
     Modules receive either an asyncpg pool/connection or the project's
@@ -136,18 +143,24 @@ async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
         async with acquire() as connection:
             transaction = getattr(connection, "transaction", None)
             if callable(transaction):
-                async with connection.transaction():
+                scope = audit_transaction(connection) if audit_owned else connection.transaction()
+                async with scope:
                     yield connection
             else:
+                if audit_owned:
+                    raise AuditTransactionError("Audit transaction state is unavailable")
                 yield connection
         return
 
     transaction = getattr(target, "transaction", None)
     if callable(transaction):
-        async with transaction():
+        scope = audit_transaction(target) if audit_owned else transaction()
+        async with scope:
             yield target
         return
 
+    if audit_owned:
+        raise AuditTransactionError("Audit transaction state is unavailable")
     yield target
 
 
@@ -244,6 +257,7 @@ async def execute_approved_action(
                     )
 
                 dispatch_args = tool_args
+                context_args = tool_args
                 if tool_name == "relationship_assert_fact":
                     stored_args = existing_row.get("tool_args")
                     if isinstance(stored_args, str):
@@ -263,6 +277,30 @@ async def execute_approved_action(
                     dispatch_args = {
                         key: value for key, value in stored_args.items() if key != "verified"
                     }
+                elif tool_name in CALENDAR_APPROVAL_TOOLS:
+                    stored_args = existing_row.get("tool_args")
+                    if isinstance(stored_args, str):
+                        stored_args = json.loads(stored_args)
+                    if (
+                        existing_row.get("tool_name") != tool_name
+                        or not isinstance(stored_args, dict)
+                        or approval_tool_args_digest(stored_args)
+                        != approval_tool_args_digest(tool_args)
+                    ):
+                        return ExecutionResult(
+                            success=False, error="approved original argument binding mismatch"
+                        )
+                    # Calendar tools open their gates only for this context, so
+                    # bind it to the canonical public call derived from the
+                    # exact locked stored row (legacy markers retired there,
+                    # never forwarded). No caller-supplied value carries authority.
+                    try:
+                        dispatch_args = retire_legacy_calendar_approval_args(tool_name, stored_args)
+                    except (TypeError, ValueError) as exc:
+                        return ExecutionResult(
+                            success=False, error=f"invalid approved calendar arguments: {exc}"
+                        )
+                    context_args = dispatch_args
 
                 try:
                     authorized_task = asyncio.current_task()
@@ -273,7 +311,7 @@ async def execute_approved_action(
                         session_id=existing_row.get("session_id"),
                         actor=existing_row.get("decided_by") or "system:approval_executor",
                         tool_name=tool_name,
-                        tool_args_digest=approval_tool_args_digest(tool_args),
+                        tool_args_digest=approval_tool_args_digest(context_args),
                         authorized_task=authorized_task,
                     )
                     context_token = set_approval_execution_context(execution_context)

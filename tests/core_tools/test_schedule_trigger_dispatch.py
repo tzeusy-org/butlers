@@ -28,15 +28,12 @@ import shutil
 import uuid
 from types import SimpleNamespace
 
-import asyncpg
 import pytest
 
 from butlers.config import ButlerType
 from butlers.core.model_routing import Complexity
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._scheduling import register_scheduling_tools
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -49,27 +46,6 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with the scheduler table cleared between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
-    yield p
-    await p.close()
 
 
 class _RecordingDaemon:
@@ -151,7 +127,7 @@ def _register_and_grab_schedule_toggle(pool, daemon):
         (None, Complexity.WORKHORSE),  # missing/null column defaults to workhorse
     ],
 )
-async def test_schedule_trigger_dispatches_parsed_complexity(pool, stored, expected):
+async def test_schedule_trigger_dispatches_parsed_complexity(db_pool, stored, expected):
     """schedule_trigger fetches the row, parses complexity via the shared
     ``_parse_complexity_from_db_row``, and hands the canonical ``Complexity`` enum
     to the daemon dispatch. A legacy ``high`` row must dispatch at ``reasoning``.
@@ -161,12 +137,14 @@ async def test_schedule_trigger_dispatches_parsed_complexity(pool, stored, expec
     from butlers.core.scheduler.crud import schedule_create
 
     daemon = _RecordingDaemon(result={"ok": True})
-    schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
+    schedule_trigger = _register_and_grab_schedule_trigger(db_pool, daemon)
 
-    task_id = await schedule_create(pool, "trigger-task", "0 9 * * *", "run the trigger")
+    task_id = await schedule_create(db_pool, "trigger-task", "0 9 * * *", "run the trigger")
     # schedule_create validates complexity on write, so persist the stale/legacy
     # value (or NULL) via a direct row update — mirrors the tick() dispatch test.
-    await pool.execute("UPDATE scheduled_tasks SET complexity = $2 WHERE id = $1", task_id, stored)
+    await db_pool.execute(
+        "UPDATE scheduled_tasks SET complexity = $2 WHERE id = $1", task_id, stored
+    )
 
     result = await schedule_trigger(task_id=str(task_id))
 
@@ -179,13 +157,13 @@ async def test_schedule_trigger_dispatches_parsed_complexity(pool, stored, expec
     assert call["complexity"] == expected
 
     # End-to-end DB write: the successful trigger stamps last_run_at.
-    last_run_at = await pool.fetchval(
+    last_run_at = await db_pool.fetchval(
         "SELECT last_run_at FROM scheduled_tasks WHERE id = $1", task_id
     )
     assert last_run_at is not None
 
 
-async def test_schedule_trigger_uses_shared_prompt_and_completion_context(pool):
+async def test_schedule_trigger_uses_shared_prompt_and_completion_context(db_pool):
     """Dashboard Run now binds and completes the same owner-local schedule tuple."""
     from butlers.core.scheduler.crud import schedule_create
 
@@ -219,10 +197,10 @@ async def test_schedule_trigger_uses_shared_prompt_and_completion_context(pool):
         ),
     )
     daemon.config.name = "chronicler"
-    schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
+    schedule_trigger = _register_and_grab_schedule_trigger(db_pool, daemon)
 
     task_id = await schedule_create(
-        pool,
+        db_pool,
         "chronicler_day_close",
         "5 1 * * *",
         "day-close prompt",
@@ -238,16 +216,16 @@ async def test_schedule_trigger_uses_shared_prompt_and_completion_context(pool):
     assert completion_context["timezone"] == prompt_context["timezone"]
 
 
-async def test_schedule_trigger_job_mode_dispatches_without_complexity(pool):
+async def test_schedule_trigger_job_mode_dispatches_without_complexity(db_pool):
     """A ``job``-mode row dispatches by job_name/job_args and forwards no complexity —
     parity with the tick() job-dispatch contract."""
     from butlers.core.scheduler.crud import schedule_create
 
     daemon = _RecordingDaemon(result={"evaluated": 1})
-    schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
+    schedule_trigger = _register_and_grab_schedule_trigger(db_pool, daemon)
 
     task_id = await schedule_create(
-        pool,
+        db_pool,
         "trigger-job",
         "0 9 * * *",
         dispatch_mode="job",
@@ -266,11 +244,11 @@ async def test_schedule_trigger_job_mode_dispatches_without_complexity(pool):
     assert call["trigger_source"] == "schedule:trigger-job"
 
 
-async def test_schedule_trigger_missing_row_returns_error_without_dispatch(pool):
+async def test_schedule_trigger_missing_row_returns_error_without_dispatch(db_pool):
     """A trigger for an unknown task id returns the tool's ``Schedule not found``
     error contract and never invokes dispatch."""
     daemon = _RecordingDaemon()
-    schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
+    schedule_trigger = _register_and_grab_schedule_trigger(db_pool, daemon)
 
     result = await schedule_trigger(task_id=str(uuid.uuid4()))
 
@@ -279,12 +257,12 @@ async def test_schedule_trigger_missing_row_returns_error_without_dispatch(pool)
     assert daemon.calls == []
 
 
-async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
+async def test_schedule_toggle_is_registered_and_returns_observed_receipt(db_pool):
     """The dashboard-facing action is on the canonical scheduling group."""
     from butlers.core.scheduler.crud import schedule_create
 
-    toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
-    task_id = await schedule_create(pool, "toggle-task", "0 9 * * *", "toggle me")
+    toggle = _register_and_grab_schedule_toggle(db_pool, _RecordingDaemon())
+    task_id = await schedule_create(db_pool, "toggle-task", "0 9 * * *", "toggle me")
 
     result = await toggle(task_id=str(task_id), enabled=False)
 
@@ -298,7 +276,8 @@ async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
         "target": f"schedule:{task_id}",
     }
     assert (
-        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+        await db_pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id)
+        is False
     )
 
     retry = await toggle(task_id=str(task_id), enabled=False)
@@ -309,36 +288,41 @@ async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
     with pytest.raises(TypeError):
         await toggle(task_id=str(task_id))
     assert (
-        await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is False
+        await db_pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id)
+        is False
     )
 
 
-async def test_schedule_toggle_returns_typed_refusals(pool):
+async def test_schedule_toggle_returns_typed_refusals(db_pool):
     """Missing, TOML, and other managed rows never impersonate a toggle."""
     from butlers.core.scheduler.crud import schedule_create
 
-    toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
+    toggle = _register_and_grab_schedule_toggle(db_pool, _RecordingDaemon())
     missing = await toggle(task_id=str(uuid.uuid4()), enabled=False)
     assert missing["status"] == "error"
     assert missing["code"] == "SCHEDULE_NOT_FOUND"
 
-    task_id = await schedule_create(pool, "toml-toggle-task", "0 9 * * *", "managed")
-    await pool.execute("UPDATE scheduled_tasks SET source = 'toml' WHERE id = $1", task_id)
+    task_id = await schedule_create(db_pool, "toml-toggle-task", "0 9 * * *", "managed")
+    await db_pool.execute("UPDATE scheduled_tasks SET source = 'toml' WHERE id = $1", task_id)
     managed = await toggle(task_id=str(task_id), enabled=False)
     assert managed["status"] == "error"
     assert managed["code"] == "SCHEDULE_TOML_MANAGED"
-    assert await pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is True
+    assert (
+        await db_pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE id = $1", task_id) is True
+    )
 
     for source in ("module", ""):
         other_id = await schedule_create(
-            pool, f"managed-toggle-{source or 'empty'}", "0 9 * * *", "managed"
+            db_pool, f"managed-toggle-{source or 'empty'}", "0 9 * * *", "managed"
         )
-        await pool.execute("UPDATE scheduled_tasks SET source = $2 WHERE id = $1", other_id, source)
-        before = await pool.fetchrow(
+        await db_pool.execute(
+            "UPDATE scheduled_tasks SET source = $2 WHERE id = $1", other_id, source
+        )
+        before = await db_pool.fetchrow(
             "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1", other_id
         )
         other_managed = await toggle(task_id=str(other_id), enabled=False)
-        after = await pool.fetchrow(
+        after = await db_pool.fetchrow(
             "SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = $1", other_id
         )
         assert other_managed["status"] == "error"

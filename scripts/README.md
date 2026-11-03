@@ -195,11 +195,11 @@ Optional environment variable:
 ## setup_main_ruleset.sh and the merge queue
 
 `setup_main_ruleset.sh` installs the `main-merge-queue` ruleset for
-`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, and
-the non-strict required contexts `check`, `guards` and `frontend`; `check` and
-`frontend` now only mirror `alls-green`, the fan-in over every CI job. The script
-already writes the single `alls-green` context: running it is the owner's
-cutover act, after which the two mirror jobs are deleted.
+`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, up
+to 9 concurrent merge-group builds, and one non-strict required context:
+`alls-green`, the fan-in over every CI job, reported by GitHub Actions.
+`.github/workflows/merge-queue-sweep.yml` force-cancels runs left behind when
+the queue rebuilds its groups.
 
 After review and the PR-head gates are complete, add the PR to the queue:
 
@@ -240,7 +240,7 @@ changes infrastructure or historical data.
 | --- | --- | --- |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
 | [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | `ci.yml`, Make, `pre_push.py` | Confirms archived OpenSpec requirements reached their canonical specs, honouring `archived-capability-homes.json`. |
-| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition. |
+| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition, and that no ID names two different requirement headings. |
 | [`check_countable_tasks.py`](check_countable_tasks.py) | `ci.yml`, `make check-countable-tasks`, `pre_push.py` | Fails when an unarchived change's tasks cannot be counted by the archive gate. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
 | [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |
@@ -278,7 +278,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`ci_smoke.py`](ci_smoke.py) | `ci.yml` (`smoke` job) | Runs the dedicated smoke tier and writes its release evidence. |
 | [`pyright_runtime.py`](pyright_runtime.py) | `make typecheck`, `make prepare-typecheck`, `make update-type-baseline` | Pinned offline checker supervision, immutable-public bootstrap and atomic baseline shrink. |
 | [`ci_environment.py`](ci_environment.py) | `ci.yml`, `ci-python-environment` action, watchdog workflow | Advisory CI environment cache with mandatory frozen repair on every restore. |
-| [`ci_test_images.py`](ci_test_images.py) | root `conftest.py`, `test_owner_auth_browser.py` | Preloads the test container images by public immutable content, without credentials. |
+| [`ci_test_images.py`](ci_test_images.py) | root `conftest.py`, `test_owner_auth_browser.py`, the PG17 client-container integration tests | Preloads the test container images by public immutable content, without credentials. |
 | [`ci_vitest.py`](ci_vitest.py) | `ci.yml` | Executes the locked Vitest shards and retains actual-item evidence. |
 | [`ci_vitest_reporter.mjs`](ci_vitest_reporter.mjs) | `ci_vitest.py` | Vitest reporter. |
 | [`combine_review_comment_sources.py`](combine_review_comment_sources.py) | `ci.yml` | Flattens raw GitHub review-comment dumps into the session-link guard's input shape. |

@@ -1049,10 +1049,10 @@
     "direct": 77,
     "direct_files": 35,
     "container": 86,
-    "supplementary": 30,
+    "supplementary": 36,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
-      "NON_NAME_ENUM_OR_MODULE": 20,
+      "NON_NAME_ENUM_OR_MODULE": 26,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 25,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
@@ -4003,6 +4003,132 @@
       ],
       "reason": "bu-fvw4ap.11 relocates the original controller selector (public source cf9d0f00aa8c6ebccf4467c039e579a2c5c05a46) and coalesces the equivalent Q4 readiness selector fd74ff6990933f5dd03f3c2ad63eb1277ac4b150d0a4509921feb9e6d9922731 (actually landed #5185/e9f5bfadc210070822c2ef576416c32e32209849). First missing/None/disabled contract, order and identity are preserved; not a policy conversion.",
       "public_source_commit": null
+    },
+    {
+      "id": "7ac2dbec9a1126ed2aac3e7403d0fed5f871516f718dea94ae5e29fc0c26c290",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "anchors_from_registry",
+      "kind": "alias_compare",
+      "expression": "place.kind in ANCHOR_KINDS",
+      "occurrence": 1,
+      "line": 118,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "d497a7003a38efc96fed92c80a506e4707cf9973f0cb7eb96560756c4848dac4",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "anchors_from_references",
+      "kind": "alias_compare",
+      "expression": "label.lower() in (KIND_HOME, KIND_WORK)",
+      "occurrence": 1,
+      "line": 196,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "2111d6f278006d6bb1380af7058bd5ca3ec3eddc3de9cb51be2fb541c5c2e29f",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "resolve_anchors",
+      "kind": "alias_compare",
+      "expression": "kind == KIND_HOME",
+      "occurrence": 1,
+      "line": 282,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "adfc3cfb7a3228dbdcebdae7a66bed061d09348b236f4ffbe2cf3d876c68bf77",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "home_anchor",
+      "kind": "alias_compare",
+      "expression": "a.kind == KIND_HOME",
+      "occurrence": 1,
+      "line": 301,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "855869816efb8525de70702e01930fec7539f5396e6a64d309bca57623b78dc2",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "load_anchors",
+      "kind": "alias_compare",
+      "expression": "a.kind == KIND_HOME",
+      "occurrence": 1,
+      "line": 448,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "ecbc75c9928f69f0a87c217b0d09eea3f06e0628c58d0659205783727d8300e2",
+      "path": "src/butlers/chronicler/situation.py",
+      "symbol": "_outranks",
+      "kind": "alias_compare",
+      "expression": "lane not in LANE_PRECEDENCE",
+      "occurrence": 1,
+      "line": 249,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Check a Chronicler lane name (travel/work/...), not a roster identity, against the situational precedence order.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
     }
   ],
   "retired": [

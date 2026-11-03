@@ -197,7 +197,7 @@ The `insight-delivery-cycle` job runs as a daily scheduled task on the Switchboa
 
 **Step 10 — Record engagement tracking.** For each delivered candidate, insert a row into `public.insight_engagement` with `delivered_at` and `engaged=FALSE`.
 
-**Step 11 — Cleanup.** Delete non-pending candidates from `public.insight_candidates` where `created_at` is older than 30 days. Delete cooldown entries from `public.insight_cooldowns` where `cooldown_until` is older than 30 days in the past. Before deleting engagement entries from `public.insight_engagement` where `delivered_at` is older than 30 days, upsert each affected day's delivered and engaged counts into `public.attention_daily_rollup`.
+**Step 11 — Cleanup.** The cycle never deletes `public.insight_candidates` rows: terminal candidates are pruned only by the opt-in, default-off retention pruner [C] (90 days; see `docs/operations/data-retention.md`). Delete cooldown entries from `public.insight_cooldowns` where `cooldown_until` is older than 30 days in the past. Before deleting engagement entries from `public.insight_engagement` where `delivered_at` is older than 30 days, upsert each affected day's delivered and engaged counts into `public.attention_daily_rollup`.
 
 ### Verbosity Presets and Budget
 

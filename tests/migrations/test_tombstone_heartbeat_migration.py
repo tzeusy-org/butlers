@@ -15,11 +15,12 @@ Issue: bu-6t63s
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -34,15 +35,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "007_tombstone_heartbeat_episodes.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("chronicler_007", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +97,7 @@ def _collect_downgrade_calls() -> list[str]:
     Loaded once and shared across TestDowngradeSQLShape tests — eliminates
     repeated module loads and import-time races under pytest-xdist.
     """
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "chronicler_007")
     calls_collected: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = calls_collected.append
@@ -121,7 +113,7 @@ def migration_mod():
     Shared across TestMigrationFileAndChain and TestExclusionConstantsImport to
     avoid repeated importlib loads for cheap attribute reads.
     """
-    return _load_migration()
+    return load_migration(_MIGRATION_PATH, "chronicler_007")
 
 
 @pytest.fixture(scope="module")
@@ -185,7 +177,7 @@ class TestTombstoneHeartbeatMigrationIntegration:
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_007")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -202,7 +194,7 @@ class TestTombstoneHeartbeatMigrationIntegration:
 
     async def _run_downgrade(self, pool) -> None:
         """Execute downgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_007")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)

@@ -29,11 +29,11 @@ from tests.integration.test_owner_creation_attention import (
     authority as authority,
 )
 from tests.integration.test_owner_creation_attention import (
-    create,
-    issue,
+    authority_db_url as authority_db_url,
 )
 from tests.integration.test_owner_creation_attention import (
-    migrated_db_url as migrated_db_url,
+    create,
+    issue,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
-    attention_env, migrated_db_url, postgres_container, tmp_path
+    attention_env, authority_db_url, postgres_container, tmp_path
 ):
     env = attention_env
     _, claim = await issue(env, {"name": "durable"})
@@ -118,7 +118,7 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
         for table in tables
     }
     assert all(before.values())
-    source = urlparse(migrated_db_url)
+    source = urlparse(authority_db_url)
     backup = await asyncio.to_thread(
         client,
         postgres_container,

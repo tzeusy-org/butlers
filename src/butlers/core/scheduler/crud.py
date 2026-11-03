@@ -10,6 +10,7 @@ from typing import Any
 import asyncpg
 from croniter import croniter
 
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.owner_creation import owner_creation_transaction
 from butlers.core.scheduler.rows import (
     _DEFAULT_COMPLEXITY,
@@ -74,7 +75,7 @@ async def ensure_module_default_schedule(
     next_run_at = _next_run(cron)
 
     async with pool.acquire() as connection:
-        async with connection.transaction():
+        async with audit_transaction(connection):
             inserted = await connection.fetchrow(
                 """
                 INSERT INTO scheduled_tasks (

@@ -234,6 +234,8 @@ async def run_rule_write(
     kind: str,
     parameters: dict[str, Any],
     writer: Callable[[Any], Awaitable[dict[str, Any]]],
+    *,
+    audit_owned: bool = False,
 ) -> dict[str, Any]:
     """Consume once, write and retain the exact result in one owning scope.
 
@@ -255,7 +257,7 @@ async def run_rule_write(
     state = getattr(pool, "is_in_transaction", None)
     borrowed = callable(state) and state()
     try:
-        async with _approval_write_transaction(pool) as connection:
+        async with _approval_write_transaction(pool, audit_owned=audit_owned) as connection:
             in_transaction = getattr(connection, "is_in_transaction", None)
             if not callable(in_transaction) or not in_transaction():
                 raise RuntimeError("Step-up requires an owning transaction")

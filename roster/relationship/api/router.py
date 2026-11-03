@@ -29,6 +29,7 @@ from butlers.api.deps import (
 )
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
+from butlers.core.audit_transaction import audit_transaction
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
@@ -6528,6 +6529,9 @@ async def dismiss_pair(
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
 
+#: Episodes requested from Chronicler per entity; a full page means the read was capped.
+_CHRONICLER_ACTIVITY_CAP = 500
+
 # Content-blind API discriminator. Never expose the upstream exception or MCP
 # payload through the entity activity response.
 _CHRONICLER_ACTIVITY_UNAVAILABLE: Literal["chronicler_activity_unavailable"] = (
@@ -6654,7 +6658,7 @@ async def _fetch_identity_activity(
 async def _fetch_chronicler_activity(
     mcp_manager: MCPClientManager | None,
     entity_id: UUID,
-) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None]:
+) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None, bool]:
     """Fetch episodes from the chronicler butler via MCP.
 
     Calls ``chronicler_list_episodes(participant_entity_id=<entity_id>, limit=500)``
@@ -6666,7 +6670,8 @@ async def _fetch_chronicler_activity(
     where the requested entity is an organizer or attendee — but not the calendar
     owner — surface in the entity's activity feed.
 
-    Returns ``(entries, None)`` on a successful read. When Chronicler is
+    Returns ``(entries, None, truncated)`` on a successful read, where ``truncated`` is
+    true when the page hit the episode cap. When Chronicler is
     unreachable, the MCP call fails, or the response envelope is unreadable,
     returns ``([], chronicler_activity_unavailable)`` so callers cannot confuse
     missing source evidence with genuine zero activity. A non-object row, a
@@ -6677,7 +6682,7 @@ async def _fetch_chronicler_activity(
     INVARIANT: No direct SQL on chronicler.* tables.
     """
     if mcp_manager is None:
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client("chronicler"),
@@ -6686,7 +6691,7 @@ async def _fetch_chronicler_activity(
         result = await asyncio.wait_for(
             client.call_tool(
                 "chronicler_list_episodes",
-                {"participant_entity_id": str(entity_id), "limit": 500},
+                {"participant_entity_id": str(entity_id), "limit": _CHRONICLER_ACTIVITY_CAP},
             ),
             timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
         )
@@ -6696,7 +6701,7 @@ async def _fetch_chronicler_activity(
             entity_id,
             exc,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     raw_text = _extract_mcp_result_text(result)
     payload = _parse_mcp_result_payload(raw_text)
@@ -6707,7 +6712,7 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: unexpected payload for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes_raw = payload.get("data")
     if not isinstance(episodes_raw, list):
@@ -6715,9 +6720,11 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: missing episode list for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes: list[Any] = episodes_raw
+    # A full page means older episodes may exist; Chronicler has no cursor here.
+    truncated = len(episodes) >= _CHRONICLER_ACTIVITY_CAP
     entries: list[ActivityEntry] = []
     malformed_count = 0
     for ep in episodes:
@@ -6767,8 +6774,8 @@ async def _fetch_chronicler_activity(
             len(episodes),
             entity_id,
         )
-        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE
-    return entries, None
+        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE, False
+    return entries, None, truncated
 
 
 def _sort_key_activity(entry: ActivityEntry) -> datetime:
@@ -6914,8 +6921,8 @@ async def get_entity_activity(
     async def _no_entries() -> list[ActivityEntry]:
         return []
 
-    async def _no_chronicler() -> tuple[list[ActivityEntry], None]:
-        return [], None
+    async def _no_chronicler() -> tuple[list[ActivityEntry], None, bool]:
+        return [], None, False
 
     with_relationship = source in ("all", "relationship")
     with_chronicler = source in ("all", "chronicler")
@@ -6924,7 +6931,7 @@ async def get_entity_activity(
         _fetch_identity_activity(pool, entity_id) if with_relationship else _no_entries(),
         _fetch_chronicler_activity(mcp_manager, entity_id) if with_chronicler else _no_chronicler(),
     )
-    chr_entries, degraded_reason = chronicler_result
+    chr_entries, degraded_reason, chronicler_truncated = chronicler_result
     degraded = degraded_reason is not None
 
     # Merge and sort descending by timestamp.
@@ -6940,6 +6947,7 @@ async def get_entity_activity(
                 bins=daily,
                 degraded=degraded,
                 degraded_reason=degraded_reason,
+                chronicler_truncated=chronicler_truncated,
             )
         total = len(all_entries)
         page = all_entries[offset : offset + limit]
@@ -6953,6 +6961,7 @@ async def get_entity_activity(
             offset=offset,
             degraded=degraded,
             degraded_reason=degraded_reason,
+            chronicler_truncated=chronicler_truncated,
         )
         return stream.model_dump(mode="json") | {"bins": [b.model_dump(mode="json") for b in daily]}
 
@@ -6966,6 +6975,7 @@ async def get_entity_activity(
         offset=offset,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        chronicler_truncated=chronicler_truncated,
     )
 
 
@@ -7425,7 +7435,7 @@ async def owner_identity_fact_decision(
     )
 
     pool = _pool(db)
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         try:
             result = await decide_identity_fact(
                 conn, entity_id=entity_id, fact_id=fact_id, decision=decision

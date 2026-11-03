@@ -17,7 +17,6 @@ import shutil
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 
 from butlers.core.condition_ledger import ConditionTransition
@@ -27,8 +26,6 @@ from butlers.core.insight_premise import (
     owner_condition_premise,
     probe_premise,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight import broker, premises
 
 _docker_available = shutil.which("docker") is not None
@@ -303,32 +300,25 @@ class TestApplyPendingAmendments:
 
 
 @pytest.fixture
-def premise_db_url(postgres_container) -> str:
-    """Migrate a fresh database before entering this case's async fixture loop."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def premise_pool(premise_db_url: str):
-    """Real core policy/context/definers plus this case's Finance bill state."""
+async def premise_pool(db):
+    """Real core policy/context/definers plus the real Finance bills table."""
     from butlers.core.owner_conditions import create_owner_conditions_table
 
-    pool = await asyncpg.create_pool(
-        premise_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    pool = await db("core", "finance", schemas={"finance": "finance"})
+    await broker.create_insight_tables(pool)
+    await create_owner_conditions_table(pool)
+    await pool.execute(
+        "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
+        "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
     )
-    try:
-        await broker.create_insight_tables(pool)
-        await create_owner_conditions_table(pool)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS finance")
-        await pool.execute("CREATE TABLE finance.bills (id uuid PRIMARY KEY, status text NOT NULL)")
-        await pool.execute(
-            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
-            "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
-        )
-        yield pool
-    finally:
-        await pool.close()
+    return pool
 
+
+# The real finance.bills row needs its NOT NULL obligation columns.
+_INSERT_PENDING_BILL = (
+    "INSERT INTO finance.bills (id, payee, amount, currency, due_date, frequency, status) "
+    "VALUES ($1, 'Water', 42.00, 'SGD', CURRENT_DATE + 1, 'one_time', 'pending')"
+)
 
 _TELEGRAM_SENT = {
     "notification_id": "n-1",
@@ -343,9 +333,7 @@ _TELEGRAM_SENT = {
 class TestPremiseBoundDelivery:
     async def test_a_bill_paid_before_the_cycle_is_withdrawn_and_never_sent(self, premise_pool):
         bill_id = "8c1b3a52-6a6e-4a7e-9a52-0d5f6f1d9c01"
-        await premise_pool.execute(
-            "INSERT INTO finance.bills (id, status) VALUES ($1, 'pending')", bill_id
-        )
+        await premise_pool.execute(_INSERT_PENDING_BILL, bill_id)
         proposed = await broker.propose_insight_candidate(
             premise_pool,
             origin_butler="finance",
@@ -375,9 +363,7 @@ class TestPremiseBoundDelivery:
         self, premise_pool
     ):
         bill_id = "8c1b3a52-6a6e-4a7e-9a52-0d5f6f1d9c02"
-        await premise_pool.execute(
-            "INSERT INTO finance.bills (id, status) VALUES ($1, 'pending')", bill_id
-        )
+        await premise_pool.execute(_INSERT_PENDING_BILL, bill_id)
         for key, args in (("a", {"bill_id": bill_id}), ("b", {"bill_id": "not-a-uuid"})):
             await broker.propose_insight_candidate(
                 premise_pool,
@@ -526,6 +512,103 @@ class TestPremiseBoundDelivery:
         assert "Refill due" in sent
         assert "Since last digest: Resolved" in sent
         assert await premise_pool.fetchval("SELECT state FROM insight_amendments") == "folded"
+
+    @pytest.mark.parametrize(
+        ("resolved", "status", "expected_states"),
+        [
+            (("b3",), "edited", ["applied"]),
+            (("b3", "b4"), "edited", ["applied", "applied"]),
+            (("b3",), "rejected", ["fold"]),
+            (("b3", "b4"), "two-cycles", ["applied", "applied"]),
+        ],
+        ids=["one-line", "two-lines-one-edit", "rejected-folds", "second-cycle-keeps-first"],
+    )
+    async def test_a_resolved_digest_line_is_struck_inside_the_delivered_digest(
+        self, premise_pool, resolved, status, expected_states
+    ):
+        from butlers.core.condition_ledger import Observation, compute_fingerprint
+        from butlers.core.owner_conditions import reconcile_snapshot
+
+        source = "finance:bill-overdue"
+        prints = {k: compute_fingerprint(source, 1, {"bill_id": k}) for k in ("b3", "b4")}
+        await reconcile_snapshot(
+            premise_pool,
+            source=source,
+            observations=[Observation(fingerprint=f, summary=k) for k, f in prints.items()],
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+        for key, name in (("b3", "Water"), ("b4", "Rent")):
+            await broker.propose_insight_candidate(
+                premise_pool,
+                origin_butler="finance",
+                priority=92,
+                category="bill-overdue",
+                dedup_key=f"finance:bill-overdue:{key}:2026-08-21",
+                message=f"{name} bill is overdue",
+                expires_at=_future(),
+                premise=owner_condition_premise(source, prints[key]),
+                now=_PINNED_NOW,
+            )
+        # Both candidates must share one digest: lift the per-cycle budget.
+        await premise_pool.execute("UPDATE insight_settings SET custom_budget = 3 WHERE id = 1")
+        notify = AsyncMock(return_value=_TELEGRAM_SENT)
+        await broker.delivery_cycle(premise_pool, notify_fn=notify, now=_PINNED_NOW)
+        sent = notify.await_args.args[0]
+        assert "Water bill is overdue" in sent and "Rent bill is overdue" in sent
+
+        two_cycles = status == "two-cycles"
+        if two_cycles:
+            status = "edited"
+            resolved = ("b3",)
+        remaining = [k for k in ("b3", "b4") if k not in resolved]
+        observations = [Observation(fingerprint=prints[k], summary=k) for k in remaining]
+        await reconcile_snapshot(
+            premise_pool,
+            source=source,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=3600,
+        )
+
+        amend = AsyncMock(return_value={"status": status})
+        later = _PINNED_NOW + timedelta(minutes=5)
+        for step in (0, 1):  # the second cycle is a replay
+            await broker.delivery_cycle(
+                premise_pool,
+                notify_fn=notify,
+                amend_fn=amend,
+                now=later + timedelta(minutes=5 * step),
+            )
+
+        if two_cycles:
+            await reconcile_snapshot(
+                premise_pool,
+                source=source,
+                observations=[],
+                snapshot_complete=True,
+                initial_grace_seconds=3600,
+            )
+            await broker.delivery_cycle(
+                premise_pool, notify_fn=notify, amend_fn=amend, now=later + timedelta(hours=1)
+            )
+            assert amend.await_count == 2
+            final = amend.await_args.args[1]
+            assert "~~Water bill is overdue~~ Resolved" in final  # earlier strike kept
+            assert "~~Rent bill is overdue~~ Resolved" in final
+            resolved = ("b3", "b4")
+        rows = await premise_pool.fetch("SELECT state FROM insight_amendments")
+        assert sorted(r["state"] for r in rows) == sorted(expected_states)
+        if not two_cycles:
+            amend.assert_awaited_once()  # the replayed cycle issues no second edit
+        text = amend.await_args_list[0].args[1]
+        if not two_cycles:
+            assert text.count("~~") == 2 * len(resolved)
+        assert "~~Water bill is overdue~~ Resolved" in text
+        if not two_cycles:
+            assert ("~~Rent bill is overdue~~ Resolved" in text) is ("b4" in resolved)
+        if status == "edited":
+            assert text.startswith(sent.split("\n")[0])  # other lines untouched
 
 
 async def _delivered_owner_condition_candidate(pool, name: str) -> tuple[str, str, object]:

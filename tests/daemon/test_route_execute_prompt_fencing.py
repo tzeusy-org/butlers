@@ -128,9 +128,17 @@ def _patch_infra():
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.execute = AsyncMock(return_value=None)
 
+    transaction_depth = 0
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
+
     @asynccontextmanager
     async def _transaction():
-        yield
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield
+        finally:
+            transaction_depth -= 1
 
     mock_conn.transaction = MagicMock(side_effect=_transaction)
 
@@ -273,6 +281,42 @@ def test_generated_route_context_keeps_the_payload_fence_unambiguous(
     assert "<user_message>" not in context
     persisted_prompt = f"{context}\n\n{wrap_payload('Terminal payload')}"
     assert derive_session_summary(persisted_prompt, trigger_source="route") == "Terminal payload"
+
+
+@pytest.mark.parametrize(
+    "build_context",
+    (_build_route_runtime_context, _build_recovery_route_runtime_context),
+    ids=("primary", "recovery"),
+)
+def test_attachments_block_tells_a_lazy_mail_ref_from_a_failed_fetch(build_context) -> None:
+    """A lazy Gmail ref was never downloaded, which is not the same as a failed fetch."""
+    context = build_context(
+        route_context={"request_id": "018f6f4e-5b3b-7b2d-9c2f-fe0cefe0ce01"},
+        source_channel="email",
+        conversation_history=None,
+        input_context=None,
+        attachments=[
+            {"media_type": "image/png", "filename": "a.png", "storage_ref": "s3://b/c/a.png"},
+            {
+                "media_type": "application/pdf",
+                "filename": "bill.pdf",
+                "size_bytes": 2048,
+                "storage_ref": None,
+                "source_message_id": "m1",
+                "source_attachment_id": "a1",
+            },
+            {"media_type": "application/pdf", "filename": "lost.pdf", "storage_ref": None},
+        ],
+    )
+
+    lines = {
+        line.split(",")[0].strip(): line for line in context.splitlines() if "filename=" in line
+    }
+    assert "storage_ref=s3://b/c/a.png" in lines["- filename=a.png"]
+    assert "status=not_fetched" in lines["- filename=bill.pdf"]
+    assert "status=unavailable" in lines["- filename=lost.pdf"]
+    assert "status=not_fetched or status=unavailable cannot be retrieved" in context
+    assert "attachment_materialize" not in context  # dark until the RFC 0038 cutover
 
 
 class TestRouteExecutePromptFencing:

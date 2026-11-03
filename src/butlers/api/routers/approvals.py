@@ -78,6 +78,7 @@ from butlers.api.models.approval import (
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as audit_router
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals import reply_templates
@@ -2832,7 +2833,7 @@ async def update_approvals_policy(
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
     try:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn, audit_transaction(conn):
             await conn.execute(
                 """
                 INSERT INTO public.approvals_policy
@@ -3654,9 +3655,11 @@ async def approve_owning_action(
                 edits=edits,
                 displayed_call=displayed_call.model_dump(mode="json") if displayed_call else None,
             )
-            result = await run_rule_write(conn, "approve_with_rule", parameters, decide)
+            result = await run_rule_write(
+                conn, "approve_with_rule", parameters, decide, audit_owned=True
+            )
         else:
-            async with conn.transaction():
+            async with audit_transaction(conn):
                 result = await decide(conn)
 
     if "error" in result:
@@ -3759,7 +3762,7 @@ async def deny_approval(
     # propagates to the app-level handler, which returns 503
     # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
     # deny transition back with it.
-    async with target_pool.acquire() as conn, conn.transaction():
+    async with target_pool.acquire() as conn, audit_transaction(conn):
         result = await approvals_ops.reject_action(
             conn,
             action_id=action_id,
@@ -3835,7 +3838,7 @@ async def defer_approval(
     transition_error: str | None = None
     updated: PendingAction | None = None
     updated_delivery: ApprovalDeliveryTruth | None = None
-    async with target_pool.acquire() as conn, conn.transaction():
+    async with target_pool.acquire() as conn, audit_transaction(conn):
         transition = await defer_pending_action(
             conn,
             action_id=parsed_id,
@@ -3987,7 +3990,7 @@ async def abandon_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
-    async with target_pool.acquire() as conn, conn.transaction():
+    async with target_pool.acquire() as conn, audit_transaction(conn):
         result = await approvals_ops.abandon_approved_action(
             conn, action_id=action_id, reason=request.reason, actor_id="dashboard:rest-api"
         )

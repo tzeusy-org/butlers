@@ -106,7 +106,8 @@ partitions accumulate.
 
 Candidates move from `pending` to a terminal status (`delivered`, `filtered`,
 `expired`, `withdrawn`).  Only terminal rows are eligible for cleanup; `pending` rows are
-never touched.
+never touched.  The Switchboard's daily insight delivery cycle (`cleanup_old_rows()`) never
+deletes candidates; pruner [C] is the only deletion path.
 
 ---
 

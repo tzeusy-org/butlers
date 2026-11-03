@@ -51,9 +51,12 @@ name for the device. A declared sensor that stays on for 60 seconds opens an own
 (source `home:safety`) and sends one high-priority message through the notify path, which
 quiet hours and do-not-disturb do not hold. Two triggers feed the same ledger: the websocket
 event hook (seconds) and the `home_safety_sentinel` job every five minutes, so they never
-double-alert. If delivery fails the condition stays open and is retried, and a still-active alarm
-re-sends as the condition ages. A sensor that reads `unavailable`, or a Home Assistant source
-that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
+double-alert. Both judge the 60-second hold from the sensor's last state change (`last_changed`),
+so an attribute-only update never makes an old alarm look new. If delivery fails the condition
+stays open and is retried, and a still-active alarm re-sends after 15 minutes, 1 hour and 4 hours,
+then daily, while the sensor stays on; a duplicate send between the two triggers is prevented by
+keeping the delivery marker across confirmations. A sensor that reads `unavailable`, or a Home
+Assistant source that has gone quiet, never clears an open alarm. The sentinel is read-only: it never calls a Home
 Assistant service. Code: `src/butlers/jobs/home_safety.py`; requirement: `home-deterministic-jobs`
 spec, "Home Safety Sentinel Job".
 
@@ -123,7 +126,12 @@ verification matrices; they claim no measured live latency or token savings.
   `conversation.*`, `tts.*`, IR/RF blasters, Zigbee2MQTT gesture `*_action_*` sensors) as healthy at
   `unknown` (`is_steady_state_unknown`). `select_due_issues` throttles repeat alerts via state key
   `home:health_check:last_alerted` and the `realert` threshold (default 24h); returned counts still
-  reflect current state.
+  reflect current state. Best-effort, it also reconciles owner-condition source
+  `home:device-threshold`: identity `{entity_id, issue}` (`battery` or `offline`), only `warning`
+  and `critical` qualify, and severity and battery percentage are evidence. A non-numeric battery
+  is carried forward `confirm_only`; an unmeasurable HA source or empty snapshot skips the
+  reconcile, and a ledger failure never breaks the job. A numeric reading with an old HA
+  `last_updated` counts as measured, since HA bumps it only when the value changes.
 - Actuation outcomes: only a connection-establishment failure or an HTTP rejection is `failed`. A
   timeout or reset after dispatch, or an unparseable 2xx, is `unverified` and still attempts live
   read-back.

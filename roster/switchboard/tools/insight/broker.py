@@ -15,10 +15,12 @@ Database tables used (all in the ``public`` schema):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -36,7 +38,7 @@ from butlers.core.attention_ledger import (
 from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
 from butlers.core.insight_premise import normalize_premise
 from butlers.telegram_api import terminal_telegram_metadata
-from butlers.telegram_text import PartialDeliveryLatch
+from butlers.telegram_text import MAX_VISIBLE_UNITS, PartialDeliveryLatch, text_units
 from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 from butlers.tools.switchboard.insight.premises import check_premise
 
@@ -848,9 +850,14 @@ async def cleanup_old_rows(
     now: datetime | None = None,
     retention_days: int = 30,
 ) -> None:
-    """Delete old insight data to prevent unbounded table growth.
+    """Delete old insight bookkeeping rows to prevent unbounded table growth.
 
-    - insight_candidates: non-pending rows older than retention_days
+    ``insight_candidates`` is never touched here (bu-3jyrqz): terminal
+    candidates are pruned only by the opt-in, default-off, dry-run-first
+    retention pruner [C] (``butlers.jobs.retention.prune_insight_candidates``,
+    90-day bound), per docs/operations/data-retention.md. Amendments are not
+    cascaded since ``core_312`` (no FK to the candidate).
+
     - insight_amendments: never deleted (kept as evidence); a ``pending`` or ``fold``
       row whose candidate is gone settles to terminal ``orphaned`` (bu-q7vx1q.32)
     - insight_cooldowns: rows where cooldown_until is older than retention_days
@@ -863,13 +870,6 @@ async def cleanup_old_rows(
         now = datetime.now(UTC)
     cutoff = now - timedelta(days=retention_days)
 
-    await pool.execute(
-        """
-        DELETE FROM insight_candidates
-        WHERE status != 'pending' AND created_at < $1
-        """,
-        cutoff,
-    )
     # Amendment evidence outlives its candidate (core_312 dropped the cascade), but a
     # correction with nothing left to correct must not wait forever.
     await pool.execute(
@@ -1271,6 +1271,247 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
         groups.setdefault(find(idx), []).append(candidate)
 
     return [groups[root] for root in sorted(groups)]
+
+
+# ---------------------------------------------------------------------------
+# Tension clusters (bu-7dpw8 — producer-declared conflicting choices become one
+# owner question instead of several digest lines)
+# ---------------------------------------------------------------------------
+
+TENSION_PRODUCER = "insight_broker"
+TENSION_SINK = "insight_tension"
+_TENSION_MAX_OPTIONS = 4  # ConfirmPrompt allows 2-4 options
+_TENSION_OPTION_LABEL_CHARS = 80
+_TENSION_TIMEOUT_SECONDS = 86400
+
+
+@dataclass(frozen=True, slots=True)
+class TensionOption:
+    value: str  # closed vocabulary ``o0``..``o3``; the label is producer text
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class TensionQuestion:
+    """One owner question for a tension cluster; built by code, never a model."""
+
+    ref: str
+    question: str
+    options: tuple[TensionOption, ...]
+    member_ids: tuple[str, ...]
+
+
+def _candidate_choice(candidate: dict[str, Any]) -> tuple[str, str] | None:
+    """Return a candidate's declared ``metadata.choice`` as ``(key, option)``."""
+    metadata = _json_object(candidate.get("metadata"))
+    choice = metadata.get("choice") if metadata else None
+    if not isinstance(choice, dict):
+        return None
+    key, option = choice.get("key"), choice.get("option")
+    if not isinstance(key, str) or not isinstance(option, str):
+        return None
+    key, option = key.strip(), option.strip()
+    return (key, option) if key and option else None
+
+
+def _tension_choices(cluster: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Group declared options by choice key, keeping only conflicting keys."""
+    by_key: dict[str, set[str]] = {}
+    for candidate in cluster:
+        if (choice := _candidate_choice(candidate)) is not None:
+            by_key.setdefault(choice[0], set()).add(choice[1])
+    return {key: options for key, options in by_key.items() if len(options) > 1}
+
+
+def _is_tension(cluster: list[dict[str, Any]]) -> bool:
+    """True when two or more members declare one choice key with different options."""
+    return bool(_tension_choices(cluster))
+
+
+def _tension_ref(cluster: list[dict[str, Any]]) -> str:
+    """Stable identity of a tension: the sorted member dedup keys, hashed."""
+    keys = "\n".join(sorted(str(c.get("dedup_key")) for c in cluster))
+    return hashlib.sha256(keys.encode()).hexdigest()[:32]
+
+
+def _tension_members(cluster: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Members that declare the asked (first conflicting) choice key.
+
+    A cluster can link unrelated candidates by entity or time; only the members
+    taking part in the conflict belong to the question. The rest stay in the digest.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return []
+    key = sorted(conflicts)[0]
+    return [c for c in cluster if (choice := _candidate_choice(c)) and choice[0] == key]
+
+
+def tension_question(cluster: list[dict[str, Any]]) -> TensionQuestion | None:
+    """Build the owner question for a tension cluster, or None if it cannot be asked.
+
+    Only the first conflicting key is asked, over the members declaring it; its
+    distinct options (sorted, so the option vocabulary is stable across cycles)
+    must fit the 2-4 option card.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return None
+    cluster = _tension_members(cluster)
+    options = sorted(conflicts[sorted(conflicts)[0]])
+    if len(options) > _TENSION_MAX_OPTIONS:
+        return None
+    labels = [option[:_TENSION_OPTION_LABEL_CHARS] for option in options]
+    if len(set(labels)) != len(labels):
+        return None
+    butlers = sorted({str(c.get("origin_butler") or "") for c in cluster} - {""})
+    source = ", ".join(b.capitalize() for b in butlers) or "Your butlers"
+    return TensionQuestion(
+        ref=_tension_ref(cluster),
+        question=f"{source} suggested {len(options)} options that can't all happen. Which one?",
+        options=tuple(TensionOption(f"o{i}", label) for i, label in enumerate(labels)),
+        member_ids=tuple(sorted(str(c["id"]) for c in cluster)),
+    )
+
+
+async def absorb_tensions(
+    pool: Any,
+    candidates: list[dict[str, Any]],
+    confirm_fn: Any | None,
+    *,
+    budget: int,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Ask one owner question per tension cluster and remove its members.
+
+    ``confirm_fn(question) -> {"status": "asked" | "open" | ...}`` is the owner
+    confirm transport (``None`` when none is wired). ``asked`` is a new question and
+    ``open`` an already-open identical one; both absorb the members, which settle as
+    delivered with ``tension_ref`` stamped so the answer path can find them. Any
+    other result, an exception or a missing transport leaves the members in
+    ``candidates`` so they ride the normal digest (never silent). Each question
+    spends one slot of ``budget``. Returns ``(remaining, questions_absorbed)``.
+    """
+    if confirm_fn is None or budget <= 0:
+        return candidates, 0
+    if now is None:
+        now = datetime.now(UTC)
+    absorbed_ids: set[str] = set()
+    absorbed = 0
+    for cluster in _cluster_candidates(candidates):
+        if absorbed >= budget or not _is_tension(cluster):
+            continue
+        question = tension_question(cluster)
+        if question is None:
+            continue
+        try:
+            outcome = await confirm_fn(question)
+        except Exception:
+            logger.warning("insight tension question transport raised", exc_info=True)
+            continue
+        if not isinstance(outcome, dict) or outcome.get("status") not in {"asked", "open"}:
+            continue
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                UPDATE insight_candidates
+                SET status = 'delivered', delivered_at = $2, delivery_attempt_count = 0,
+                    metadata = COALESCE(metadata, '{}'::jsonb)
+                               || jsonb_build_object('tension_ref', $3::text)
+                WHERE id = ANY($1::uuid[])
+                """,
+                list(question.member_ids),
+                now,
+                question.ref,
+            )
+            members = _tension_members(cluster)
+            await record_cooldowns(conn, members, now=now)
+            await record_engagement_rows(conn, members, delivered_at=now)
+        absorbed_ids.update(question.member_ids)
+        absorbed += 1
+    return [c for c in candidates if str(c["id"]) not in absorbed_ids], absorbed
+
+
+async def apply_tension_answer(
+    pool: Any, tension_ref: str, value: str, *, confirm_id: Any = None
+) -> dict[str, Any]:
+    """Record the owner's pick as ``useful`` feedback on every member of the tension.
+
+    The options are the cluster's sorted distinct declared options, so ``o<i>`` maps
+    back to one of them. Safe to retry: a member already carrying this confirm's
+    evidence is skipped (the confirm service re-applies after loss or restart).
+    """
+    rows = await pool.fetch(
+        "SELECT id, metadata FROM insight_candidates "
+        "WHERE metadata->>'tension_ref' = $1 ORDER BY id",
+        tension_ref,
+    )
+    members = [{"id": row["id"], "metadata": row["metadata"]} for row in rows]
+    question = tension_question(members)
+    if question is None or value not in {o.value for o in question.options}:
+        raise ValueError("tension answer does not match the recorded options")
+    chosen = next(o.label for o in question.options if o.value == value)
+    evidence = f"tension:{tension_ref}:{chosen}"
+    for member in members:
+        # The confirm service re-invokes this after errors and timeouts, and each
+        # feedback call inserts a row: skip members that already carry this evidence.
+        if await pool.fetchval(
+            "SELECT 1 FROM insight_feedback WHERE insight_id = $1::uuid AND evidence_ref = $2",
+            str(member["id"]),
+            evidence,
+        ):
+            continue
+        result = await record_insight_feedback(
+            pool,
+            insight_id=str(member["id"]),
+            verdict="useful",
+            actor="owner",
+            evidence_ref=evidence,
+        )
+        if result.get("status") != "recorded":
+            raise ValueError("tension feedback was not recorded")
+    return {"status": "applied", "members": len(members), "chosen": chosen}
+
+
+def tension_sink_registration(pool: Any) -> Any:
+    """Confirm-service sink that turns a tension answer into member feedback."""
+    from butlers.core.confirm_service import SinkRegistration
+
+    async def apply(confirm_id: Any, sink_ref: str, value: str) -> dict[str, Any]:
+        return await apply_tension_answer(pool, sink_ref, value, confirm_id=confirm_id)
+
+    return SinkRegistration(
+        producer=TENSION_PRODUCER,
+        values=frozenset(f"o{i}" for i in range(_TENSION_MAX_OPTIONS)),
+        apply=apply,
+    )
+
+
+def make_tension_confirm_fn(service: Any, recipient: Any) -> Any:
+    """Adapt a ``ConfirmService`` and resolved owner ``Recipient`` into ``confirm_fn``.
+
+    The service's per-producer key makes a repeated identical tension return the
+    existing row, so a pending row reports ``open`` rather than a second question.
+    """
+    from butlers.core.confirm_models import ConfirmOption, ConfirmPrompt
+
+    async def confirm_fn(question: TensionQuestion) -> dict[str, Any]:
+        prompt = ConfirmPrompt(
+            question=question.question,
+            options=tuple(ConfirmOption(o.value, o.label) for o in question.options),
+            recipient=recipient,
+            timeout_seconds=_TENSION_TIMEOUT_SECONDS,
+        )
+        row = await service.create(
+            TENSION_PRODUCER,
+            question.ref,
+            prompt,
+            sink=TENSION_SINK,
+            sink_ref=question.ref,
+        )
+        return {"status": "open" if row["status"] == "pending" else "settled"}
+
+    return confirm_fn
 
 
 # ---------------------------------------------------------------------------
@@ -1790,6 +2031,8 @@ def _build_delivery_ref(
     standalone: bool,
     digest_line_index: int | None,
     delivered_at: datetime,
+    line_text: str | None = None,
+    delivery_text: str | None = None,
 ) -> dict[str, Any]:
     """Describe where a delivered candidate landed, for later in-place amendment.
 
@@ -1803,6 +2046,11 @@ def _build_delivery_ref(
         "digest_line_index": digest_line_index,
         "delivered_at": delivered_at.isoformat(),
     }
+    if digest_line_index is not None:
+        # bu-q7vx1q.31: a digest edit re-renders the whole message with this
+        # line struck, so the sent text and the line's own text are kept.
+        ref["line_text"] = line_text
+        ref["delivery_text"] = delivery_text
     if isinstance(notify_result, dict):
         ref["notification_id"] = notify_result.get("notification_id")
         found = _find_provider_message(notify_result.get("result"))
@@ -1841,8 +2089,10 @@ async def apply_pending_amendments(
 
     ``amend_fn(delivery_ref, text)`` returns ``{"status": "edited" | "rejected"
     | "error"}``. A standalone Telegram delivery is edited to a struck-through
-    "Resolved HH:MM" form with no new ping. A delivery that cannot be edited
-    (email, a digest line, a rejected edit, three transport failures) becomes a
+    "Resolved HH:MM" form with no new ping. A Telegram digest is edited once per
+    message, striking every resolved line and keeping earlier strikes. A
+    delivery that cannot be edited (email, a rejected edit, three transport
+    failures) becomes a
     ``fold`` amendment instead: it rides the next delivery as a "since last
     digest" line, never a standalone message. Every state change is guarded on
     ``state = 'pending'``, so a replayed cycle neither double-edits nor
@@ -1861,38 +2111,109 @@ async def apply_pending_amendments(
         """,
         _AMENDMENT_BATCH,
     )
+    # Group pending digest-line amendments by the Telegram message they sit in:
+    # one edit per message carries every strike.
+    digest_groups: dict[tuple[str, int], list[Any]] = {}
+    units: list[tuple[Any, list[Any]]] = []
     for row in rows:
         ref = _json_object(row["delivery_ref"]) or {}
-        premise = _json_object(row["premise"])
-        note = await _resolution_note(pool, premise)
-        editable = bool(
-            ref.get("standalone")
-            and ref.get("channel") == "telegram"
-            and ref.get("chat_id")
-            and ref.get("provider_message_id")
-        )
-        next_state = "fold"
-        if editable:
-            try:
-                result = await amend_fn(ref, f"~~{row['message']}~~\n{note}")
-                status = result.get("status") if isinstance(result, dict) else "error"
-            except Exception:
-                logger.warning(
-                    "insight-delivery-cycle: amend of candidate %s raised",
-                    row["candidate_id"],
-                    exc_info=True,
-                )
-                status = "error"
-            if status == "edited":
-                next_state = "applied"
-            elif status == "error" and row["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+        if _is_editable_digest_ref(ref):
+            key = (str(ref["chat_id"]), int(ref["provider_message_id"]))
+            if key not in digest_groups:
+                digest_groups[key] = []
+                units.append((ref, digest_groups[key]))
+            digest_groups[key].append(row)
+        else:
+            units.append((ref, [row]))
+    for ref, group in units:
+        if _is_editable_digest_ref(ref):
+            # The daily cycle and the urgent subcycle can overlap; one lock per
+            # message keeps the later run rendering from the earlier run's
+            # applied strikes instead of overwriting them.
+            lock_key = f"insight-digest-amend:{ref['chat_id']}:{ref['provider_message_id']}"
+            async with pool.acquire() as lock_conn, lock_conn.transaction():
+                if not await lock_conn.fetchval(
+                    "SELECT pg_try_advisory_xact_lock(hashtext($1))", lock_key
+                ):
+                    continue  # another run owns this message; rows stay pending
+                still_pending = {
+                    r["id"]
+                    for r in await pool.fetch(
+                        "SELECT id FROM insight_amendments "
+                        "WHERE id = ANY($1::uuid[]) AND state = 'pending'",
+                        [r["id"] for r in group],
+                    )
+                }
+                group = [r for r in group if r["id"] in still_pending]
+                if group:
+                    await _settle_amendment_unit(pool, amend_fn, ref, group, now, counts)
+        else:
+            await _settle_amendment_unit(pool, amend_fn, ref, group, now, counts)
+    return counts
+
+
+async def _settle_amendment_unit(
+    pool: asyncpg.Pool,
+    amend_fn: Any,
+    ref: dict[str, Any],
+    group: list[Any],
+    now: datetime,
+    counts: dict[str, int],
+) -> None:
+    """Edit one delivered message for ``group`` (or fold what cannot be edited)."""
+    notes = {r["id"]: await _resolution_note(pool, _json_object(r["premise"])) for r in group}
+    is_digest = _is_editable_digest_ref(ref)
+    fold_rows: list[Any] = []
+    edit_rows = group
+    text = ""
+    if is_digest:
+        text, edit_rows, fold_rows = await _render_struck_digest(pool, ref, group, notes)
+    elif not (
+        ref.get("standalone")
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+    ):
+        fold_rows, edit_rows = group, []
+    else:
+        text = f"~~{group[0]['message']}~~\n{notes[group[0]['id']]}"
+    if edit_rows:
+        first = edit_rows[0]
+        try:
+            result = await amend_fn(ref, text)
+            status = result.get("status") if isinstance(result, dict) else "error"
+        except Exception:
+            logger.warning(
+                "insight-delivery-cycle: amend of candidate %s raised",
+                first["candidate_id"],
+                exc_info=True,
+            )
+            status = "error"
+        if status == "edited":
+            await _settle_rows(pool, edit_rows, "applied", notes, now, counts)
+        elif status == "error" and first["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+            for row in edit_rows:
                 await pool.execute(
                     "UPDATE insight_amendments SET attempts = attempts + 1 "
                     "WHERE id = $1 AND state = 'pending'",
                     row["id"],
                 )
-                counts["retry"] += 1
-                continue
+            counts["retry"] += len(edit_rows)
+        else:
+            fold_rows = fold_rows + edit_rows
+    if fold_rows:
+        await _settle_rows(pool, fold_rows, "fold", notes, now, counts)
+
+
+async def _settle_rows(
+    pool: asyncpg.Pool,
+    rows: list[Any],
+    next_state: str,
+    notes: dict[Any, str],
+    now: datetime,
+    counts: dict[str, int],
+) -> None:
+    for row in rows:
         updated = await pool.execute(
             """
             UPDATE insight_amendments
@@ -1901,7 +2222,7 @@ async def apply_pending_amendments(
             """,
             row["id"],
             next_state,
-            note,
+            notes[row["id"]],
             now,
         )
         if not str(updated).endswith(" 1"):
@@ -1922,7 +2243,86 @@ async def apply_pending_amendments(
             )
         else:
             counts["folded"] += 1
-    return counts
+
+
+def _is_editable_digest_ref(ref: dict[str, Any]) -> bool:
+    """A Telegram digest line whose sent text and line text were recorded."""
+    return bool(
+        not ref.get("standalone")
+        and ref.get("digest_line_index") is not None
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+        and ref.get("delivery_text")
+        and ref.get("line_text")
+    )
+
+
+def strike_digest_lines(
+    delivery_text: str, strikes: list[tuple[str, str]]
+) -> tuple[str, list[bool]]:
+    """Strike each ``(line_text, note)`` on its own whole digest line.
+
+    A line is the numbered or bulleted ``[Butler] message`` row, so a message
+    that is a prefix or substring of another row never matches it. A strike
+    whose line is not found exactly once is left out and reported ``False``.
+    """
+    lines = delivery_text.split("\n")
+    anchored = [False] * len(strikes)
+    for n, (line_text, note) in enumerate(strikes):
+        pattern = re.compile(r"^(?:\d+\. |- )(?:\[[^\]]*\] )?" + re.escape(line_text) + r"$")
+        hits = [i for i, row in enumerate(lines) if pattern.match(row)]
+        if len(hits) != 1 or "~~" in lines[hits[0]]:
+            continue
+        i = hits[0]
+        prefix = lines[i][: len(lines[i]) - len(line_text)]
+        lines[i] = f"{prefix}~~{line_text}~~ {note}"
+        anchored[n] = True
+    return "\n".join(lines), anchored
+
+
+async def _render_struck_digest(
+    pool: asyncpg.Pool,
+    ref: dict[str, Any],
+    pending: list[Any],
+    notes: dict[Any, str],
+) -> tuple[str, list[Any], list[Any]]:
+    """Re-render a delivered digest with every resolved line struck through.
+
+    Returns ``(text, rows_to_edit, rows_to_fold)``. Earlier strikes come from
+    already-applied amendments on the same message, so a later edit keeps them
+    and replays are idempotent. Rows whose line is not uniquely anchored, or
+    every row when the original or re-rendered text exceeds one Telegram
+    message (an edit cannot be truncated or chunked), fold instead.
+    """
+    applied = await pool.fetch(
+        """
+        SELECT a.summary, c.delivery_ref
+        FROM insight_amendments a
+        JOIN insight_candidates c ON c.id = a.candidate_id
+        WHERE a.state = 'applied'
+          AND c.delivery_ref ->> 'provider_message_id' = $1
+          AND c.delivery_ref ->> 'chat_id' = $2
+        """,
+        str(ref["provider_message_id"]),
+        str(ref["chat_id"]),
+    )
+    strikes = [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text") or "", r["summary"] or "Resolved")
+        for r in applied
+    ]
+    earlier = len(strikes)
+    strikes += [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text") or "", notes[r["id"]])
+        for r in pending
+    ]
+    original = str(ref["delivery_text"])
+    text, anchored = strike_digest_lines(original, strikes)
+    edit = [r for r, ok in zip(pending, anchored[earlier:], strict=True) if ok]
+    fold = [r for r, ok in zip(pending, anchored[earlier:], strict=True) if not ok]
+    if text_units(original) > MAX_VISIBLE_UNITS or text_units(text) > MAX_VISIBLE_UNITS:
+        return text, [], pending
+    return text, edit, fold
 
 
 async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
@@ -1954,8 +2354,13 @@ async def delivery_cycle(
     credential_store: Any | None = None,
     amend_fn: Any | None = None,
     finance_warning_reader: Any | None = None,
+    tension_confirm_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
+
+    ``tension_confirm_fn`` (bu-7dpw8): optional owner-confirm transport; a cluster
+    whose members declare conflicting ``metadata.choice`` options becomes one owner
+    question (one budget slot) instead of digest lines. ``None`` keeps the digest.
 
     Steps (per spec §Delivery cycle execution order):
     1. Check quiet hours — if active, skip and return
@@ -2251,6 +2656,14 @@ async def delivery_cycle(
         eligible_ids,
     )
     candidates = [dict(row) for row in rows]
+    candidates, tensions_asked = await absorb_tensions(
+        pool, candidates, tension_confirm_fn, budget=effective_budget, now=now
+    )
+    if tensions_asked:
+        result["tensions_asked"] = tensions_asked
+        effective_budget -= tensions_asked
+        if not candidates:
+            return result
     weights = await compute_category_budget_weights(
         pool,
         [candidate["category"] for candidate in candidates],
@@ -2524,6 +2937,8 @@ async def delivery_cycle(
                                     standalone=deliver_count == 1,
                                     digest_line_index=None if deliver_count == 1 else line_index,
                                     delivered_at=delivered_at,
+                                    line_text=_c["message"],
+                                    delivery_text=delivery_message,
                                 ),
                             )
                         if fold_lines:
