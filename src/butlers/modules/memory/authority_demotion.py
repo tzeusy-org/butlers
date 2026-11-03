@@ -614,7 +614,7 @@ async def _existing_receipts(
         raise DemotionRefused("operation_key_reused")
     rows = await conn.fetch(
         f"SELECT payload FROM {events} WHERE event_type = $1 AND request_id = $2"
-        " ORDER BY payload->>'memory_type', memory_id",
+        " ORDER BY memory_type, memory_id",
         RECEIPT_EVENT,
         approval.operation_key,
     )
@@ -695,7 +695,9 @@ async def apply(conn: Any, manifest: EvidenceManifest, approval: Approval) -> Ap
                 approval.operation_key,
                 candidate.memory_type,
                 candidate.id,
-                json.dumps(receipt),
+                # A dict, not json.dumps(...): the connection's JSONB codec serializes
+                # it, so a pre-dumped str would land as a JSON string scalar.
+                receipt,
             )
             receipts.append(receipt)
 
@@ -705,18 +707,16 @@ async def apply(conn: Any, manifest: EvidenceManifest, approval: Approval) -> Ap
             OPERATION_EVENT,
             ACTOR,
             approval.operation_key,
-            json.dumps(
-                {
-                    "operation_key": approval.operation_key,
-                    "predicate_version": PREDICATE_VERSION,
-                    "schema": schema,
-                    "manifest_digest": manifest.digest,
-                    "candidate_digest": report.candidate_digest,
-                    "approved_by": approval.approved_by,
-                    "demoted": len(receipts),
-                    "catalog": catalog,
-                }
-            ),
+            {
+                "operation_key": approval.operation_key,
+                "predicate_version": PREDICATE_VERSION,
+                "schema": schema,
+                "manifest_digest": manifest.digest,
+                "candidate_digest": report.candidate_digest,
+                "approved_by": approval.approved_by,
+                "demoted": len(receipts),
+                "catalog": catalog,
+            },
         )
     return ApplyResult(approval.operation_key, False, tuple(receipts))
 
