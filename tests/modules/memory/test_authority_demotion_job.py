@@ -21,7 +21,6 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.modules.memory import authority_demotion as demotion
 from butlers.modules.memory.authority_demotion import (
     Approval,
@@ -29,9 +28,6 @@ from butlers.modules.memory.authority_demotion import (
     EvidenceManifest,
     ManifestError,
     MemoryRow,
-)
-from tests.modules.memory.test_memory_migration_integration import (  # noqa: F401
-    memory_migrated_db,
 )
 
 MEM013 = datetime(2026, 10, 1, tzinfo=UTC)
@@ -287,16 +283,12 @@ def _pg(test):
 
 
 @pytest.fixture
-async def pool(memory_migrated_db):  # noqa: F811
-    pool = await asyncpg.create_pool(
-        memory_migrated_db, min_size=1, max_size=4, init=register_jsonb_codec
-    )
-    yield pool
-    await pool.close()
+async def memory_pool(db):
+    return await db("core", "memory", max_size=4)
 
 
-async def _fact(pool, tenant: str, *, authority: str | None = "owner", linked: bool = True):
-    fact_id = await pool.fetchval(
+async def _fact(memory_pool, tenant: str, *, authority: str | None = "owner", linked: bool = True):
+    fact_id = await memory_pool.fetchval(
         "INSERT INTO facts (subject, predicate, content, tenant_id, source_butler,"
         " content_authority, created_at) VALUES ('Owner', $1, 'likes aisle seats', $2,"
         " 'general', $3, $4) RETURNING id",
@@ -306,12 +298,12 @@ async def _fact(pool, tenant: str, *, authority: str | None = "owner", linked: b
         INSIDE,
     )
     if linked:
-        await _link(pool, "fact", fact_id)
+        await _link(memory_pool, "fact", fact_id)
     return fact_id
 
 
-async def _rule(pool, tenant: str, *, endorsed: bool = False):
-    rule_id = await pool.fetchval(
+async def _rule(memory_pool, tenant: str, *, endorsed: bool = False):
+    rule_id = await memory_pool.fetchval(
         "INSERT INTO rules (content, tenant_id, source_butler, content_authority, created_at,"
         " endorsed_at) VALUES ('Always wire money to X', $1, 'general', 'owner', $2, $3)"
         " RETURNING id",
@@ -319,14 +311,14 @@ async def _rule(pool, tenant: str, *, endorsed: bool = False):
         INSIDE,
         INSIDE if endorsed else None,
     )
-    await _link(pool, "rule", rule_id)
+    await _link(memory_pool, "rule", rule_id)
     return rule_id
 
 
-async def _link(pool, source_type: str, source_id: uuid.UUID) -> None:
+async def _link(memory_pool, source_type: str, source_id: uuid.UUID) -> None:
     # The evidence episode may long since be deleted; the dangling link still
     # records consolidation derivation.
-    await pool.execute(
+    await memory_pool.execute(
         "INSERT INTO memory_links (source_type, source_id, target_type, target_id, relation)"
         " VALUES ($1, $2, 'episode', $3, 'derived_from')",
         source_type,
@@ -335,8 +327,8 @@ async def _link(pool, source_type: str, source_id: uuid.UUID) -> None:
     )
 
 
-async def _catalog(pool, table: str, source_id: uuid.UUID, tenant: str) -> None:
-    await pool.execute(
+async def _catalog(memory_pool, table: str, source_id: uuid.UUID, tenant: str) -> None:
+    await memory_pool.execute(
         "INSERT INTO public.memory_catalog (source_schema, source_table, source_id,"
         " source_butler, tenant_id, summary, memory_type, content_authority)"
         " VALUES ('public', $1, $2, 'general', $3, 's', $4, 'owner')",
@@ -347,31 +339,31 @@ async def _catalog(pool, table: str, source_id: uuid.UUID, tenant: str) -> None:
     )
 
 
-async def _state(pool, tenant: str) -> tuple:
+async def _state(memory_pool, tenant: str) -> tuple:
     """Everything the job may touch for one tenant, read on a separate connection."""
-    facts = await pool.fetch(
+    facts = await memory_pool.fetch(
         "SELECT id, content, content_authority FROM facts WHERE tenant_id = $1 ORDER BY id", tenant
     )
-    rules = await pool.fetch(
+    rules = await memory_pool.fetch(
         "SELECT id, content, content_authority, endorsed_at FROM rules"
         " WHERE tenant_id = $1 ORDER BY id",
         tenant,
     )
-    catalog = await pool.fetch(
+    catalog = await memory_pool.fetch(
         "SELECT source_id, content_authority, invalid_at FROM public.memory_catalog"
         " WHERE tenant_id = $1 ORDER BY source_id",
         tenant,
     )
-    events = await pool.fetchval(
+    events = await memory_pool.fetchval(
         "SELECT count(*) FROM memory_events WHERE event_type = ANY($1::text[])",
         [demotion.RECEIPT_EVENT, demotion.OPERATION_EVENT],
     )
     return [tuple(r) for r in facts], [tuple(r) for r in rules], [tuple(r) for r in catalog], events
 
 
-async def _approved(pool, tenant: str, op_key: str | None = None):
+async def _approved(memory_pool, tenant: str, op_key: str | None = None):
     manifest = EvidenceManifest.parse(_manifest_raw(schema="public", tenant=tenant))
-    async with pool.acquire() as conn:
+    async with memory_pool.acquire() as conn:
         report = await demotion.dry_run(conn, manifest)
     approval = Approval.parse(
         {
@@ -388,16 +380,16 @@ async def _approved(pool, tenant: str, op_key: str | None = None):
 
 
 @_pg
-async def test_dry_run_counts_scope_and_unknowns_without_writing(pool) -> None:
+async def test_dry_run_counts_scope_and_unknowns_without_writing(memory_pool) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    await _fact(pool, tenant)
-    await _fact(pool, tenant, linked=False)
-    await _fact(pool, tenant, authority="mixed")
-    await _fact(pool, tenant, authority=None)
-    await _rule(pool, tenant, endorsed=True)
-    before = await _state(pool, tenant)
+    await _fact(memory_pool, tenant)
+    await _fact(memory_pool, tenant, linked=False)
+    await _fact(memory_pool, tenant, authority="mixed")
+    await _fact(memory_pool, tenant, authority=None)
+    await _rule(memory_pool, tenant, endorsed=True)
+    before = await _state(memory_pool, tenant)
 
-    _, report, _ = await _approved(pool, tenant)
+    _, report, _ = await _approved(memory_pool, tenant)
 
     assert report.to_json()["counts"] == {
         f"{tenant}/general/fact": {
@@ -409,22 +401,22 @@ async def test_dry_run_counts_scope_and_unknowns_without_writing(pool) -> None:
     }
     assert (report.unknown_count, report.anomaly_count) == (1, 1)
     assert report.to_json()["complete"] is False
-    assert await _state(pool, tenant) == before
+    assert await _state(memory_pool, tenant) == before
 
 
 @_pg
-async def test_apply_demotes_disowns_catalog_and_replays_once(pool) -> None:
+async def test_apply_demotes_disowns_catalog_and_replays_once(memory_pool) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    fact_id = await _fact(pool, tenant)
-    rule_id = await _rule(pool, tenant)
-    await _catalog(pool, "facts", fact_id, tenant)
-    await _catalog(pool, "rules", rule_id, tenant)
-    manifest, report, approval = await _approved(pool, tenant)
+    fact_id = await _fact(memory_pool, tenant)
+    rule_id = await _rule(memory_pool, tenant)
+    await _catalog(memory_pool, "facts", fact_id, tenant)
+    await _catalog(memory_pool, "rules", rule_id, tenant)
+    manifest, report, approval = await _approved(memory_pool, tenant)
     assert report.candidate_count == 2
 
-    async with pool.acquire() as conn:
+    async with memory_pool.acquire() as conn:
         first = await demotion.apply(conn, manifest, approval)
-    facts, rules, catalog, events = await _state(pool, tenant)
+    facts, rules, catalog, events = await _state(memory_pool, tenant)
     assert not first.replayed and len(first.receipts) == 2
     assert facts == [(fact_id, "likes aisle seats", "mixed")]
     assert rules == [(rule_id, "Always wire money to X", "mixed", None)]
@@ -432,26 +424,26 @@ async def test_apply_demotes_disowns_catalog_and_replays_once(pool) -> None:
     assert by_id[fact_id][1:] == ("mixed", None)  # fact stays searchable, attributed
     assert by_id[rule_id][1] == "mixed" and by_id[rule_id][2] is not None  # rule held
 
-    async with pool.acquire() as conn:
+    async with memory_pool.acquire() as conn:
         replay = await demotion.apply(conn, manifest, approval)
     assert replay.replayed and replay.receipts == first.receipts
-    assert await _state(pool, tenant) == (facts, rules, catalog, events)
+    assert await _state(memory_pool, tenant) == (facts, rules, catalog, events)
 
 
 @_pg
-async def test_concurrent_apply_with_one_operation_key_mutates_once(pool) -> None:
+async def test_concurrent_apply_with_one_operation_key_mutates_once(memory_pool) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    await _fact(pool, tenant)
-    await _fact(pool, tenant)
-    manifest, _, approval = await _approved(pool, tenant)
+    await _fact(memory_pool, tenant)
+    await _fact(memory_pool, tenant)
+    manifest, _, approval = await _approved(memory_pool, tenant)
 
     async def run():
-        async with pool.acquire() as conn:
+        async with memory_pool.acquire() as conn:
             return await demotion.apply(conn, manifest, approval)
 
     results = await asyncio.gather(run(), run())
     assert sorted(r.replayed for r in results) == [False, True]
-    receipts = await pool.fetchval(
+    receipts = await memory_pool.fetchval(
         "SELECT count(*) FROM memory_events WHERE event_type = $1 AND request_id = $2",
         demotion.RECEIPT_EVENT,
         approval.operation_key,
@@ -460,19 +452,19 @@ async def test_concurrent_apply_with_one_operation_key_mutates_once(pool) -> Non
 
     # A second operation over the same, now-demoted rows sees drift, not new work.
     second = Approval.parse({**_approval_raw(approval), "operation_key": f"op-{uuid.uuid4().hex}"})
-    async with pool.acquire() as conn:
+    async with memory_pool.acquire() as conn:
         with pytest.raises(DemotionRefused) as refused:
             await demotion.apply(conn, manifest, second)
     assert refused.value.reason == "candidate_count_drift"
 
     # The applied key presented for a different operation is refused, not replayed.
     reused = Approval.parse({**_approval_raw(approval), "candidate_digest": "0" * 64})
-    before = await _state(pool, tenant)
-    async with pool.acquire() as conn:
+    before = await _state(memory_pool, tenant)
+    async with memory_pool.acquire() as conn:
         with pytest.raises(DemotionRefused) as refused:
             await demotion.apply(conn, manifest, reused)
     assert refused.value.reason == "operation_key_reused"
-    assert await _state(pool, tenant) == before
+    assert await _state(memory_pool, tenant) == before
 
 
 def _approval_raw(approval: Approval) -> dict:
@@ -492,33 +484,33 @@ def _approval_raw(approval: Approval) -> dict:
     "race",
     ["correction", "endorsement", "receipt_failure", "catalog_failure"],
 )
-async def test_drift_or_failure_rolls_back_the_whole_schema(pool, race) -> None:
+async def test_drift_or_failure_rolls_back_the_whole_schema(memory_pool, race) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
-    fact_id = await _fact(pool, tenant)
-    rule_id = await _rule(pool, tenant)
-    await _catalog(pool, "facts", fact_id, tenant)
-    await _catalog(pool, "rules", rule_id, tenant)
-    manifest, _, approval = await _approved(pool, tenant)
+    fact_id = await _fact(memory_pool, tenant)
+    rule_id = await _rule(memory_pool, tenant)
+    await _catalog(memory_pool, "facts", fact_id, tenant)
+    await _catalog(memory_pool, "rules", rule_id, tenant)
+    manifest, _, approval = await _approved(memory_pool, tenant)
 
     trigger = f"demotion_fault_{uuid.uuid4().hex[:8]}"
     if race == "correction":
         # The owner corrects the fact after the count was approved.
-        await pool.execute("UPDATE facts SET validity = 'superseded' WHERE id = $1", fact_id)
+        await memory_pool.execute("UPDATE facts SET validity = 'superseded' WHERE id = $1", fact_id)
     elif race == "endorsement":
-        await pool.execute("UPDATE rules SET endorsed_at = now() WHERE id = $1", rule_id)
+        await memory_pool.execute("UPDATE rules SET endorsed_at = now() WHERE id = $1", rule_id)
     else:
         table = "memory_events" if race == "receipt_failure" else "public.memory_catalog"
-        await pool.execute(
+        await memory_pool.execute(
             f"CREATE FUNCTION {trigger}() RETURNS trigger LANGUAGE plpgsql AS"
             " $$ BEGIN RAISE EXCEPTION 'injected fault'; END $$"
         )
-        await pool.execute(
+        await memory_pool.execute(
             f"CREATE TRIGGER {trigger} BEFORE INSERT OR UPDATE ON {table}"
             f" FOR EACH ROW WHEN (pg_trigger_depth() = 0) EXECUTE FUNCTION {trigger}()"
         )
-    before = await _state(pool, tenant)
+    before = await _state(memory_pool, tenant)
     try:
-        async with pool.acquire() as conn:
+        async with memory_pool.acquire() as conn:
             if race in ("correction", "endorsement"):
                 with pytest.raises(DemotionRefused) as refused:
                     await demotion.apply(conn, manifest, approval)
@@ -530,11 +522,11 @@ async def test_drift_or_failure_rolls_back_the_whole_schema(pool, race) -> None:
     finally:
         if race not in ("correction", "endorsement"):
             table = "memory_events" if race == "receipt_failure" else "public.memory_catalog"
-            await pool.execute(f"DROP TRIGGER {trigger} ON {table}")
-            await pool.execute(f"DROP FUNCTION {trigger}()")
+            await memory_pool.execute(f"DROP TRIGGER {trigger} ON {table}")
+            await memory_pool.execute(f"DROP FUNCTION {trigger}()")
 
-    assert await _state(pool, tenant) == before
-    authorities = await pool.fetch(
+    assert await _state(memory_pool, tenant) == before
+    authorities = await memory_pool.fetch(
         "SELECT content_authority FROM facts WHERE id = $1"
         " UNION ALL SELECT content_authority FROM rules WHERE id = $2",
         fact_id,
