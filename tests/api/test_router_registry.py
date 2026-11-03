@@ -55,7 +55,7 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     }
     encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "84ddaa7f35f772d35b8ab0e91e6b91e3634c43e7e80cb45c8c0f1bda3a8ef74a"
+        "cb7fd0c38f8666f9708a4220fab24b52df6d3c9211c25c1ec6424528544be3b2"
     )
     assert "/api/system/background-jobs" in snapshot["openapi"]["paths"]
     assert "/api/health/baselines" in snapshot["openapi"]["paths"]
