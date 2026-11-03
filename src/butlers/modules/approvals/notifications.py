@@ -1,40 +1,25 @@
-"""Deterministic owner notification for approval-gate park events.
+"""Deterministic approval envelopes and dependencies for durable delivery.
 
-This module deliberately contains no model invocation and never calls the
-proactive-insight broker.  It reserves one durable control-plane emission for
-each parked action, renders fixed dossier text, and routes the resulting
-``approval_request`` envelope through the normal Switchboard → Messenger path.
+This module renders fixed dossier text and signed actions without model or
+provider calls. Durable approval delivery owns admission, reservation and
+handoff through the normal Switchboard → Messenger path; legacy push evidence
+remains readable but has no sender here.
 """
 
 from __future__ import annotations
 
-import logging
 import os
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Any
 
-from butlers.core.approval_callbacks import (
-    APPROVAL_CALLBACK_SECRET_KEY,
-    mint_approval_callback_token,
-)
-from butlers.core.approvals_policy import (
-    approval_push_deliver_at,
-    get_approvals_policy_quiet_hours,
-)
-from butlers.core.temporal.delivery_db import insert_deferred_notification
+from butlers.core.approval_callbacks import mint_approval_callback_token
 from butlers.modules.approvals.previews import defang_urls, resolve_call_preview
 
-logger = logging.getLogger(__name__)
-
-_BURST_WINDOW = timedelta(minutes=10)
 _DASHBOARD_PORT_DEFAULT = "41200"
-
-ApprovalPushMode = Literal["single", "burst_digest", "collapsed", "duplicate"]
-ApprovalPushOutcome = Literal["delivered", "deferred", "collapsed", "duplicate", "failed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,15 +35,6 @@ class ApprovalPushRuntime:
     resolve_owner_recipient: Callable[[], Awaitable[str | None]]
     credential_store: Any | None
     dashboard_base_url: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovalPushReservation:
-    """A durable reservation result for one action's park event."""
-
-    mode: ApprovalPushMode
-    park_count: int
-    pending_count: int
 
 
 def _dashboard_base_url(override: str | None = None) -> str:
@@ -304,270 +280,12 @@ def build_approval_digest_envelope(
     }
 
 
-def select_approval_push_mode(*, park_count: int, digest_already_emitted: bool) -> ApprovalPushMode:
-    """Select a deterministic park-notification mode for the current burst."""
-    if park_count <= 3:
-        return "single"
-    if digest_already_emitted:
-        return "collapsed"
-    return "burst_digest"
-
-
-async def reserve_approval_push(
-    pool: Any,
-    *,
-    action_id: uuid.UUID,
-    now: datetime,
-) -> ApprovalPushReservation:
-    """Reserve exactly one emission mode under a per-schema transaction lock.
-
-    A reservation whose prior attempt never reached a terminal successful
-    outcome (``outcome`` is ``NULL`` -- still in flight or from a version of
-    this table that predates outcome tracking -- or ``'failed'``) is claimed
-    again rather than treated as a duplicate.  This is what makes a
-    previously-failed push (e.g. because ``APPROVAL_CALLBACK_SECRET`` was
-    unavailable) actually retryable once the underlying problem is fixed,
-    instead of being silently swallowed forever by ``ON CONFLICT DO NOTHING``
-    (bu-mda0r).  A reservation that already reached a terminal outcome
-    (``delivered``, ``deferred``, ``collapsed``, ``duplicate``) is left alone.
-    """
-    window_start = now - _BURST_WINDOW
-    async with pool.acquire() as connection:
-        async with connection.transaction():
-            # The tables are butler-schema scoped. Serializing within the active
-            # schema prevents concurrent fourth parks from each emitting a digest.
-            await connection.execute("SELECT pg_advisory_xact_lock(hashtext(current_schema()))")
-            inserted = await connection.fetchval(
-                """
-                INSERT INTO approval_push_emissions (action_id, emission_kind, created_at, outcome)
-                VALUES ($1, 'single', $2, NULL)
-                ON CONFLICT (action_id) DO UPDATE
-                    SET emission_kind = EXCLUDED.emission_kind,
-                        created_at = EXCLUDED.created_at,
-                        outcome = NULL
-                    WHERE approval_push_emissions.outcome IS NULL
-                       OR approval_push_emissions.outcome = 'failed'
-                RETURNING action_id
-                """,
-                action_id,
-                now,
-            )
-            if inserted is None:
-                return ApprovalPushReservation(mode="duplicate", park_count=0, pending_count=0)
-
-            park_count = int(
-                await connection.fetchval(
-                    """
-                    SELECT COUNT(*)
-                    FROM approval_push_emissions
-                    WHERE created_at >= $1
-                    """,
-                    window_start,
-                )
-                or 0
-            )
-            pending_count = int(
-                await connection.fetchval(
-                    "SELECT COUNT(*) FROM pending_actions WHERE status = 'pending'"
-                )
-                or 0
-            )
-            digest_already_emitted = bool(
-                await connection.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM approval_push_emissions
-                        WHERE emission_kind = 'burst_digest' AND created_at >= $1
-                    )
-                    """,
-                    window_start,
-                )
-            )
-            mode = select_approval_push_mode(
-                park_count=park_count,
-                digest_already_emitted=digest_already_emitted,
-            )
-            if mode != "single":
-                await connection.execute(
-                    "UPDATE approval_push_emissions SET emission_kind = $1 WHERE action_id = $2",
-                    mode,
-                    action_id,
-                )
-            return ApprovalPushReservation(
-                mode=mode,
-                park_count=park_count,
-                pending_count=pending_count,
-            )
-
-
-async def _callback_secret(runtime: ApprovalPushRuntime) -> str | None:
-    if runtime.credential_store is None:
-        return None
-    return await runtime.credential_store.resolve(APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False)
-
-
-async def _record_push_outcome(
-    pool: Any,
-    action_id: uuid.UUID,
-    outcome: ApprovalPushOutcome,
-) -> None:
-    """Persist the terminal outcome onto this action's emission reservation.
-
-    Recording the outcome (rather than leaving the row's mere existence as the
-    only signal) is what lets :func:`reserve_approval_push` tell a delivered
-    push apart from a failed one on a later call, and is what surfaces a
-    failed push to the dashboard/API layer instead of it reading as a normal
-    silently-unreported pending row (bu-mda0r).
-    """
-    try:
-        await pool.execute(
-            "UPDATE approval_push_emissions SET outcome = $1 WHERE action_id = $2",
-            outcome,
-            action_id,
-        )
-    except Exception:  # noqa: BLE001 - never let outcome bookkeeping mutate the action
-        logger.warning(
-            "approval push: failed to record emission outcome %r (action=%s)",
-            outcome,
-            action_id,
-            exc_info=True,
-        )
-
-
-async def emit_approval_push(
-    *,
-    pool: Any,
-    action: Mapping[str, Any],
-    origin_butler: str,
-    runtime: ApprovalPushRuntime,
-    now: datetime | None = None,
-) -> ApprovalPushOutcome:
-    """Reserve and submit the deterministic push for a newly parked action.
-
-    This is fail-open with respect to the action itself: an unavailable delivery
-    plane must never un-park, approve, extend, or otherwise mutate the pending
-    action.  The durable reservation is intentionally retained on an egress
-    failure so retries/edits do not create owner-notification storms -- but its
-    ``outcome`` is recorded, so a subsequent call for the same action (once the
-    underlying problem is fixed) claims the reservation again instead of being
-    treated as a duplicate of a push that never actually went out.
-    """
-    effective_now = now or datetime.now(UTC)
-    if effective_now.tzinfo is None or effective_now.utcoffset() is None:
-        raise ValueError("emit_approval_push requires a timezone-aware now value")
-
-    action_id = _action_id(action)
-    reservation_claimed = False
-
-    try:
-        reservation = await reserve_approval_push(
-            pool,
-            action_id=action_id,
-            now=effective_now,
-        )
-        if reservation.mode == "duplicate":
-            return "duplicate"
-        # From here on this call owns the reservation row and must record its
-        # terminal outcome before returning, on every exit path.
-        reservation_claimed = True
-        if reservation.mode == "collapsed":
-            await _record_push_outcome(pool, action_id, "collapsed")
-            return "collapsed"
-
-        owner_recipient = await runtime.resolve_owner_recipient()
-        if not owner_recipient:
-            logger.warning(
-                "approval push skipped because no owner Telegram recipient is configured "
-                "(action=%s butler=%s)",
-                action_id,
-                origin_butler,
-            )
-            await _record_push_outcome(pool, action_id, "failed")
-            return "failed"
-
-        if reservation.mode == "burst_digest":
-            envelope = build_approval_digest_envelope(
-                pending_count=reservation.pending_count,
-                origin_butler=origin_butler,
-                owner_recipient=owner_recipient,
-                dashboard_base_url=runtime.dashboard_base_url,
-            )
-        else:
-            callback_secret = await _callback_secret(runtime)
-            if not callback_secret:
-                logger.warning(
-                    "approval push skipped because %s is unavailable (action=%s butler=%s)",
-                    APPROVAL_CALLBACK_SECRET_KEY,
-                    action_id,
-                    origin_butler,
-                )
-                await _record_push_outcome(pool, action_id, "failed")
-                return "failed"
-            envelope = build_approval_request_envelope(
-                action=action,
-                origin_butler=origin_butler,
-                owner_recipient=owner_recipient,
-                callback_secret=callback_secret,
-                dashboard_base_url=runtime.dashboard_base_url,
-            )
-
-        policy = await get_approvals_policy_quiet_hours(pool)
-        deliver_at = approval_push_deliver_at(policy, now=effective_now)
-        if deliver_at is not None:
-            await insert_deferred_notification(
-                pool,
-                butler_name=origin_butler,
-                channel="telegram",
-                message=envelope["delivery"]["message"],
-                priority="high",
-                envelope=envelope,
-                deliver_at=deliver_at,
-                deferred_at=effective_now,
-            )
-            logger.info(
-                "Deferred approval push (action=%s butler=%s deliver_at=%s mode=%s)",
-                action_id,
-                origin_butler,
-                deliver_at.isoformat(),
-                reservation.mode,
-            )
-            await _record_push_outcome(pool, action_id, "deferred")
-            return "deferred"
-
-        await runtime.dispatch(envelope)
-        logger.info(
-            "Submitted approval push (action=%s butler=%s mode=%s)",
-            action_id,
-            origin_butler,
-            reservation.mode,
-        )
-        await _record_push_outcome(pool, action_id, "delivered")
-        return "delivered"
-    except Exception:  # noqa: BLE001 - never alter a parked action for push failure
-        logger.warning(
-            "approval push failed after action park (action=%s butler=%s)",
-            action.get("id"),
-            origin_butler,
-            exc_info=True,
-        )
-        if reservation_claimed:
-            await _record_push_outcome(pool, action_id, "failed")
-        return "failed"
-
-
 __all__ = [
     "CARD_FIT_BUDGET",
     "ApprovalCard",
-    "ApprovalPushMode",
-    "ApprovalPushOutcome",
-    "ApprovalPushReservation",
     "ApprovalPushRuntime",
     "build_approval_digest_envelope",
     "build_approval_request_envelope",
-    "emit_approval_push",
     "format_approval_request_message",
     "render_approval_card",
-    "reserve_approval_push",
-    "select_approval_push_mode",
 ]
