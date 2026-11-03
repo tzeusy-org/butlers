@@ -99,6 +99,7 @@ from butlers.core.backup_facts import (
     offsite_copy_expected_from_env,
     read_backup_facts_from_dir,
 )
+from butlers.core.commitments import COMMITMENT_METADATA_CLASS, COMMITMENT_SPHERES
 from butlers.core.fleet_conditions import (
     FLEET_FINGERPRINT,
     FLEET_SOURCE,
@@ -1416,6 +1417,8 @@ async def get_insight_delivery_state(
 
 
 VALID_LEDGERS = frozenset({"infra", "owner"})
+_SPHERE_UNDECLARED = "undeclared"
+_SPHERE_FILTERS = COMMITMENT_SPHERES | {_SPHERE_UNDECLARED}
 _ATTENTION_IDENTITIES = frozenset(
     {
         (FLEET_SOURCE, FLEET_FINGERPRINT),
@@ -1504,6 +1507,13 @@ async def get_conditions(
     ),
     source: str | None = Query(None, description="Filter by producer source."),
     state: str | None = Query(None, description="Filter by state. One of: open, aging, resolved."),
+    sphere: str | None = Query(
+        None,
+        description=(
+            "Owner ledger only: narrow to commitments by declared sphere. One of: "
+            "work, personal, undeclared (a commitment with no declared sphere)."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     *,
@@ -1526,6 +1536,11 @@ async def get_conditions(
     fleet-wide degraded-envelope convention, a failed ledger query sets
     ``conditions_available=False`` with an empty list, never a fabricated
     all-clear.
+
+    ``sphere`` (``ledger=owner`` only) keeps just commitment rows by the sphere
+    the owner declared at ``create_commitment``; ``undeclared`` is its own
+    choice, never folded into a sphere (REQ-commitment-lifecycle-010). It runs
+    in SQL, so ``total`` counts the filtered set.
     """
     if ledger not in VALID_LEDGERS:
         allowed = ", ".join(sorted(VALID_LEDGERS))
@@ -1546,6 +1561,22 @@ async def get_conditions(
             detail=f"Invalid state {state!r}. Must be one of: {allowed}",
         )
 
+    sphere_filters: dict[str, Any] = {}
+    if sphere is not None:
+        if ledger != "owner":
+            raise HTTPException(status_code=400, detail="sphere is only valid with ledger=owner")
+        if sphere not in _SPHERE_FILTERS:
+            allowed = ", ".join(sorted(_SPHERE_FILTERS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid sphere {sphere!r}. Must be one of: {allowed}",
+            )
+        sphere_filters = {"metadata_equals": {"class": COMMITMENT_METADATA_CLASS}}
+        if sphere == _SPHERE_UNDECLARED:
+            sphere_filters["metadata_missing"] = ["sphere"]
+        else:
+            sphere_filters["metadata_equals"]["sphere"] = sphere
+
     try:
         pool = db.pool("switchboard")
     except KeyError as exc:
@@ -1555,7 +1586,7 @@ async def get_conditions(
 
     try:
         total, rows = await list_conditions(
-            pool, source=source, state=state, offset=offset, limit=limit
+            pool, source=source, state=state, offset=offset, limit=limit, **sphere_filters
         )
     except Exception as exc:
         logger.warning("%s_conditions query failed (degraded state returned): %s", ledger, exc)
