@@ -242,6 +242,7 @@ connectors:
     logSubdir: telegram_user
     provider: telegram
     channel: telegram_user_client
+    healthPort: 40080
   whatsapp-user:
     module: whatsapp_user_client
     logSubdir: whatsapp_user

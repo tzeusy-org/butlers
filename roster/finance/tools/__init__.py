@@ -84,11 +84,9 @@ except (ImportError, AttributeError):
 try:
     from butlers.tools.finance.data_import import (  # type: ignore[attr-defined]
         import_transactions,
-        import_transactions_from_file,
     )
 except (ImportError, AttributeError):
     import_transactions = None  # type: ignore[assignment]
-    import_transactions_from_file = None  # type: ignore[assignment]
 
 # --- Merchant pattern recognition (finance-intelligence) ---
 try:
@@ -209,7 +207,6 @@ __all__ = [
     "bulk_recategorize",
     # Historical data import (finance-intelligence)
     "import_transactions",
-    "import_transactions_from_file",
     # Merchant pattern recognition (finance-intelligence)
     "learn_merchant_categories",
     "suggest_categories",

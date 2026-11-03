@@ -114,16 +114,17 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             delivery_ref JSONB
         )
     """)
-    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py.
+    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py as
+    # amended by core_312 (no candidate foreign key; terminal 'orphaned').
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS insight_amendments (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            candidate_id UUID NOT NULL REFERENCES insight_candidates(id) ON DELETE CASCADE,
+            candidate_id UUID NOT NULL,
             episode_key TEXT NOT NULL,
             reason TEXT NOT NULL,
             summary TEXT,
             state TEXT NOT NULL DEFAULT 'pending'
-                CHECK (state IN ('pending', 'applied', 'fold', 'folded')),
+                CHECK (state IN ('pending', 'applied', 'fold', 'folded', 'orphaned')),
             attempts INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             resolved_at TIMESTAMPTZ,
@@ -852,9 +853,11 @@ async def cleanup_old_rows(
     ``insight_candidates`` is never touched here (bu-3jyrqz): terminal
     candidates are pruned only by the opt-in, default-off, dry-run-first
     retention pruner [C] (``butlers.jobs.retention.prune_insight_candidates``,
-    90-day bound), per docs/operations/data-retention.md. Deleting a candidate
-    also cascades to its ``insight_amendments`` correction evidence.
+    90-day bound), per docs/operations/data-retention.md. Amendments are not
+    cascaded since ``core_312`` (no FK to the candidate).
 
+    - insight_amendments: never deleted (kept as evidence); a ``pending`` or ``fold``
+      row whose candidate is gone settles to terminal ``orphaned`` (bu-q7vx1q.32)
     - insight_cooldowns: rows where cooldown_until is older than retention_days
     - insight_engagement: rows older than retention_days, after first rolling
       each affected day's delivered/engaged counts into
@@ -865,6 +868,17 @@ async def cleanup_old_rows(
         now = datetime.now(UTC)
     cutoff = now - timedelta(days=retention_days)
 
+    # Amendment evidence outlives its candidate (core_312 dropped the cascade), but a
+    # correction with nothing left to correct must not wait forever.
+    await pool.execute(
+        """
+        UPDATE insight_amendments a
+        SET state = 'orphaned', resolved_at = $1
+        WHERE a.state IN ('pending', 'fold')
+          AND NOT EXISTS (SELECT 1 FROM insight_candidates c WHERE c.id = a.candidate_id)
+        """,
+        now,
+    )
     await pool.execute(
         """
         DELETE FROM insight_cooldowns

@@ -113,11 +113,13 @@ deletes candidates; pruner [C] is the only deletion path.
 
 ### `public.insight_amendments`
 
-**Decision: KEEP FOREVER — correction evidence (owner decision 2026-10-27, bu-tid6bj)**
+**Decision: KEEP FOREVER as evidence; orphans settle to `orphaned`** (owner decision 2026-10-27)
 
-One row per (delivered candidate, premise resolution).  The schema still declares
-`ON DELETE CASCADE` from the candidate until bu-q7vx1q.32 removes it, so enabling
-pruner [C] before then would also delete this evidence.
+One row per (delivered candidate, premise resolution): the record of an owner-visible
+correction. Since `core_312` the table has no foreign key to `insight_candidates`, so rows
+outlive candidate cleanup and nothing deletes them. The broker's `cleanup_old_rows` settles
+a `pending` or `fold` row whose candidate is gone to the terminal `orphaned` state, so a
+correction with nothing left to correct never waits forever.
 
 ---
 
