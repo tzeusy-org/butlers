@@ -37,6 +37,7 @@ from butlers.connectors.home_assistant_statistics import (
     parse_statistics_change_series,
 )
 from butlers.core.audit import append as append_audit
+from butlers.core.state import decode_jsonb, state_set
 from butlers.credential_store import upsert_owner_entity_info
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 from butlers.roster_imports import roster_module
@@ -70,6 +71,8 @@ SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
 OwnerPlaceInput = _models.OwnerPlaceInput
 OwnerPlaceUpdate = _models.OwnerPlaceUpdate
 OwnerPlaceResponse = _models.OwnerPlaceResponse
+PresenceOwnerEntitiesUpdate = _models.PresenceOwnerEntitiesUpdate
+PresenceOwnerEntitiesResponse = _models.PresenceOwnerEntitiesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -1606,20 +1609,37 @@ def _places_pool(db: DatabaseManager | None):
         raise _PlaceRefusal(*_PLACES_UNAVAILABLE) from exc
 
 
-async def _read_place_body[T: BaseModel](request: Request, model: type[T]) -> T:
-    """Read at most 16 KiB of received octets and validate them without echoing input."""
+async def _read_private_body[T: BaseModel](
+    request: Request,
+    model: type[T],
+    *,
+    max_bytes: int,
+    invalid: tuple[int, str, str],
+    too_large: tuple[int, str, str],
+) -> T:
+    """Read at most ``max_bytes`` received octets and validate them without echoing input."""
     if request.url.query:
-        raise _PlaceRefusal(*_INVALID_PLACE)
+        raise _PlaceRefusal(*invalid)
     raw = bytearray()
     async for chunk in request.stream():
-        raw.extend(chunk[: _PLACES_MAX_BODY_BYTES + 1 - len(raw)])
-        if len(raw) > _PLACES_MAX_BODY_BYTES:
-            raise _PlaceRefusal(*_PLACE_TOO_LARGE)
+        raw.extend(chunk[: max_bytes + 1 - len(raw)])
+        if len(raw) > max_bytes:
+            raise _PlaceRefusal(*too_large)
     try:
         return model.model_validate(json.loads(bytes(raw).decode("utf-8")))
     except (UnicodeError, ValueError, RecursionError) as exc:
         # ValidationError and JSONDecodeError are both ValueError subclasses.
-        raise _PlaceRefusal(*_INVALID_PLACE) from exc
+        raise _PlaceRefusal(*invalid) from exc
+
+
+async def _read_place_body[T: BaseModel](request: Request, model: type[T]) -> T:
+    return await _read_private_body(
+        request,
+        model,
+        max_bytes=_PLACES_MAX_BODY_BYTES,
+        invalid=_INVALID_PLACE,
+        too_large=_PLACE_TOO_LARGE,
+    )
 
 
 def _parse_place_id(place_id: str) -> UUID:
@@ -1952,3 +1972,259 @@ async def delete_owner_place(
     if isinstance(result, tuple):
         return _place_error(result)
     return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/settings/presence/owner-entities — owner presence entity settings
+# (home:presence:owner_entities; REQ-home-presence-configuration-001..003; bu-jv1moa.7)
+# ---------------------------------------------------------------------------
+#
+# Exactly one GET and one PUT, owner-only and content-blind like the place editor above.
+# Writes serialize on a fixed advisory lock and compare-and-swap the existing state row's
+# version.  The generic state API and the state_* MCP tools still read and overwrite this
+# key without this validation or lock; this route's guarantees hold only among its own
+# callers.  A PUT is a configuration receipt: the next scheduled presence producer run is
+# the only thing that reads the new list.
+
+_PRESENCE_KEY = "home:presence:owner_entities"
+_PRESENCE_LOCK = "butlers:home:presence-owner-entities:v1"
+_PRESENCE_MAX_BODY_BYTES = 32_768
+_PRESENCE_AUDIT_ACTION = "home_presence_owner_entities_put"
+
+_INVALID_PRESENCE = (422, "INVALID_REQUEST", "Presence settings request is invalid.")
+_PRESENCE_UNAVAILABLE = (
+    503,
+    "PRESENCE_CONFIG_UNAVAILABLE",
+    "Presence settings are unavailable.",
+)
+_PRESENCE_VERSION_CONFLICT = (
+    409,
+    "VERSION_CONFLICT",
+    "Presence settings changed since they were loaded. Reload and try again.",
+)
+_PRESENCE_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 32 KiB.")
+
+
+def _presence_pool(db: DatabaseManager | None):
+    if db is None:
+        raise _PlaceRefusal(*_PRESENCE_UNAVAILABLE)
+    try:
+        return db.pool(BUTLER_DB)
+    except Exception as exc:
+        raise _PlaceRefusal(*_PRESENCE_UNAVAILABLE) from exc
+
+
+def _stored_presence(row: Any) -> tuple[list[str], int] | None:
+    """The stored list (ASCII-sorted) and row version; ``None`` when the value is malformed."""
+    if row is None:
+        return [], 0
+    value = decode_jsonb(row["value"])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return sorted(value), row["version"]
+
+
+def _presence_ok(entities: list[str], version: int) -> JSONResponse:
+    payload = ApiResponse[PresenceOwnerEntitiesResponse](
+        data=PresenceOwnerEntitiesResponse(
+            configured=bool(entities), owner_entities=entities, version=version
+        )
+    )
+    return JSONResponse(
+        content=payload.model_dump(mode="json"), headers={"Cache-Control": "no-store"}
+    )
+
+
+def _invalid_reference(count: int) -> JSONResponse:
+    body = ErrorResponse(
+        error=ErrorDetail(
+            code="INVALID_REFERENCE",
+            message="One or more entities have not been seen in Home Assistant.",
+            details={"invalid_reference_count": count},
+        )
+    )
+    return JSONResponse(
+        status_code=422,
+        content=body.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+async def _audit_presence(
+    connection: Any,
+    outcome: str,
+    *,
+    entities: list[str] | None,
+    prior_version: int | None,
+    new_version: int | None,
+) -> None:
+    """The one allowlisted audit event: counts, versions and outcome, never an entity id."""
+    await append_audit(
+        connection,
+        authenticated_principal(),
+        _PRESENCE_AUDIT_ACTION,
+        metadata={
+            "operation": "put",
+            "configured": None if entities is None else bool(entities),
+            "entity_count": None if entities is None else len(entities),
+            "prior_version": prior_version,
+            "new_version": new_version,
+            "outcome": outcome,
+        },
+        result="success" if outcome in {"updated", "unchanged"} else "refused",
+    )
+    logger.info("owner presence entities put outcome=%s", outcome)
+
+
+async def _audit_presence_best_effort(db: DatabaseManager | None, outcome: str) -> None:
+    """Audit a refusal reached outside the write transaction; a failure here stays blind."""
+    try:
+        await _audit_presence(
+            _presence_pool(db), outcome, entities=None, prior_version=None, new_version=None
+        )
+    except Exception:
+        logger.warning("owner presence entities put outcome=%s audit unavailable", outcome)
+
+
+@router.get(
+    "/settings/presence/owner-entities",
+    response_model=ApiResponse[PresenceOwnerEntitiesResponse],
+    responses={422: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_presence_owner_entities(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The literal stored owner presence entity list, its row version and ``configured``."""
+    try:
+        if request.url.query:
+            raise _PlaceRefusal(*_INVALID_PRESENCE)
+        row = await _presence_pool(db).fetchrow(
+            "SELECT value, version FROM state WHERE key = $1", _PRESENCE_KEY
+        )
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("owner presence entities read failed: database unavailable")
+        return _place_error(_PRESENCE_UNAVAILABLE)
+    stored = _stored_presence(row)
+    if stored is None:
+        return _place_error(_PRESENCE_UNAVAILABLE)
+    return _presence_ok(*stored)
+
+
+@router.put(
+    "/settings/presence/owner-entities",
+    response_model=ApiResponse[PresenceOwnerEntitiesResponse],
+    responses={
+        409: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def put_presence_owner_entities(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Replace the owner presence entity list under version compare-and-swap.
+
+    An identical list is a no-op success at any ``expected_version``; a changed list from a
+    stale version is ``409 VERSION_CONFLICT``.  Every id must already be a row in this
+    butler's ``ha_entity_snapshot``; Home Assistant itself is never asked.
+    """
+    try:
+        body = await _read_private_body(
+            request,
+            PresenceOwnerEntitiesUpdate,
+            max_bytes=_PRESENCE_MAX_BODY_BYTES,
+            invalid=_INVALID_PRESENCE,
+            too_large=_PRESENCE_TOO_LARGE,
+        )
+    except _PlaceRefusal as refusal:
+        # Malformed and oversized bodies are both terminal ``invalid_request`` outcomes.
+        await _audit_presence_best_effort(db, "invalid_request")
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+
+    submitted = sorted(body.owner_entities)
+
+    async def decide(connection: Any) -> Any:
+        row = await connection.fetchrow(
+            "SELECT value, version FROM state WHERE key = $1", _PRESENCE_KEY
+        )
+        stored = _stored_presence(row)
+        if stored is None:
+            await _audit_presence(
+                connection,
+                "unavailable",
+                entities=submitted,
+                prior_version=row["version"],
+                new_version=None,
+            )
+            return _PRESENCE_UNAVAILABLE
+        current, version = stored
+        observed = await connection.fetchval(
+            "SELECT count(*) FROM ha_entity_snapshot WHERE entity_id = ANY($1::text[])",
+            submitted,
+        )
+        if observed != len(submitted):
+            await _audit_presence(
+                connection,
+                "invalid_reference",
+                entities=submitted,
+                prior_version=version,
+                new_version=None,
+            )
+            return len(submitted) - observed
+        if submitted == current:
+            await _audit_presence(
+                connection,
+                "unchanged",
+                entities=submitted,
+                prior_version=version,
+                new_version=version,
+            )
+            return current, version
+        if body.expected_version != version:
+            await _audit_presence(
+                connection,
+                "version_conflict",
+                entities=submitted,
+                prior_version=version,
+                new_version=None,
+            )
+            return _PRESENCE_VERSION_CONFLICT
+        new_version = await state_set(connection, _PRESENCE_KEY, submitted)
+        await _audit_presence(
+            connection,
+            "updated",
+            entities=submitted,
+            prior_version=version,
+            new_version=new_version,
+        )
+        return submitted, new_version
+
+    try:
+        pool = _presence_pool(db)
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+                _PRESENCE_LOCK,
+            )
+            result = await decide(connection)
+    except _PlaceRefusal as refusal:
+        await _audit_presence_best_effort(db, "unavailable")
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("owner presence entities write failed: database unavailable")
+        await _audit_presence_best_effort(db, "unavailable")
+        return _place_error(_PRESENCE_UNAVAILABLE)
+    if isinstance(result, int):
+        return _invalid_reference(result)
+    if len(result) == 3:
+        return _place_error(result)
+    return _presence_ok(*result)

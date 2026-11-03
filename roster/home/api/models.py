@@ -332,6 +332,11 @@ class SafetyWatchUpsertRequest(BaseModel):
 
 _HA_ZONE_PATTERN = re.compile(r"\Azone\.[a-z0-9_]+\Z", re.ASCII)
 
+# Owner presence entity settings (home:presence:owner_entities; REQ-home-presence-configuration).
+_PRESENCE_ENTITY_PATTERN = re.compile(r"\A[a-z0-9_]+\.[a-z0-9_]+\Z", re.ASCII)
+PRESENCE_MAX_ENTITIES = 50
+PRESENCE_ENTITY_MAX_BYTES = 255
+
 
 def _coordinate(value: Any, *, bound: int) -> float:
     """Accept a finite JSON number within ``±bound`` at no more than five decimals."""
@@ -418,6 +423,40 @@ class OwnerPlaceUpdate(OwnerPlaceInput):
     """A whole-row edit guarded by the version the editor last read."""
 
     expected_version: int = Field(..., ge=1)
+
+
+class PresenceOwnerEntitiesUpdate(BaseModel):
+    """The whole owner presence entity list, guarded by the version the editor last read.
+
+    Ids are evaluated exactly as submitted: never trimmed, case-folded, normalized or
+    resolved from a friendly name, and not limited to person/device_tracker domains.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    owner_entities: list[str] = Field(..., max_length=PRESENCE_MAX_ENTITIES)
+    expected_version: int = Field(..., ge=0)
+
+    @field_validator("owner_entities")
+    @classmethod
+    def _owner_entities(cls, values: list[str]) -> list[str]:
+        if any(
+            len(value.encode("utf-8")) > PRESENCE_ENTITY_MAX_BYTES
+            or _PRESENCE_ENTITY_PATTERN.fullmatch(value) is None
+            for value in values
+        ):
+            raise ValueError("entity id is malformed")
+        if len(set(values)) != len(values):
+            raise ValueError("entity ids repeat")
+        return values
+
+
+class PresenceOwnerEntitiesResponse(BaseModel):
+    """The literal stored owner presence entity list, ASCII-sorted."""
+
+    configured: bool
+    owner_entities: list[str]
+    version: int
 
 
 class OwnerPlaceResponse(BaseModel):
