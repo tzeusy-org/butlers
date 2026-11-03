@@ -1,13 +1,17 @@
 ---
 name: transaction-csv-extraction
-description: Adaptive CSV import skill — samples the file, generates a stdlib-only Python script, and bulk-POSTs normalized transactions to /api/finance/transactions/bulk. Enforces strict token budget discipline throughout.
-version: 1.0.0
+description: Adaptive CSV import skill — previews a stored bank or card CSV with import_transactions(storage_ref, dry_run=true), fixes the column map if needed, then imports it in one call. Enforces strict token budget discipline throughout.
+version: 2.0.0
 ---
 
 # Transaction CSV Extraction Skill
 
 This skill guides the finance butler through importing transaction history from a
-CSV file. The workflow is: **sample → generate script → execute → report**.
+bank or card CSV export. The workflow is: **locate → preview → adjust → import → report**.
+
+All parsing, format detection, date and sign normalization, deduplication, and
+batching happen inside the `import_transactions` tool. Your job is to pick the
+right inputs, check the preview, and report the result.
 
 ---
 
@@ -15,31 +19,35 @@ CSV file. The workflow is: **sample → generate script → execute → report**
 
 **READ THIS SECTION FIRST. These are hard rules, not suggestions.**
 
-### MUST NOT: Read the entire CSV file into context
+### MUST NOT: Place the CSV file into context
 
-You MUST NOT read, display, or stream more than 15 lines of the CSV file into
-your context window at any point during this workflow.
+You MUST NOT read, display, or stream the CSV file into your context window.
+The only CSV content you may see is what `import_transactions` returns: the
+dry-run `preview` (at most 10 transactions) and `error_details`.
 
-**Reason:** A typical bank statement with 500 rows consumes roughly 50,000
-tokens. A full year of transactions can exceed 500,000 tokens. Reading a full
-CSV into context is not an acceptable approach — it will exhaust the token
-budget and may abort the session before any data is imported.
+**Reason:** Reading a full CSV into context would consume hundreds of thousands
+of tokens and is not an acceptable approach. A 500-row statement is roughly
+50,000 tokens; a year of history can exceed 500,000.
 
-**The only CSV lines you may read into context are: the header row plus the
-first 10 rows of data (≤ 15 lines total, including any BOM or blank rows).**
+### MUST NOT: Read a local file path
+
+You MUST NOT open, `cat`, `head`, or otherwise read a CSV from a local
+filesystem path, and you MUST NOT write or run a script that does. If the user
+gives you a local path, ask them to upload the file instead (see Phase 1).
+
+**Reason:** `storage_ref` is the only way to name CSV bytes for import. Finance
+sessions read only blobs under this butler's storage prefix; reading arbitrary
+paths would let a session reach any file the daemon can.
 
 ### MUST NOT: Call single-record tools in a loop
 
 You MUST NOT call `record_transaction`, `record_transaction_fact`, or any other
 single-record ingestion tool in a loop over CSV rows.
 
-**Reason:** A 500-row CSV would require 500 separate MCP tool calls. Each
-round-trip consumes tokens and time. For a modest statement, this generates
-thousands of tokens of tool-call overhead and would take minutes to complete.
-This approach is not acceptable regardless of file size.
+**Reason:** Calling a tool per CSV row would generate thousands of MCP
+round-trips and consume an unacceptable number of tokens.
 
-**The ONLY acceptable ingestion path is a generated Python script that batches
-100 rows at a time and POSTs them to the bulk HTTP endpoint.**
+**The ONLY acceptable ingestion path is `import_transactions(storage_ref, ...)`.**
 
 ---
 
@@ -47,173 +55,127 @@ This approach is not acceptable regardless of file size.
 
 | Input | Required | Description |
 |---|---|---|
-| `file_path` | Yes | Absolute or relative path to the CSV file |
+| `storage_ref` | Yes | Blob reference to the uploaded CSV (e.g. `s3://bucket/finance/...` or an attachment's `storage_ref` under `connectors/`) |
 | `account_id` | No | UUID of the account these transactions belong to |
-| `api_url` | No | Override for the dashboard API base URL |
+| `currency` | No | ISO-4217 code when the CSV has no currency column and the account has none on file |
 
 ---
 
-## Phase 1: Sample the File
+## Phase 1: Locate the CSV
 
-Read **only the first 15 lines** of the CSV file (header + first 10 data rows,
-plus allowance for a BOM marker or blank leading rows). Do not read more.
+You need a `storage_ref`.
 
-From this sample, infer:
+- **CSV arrived as an attachment** (email, Telegram): use the attachment's
+  `storage_ref` from the routed message's `payload.attachments`.
+- **User uploaded through the dashboard**: use the `storage_ref` the upload
+  returned.
+- **User gave only a local path or pasted a filename**: do not read it. Ask the
+  user to upload the CSV through the dashboard or send it as an attachment, then
+  continue with the resulting `storage_ref`.
 
-1. **Delimiter** — comma, semicolon, tab, or pipe. Identify from the header row.
-2. **Header row** — the exact column names as they appear, case-preserved.
-3. **Column mapping** — identify which column carries each of:
-   - Date / posting date
-   - Merchant / description / payee
-   - Amount (single column, or split Debit + Credit columns)
-   - Transaction type indicator if present (e.g. "Type", "D/C", "CR/DR")
-   - Any other available fields (reference, category, balance)
-4. **Date format** — e.g. `%Y-%m-%d`, `%m/%d/%Y`, `%d/%m/%Y`, `%b %d, %Y`.
-   Infer from the sample data values, not the column name.
-5. **Amount sign convention** — determine which of these applies:
-   - **Single signed column**: negative = debit, positive = credit (already canonical).
-   - **Single unsigned column + type indicator**: debits are positive, negate them.
-   - **Split debit/credit columns**: Debit column values → negate to negative; Credit column values → keep positive.
-   - **All positive (credit card statement style)**: all charges are debits; negate all amounts. Refunds/payments identifiable from description or type column stay positive.
-6. **BOM marker** — note if the file starts with `\ufeff` so the script handles it.
-7. **Currency** — infer from column headers, file name, or sample values. Default to `USD` only when context is unambiguously US.
-
-Summarize your inferences in a brief internal note before writing the script.
-Do not ask the user to confirm the mapping unless the sample is genuinely
-ambiguous (e.g., date format cannot be determined from 10 rows).
+If the user named an account, resolve its `account_id` before importing so
+dedup and currency inference use it.
 
 ---
 
-## Phase 2: Generate the Script
+## Phase 2: Preview (dry run)
 
-Write a self-contained Python script named `import_csv.py` (or a similarly
-descriptive name) and save it to disk. The script MUST:
-
-### Stdlib-only
-
-Use only Python standard library modules. Permitted: `csv`, `json`,
-`urllib.request`, `urllib.error`, `urllib.parse`, `datetime`, `hashlib`, `sys`,
-`os`, `argparse`, `pathlib`. Do NOT import `requests`, `pandas`, `httpx`, or
-any third-party package.
-
-### CLI interface
+Call:
 
 ```
-python import_csv.py <csv_file> [--account-id UUID] [--api-url URL]
+import_transactions(storage_ref=<ref>, account_id=<uuid or omit>, dry_run=true)
 ```
 
-- `csv_file` — positional argument: path to the CSV file.
-- `--account-id` — optional account UUID.
-- `--api-url` — optional API base URL. Falls back to `BUTLERS_API_URL` environment
-  variable, then to `http://localhost:8000`.
+Nothing is written. Check the response:
 
-### Pre-flight connectivity check
-
-Before reading any CSV rows, send a HEAD request to `<api_url>/api/finance/transactions/bulk`.
-If the connection is refused or the server returns an unexpected error, print:
-
-```
-ERROR: Dashboard API not reachable at <api_url>
-```
-
-and exit with code 1. No transactions should be processed if the check fails.
-
-### BOM handling
-
-Open the file with `encoding="utf-8-sig"` to transparently strip the BOM marker
-if present.
-
-### Row normalization
-
-For each data row, map columns to the canonical transaction schema:
-
-| Field | Type | Notes |
-|---|---|---|
-| `posted_at` | ISO-8601 string with `Z` suffix | Parse with inferred date format; set time to `T00:00:00Z` when only a date is available |
-| `merchant` | string | Raw value from the description/payee column; do not normalize |
-| `amount` | string (decimal) | Apply sign normalization; format as `"-47.32"` not `-47.32` |
-| `currency` | string | ISO-4217 uppercase; e.g. `"USD"` |
-| `category` | string or null | Pass through if present in CSV; omit if absent |
-| `description` | string or null | Any additional context column; omit if absent |
-| `payment_method` | string or null | Omit if absent |
-
-Skip rows where date or amount cannot be parsed; count them in `errors`.
-Skip completely blank rows silently (do not count as errors).
-
-### Amount sign normalization (canonical: negative = debit, positive = credit)
-
-Apply exactly one of the following based on your Phase 1 inference:
-
-- **Single signed column** — use value as-is.
-- **Single unsigned column + type indicator** — negate if type indicates debit
-  (`"debit"`, `"d"`, `"dr"`, `"withdrawal"`, `"purchase"`, case-insensitive);
-  keep positive if type indicates credit.
-- **Split debit/credit columns** — `amount = -(debit_value) if debit_value else +(credit_value)`.
-- **All-positive (credit card style)** — negate all amounts; keep positive for
-  rows where the type or description clearly indicates a payment, refund, or credit.
-
-### Batch POST
-
-Group normalized rows into batches of 100. For each batch, POST to
-`<api_url>/api/finance/transactions/bulk` with JSON body:
-
-```json
-{
-  "account_id": "<uuid or omitted>",
-  "source": "csv-import",
-  "transactions": [ ... ]
-}
-```
-
-Request headers: `Content-Type: application/json`.
-
-Parse the JSON response. Accumulate `imported`, `skipped`, and `errors` across
-all batches. If a batch request fails with a non-2xx status or a network error,
-print the error to stderr and count all rows in that batch as errors.
-
-### JSON summary to stdout
-
-When all batches are complete, print a single JSON object to stdout:
-
-```json
-{"total": 500, "imported": 487, "skipped": 11, "errors": 2}
-```
-
-No other output to stdout. Diagnostic messages go to stderr.
-
-### Exit codes
-
-- `0` — completed (even if some rows were skipped or errored).
-- `1` — fatal error (API unreachable, file not found, unrecoverable parse failure).
+1. **`status`** — `"refused"` means the ref is outside this butler's prefix
+   (`reason="attachment_forbidden"`) or malformed (`reason="invalid_storage_ref"`).
+   Do not retry with a different guess; ask the user for the correct upload.
+   `"unrecognized_format"` means the columns or date format could not be
+   detected; the response carries `headers` and `missing_columns` (go to
+   Phase 3). `"error"` carries a message (blob not found, ...).
+2. **`detected_format`** — `chase`, `amex`, `capital_one`, or `generic`.
+3. **`date_format_detected`** — confirm it matches the `preview` dates (e.g. a UK
+   statement must not parse `03/04` as March 4 when it means 3 April).
+4. **`preview`** — up to 10 parsed transactions. If `preview` is empty or
+   `parsed` is 0, nothing would import: do NOT run Phase 4. Fix the
+   `column_map` (Phase 3) or report to the user. For each row, check `merchant`,
+   `amount`, and `direction` (`debit` = money out, `credit` = money in). Charges
+   on a card statement and purchases on a bank statement must be `debit`.
+5. **`is_duplicate`** — preview rows already in the ledger.
+6. **`parse_errors` / `error_details`** — rows that failed to parse, with a
+   reason per row.
+7. **`currency_warning`** — currency fell back to USD. If the statement is not
+   USD, re-run the preview with `currency=<code>`.
 
 ---
 
-## Phase 3: Execute and Self-Correct
+## Phase 3: Adjust the column map (only when needed)
 
-Run the generated script. Read stderr if the exit code is non-zero.
+Supply a `column_map` (a JSON string) when the dry run returns
+`status="unrecognized_format"`, or when the preview read the wrong column
+(e.g. the merchant shows a reference number). Re-run the dry run with it:
 
-If the script fails:
+```
+import_transactions(
+    storage_ref=<ref>,
+    column_map='{"date": "Booking Date"}',
+    dry_run=true,
+)
+```
 
-1. Read the error output (stderr).
-2. Diagnose the issue from the traceback or error message.
-3. Fix the script — the most common problems are:
-   - Wrong date format string for the inferred format.
-   - Column name mismatch (check exact header from sample).
-   - Debit/credit column logic for a split-column layout.
-   - Missing `encoding="utf-8-sig"` on the `open()` call.
-4. Save the corrected script and re-run.
+- Every key is an override merged over auto-detection; no key is required.
+  Name only the columns detection got wrong or missed.
+- Keys: `date`, `merchant`, `amount`, plus optional `category` and
+  `description`. `description` is NOT a substitute for `merchant`: the
+  merchant is read only from the `merchant` key (or its auto-detected column).
+- On `unrecognized_format`, build the map from the response: for each entry in
+  `missing_columns`, pick the matching name from `headers` (e.g. `Booking Date`
+  for `date`, `Payee Details` for `merchant`, `Value` for `amount`). If
+  `missing_columns` is empty, the date column was found but its format was not
+  recognized; check whether another header is the real date column.
+- Ask the user only when `headers` leaves the choice ambiguous (two plausible
+  columns for one key, or none that fits). Never read the file to find out.
+- If `headers_truncated` is true, the echoed headers were capped (at most 50
+  names of 100 characters each), so the list may be incomplete. Do not guess:
+  ask the user which columns hold the date, amount, and merchant.
 
-**Maximum 3 self-correction attempts.** If the script still fails after 3 tries,
-report the failure to the user with the last error output and your diagnosis.
-Do not attempt a 4th correction without user input.
+**Sign convention you cannot fix.** `column_map` chooses columns; it does not
+flip signs. If the preview shows every charge as `credit` (common for
+credit-card exports that list charges as positive numbers and were detected as
+`generic`), STOP. Tell the user the amounts would import with the wrong
+direction and do not run the import.
+
+**Maximum 3 preview attempts.** If the preview is still wrong after 3 tries,
+report the last response and your diagnosis to the user. Do not try a 4th
+without user input.
 
 ---
 
-## Phase 4: Parse and Report Results
+## Phase 4: Import
 
-After the script exits with code 0, parse the JSON summary from stdout.
+When the preview looks right, call `import_transactions` again with the same
+`storage_ref`, `account_id`, `currency`, and `column_map`, and without
+`dry_run`:
 
-Report to the user:
+```
+import_transactions(
+    storage_ref=<ref>,
+    account_id=<uuid or omit>,
+    currency=<same or omit>,
+    column_map=<same or omit>,
+)
+```
+
+The tool inserts in batches, skips duplicates, sends progress notifications for
+large files, and runs post-import steps (`baselines_triggered`,
+`categories_learned`, `merchant_mappings_applied`).
+
+---
+
+## Phase 5: Report Results
+
+Report to the user from the response:
 
 ```
 CSV import complete.
@@ -221,8 +183,11 @@ CSV import complete.
 Total rows:    500
 Imported:      487
 Skipped:        11  (duplicates — already in your transaction history)
-Errors:          2  (rows that could not be parsed; see stderr output above)
+Errors:          2  (rows that could not be parsed)
 ```
+
+Mention `baselines_triggered=true` (spending baselines were recomputed) and a
+non-zero `categories_learned` when present.
 
 ### High skip-rate warning
 
@@ -245,174 +210,42 @@ If the user mentions this is a re-run after a partial failure, explain:
 
 ## Worked Examples
 
-### Example 1: Simple Standard CSV
+### Example 1: Known format, straight through
 
-**File**: `chase_checking_jan2025.csv`
+The user emails `chase_checking_jan2025.csv`; the routed message carries its
+`storage_ref`.
 
-**Sample (first 3 data rows)**:
-```
-Date,Description,Amount
-2025-01-03,WHOLEFDS MKT #10456,-47.32
-2025-01-04,NETFLIX.COM,-15.99
-2025-01-05,DIRECT DEPOSIT EMPLOYER,2500.00
-```
+1. `import_transactions(storage_ref=..., dry_run=true)` returns
+   `detected_format="chase"`, `date_format_detected="%m/%d/%Y"`, and a preview
+   where `WHOLEFDS MKT` is a `debit` and `DIRECT DEPOSIT` is a `credit`.
+2. The preview is right, so `import_transactions(storage_ref=...)`.
+3. Response `{total: 47, imported: 45, skipped: 2, errors: 0}` → report it.
 
-**Phase 1 inferences**:
-- Delimiter: comma
-- Date column: `Date`, format `%Y-%m-%d`
-- Merchant column: `Description`
-- Amount column: `Amount`, already signed (negative = debit, positive = credit)
-- No type indicator column
-- Currency: USD (inferred from context)
+### Example 2: Unrecognized date column needs a column map
 
-**Generated script (key logic)**:
-```python
-import csv, json, urllib.request, sys, argparse, os
-from datetime import datetime, timezone
+A dashboard upload of a European bank export whose date column is named
+`Booking Date`.
 
-parser = argparse.ArgumentParser()
-parser.add_argument("csv_file")
-parser.add_argument("--account-id", default=None)
-parser.add_argument("--api-url", default=None)
-args = parser.parse_args()
-
-api_url = args.api_url or os.environ.get("BUTLERS_API_URL", "http://localhost:8000")
-
-# Pre-flight
-try:
-    req = urllib.request.Request(f"{api_url}/api/finance/transactions/bulk", method="HEAD")
-    urllib.request.urlopen(req, timeout=5)
-except Exception as e:
-    print(f"ERROR: Dashboard API not reachable at {api_url}", file=sys.stderr)
-    sys.exit(1)
-
-totals = {"total": 0, "imported": 0, "skipped": 0, "errors": 0}
-batch = []
-
-def post_batch(rows):
-    body = json.dumps({
-        "account_id": args.account_id,
-        "source": "csv-import",
-        "transactions": rows,
-    }).encode()
-    req = urllib.request.Request(
-        f"{api_url}/api/finance/transactions/bulk",
-        data=body,
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
-
-def flush_batch(rows, totals_dict):
-    if not rows:
-        return
-    try:
-        result = post_batch(rows)
-        totals_dict["imported"] += result.get("imported", 0)
-        totals_dict["skipped"] += result.get("skipped", 0)
-        totals_dict["errors"] += result.get("errors", 0)
-    except Exception as e:
-        print(f"Batch post error: {e}", file=sys.stderr)
-        totals_dict["errors"] += len(rows)
-
-with open(args.csv_file, encoding="utf-8-sig", newline="") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        if not any(row.values()):
-            continue
-        totals["total"] += 1
-        try:
-            dt = datetime.strptime(row["Date"].strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            amount = str(float(row["Amount"].strip().replace(",", "")))
-            batch.append({
-                "posted_at": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "merchant": row["Description"].strip(),
-                "amount": amount,
-                "currency": "USD",
-            })
-        except Exception as e:
-            print(f"Row error: {e}", file=sys.stderr)
-            totals["errors"] += 1
-            continue
-
-        if len(batch) >= 100:
-            flush_batch(batch, totals)
-            batch = []
-
-flush_batch(batch, totals)
-
-print(json.dumps(totals))
-```
-
-**Result report**:
-```
-CSV import complete.
-
-Total rows:   47
-Imported:     45
-Skipped:       2  (duplicates)
-Errors:        0
-```
-
----
-
-### Example 2: Split Debit/Credit Columns + Non-Standard Date Format
-
-**File**: `barclays_account_q1_2025.csv`
-
-**Sample (first 3 data rows)**:
-```
-Transaction Date,Narrative,Debit Amount,Credit Amount,Balance
-15/01/2025,TESCO STORES 3456,47.50,,1243.20
-18/01/2025,SALARY PAYMENT,,2200.00,3443.20
-20/01/2025,AMAZON.CO.UK,12.99,,3430.21
-```
-
-**Phase 1 inferences**:
-- Delimiter: comma
-- Date column: `Transaction Date`, format `%d/%m/%Y`
-- Merchant column: `Narrative`
-- Amount: split columns — `Debit Amount` (positive values = money out) and `Credit Amount` (positive values = money in)
-- Sign convention: negate Debit Amount values; keep Credit Amount values positive
-- Currency: GBP (inferred from Barclays UK context)
-
-**Key normalization logic in generated script**:
-```python
-debit_raw = row.get("Debit Amount", "").strip().replace(",", "")
-credit_raw = row.get("Credit Amount", "").strip().replace(",", "")
-
-if debit_raw:
-    amount = str(-abs(float(debit_raw)))   # debit → negative
-elif credit_raw:
-    amount = str(abs(float(credit_raw)))   # credit → positive
-else:
-    raise ValueError("Neither debit nor credit value present")
-```
-
-**Date parsing**:
-```python
-dt = datetime.strptime(row["Transaction Date"].strip(), "%d/%m/%Y").replace(tzinfo=timezone.utc)
-```
-
-**Result report**:
-```
-CSV import complete.
-
-Total rows:   91
-Imported:     89
-Skipped:       1  (duplicate)
-Errors:        1  (one row had both Debit Amount and Credit Amount blank)
-```
+1. The dry run returns `status="unrecognized_format"` with
+   `headers=["Booking Date", "Payee", "Value", "Balance"]` and
+   `missing_columns=["date"]`. `Payee` and `Value` were detected on their own.
+2. `Booking Date` is the only date-like header, so there is no need to ask the
+   user. Re-run the dry run with `column_map='{"date": "Booking Date"}'` and
+   `currency="EUR"`. The preview now shows dated rows with a supermarket
+   purchase as a `debit` and a salary as a `credit`.
+3. Import with the same `column_map` and `currency`, then report.
 
 ---
 
 ## Error Reference
 
-| Error | Likely Cause | Fix |
+| Response | Likely Cause | Fix |
 |---|---|---|
-| `Dashboard API not reachable` | Butler daemon not running | Start the butler daemon; retry |
-| `KeyError: 'Date'` | Column name mismatch | Check exact header spelling in sample; update script |
-| `ValueError: time data does not match format` | Wrong date format string | Re-examine sample dates; update `strptime` pattern |
-| `ImportError: No module named 'requests'` | Script used non-stdlib import | Rewrite using `urllib.request` only |
-| `json.decoder.JSONDecodeError` | API returned non-JSON (HTML error page) | Check API URL is correct; verify butler is healthy |
+| `status="refused"`, `attachment_forbidden` | `storage_ref` belongs to another butler | Ask the user to upload the CSV to finance |
+| `status="refused"`, `invalid_storage_ref` | Malformed ref | Use the exact ref from the attachment or upload |
+| `Blob storage is not configured` | Deployment has no blob store | Report to the user; import is unavailable |
+| `Failed to load file from blob storage` | Ref points at a missing blob | Ask the user to re-upload |
+| `status="unrecognized_format"` | Required column not detected, or date format unknown | Build `column_map` from `headers` and `missing_columns`; ask the user only if ambiguous |
+| Empty `preview`, `parsed` is 0 | `column_map` points at the wrong columns | Fix the map; do not import |
+| Every charge previews as `credit` | Positive-charge export detected as `generic` | Do not import; report the sign problem to the user |
 | High skip rate (>20%) | Overlapping import or cross-source duplicates | Expected on re-run; verify with user if first run |

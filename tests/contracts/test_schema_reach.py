@@ -411,10 +411,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.message_inbox",
     ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
     (
-        "roster/relationship/tests/test_commitment_extraction_db.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: closed public table cleanup tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
         "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
         "<dynamic:{table}>",
     ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -602,6 +598,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/bootstrap_prerequisite.py",
         '<dynamic:"{admin}".bootstrap_configuration>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
+    (
+        "src/butlers/chronicler/adapters/base.py",
+        "<dynamic:{table}>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface; keyset_page builds the page query over the adapter's own fixed source table",
     (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",

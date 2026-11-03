@@ -1,7 +1,14 @@
+> **Archived unadopted on 2026-11-03 (`bu-mw7muo`).** The owner answered `bu-4awqyt` with
+> choice B on 2026-10-20: the Relationship legacy-index cutover is a plain hard cutover with no
+> signer, receipt or orchestrator fence. This Kubernetes extension was never adopted, and its
+> `specs/` delta was removed on archive, so nothing from it reached `openspec/specs`. The delta
+> remains in git history before this archive. The governing contract is
+> [`authorize-relationship-effective-time-cutover`](../../authorize-relationship-effective-time-cutover/proposal.md).
+
 ## Why
 
 The current k3s deployment runs database clients that the unimplemented
-[Compose cutover proposal](../authorize-relationship-effective-time-cutover/proposal.md)
+[Compose cutover proposal](../../authorize-relationship-effective-time-cutover/proposal.md)
 cannot inventory or fence. A successful Helm rollout, a healthy receiver, a boot
 ledger, or a suspended Deployment does not prove that every old Relationship
 writer is absent. The legacy index must remain until the complete adopted

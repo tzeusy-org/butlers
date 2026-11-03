@@ -24,14 +24,6 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-)
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -40,130 +32,22 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with the relationship-merge schema surface used by merge_entities."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as p:
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        # has-birthday is single-cardinality: an entity holds at most one active
-        # value. has-email is multi-cardinality (the three-emails-three-rows rule).
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, cardinality, description)
-            VALUES
-                -- 'contact', as rel_014/rel_017 seed it. The hand-rolled registry
-                -- this fixture used to build had no kind CHECK, so 'attribute' --
-                -- a kind the real chain has never allowed -- inserted cleanly.
-                ('has-birthday', 'contact',   'literal', 'single', 'Birthday.'),
-                ('has-email',    'contact',   'literal', 'multi',  'Email address.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0,
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id     UUID,
-                object_entity_id UUID,
-                predicate     TEXT        NOT NULL,
-                content       TEXT,
-                source_butler TEXT,
-                confidence       FLOAT    NOT NULL DEFAULT 1.0,
-                observed_at      TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                valid_at         TIMESTAMPTZ,
-                supersedes_id    UUID,
-                scope         TEXT        NOT NULL DEFAULT 'relationship',
-                validity      TEXT        NOT NULL DEFAULT 'active',
-                created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.merge_reviews (
-                id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a        UUID        NOT NULL REFERENCES public.entities(id),
-                entity_b        UUID        NOT NULL REFERENCES public.entities(id),
-                shared_facts    JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                divergent_facts JSONB       NOT NULL DEFAULT '[]'::jsonb,
-                outcome         TEXT        NOT NULL CHECK (outcome IN ('merged', 'dismissed')),
-                reviewed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # merge_entities re-points public.contacts.entity_id onto the survivor
-        # (bu-j820n.1), so the table must exist even when no contacts are linked.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.contacts (
-                id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                name        TEXT,
-                entity_id   UUID,
-                archived_at TIMESTAMPTZ,
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — merge_entities now updates this instead of
-        # public.contacts.entity_id directly (bu-j77a5).
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # bu-8478w: merge_entity_pair repoints entity_graph_edges rows for
-        # rewired entity_facts on the same connection.
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
-        yield p
+async def rel_pool(db):
+    """Core + memory + relationship + approvals chains (flat; entity_facts in ``relationship``)."""
+    return await db("core", "memory", "relationship", "approvals")
 
 
-def _db_with_pool(pool: asyncpg.Pool) -> MagicMock:
+def _db_with_pool(rel_pool: asyncpg.Pool) -> MagicMock:
     db = MagicMock()
-    db.pool = MagicMock(return_value=pool)
+    db.pool = MagicMock(return_value=rel_pool)
     return db
 
 
-async def _insert_entity(pool: asyncpg.Pool, *, name: str, roles: list[str]) -> uuid.UUID:
-    return await pool.fetchval(
+async def _insert_entity(rel_pool: asyncpg.Pool, *, name: str, roles: list[str]) -> uuid.UUID:
+    return await rel_pool.fetchval(
         """
-        INSERT INTO public.entities (canonical_name, name, entity_type, roles)
-        VALUES ($1, $1, 'person', $2)
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ($1, 'person', $2)
         RETURNING id
         """,
         name,
@@ -172,14 +56,14 @@ async def _insert_entity(pool: asyncpg.Pool, *, name: str, roles: list[str]) -> 
 
 
 async def _add_fact(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     subject: uuid.UUID,
     predicate: str,
     value: str,
     *,
     conf: float = 1.0,
 ) -> None:
-    await pool.execute(
+    await rel_pool.execute(
         """
         INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src, conf)
         VALUES ($1, $2, $3, 'literal', 'test', $4)
@@ -191,7 +75,7 @@ async def _add_fact(
     )
 
 
-def _merge_handle(pool: asyncpg.Pool):
+def _merge_handle(rel_pool: asyncpg.Pool):
     from butlers.api.router_discovery import discover_butler_routers
 
     router_mod = next(
@@ -201,26 +85,26 @@ def _merge_handle(pool: asyncpg.Pool):
 
 
 class TestMergeResolvesSingleCardinalityDivergence:
-    async def test_conflicting_birthday_leaves_exactly_one_active_row(self, pool):
+    async def test_conflicting_birthday_leaves_exactly_one_active_row(self, rel_pool):
         """Two DIFFERENT has-birthday values (cardinality=single) → exactly one
         active row on the survivor (higher conf) + the loser superseded."""
-        merge_entities, MergeEntitiesRequest = _merge_handle(pool)
+        merge_entities, MergeEntitiesRequest = _merge_handle(rel_pool)
 
-        await _insert_entity(pool, name="Owner", roles=["owner"])
-        target_id = await _insert_entity(pool, name="Alice (canonical)", roles=[])
-        source_id = await _insert_entity(pool, name="Alice (duplicate)", roles=[])
+        await _insert_entity(rel_pool, name="Owner", roles=["owner"])
+        target_id = await _insert_entity(rel_pool, name="Alice (canonical)", roles=[])
+        source_id = await _insert_entity(rel_pool, name="Alice (duplicate)", roles=[])
 
         # Target holds the LOWER-confidence birthday; source holds the HIGHER one.
         # The higher-conf value must win, the target's row must be superseded.
-        await _add_fact(pool, target_id, "has-birthday", "1990-01-01", conf=0.6)
-        await _add_fact(pool, source_id, "has-birthday", "1991-02-02", conf=0.9)
+        await _add_fact(rel_pool, target_id, "has-birthday", "1990-01-01", conf=0.6)
+        await _add_fact(rel_pool, source_id, "has-birthday", "1991-02-02", conf=0.9)
 
-        db = _db_with_pool(pool)
+        db = _db_with_pool(rel_pool)
         body = MergeEntitiesRequest(entityA=target_id, entityB=source_id, keepAs="A")
         await merge_entities(target_id, body, db=db)
 
         # Exactly one active has-birthday row on the survivor — the higher-conf one.
-        active = await pool.fetch(
+        active = await rel_pool.fetch(
             """
             SELECT object, conf FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = 'has-birthday' AND validity = 'active'
@@ -233,7 +117,7 @@ class TestMergeResolvesSingleCardinalityDivergence:
 
         # The losing value (target's original lower-conf row) must be superseded,
         # not stranded as active and not deleted.
-        superseded = await pool.fetch(
+        superseded = await rel_pool.fetch(
             """
             SELECT object FROM relationship.entity_facts
             WHERE predicate = 'has-birthday' AND validity = 'superseded'
@@ -242,28 +126,28 @@ class TestMergeResolvesSingleCardinalityDivergence:
         assert {r["object"] for r in superseded} == {"1990-01-01"}
 
         # No active rows remain stranded on the tombstoned source.
-        stranded = await pool.fetch(
+        stranded = await rel_pool.fetch(
             "SELECT id FROM relationship.entity_facts WHERE subject = $1 AND validity = 'active'",
             source_id,
         )
         assert stranded == []
 
-    async def test_tie_keeps_target_value(self, pool):
+    async def test_tie_keeps_target_value(self, rel_pool):
         """On equal conf, the target's value wins (tie → target)."""
-        merge_entities, MergeEntitiesRequest = _merge_handle(pool)
+        merge_entities, MergeEntitiesRequest = _merge_handle(rel_pool)
 
-        await _insert_entity(pool, name="Owner", roles=["owner"])
-        target_id = await _insert_entity(pool, name="Bob (canonical)", roles=[])
-        source_id = await _insert_entity(pool, name="Bob (duplicate)", roles=[])
+        await _insert_entity(rel_pool, name="Owner", roles=["owner"])
+        target_id = await _insert_entity(rel_pool, name="Bob (canonical)", roles=[])
+        source_id = await _insert_entity(rel_pool, name="Bob (duplicate)", roles=[])
 
-        await _add_fact(pool, target_id, "has-birthday", "2000-03-03", conf=0.8)
-        await _add_fact(pool, source_id, "has-birthday", "2001-04-04", conf=0.8)
+        await _add_fact(rel_pool, target_id, "has-birthday", "2000-03-03", conf=0.8)
+        await _add_fact(rel_pool, source_id, "has-birthday", "2001-04-04", conf=0.8)
 
-        db = _db_with_pool(pool)
+        db = _db_with_pool(rel_pool)
         body = MergeEntitiesRequest(entityA=target_id, entityB=source_id, keepAs="A")
         await merge_entities(target_id, body, db=db)
 
-        active = await pool.fetch(
+        active = await rel_pool.fetch(
             """
             SELECT object FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = 'has-birthday' AND validity = 'active'
@@ -273,22 +157,22 @@ class TestMergeResolvesSingleCardinalityDivergence:
         assert len(active) == 1
         assert active[0]["object"] == "2000-03-03", "tie must keep the target's value"
 
-    async def test_multi_cardinality_predicate_unions(self, pool):
+    async def test_multi_cardinality_predicate_unions(self, rel_pool):
         """Multi-cardinality predicates (has-email) still union — both survive."""
-        merge_entities, MergeEntitiesRequest = _merge_handle(pool)
+        merge_entities, MergeEntitiesRequest = _merge_handle(rel_pool)
 
-        await _insert_entity(pool, name="Owner", roles=["owner"])
-        target_id = await _insert_entity(pool, name="Carol (canonical)", roles=[])
-        source_id = await _insert_entity(pool, name="Carol (duplicate)", roles=[])
+        await _insert_entity(rel_pool, name="Owner", roles=["owner"])
+        target_id = await _insert_entity(rel_pool, name="Carol (canonical)", roles=[])
+        source_id = await _insert_entity(rel_pool, name="Carol (duplicate)", roles=[])
 
-        await _add_fact(pool, target_id, "has-email", "carol@work.com", conf=0.5)
-        await _add_fact(pool, source_id, "has-email", "carol@home.com", conf=0.9)
+        await _add_fact(rel_pool, target_id, "has-email", "carol@work.com", conf=0.5)
+        await _add_fact(rel_pool, source_id, "has-email", "carol@home.com", conf=0.9)
 
-        db = _db_with_pool(pool)
+        db = _db_with_pool(rel_pool)
         body = MergeEntitiesRequest(entityA=target_id, entityB=source_id, keepAs="A")
         await merge_entities(target_id, body, db=db)
 
-        active = await pool.fetch(
+        active = await rel_pool.fetch(
             """
             SELECT object FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = 'has-email' AND validity = 'active'

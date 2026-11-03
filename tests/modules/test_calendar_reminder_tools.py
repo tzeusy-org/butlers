@@ -9,6 +9,7 @@ unit-level (no live DB required).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -17,7 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+from butlers.modules.approvals.execution_context import (
+    ApprovalExecutionContext,
+    approval_tool_args_digest,
+    reset_approval_execution_context,
+    set_approval_execution_context,
+)
 from butlers.modules.calendar import SOURCE_KIND_INTERNAL_REMINDERS, CalendarModule
+from butlers.modules.calendar_approval import calendar_approval_args
 from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.mcp import registered_tools, tool_fn
 from butlers.testing.records import Record, row
@@ -452,9 +460,10 @@ class TestCreateButlerReminder:
         mod._toggle_native_reminder_event = AsyncMock(return_value=paused_row)
         mod._delete_native_reminder_event = AsyncMock(return_value=True)
         mod._upsert_event_entities = AsyncMock()
-        mod._gate_high_impact_mutation = AsyncMock(return_value=None)
         mod._refresh_butler_projection = AsyncMock(return_value={"available": True})
         mod._finalize_workspace_mutation = AsyncMock()
+        enqueue = AsyncMock(return_value="pending-action")
+        mod.set_approval_enqueuer(enqueue)
 
         created = await (await tool_fn(mcp, "calendar_create_butler_event"))(
             butler_name="finance",
@@ -468,16 +477,39 @@ class TestCreateButlerReminder:
             source_hint="butler_reminder",
             entity_ids=[entity_id],
         )
-        toggled = await (await tool_fn(mcp, "calendar_toggle_butler_event"))(
+
+        async def approved_call(tool_name, **args):
+            task = asyncio.current_task()
+            assert task is not None
+            # Mirror the approvals executor: authority is the digest-bound
+            # context for this exact call, never a caller-supplied argument.
+            token = set_approval_execution_context(
+                ApprovalExecutionContext(
+                    action_id=uuid.uuid4(),
+                    session_id=None,
+                    actor="owner",
+                    tool_name=tool_name,
+                    tool_args_digest=approval_tool_args_digest(
+                        calendar_approval_args(tool_name, **args)
+                    ),
+                    authorized_task=task,
+                )
+            )
+            try:
+                return await (await tool_fn(mcp, tool_name))(**args)
+            finally:
+                reset_approval_execution_context(token)
+
+        toggled = await approved_call(
+            "calendar_toggle_butler_event",
             event_id=created["event_id"],
             enabled=False,
             source_hint="butler_reminder",
-            _approval_bypass=True,
         )
-        deleted = await (await tool_fn(mcp, "calendar_delete_butler_event"))(
+        deleted = await approved_call(
+            "calendar_delete_butler_event",
             event_id=created["event_id"],
             source_hint="butler_reminder",
-            _approval_bypass=True,
         )
 
         assert updated["status"] == "updated"
@@ -496,6 +528,7 @@ class TestCreateButlerReminder:
             scope="series",
             instance_start_at=None,
         )
+        enqueue.assert_not_awaited()
 
     async def test_native_reminder_delete_forwards_occurrence_scope(self):
         """Occurrence-scoped deletion reaches the native reminder backend."""

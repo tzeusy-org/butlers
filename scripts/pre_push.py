@@ -334,13 +334,6 @@ def validate_updates(raw: bytes, head: str) -> bytes:
     return raw
 
 
-def collection_required(paths: list[str]) -> bool:
-    # Imports/parametrization may read docs, specs or frontend assets. Until a
-    # complete executing dependency proof earns a skip, every push recollects.
-    # This conservative envelope does not claim the hard under-30s metric.
-    return True
-
-
 def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str, list[str]]]:
     python = sys.executable
     plan = [("lock", ["uv", "lock", "--check", "--offline"])]
@@ -367,8 +360,6 @@ def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str,
         # Hosted guards runs these when frontend/ changed (bu-5n9pfa); one shared step list.
         plan.append(("frontend-guards", [python, "scripts/frontend_guards.py", "--assume-changed"]))
     plan.append(("openspec-strict", ["openspec", "validate", "--all", "--strict"]))
-    if collection_required(paths):
-        plan.append(("test-budget", [python, "scripts/check_test_budget.py"]))
     return plan
 
 

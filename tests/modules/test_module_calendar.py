@@ -27,10 +27,12 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -39,6 +41,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.core.temporal.scheduling import SchedulingPreferences
+from butlers.mcp_wrappers import _SpanWrappingMCP
 from butlers.modules.base import Module
 from butlers.modules.calendar import (
     _CREDENTIAL_KEY_CALENDAR_ID,
@@ -58,6 +61,7 @@ from butlers.modules.calendar import (
     CalendarEventCreate,
     CalendarEventUpdate,
     CalendarModule,
+    CalendarNotificationInput,
     CalendarProvider,
     CalendarRequestError,
     CalendarSyncState,
@@ -746,6 +750,28 @@ class TestCalendarWriteTools:
         assert result["action_id"] == "action-123"
         assert len(enqueue_calls) == 1
         assert enqueue_calls[0][0] == "calendar_create_event"
+        # The parked call names the concrete calendar, not "resolve at replay".
+        assert enqueue_calls[0][1]["calendar_id"] == "primary"
+
+        # An overlapping update that omits calendar_id parks the resolved home calendar too.
+        moved_start = created.start_at + timedelta(hours=1)
+        moved_end = created.end_at + timedelta(hours=1)
+        provider._conflicts = [
+            _make_event(event_id="busy-2", title="(busy)", start_at=moved_start, end_at=moved_end)
+        ]
+        updated = await (await tool_fn(mcp, "calendar_update_event"))(
+            event_id=created.event_id,
+            start_at=moved_start,
+            end_at=moved_end,
+            conflict_policy="allow_overlap",
+        )
+        assert updated["status"] == "approval_required"
+        assert provider.update_calls == []
+        assert [name for name, _ in enqueue_calls] == [
+            "calendar_create_event",
+            "calendar_update_event",
+        ]
+        assert enqueue_calls[1][1]["calendar_id"] == "primary"
 
 
 # ---------------------------------------------------------------------------
@@ -3944,7 +3970,12 @@ class _RecurringProviderDouble(_ProviderDouble):
 
     async def set_recurrence(self, *, calendar_id, event_id, recurrence, send_updates=None):
         self.set_recurrence_calls.append(
-            {"event_id": event_id, "recurrence": list(recurrence), "send_updates": send_updates}
+            {
+                "calendar_id": calendar_id,
+                "event_id": event_id,
+                "recurrence": list(recurrence),
+                "send_updates": send_updates,
+            }
         )
         return self._event
 
@@ -3959,6 +3990,368 @@ class _RecurringProviderDouble(_ProviderDouble):
 
     async def delete_event(self, *, calendar_id, event_id, send_updates=None):
         self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+
+class TestCalendarApprovalAuthority:
+    """Only the approvals executor's digest-bound context opens a calendar gate."""
+
+    async def test_real_mcp_schemas_have_no_caller_approval_parameter(self):
+        from butlers.modules.calendar_approval import (
+            CALENDAR_APPROVAL_TOOLS,
+            calendar_approval_args,
+        )
+
+        mcp = FastMCP("calendar-approval-schema")
+        module = CalendarModule()
+        await module.register_tools(
+            _SpanWrappingMCP(mcp, "test", module_name="calendar"),
+            {"provider": "google"},
+            db=None,
+            butler_name="test",
+        )
+        tools = await mcp.list_tools()
+        assert CALENDAR_APPROVAL_TOOLS <= {tool.name for tool in tools}
+        for tool in tools:
+            assert not any(name.startswith("_approval") for name in tool.parameters["properties"])
+            if tool.name not in CALENDAR_APPROVAL_TOOLS:
+                continue
+            # The replay builder mirrors the public signature exactly, so a
+            # parked call carries every argument the owner approved.
+            schema = tool.parameters
+            required = {
+                name: "2026-03-03T14:00:00+00:00"
+                if name in {"start_at", "instance_start_at"}
+                else False
+                if name == "enabled"
+                else "synthetic"
+                for name in schema.get("required", [])
+            }
+            complete = calendar_approval_args(tool.name, **required)
+            assert complete.keys() == schema["properties"].keys()
+            for name, declaration in schema["properties"].items():
+                if "default" in declaration:
+                    assert complete[name] == declaration["default"]
+
+    async def test_real_mcp_caller_bypass_cannot_delete_or_toggle(self):
+        from fastmcp.exceptions import ToolError
+
+        mcp = FastMCP("calendar-approval-attack")
+        module = CalendarModule()
+        provider = _ProviderDouble()
+        module._provider = provider
+        await module.register_tools(
+            _SpanWrappingMCP(mcp, "test", module_name="calendar"),
+            {"provider": "google"},
+            db=SimpleNamespace(pool=None),
+            butler_name="test",
+        )
+        target = uuid.uuid4()
+        module._prepare_workspace_mutation = AsyncMock(return_value=("key", None))
+        module._resolve_action_source_id = AsyncMock(return_value=None)
+        module._finalize_workspace_mutation = AsyncMock()
+        module._resolve_butler_event_target = AsyncMock(return_value=("butler_reminder", target))
+        module._delete_native_reminder_event = AsyncMock(return_value=True)
+        module._toggle_native_reminder_event = AsyncMock(return_value={"id": target})
+        module._refresh_butler_projection = AsyncMock(return_value={})
+        module.set_approval_enqueuer(AsyncMock(return_value="pending-action"))
+        for name, args in (
+            ("calendar_delete_butler_event", {"event_id": str(target), "scope": "series"}),
+            ("calendar_toggle_butler_event", {"event_id": str(target), "enabled": False}),
+        ):
+            ordinary = await mcp.call_tool(name, args)
+            assert ordinary.structured_content["status"] == "approval_required"
+            try:
+                attempted = await mcp.call_tool(name, {**args, "_approval_bypass": True})
+            except (ToolError, ValidationError):
+                pass
+            else:
+                assert attempted.structured_content["status"] == "approval_required"
+        module._delete_native_reminder_event.assert_not_awaited()
+        module._toggle_native_reminder_event.assert_not_awaited()
+        assert provider.delete_calls == provider.update_calls == provider.create_calls == []
+
+    async def test_approved_json_replay_of_twelve_occurrences_executes_once(self):
+        from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+        from butlers.modules.approvals.executor import execute_approved_action
+        from butlers.modules.approvals.models import ActionStatus
+
+        event = _make_event(
+            start_at=datetime(2026, 3, 3, 14, tzinfo=UTC),
+            end_at=datetime(2026, 3, 3, 15, tzinfo=UTC),
+            recurrence_rule="FREQ=DAILY;COUNT=12",
+        )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=DAILY;COUNT=12"])
+        mod, mcp = await TestRecurrenceScopedMutation()._make_module(provider)
+        update_event = await tool_fn(mcp, "calendar_update_event")
+        pool = _CalendarApprovalRow()
+
+        async def enqueue(tool_name, tool_args, agent_summary):
+            pool.park(tool_name, tool_args)
+            return str(pool.row["id"])
+
+        mod.set_approval_enqueuer(enqueue)
+        # The owner approves the default-target calendar resolved at park time.
+        mod._resolved_calendar_id = None
+        mod._default_target_calendar_id = "cal-seen"
+        # Keep the workspace pending door real: only a proven executor context
+        # may resume it. The remaining projection seams are provider-test doubles.
+        mod._load_projection_action = AsyncMock(return_value=None)
+        mod._record_projection_action = AsyncMock()
+        mod._resolve_action_source_id = AsyncMock(return_value=None)
+        mod._refresh_user_projection = AsyncMock(return_value={})
+        mod._project_provider_mutation = AsyncMock()
+        mod._mark_instances_exception = AsyncMock()
+        call = {
+            "event_id": event.event_id,
+            "recurrence_scope": "following",
+            "instance_start_at": event.start_at,
+            "start_at": event.start_at + timedelta(hours=1),
+            "end_at": event.end_at + timedelta(hours=1),
+            "description": "Approved description",
+            "body": "Approved body",
+            "location": "Room B",
+            "request_id": "approved-twelve",
+        }
+        with patch(
+            "butlers.modules.calendar.mutations.require_permission",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            parked = await update_event(**call)
+            assert parked["status"] == "approval_required"
+            assert parked["impact"]["occurrences_touched"] == 12
+            assert provider.set_recurrence_calls == provider.created_payloads == []
+            stored = pool.row["tool_args"]
+            assert stored["instance_start_at"] == event.start_at.isoformat()
+            assert stored["description"] == call["description"]
+            assert stored["body"] == call["body"]
+            assert "_approval_bypass" not in stored
+            assert stored["all_day"] is None and stored["clear_entity_ids"] is False
+            assert stored["calendar_id"] == "cal-seen"
+            # The default moves after approval was requested; replay must not follow it.
+            mod._default_target_calendar_id = "cal-new"
+
+            # The parked row is pending, so a session re-issuing the same call
+            # (same request_id) is told it is queued and changes nothing.
+            mod._load_projection_action.return_value = ("pending", parked, None)
+            reissued = await update_event(**call)
+            assert reissued["status"] == "pending"
+            assert provider.set_recurrence_calls == []
+
+            decision = await transition_pending_action(
+                pool,
+                action_id=pool.row["id"],
+                target_status=ActionStatus.APPROVED,
+                decided_by="owner",
+                event_actor="owner",
+                event_reason="approve exact stored call",
+            )
+            assert decision.changed and pool.row["status"] == "approved"
+            outcomes = [
+                await execute_approved_action(
+                    pool, pool.row["id"], "calendar_update_event", stored, update_event
+                )
+                for _ in range(2)
+            ]
+        assert outcomes[0].success and outcomes[1].to_dict() == outcomes[0].to_dict()
+        # One following-scope mutation splits the master and creates its remainder.
+        assert len(provider.set_recurrence_calls) == len(provider.created_payloads) == 1
+        assert provider.set_recurrence_calls[0]["calendar_id"] == "cal-seen"
+        payload = provider.created_payloads[0]
+        assert payload.start_at == call["start_at"] and payload.end_at == call["end_at"]
+        assert payload.description == call["description"] and payload.body == call["body"]
+        assert payload.location == "Room B"
+
+    async def test_executor_refuses_calendar_argument_or_tool_tampering(self):
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        pool = _CalendarApprovalRow()
+        pool.park("calendar_toggle_butler_event", {"event_id": "event", "enabled": False})
+        pool.row["status"] = "approved"
+        handler = AsyncMock(return_value={"status": "updated"})
+        for name, args in (
+            ("calendar_toggle_butler_event", {"event_id": "other", "enabled": False}),
+            ("calendar_delete_butler_event", pool.row["tool_args"]),
+        ):
+            outcome = await execute_approved_action(pool, pool.row["id"], name, args, handler)
+            assert not outcome.success
+            assert pool.row["status"] == "approved"
+        handler.assert_not_awaited()
+
+    async def test_executor_refuses_row_without_bound_calendar(self):
+        """Rows parked before bu-eio2my left calendar_id unbound; replay would
+        resolve whatever calendar is the default at execution time, so they
+        refuse before effect and the owner re-requests the change."""
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        pool = _CalendarApprovalRow()
+        handler = AsyncMock(return_value={"status": "deleted"})
+        stored = {
+            "event_id": "evt-1",
+            "instance_start_at": "2026-03-03T14:00:00+00:00",
+            "recurrence_scope": "following",
+            "_approval_bypass": True,
+        }
+        for calendar_id, admitted in ((None, False), ("cal-seen", True)):
+            args = stored if calendar_id is None else {**stored, "calendar_id": calendar_id}
+            pool.park("calendar_delete_event_instance", args)
+            pool.row["status"] = "approved"
+            outcome = await execute_approved_action(
+                pool, pool.row["id"], "calendar_delete_event_instance", args, handler
+            )
+            assert outcome.success is admitted
+        handler.assert_awaited_once()
+        assert handler.await_args.kwargs["calendar_id"] == "cal-seen"
+
+    @pytest.mark.parametrize(
+        ("tool_name", "overrides"),
+        [
+            ("calendar_create_event", {}),
+            # Structured notification, all-day dates and a non-UTC offset must
+            # each survive the JSON park and rebuild the identical call.
+            (
+                "calendar_create_event",
+                {"notification": CalendarNotificationInput(enabled=True, minutes_before=10)},
+            ),
+            (
+                "calendar_create_event",
+                {"start_at": date(2026, 2, 20), "end_at": date(2026, 2, 21), "all_day": True},
+            ),
+            (
+                "calendar_create_event",
+                {
+                    "start_at": datetime.fromisoformat("2026-02-21T00:30:00+08:00"),
+                    "end_at": datetime.fromisoformat("2026-02-21T01:30:00+08:00"),
+                },
+            ),
+            ("calendar_update_event", {}),
+        ],
+        ids=["create", "create-notification", "create-all-day", "create-non-utc", "update"],
+    )
+    async def test_approved_overlap_replay_executes_once_and_only_under_its_context(
+        self, tool_name, overrides
+    ):
+        """An approved overlap write runs once on replay instead of re-parking,
+        while any other caller -- including a context bound to different
+        arguments -- still parks."""
+        from butlers.modules.approvals.execution_context import (
+            ApprovalExecutionContext,
+            approval_tool_args_digest,
+            reset_approval_execution_context,
+            set_approval_execution_context,
+        )
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        existing = _make_event(event_id="evt-1", title="BUTLER: Team Sync")
+        provider = _ProviderDouble(
+            event=existing,
+            conflicts=[
+                _make_event(
+                    event_id="busy-1",
+                    title="(busy)",
+                    start_at=datetime(2026, 2, 20, 16, 30, tzinfo=UTC),
+                    end_at=datetime(2026, 2, 20, 17, 30, tzinfo=UTC),
+                )
+            ],
+        )
+        mcp = FastMCP("calendar-overlap-replay")
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        pool = _CalendarApprovalRow()
+
+        async def enqueue(name, args, agent_summary):
+            pool.park(name, args)
+            return str(pool.row["id"])
+
+        mod.set_approval_enqueuer(enqueue)
+        tool = await tool_fn(mcp, tool_name)
+        call: dict[str, Any] = {
+            "title": "Team Sync",
+            "start_at": datetime(2026, 2, 20, 16, tzinfo=UTC),
+            "end_at": datetime(2026, 2, 20, 17, tzinfo=UTC),
+            "request_id": "overlap-1",
+            **overrides,
+        }
+        if tool_name == "calendar_update_event":
+            call["event_id"] = "evt-1"
+        # Keep the pending-row door real: the parked row resumes only for the
+        # executor's context; the other projection seams are doubles.
+        mod._load_projection_action = AsyncMock(return_value=None)
+        mod._record_projection_action = AsyncMock()
+
+        def writes():
+            return provider.create_calls + provider.update_calls
+
+        parked = await tool(**call)
+        assert parked["status"] == "approval_required"
+        stored = pool.row["tool_args"]
+        mod._load_projection_action.return_value = ("pending", parked, None)
+
+        # A context approving different arguments must not open this gate.
+        foreign = ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="owner",
+            tool_name=tool_name,
+            tool_args_digest=approval_tool_args_digest({**stored, "title": "Other"}),
+            authorized_task=asyncio.current_task(),
+        )
+        token = set_approval_execution_context(foreign)
+        try:
+            assert (await tool(**call))["status"] == "pending"
+            # Past the pending row, the overlap gate itself still parks.
+            mod._load_projection_action.return_value = None
+            assert (await tool(**call))["status"] == "approval_required"
+            mod._load_projection_action.return_value = ("pending", parked, None)
+        finally:
+            reset_approval_execution_context(token)
+        assert writes() == []
+
+        pool.row.update(status="approved", decided_by="owner")
+        outcome = await execute_approved_action(pool, pool.row["id"], tool_name, stored, tool)
+        assert outcome.success, outcome.error
+        assert outcome.result["status"] != "approval_required"
+        assert len(writes()) == 1
+
+
+class _CalendarApprovalRow:
+    """Single-row JSON storage double; PostgreSQL owns concurrency verification."""
+
+    def __init__(self):
+        self.row: dict[str, Any] = {}
+
+    def park(self, tool_name, tool_args):
+        self.row = {
+            "id": uuid.uuid4(),
+            "tool_name": tool_name,
+            "tool_args": json.loads(json.dumps(tool_args, default=str)),
+            "status": "pending",
+            "requested_at": datetime.now(UTC),
+        }
+
+    async def fetchval(self, sql, *args):
+        return False if "to_regclass" in sql else datetime.now(UTC)
+
+    async def fetchrow(self, sql, *args):
+        if sql.startswith("UPDATE pending_actions"):
+            self.row.update(status=args[0], decided_by=args[1], decided_at=args[2])
+        return self.row
+
+    async def execute(self, sql, *args):
+        if sql.startswith("UPDATE pending_actions"):
+            self.row.update(status=args[0], execution_result=args[1])
+        return "UPDATE 1"
 
 
 class TestRecurrenceHelpers:
@@ -4304,6 +4697,7 @@ class TestRecurrenceScopedMutation:
                 send_updates=None,
                 request_id=None,
                 tool_name="calendar_delete_event",
+                approval_args={},
             )
 
 
