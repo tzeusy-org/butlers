@@ -6,6 +6,7 @@ import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -192,8 +193,109 @@ async def _wait_for_peer_output(peer, peer_task, *, timeout_s=5):
         await asyncio.gather(ready, return_exceptions=True)
 
 
+class _SyntheticPeerStartup:
+    """Observe only this test's fixed payload; never expose arbitrary stderr."""
+
+    def __init__(self, monkeypatch):
+        self.ready = "not_observed"
+        self.ready_bytes = 0
+        self.stderr_bytes = 0
+        self._prefix = bytearray()
+        self._digest = hashlib.sha256()
+        self._drain = None
+        spawn = asyncio.create_subprocess_exec
+
+        async def observed_spawn(*argv, **kwargs):
+            if argv[-2:] != ("/runtime/program", "resist"):
+                return await spawn(*argv, **kwargs)
+            assert argv[0] == "/usr/bin/bwrap"
+            assert kwargs["stderr"] == asyncio.subprocess.DEVNULL
+            process = await spawn(*argv, **{**kwargs, "stderr": asyncio.subprocess.PIPE})
+            self._drain = asyncio.create_task(self._read_stderr(process.stderr))
+            readexactly = process.stdout.readexactly
+
+            async def observed_ready(length):
+                try:
+                    data = await readexactly(length)
+                except asyncio.IncompleteReadError as error:
+                    self.ready = "eof"
+                    self.ready_bytes = len(error.partial)
+                    raise
+                except asyncio.CancelledError:
+                    self.ready = "cancelled"
+                    raise
+                self.ready_bytes = len(data)
+                self.ready = (
+                    "matched" if data == b"BUTLERS_RUNTIME_CLI_SANDBOX_READY\n" else "mismatch"
+                )
+                return data
+
+            monkeypatch.setattr(process.stdout, "readexactly", observed_ready)
+            return process
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", observed_spawn)
+
+    async def _read_stderr(self, stream):
+        while chunk := await stream.read(4096):
+            self.stderr_bytes += len(chunk)
+            self._digest.update(chunk)
+            self._prefix.extend(chunk[: 4096 - len(self._prefix)])
+
+    async def finish(self):
+        if self._drain is not None:
+            try:
+                # Called after invocation settlement. A diagnostic reader must
+                # neither block cleanup nor leave an unobserved task behind.
+                await asyncio.wait({self._drain}, timeout=1)
+            finally:
+                self._drain.cancel()
+                await asyncio.gather(self._drain, return_exceptions=True)
+
+    def summary(self):
+        prefix = bytes(self._prefix)
+        category = "empty" if self.stderr_bytes == 0 else "unclassified"
+        for marker, label in (
+            (b"bwrap: execvp /runtime/init:", "shim_exec_failed"),
+            (b"bwrap: Can't create tmpfile for ", "bind_data_tmpfile_failed"),
+            (b"bwrap: Can't write data to file ", "bind_data_copy_failed"),
+            (b"bwrap: Can't set mode ", "bind_data_mode_failed"),
+            (b"bwrap: Can't bind mount ", "bind_mount_failed"),
+            (b"bwrap: Can't chdir to ", "chdir_failed"),
+            (b"bwrap: setsid:", "session_setup_failed"),
+            (b"runtime-cli-sandbox-init failed\n", "shim_refused"),
+        ):
+            if prefix.startswith(marker):
+                category = label
+                break
+        reason = "unclassified"
+        first_line = prefix.split(b"\n", 1)[0]
+        for suffix, label in (
+            (b": Permission denied", "permission_denied"),
+            (b": Operation not permitted", "operation_not_permitted"),
+            (b": No such file or directory", "not_found"),
+            (b": Exec format error", "exec_format"),
+            (b": Text file busy", "text_busy"),
+            (b": Bad file descriptor", "bad_fd"),
+        ):
+            if first_line.startswith(b"bwrap: ") and first_line.endswith(suffix):
+                reason = label
+                break
+        return {
+            "ready_receipt": self.ready,
+            "ready_bytes": self.ready_bytes,
+            "stderr_category": category,
+            "stderr_reason": reason,
+            "stderr_bytes": self.stderr_bytes,
+            "stderr_sha256": self._digest.hexdigest(),
+            "stderr_complete": self._drain is not None
+            and self._drain.done()
+            and not self._drain.cancelled()
+            and self._drain.exception() is None,
+        }
+
+
 async def test_native_cross_invocation_read_denied_and_own_material_readable(
-    native_image, native_stage
+    native_image, native_stage, monkeypatch
 ):
     req = replace(request(), timeout_s=5)
     owner = InvocationOwner(native_stage)
@@ -211,23 +313,155 @@ async def test_native_cross_invocation_read_denied_and_own_material_readable(
                 self.execution_failure = type(error).__name__
                 raise
 
+    startup = _SyntheticPeerStartup(monkeypatch)
     peer = RecordingDomain(image=native_image, command=("/runtime/program", "resist"))
     peer_task = asyncio.create_task(owner.run(replace(request(), timeout_s=5), lambda: peer))
     try:
-        await _wait_for_peer_output(peer, peer_task)
-        domain = BubblewrapDomain(
-            image=native_image,
-            command=("/runtime/program", "read", str(peer.material.directory / "model-credential")),
-        )
-        output = await owner.run(req, lambda: domain)
-        assert output == b"OWN_READ_PEER_DENIED_READONLY\n"
-        assert domain.namespace_dead and domain.direct_child_reaped
-        assert list(native_stage.iterdir()) == [peer.material.directory]
+        try:
+            await _wait_for_peer_output(peer, peer_task)
+            domain = BubblewrapDomain(
+                image=native_image,
+                command=(
+                    "/runtime/program",
+                    "read",
+                    str(peer.material.directory / "model-credential"),
+                ),
+            )
+            output = await owner.run(req, lambda: domain)
+            assert output == b"OWN_READ_PEER_DENIED_READONLY\n"
+            assert domain.namespace_dead and domain.direct_child_reaped
+            assert list(native_stage.iterdir()) == [peer.material.directory]
+        finally:
+            peer_task.cancel()
+            await asyncio.gather(peer_task, return_exceptions=True)
+            await startup.finish()
+    except Exception as error:
+        raise AssertionError(f"synthetic native isolation failed: {startup.summary()}") from error
     finally:
-        peer_task.cancel()
-        await asyncio.gather(peer_task, return_exceptions=True)
+        # Also covers cancellation while gathering the peer or diagnostics.
+        await startup.finish()
     assert peer.namespace_dead and peer.direct_child_reaped
     assert owner.healthy and not list(native_stage.iterdir())
+    assert startup.summary()["ready_receipt"] == "matched"
+    assert startup.summary()["ready_bytes"] == len(b"BUTLERS_RUNTIME_CLI_SANDBOX_READY\n")
+    assert startup.summary()["stderr_complete"] is True
+
+
+@pytest.mark.parametrize("receipt", ["matched", "eof", "mismatch", "cancelled"])
+async def test_synthetic_startup_observes_ready_without_changing_launch(monkeypatch, receipt):
+    process = SimpleNamespace(stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader())
+    launches = []
+
+    async def spawn(*argv, **kwargs):
+        launches.append((argv, kwargs))
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    capture = _SyntheticPeerStartup(monkeypatch)
+    argv = ("/usr/bin/bwrap", "--", "/runtime/program", "resist")
+    options = {
+        "stderr": asyncio.subprocess.DEVNULL,
+        "pass_fds": (101, 102, 103),
+        "env": {},
+        "close_fds": True,
+        "start_new_session": True,
+    }
+    assert await asyncio.create_subprocess_exec(*argv, **options) is process
+    assert launches == [(argv, {**options, "stderr": asyncio.subprocess.PIPE})]
+    ready = b"BUTLERS_RUNTIME_CLI_SANDBOX_READY\n"
+    reading = asyncio.create_task(process.stdout.readexactly(len(ready)))
+    if receipt == "cancelled":
+        await asyncio.sleep(0)
+        reading.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reading
+    else:
+        data = ready if receipt == "matched" else b"x" * len(ready)
+        if receipt == "eof":
+            data = ready[:7]
+        process.stdout.feed_data(data)
+        process.stdout.feed_eof()
+        if receipt == "eof":
+            with pytest.raises(asyncio.IncompleteReadError):
+                await reading
+        else:
+            assert await reading == data
+    stderr = b"bwrap: execvp /runtime/init: Permission denied\n" + b"synthetic-private-path" * 500
+    process.stderr.feed_data(stderr)
+    process.stderr.feed_eof()
+    await capture.finish()
+    summary = capture.summary()
+    assert summary["ready_receipt"] == receipt
+    assert summary["ready_bytes"] == (0 if receipt == "cancelled" else len(data))
+    assert summary["stderr_category"] == "shim_exec_failed"
+    assert summary["stderr_reason"] == "permission_denied"
+    assert summary["stderr_bytes"] == len(stderr)
+    assert summary["stderr_sha256"] == hashlib.sha256(stderr).hexdigest()
+    assert summary["stderr_complete"] is True
+    assert len(capture._prefix) == 4096  # a long stream is drained without retaining its body
+    assert "synthetic-private-path" not in str(summary)
+
+
+@pytest.mark.parametrize(
+    "stderr,category",
+    [
+        (b"bwrap: Can't create tmpfile for /runtime/init: denied\n", "bind_data_tmpfile_failed"),
+        (b"bwrap: Can't bind mount /private/source: denied\n", "bind_mount_failed"),
+        (b"runtime-cli-sandbox-init failed\n", "shim_refused"),
+        (b"synthetic private arbitrary diagnostic", "unclassified"),
+        (b"", "empty"),
+    ],
+)
+async def test_synthetic_startup_reports_closed_categories_only(monkeypatch, stderr, category):
+    process = SimpleNamespace(stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader())
+    launches = []
+
+    async def spawn(*argv, **kwargs):
+        launches.append((argv, kwargs))
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    capture = _SyntheticPeerStartup(monkeypatch)
+    await asyncio.create_subprocess_exec(
+        "/usr/bin/bwrap", "--", "/runtime/program", "resist", stderr=asyncio.subprocess.DEVNULL
+    )
+    process.stderr.feed_data(stderr)
+    process.stderr.feed_eof()
+    await capture.finish()
+    assert capture.summary()["stderr_category"] == category
+    assert set(capture.summary()) == {
+        "ready_receipt",
+        "ready_bytes",
+        "stderr_category",
+        "stderr_reason",
+        "stderr_bytes",
+        "stderr_sha256",
+        "stderr_complete",
+    }
+    # The isolation reader and every other command retain the original launch.
+    other = ("/usr/bin/bwrap", "--", "/runtime/program", "read", "/no-peer")
+    await asyncio.create_subprocess_exec(*other, stderr=asyncio.subprocess.DEVNULL)
+    assert launches[-1] == (other, {"stderr": asyncio.subprocess.DEVNULL})
+
+
+async def test_synthetic_startup_cancellation_reaps_its_stderr_reader(monkeypatch):
+    process = SimpleNamespace(stdout=asyncio.StreamReader(), stderr=asyncio.StreamReader())
+
+    async def spawn(*argv, **kwargs):
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    capture = _SyntheticPeerStartup(monkeypatch)
+    await asyncio.create_subprocess_exec(
+        "/usr/bin/bwrap", "--", "/runtime/program", "resist", stderr=asyncio.subprocess.DEVNULL
+    )
+    finishing = asyncio.create_task(capture.finish())
+    await asyncio.sleep(0)
+    finishing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await finishing
+    assert capture._drain.cancelled()
+    assert capture.summary()["stderr_complete"] is False
 
 
 @pytest.mark.parametrize(
