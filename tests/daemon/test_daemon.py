@@ -348,9 +348,21 @@ def _patch_infra(*, core_groups: list[str] | None = None):
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    transaction_depth = 0
+
+    async def enter_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc):
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
     mock_conn.transaction = MagicMock()
-    mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
-    mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction.return_value.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    mock_conn.transaction.return_value.__aexit__ = AsyncMock(side_effect=exit_transaction)
 
     mock_pool = AsyncMock()
     # Acquire and transaction are synchronous factories for async contexts.
