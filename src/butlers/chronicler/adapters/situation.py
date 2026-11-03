@@ -136,6 +136,16 @@ class SituationInferredAdapter(ProjectionAdapter):
         self.lookback_days = lookback_days
         self.timezone = timezone
         self.references = references
+        self._repair_epoch: int | None = None
+
+    async def save_checkpoint(self, pool: asyncpg.Pool, result: AdapterResult) -> None:
+        if self._repair_epoch is not None and result.success and not result.skipped:
+            from butlers.chronicler.history_repair import acknowledge_replay
+
+            async with pool.acquire() as conn:
+                await acknowledge_replay(conn, epoch=self._repair_epoch, result=result)
+        else:
+            await super().save_checkpoint(pool, result)
 
     async def project(
         self,
@@ -146,17 +156,36 @@ class SituationInferredAdapter(ProjectionAdapter):
         since_id: int | None = None,
     ) -> AdapterResult:
         del since_id
-        from butlers.core.general_settings import resolve_general_timezone
+        from butlers.chronicler.history_repair import replay_epoch
+        from butlers.core.general_settings import load_configured_general_timezone
 
+        self._repair_epoch = await replay_epoch(chronicler_pool)
+        if self._repair_epoch is not None:
+            since = None
         result = AdapterResult(source_name=self.source_name)
         now = _now()
-        tz = ZoneInfo(self.timezone or await resolve_general_timezone(chronicler_pool))
+        repair_state = await chronicler_pool.fetchrow(
+            "SELECT timezone, blocked_reason FROM chronicler.daily_repair_control WHERE singleton"
+        )
+        if repair_state is None or repair_state["blocked_reason"]:
+            raise RuntimeError("daily repair timezone state missing or blocked")
+        configured_zone = self.timezone or await load_configured_general_timezone(chronicler_pool)
+        zone = configured_zone or repair_state["timezone"]
+        if zone != repair_state["timezone"]:
+            raise RuntimeError("situation/rollup timezone mismatch")
+        tz = ZoneInfo(zone)
         references = self.references if self.references is not None else env_place_references()
         anchors = await load_anchors(chronicler_pool, tz=tz, now=now, references=references)
         entity_id = await resolve_owner_entity_id(pool)
 
         today = now.astimezone(tz).date()
         first_day = today - timedelta(days=self.lookback_days - 1)
+        if self._repair_epoch is not None:
+            pending_start = await chronicler_pool.fetchval(
+                "SELECT min(local_date) FROM chronicler.daily_repair_days WHERE totals_pending"
+            )
+            if pending_start is not None:
+                first_day = min(first_day, pending_start)
         # Re-derive changed Steam dates as well as the usual trailing window.
         # chronicler_030 resets this checkpoint once so historical daily totals
         # keep counted fallback Play after their source rows become evidence.
@@ -228,25 +257,29 @@ class SituationInferredAdapter(ProjectionAdapter):
     ) -> int:
         local_date = day.isoformat()
         async with pool.acquire() as conn:
-            segments = await self._place_segments(conn, day_start, day_end)
-            if hold is not None:
-                segments.append(hold)
-            activities = await self._activities(conn, day_start, day_end)
-            corrected = await self._corrected_own(conn, local_date)
-            corrected_refs = {ref for ref, _s, _e in corrected}
-            blocks = [
-                block
-                for block in derive_blocks(
-                    day_start=day_start,
-                    day_end=day_end,
-                    segments=segments,
-                    anchors=anchors,
-                    activities=activities,
-                    corrected=[(s, e) for _ref, s, e in corrected],
-                )
-                if block.source_ref(local_date) not in corrected_refs
-            ]
             async with owner_episode_transaction(conn):
+                from butlers.chronicler.history_repair import try_lock
+
+                if not await try_lock(conn):
+                    raise RuntimeError("daily repair busy; retry situation day")
+                segments = await self._place_segments(conn, day_start, day_end)
+                if hold is not None:
+                    segments.append(hold)
+                activities = await self._activities(conn, day_start, day_end)
+                corrected = await self._corrected_own(conn, local_date)
+                corrected_refs = {ref for ref, _s, _e in corrected}
+                blocks = [
+                    block
+                    for block in derive_blocks(
+                        day_start=day_start,
+                        day_end=day_end,
+                        segments=segments,
+                        anchors=anchors,
+                        activities=activities,
+                        corrected=[(s, e) for _ref, s, e in corrected],
+                    )
+                    if block.source_ref(local_date) not in corrected_refs
+                ]
                 refs = []
                 for block in blocks:
                     episode = await upsert_episode(conn, self._episode(block, local_date))

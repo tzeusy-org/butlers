@@ -1730,7 +1730,9 @@ class _RetractPool:
     async def fetchrow(self, query: str, *args: object):
         if (
             self._fact is not None
-            and "FROM facts WHERE id" in query
+            and (
+                "FROM facts WHERE id" in query or 'FROM "chronicler_mem"."facts" WHERE id' in query
+            )
             and args[0] == self._fact["id"]
         ):
             return Record(self._fact)
@@ -1761,11 +1763,14 @@ class _RetractPool:
         return _NullTransaction()
 
 
-async def test_retract_fact_invalidates_and_returns_updated_fact(app):
+@pytest.mark.parametrize("memory_schema", [None, "chronicler_mem"])
+async def test_retract_fact_invalidates_and_returns_updated_fact(app, memory_schema):
     """POST retract flips validity to 'retracted' and returns the updated Fact."""
     fact_id = uuid.uuid4()
     holding = _RetractPool(fact=_make_fact_row(fact_id=fact_id))
     db = _ConfirmDB({"atlas": holding, "memory": _RetractPool(fact=None)})
+    if memory_schema is not None:
+        db.memory_schema_for_butler = lambda name: memory_schema if name == "atlas" else None
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1778,16 +1783,35 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
     assert data["id"] == str(fact_id)
     # validity was previously 'active' and is now 'retracted'.
     assert data["validity"] == "retracted"
-    # The retracting UPDATE ran, followed by the catalog disownment cascade
-    # (bu-5ud8p.3) and the entity-graph disownment cascade (RFC 0031 Slice 2,
-    # bu-8cdl1.8) — all three against the pool that holds the fact.
-    assert len(holding.execute_calls) == 3
+    # Canonical UPDATE and the one SQL projection primitive use the holding pool.
+    assert len(holding.execute_calls) == 2
     assert "validity = 'retracted'" in holding.execute_calls[0][0]
-    assert "memory_catalog" in holding.execute_calls[1][0]
-    # source_schema resolved via current_schema() (see _RetractPool.fetchval).
-    assert holding.execute_calls[1][1][0] == "atlas"
-    assert "entity_graph_edges" in holding.execute_calls[2][0]
-    assert holding.execute_calls[2][1][0] == "atlas"
+    assert "invalidate_memory_projection" in holding.execute_calls[1][0]
+    assert "TRUE,FALSE" in holding.execute_calls[1][0]
+    assert holding.execute_calls[1][1][0] == (memory_schema or "atlas")
+
+
+async def test_unsafe_memory_schema_is_rejected_before_any_database_access():
+    from butlers.modules.memory.storage import cascade_fact_retraction, forget_memory
+
+    class NoDatabaseAccess:
+        def acquire(self):
+            raise AssertionError("unsafe schema reached database acquisition")
+
+        async def fetchval(self, *args, **kwargs):
+            raise AssertionError("unsafe schema queried the database")
+
+        async def execute(self, *args, **kwargs):
+            raise AssertionError("unsafe schema changed the database")
+
+    pool = NoDatabaseAccess()
+    memory_id = uuid.uuid4()
+    with pytest.raises(ValueError, match="Unsafe memory schema identifier"):
+        await forget_memory(pool, "fact", memory_id, memory_schema="chronicler_mem.bad")
+    with pytest.raises(ValueError, match="Unsafe memory schema identifier"):
+        await cascade_fact_retraction(
+            pool, [], source_schema="chronicler_mem.bad"
+        )
 
 
 async def test_retract_fact_404_when_not_found(app):
@@ -1936,16 +1960,12 @@ async def test_retire_rule_sets_retired_at_and_returns_updated_rule(app):
     assert data["id"] == str(rule_id)
     # retired_at was previously null and is now stamped.
     assert data["retired_at"] is not None
-    # The retiring UPDATE ran, followed by the catalog disownment cascade
-    # (mirrors forget_memory's plain path — memory_catalog then the
-    # entity_graph_edges no-op delete, see _cascade_catalog_disownment)
-    # against the pool that holds the rule.
-    assert len(holding.execute_calls) == 3
+    # Retirement and mandatory graph/catalog invalidation share the holding pool.
+    assert len(holding.execute_calls) == 2
     assert "retired_at = COALESCE(retired_at, now())" in holding.execute_calls[0][0]
-    assert "memory_catalog" in holding.execute_calls[1][0]
+    assert "invalidate_memory_projection" in holding.execute_calls[1][0]
+    assert "TRUE,FALSE" in holding.execute_calls[1][0]
     assert holding.execute_calls[1][1][0] == "atlas"
-    assert "entity_graph_edges" in holding.execute_calls[2][0]
-    assert holding.execute_calls[2][1][0] == "atlas"
 
 
 async def test_retire_rule_404_when_not_found(app):

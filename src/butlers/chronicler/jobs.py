@@ -623,6 +623,26 @@ async def run_routines_mine(
     return await mine_routines(db_pool, weeks=weeks, timezone=timezone)
 
 
+async def run_rebuild_daily_rollups(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Bounded old-date correction, independent of the trailing7-day materializer."""
+    from butlers.chronicler.history_repair import run_rebuild
+    from butlers.core.general_settings import load_configured_general_timezone
+
+    args = job_args or {}
+    unknown = set(args) - {"timezone", "max_days"}
+    if unknown:
+        raise ValueError(f"Unsupported repair arguments: {sorted(unknown)}")
+    return await run_rebuild(
+        db_pool,
+        timezone=args.get("timezone", "Asia/Singapore"),
+        situation_timezone=await load_configured_general_timezone(db_pool),
+        max_days=args.get("max_days", 32),
+    )
+
+
 async def run_rollup_daily(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -670,17 +690,44 @@ async def run_rollup_daily(
                 )
             timezone = raw_timezone
 
-    result = await materialize_daily_rollups(
-        db_pool, timezone=timezone, lookback_days=lookback_days
-    )
+    from butlers.chronicler.history_repair import try_lock
 
-    flags_by_day: dict[str, Any] = {}
-    for day_str in result.get("days_processed", []):
-        flags_by_day[day_str] = await evaluate_and_write_daily_flags(
-            db_pool, local_date=date.fromisoformat(day_str), timezone=timezone
-        )
-    result["flags"] = flags_by_day
-    return result
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            if not await try_lock(conn):
+                return {"status": "busy", "days_processed": []}
+            ctl = await conn.fetchrow(
+                "SELECT * FROM chronicler.daily_repair_control WHERE singleton"
+            )
+            if ctl is None:
+                raise RuntimeError("daily repair state missing")
+            if ctl["blocked_reason"] or ctl["timezone"] != timezone:
+                return {"status": "blocked", "days_processed": []}
+            if ctl["replay_ack"] < ctl["replay_epoch"] or await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_days "
+                "WHERE totals_pending OR outlier_pending)"
+            ):
+                return {"status": "waiting_repair", "days_processed": []}
+            # All day writes and flag reconciliation use this actual connection.
+            result = await materialize_daily_rollups(
+                conn, timezone=timezone, lookback_days=lookback_days
+            )
+            flags_by_day: dict[str, Any] = {}
+            for day_str in result.get("days_processed", []):
+                day = date.fromisoformat(day_str)
+                repaired = await conn.fetchval(
+                    "SELECT built_generation > 0 FROM chronicler.daily_repair_days "
+                    "WHERE local_date = $1",
+                    day,
+                )
+                if repaired:
+                    flags_by_day[day_str] = {"status": "historical_health_unknown"}
+                else:
+                    flags_by_day[day_str] = await evaluate_and_write_daily_flags(
+                        conn, local_date=day, timezone=timezone
+                    )
+            result["flags"] = flags_by_day
+            return result
 
 
 async def run_narrate_daily(

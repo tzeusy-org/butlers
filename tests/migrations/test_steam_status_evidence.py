@@ -221,6 +221,9 @@ def test_changed_old_steam_evidence_removes_stale_counted_play(postgres_containe
             server_settings={"search_path": "chronicler, public"},
             init=register_jsonb_codec,
         )
+        # This scenario deliberately derives UTC-local days; declare that actual
+        # rollup zone rather than silently mixing it with the default SGT cache.
+        await pool.execute("UPDATE daily_repair_control SET timezone='UTC'")
         now = datetime(2026, 11, 3, 12, tzinfo=UTC)
         old = now - timedelta(days=10)
         intermediate = old - timedelta(days=2)

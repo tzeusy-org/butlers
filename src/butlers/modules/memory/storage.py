@@ -136,6 +136,7 @@ _TYPE_TABLE: dict[str, str] = {
     "rule": "rules",
 }
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MEMORY_RELATION_TABLES = frozenset((*_TYPE_TABLE.values(), "memory_events"))
 
 
 # ---------------------------------------------------------------------------
@@ -188,20 +189,26 @@ def _validate_consolidation_narrative_edge(
         )
 
 
+def _qualified_memory_relation(table: str, memory_schema: str | None = None) -> str:
+    """Return a fixed memory relation, optionally pinned to its owning schema."""
+    if table not in _MEMORY_RELATION_TABLES:
+        raise ValueError(f"Unsupported memory relation: {table!r}")
+    if memory_schema is None:
+        return table
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(memory_schema):
+        raise ValueError(f"Unsafe memory schema identifier: {memory_schema!r}")
+    return f'"{memory_schema}"."{table}"'
+
+
 def _memory_relation(memory_type: str, memory_schema: str | None = None) -> str:
-    """Return a memory table relation, optionally pinned to its owning schema.
+    """Return a canonical memory relation, optionally pinned to its owner schema.
 
     Normal daemon and MCP callers rely on their pool's search path and retain
     that unqualified behavior by omitting ``memory_schema``. Dashboard callers
     that fan out across schema-scoped pools pass the explicit owner schema so a
     dropped local table cannot resolve to a same-named ``public`` relation.
     """
-    table = _TYPE_TABLE[memory_type]
-    if memory_schema is None:
-        return table
-    if not _SQL_IDENTIFIER_PATTERN.fullmatch(memory_schema):
-        raise ValueError(f"Unsafe memory schema identifier: {memory_schema!r}")
-    return f'"{memory_schema}"."{table}"'
+    return _qualified_memory_relation(_TYPE_TABLE[memory_type], memory_schema)
 
 
 # ---------------------------------------------------------------------------
@@ -517,13 +524,7 @@ async def _mark_catalog_stale(
         return
     await pool_or_conn.execute(
         """
-        UPDATE public.memory_catalog
-        SET confidence = 0,
-            invalid_at = $4,
-            updated_at = now()
-        WHERE source_schema = $1
-          AND source_table = $2
-          AND source_id = ANY($3)
+        SELECT public.invalidate_memory_projection($1,$2,$3::uuid[],$4,FALSE,FALSE)
         """,
         source_schema,
         source_table,
@@ -538,6 +539,7 @@ async def _cascade_catalog_disownment(
     source_ids: list[uuid.UUID],
     *,
     invalid_at: datetime | None = None,
+    source_schema: str | None = None,
 ) -> None:
     """Mark ``public.memory_catalog`` rows stale, atomically, for disowned memories.
 
@@ -550,37 +552,25 @@ async def _cascade_catalog_disownment(
     NOT swallow exceptions — a catalog-write failure here rolls back the whole
     transaction so the canonical disownment and the catalog never diverge).
 
-    The owning ``source_schema`` is resolved from the connection's own
-    ``current_schema()`` rather than threaded through every caller: butler
-    pools are opened with ``search_path = <schema>, public`` (see
-    ``butlers.db.schema_search_path``), so ``current_schema()`` reliably
-    returns the same schema ``store_fact``/``store_rule`` would have used to
-    catalog the row in the first place (see the identical idiom in
-    ``core/scheduler.py::_has_table`` and
-    ``scheduled_jobs.py::_infer_current_schema``). If no catalog row matches
-    (write-behind was off, or the row predates it), this is a harmless no-op.
+    Explicit ``source_schema`` must match the schema used by the canonical
+    mutation. Dashboard callers can qualify private memory relations while
+    using a domain-schema pool. Only unqualified legacy callers resolve
+    ``current_schema()`` on this same connection; never resolve it inside a
+    function with a pinned search path.
     """
+    if source_schema is not None:
+        if not _SQL_IDENTIFIER_PATTERN.fullmatch(source_schema):
+            raise ValueError(f"Unsafe memory schema identifier: {source_schema!r}")
     if not source_ids:
         return
-    source_schema = await conn.fetchval("SELECT current_schema()")
-    await _mark_catalog_stale(
-        conn,
-        source_schema=source_schema,
-        source_table=source_table,
-        source_ids=source_ids,
-        invalid_at=invalid_at or datetime.now(UTC),
-    )
-    # RFC 0031 (bu-8cdl1.8 Slice 2): a disowned fact's projected
-    # entity_graph_edges row must be retracted in the same transaction, or
-    # the graph would keep reporting a relationship whose source fact no
-    # longer exists / is no longer current. A no-op for rules (never
-    # projected — see entity_graph_edges.py) and for facts that were never
-    # edge-facts (no matching row to delete).
-    await entity_graph_edges.delete_entity_graph_edges(
-        conn,
-        source_schema=source_schema,
-        source_table=source_table,
-        source_ids=source_ids,
+    if source_schema is None:
+        source_schema = await conn.fetchval("SELECT current_schema()")
+    await conn.execute(
+        "SELECT public.invalidate_memory_projection($1,$2,$3::uuid[],$4,TRUE,FALSE)",
+        source_schema,
+        source_table,
+        source_ids,
+        invalid_at or datetime.now(UTC),
     )
 
 
@@ -589,6 +579,7 @@ async def cascade_fact_retraction(
     fact_ids: list[uuid.UUID],
     *,
     invalid_at: datetime | None = None,
+    source_schema: str | None = None,
 ) -> None:
     """Public entry point for the catalog/graph-edge cascade on retracted facts.
 
@@ -601,7 +592,9 @@ async def cascade_fact_retraction(
     connection/transaction as the retracting UPDATE, or the catalog/graph
     state can diverge from the canonical retraction on a crash.
     """
-    await _cascade_catalog_disownment(conn, "facts", fact_ids, invalid_at=invalid_at)
+    await _cascade_catalog_disownment(
+        conn, "facts", fact_ids, invalid_at=invalid_at, source_schema=source_schema
+    )
 
 
 async def _backfill_facts_to_catalog(
@@ -2938,7 +2931,9 @@ async def _forget_plain(
                 )
             found = result.endswith("1")
             if found and memory_type in ("fact", "rule"):
-                await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
+                await _cascade_catalog_disownment(
+                    conn, _TYPE_TABLE[memory_type], [memory_id], source_schema=memory_schema
+                )
     return found
 
 
@@ -2965,6 +2960,7 @@ async def _forget_with_correction_provenance(
         provenance_patch["correction_reason"] = correction_reason
 
     table = _memory_relation(memory_type, memory_schema)
+    events_table = _qualified_memory_relation("memory_events", memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
             if memory_type == "fact":
@@ -3007,8 +3003,8 @@ async def _forget_with_correction_provenance(
                     event_payload["correction_reason"] = correction_reason
 
                 await conn.execute(
-                    """
-                    INSERT INTO memory_events
+                    f"""
+                    INSERT INTO {events_table}
                         (event_type, actor, memory_type, memory_id, payload)
                     VALUES
                         ('correction_driven_retraction', 'correction_system',
@@ -3020,7 +3016,9 @@ async def _forget_with_correction_provenance(
                 )
 
                 if memory_type in ("fact", "rule"):
-                    await _cascade_catalog_disownment(conn, _TYPE_TABLE[memory_type], [memory_id])
+                    await _cascade_catalog_disownment(
+                        conn, _TYPE_TABLE[memory_type], [memory_id], source_schema=memory_schema
+                    )
 
     return found
 
@@ -3214,7 +3212,9 @@ async def retire_rule(
             )
             found = result.endswith("1")
             if found:
-                await _cascade_catalog_disownment(conn, "rules", [rule_id])
+                await _cascade_catalog_disownment(
+                    conn, "rules", [rule_id], source_schema=memory_schema
+                )
     return found
 
 

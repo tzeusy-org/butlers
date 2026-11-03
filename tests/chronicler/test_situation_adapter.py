@@ -51,11 +51,23 @@ class _Conn:
         return []
 
     async def fetchrow(self, query: str, *args: Any) -> Any:
+        if "daily_repair_control" in query:
+            return {
+                "replay_epoch": 1,
+                "replay_ack": 1,
+                "timezone": "Asia/Singapore",
+                "blocked_reason": None,
+            }
         # The latest-ending place/movement episode, for the tail hold.
         last = max(self.places, key=lambda p: p["end_at"], default=None)
         if last is None:
             return None
         return {**last, "episode_type": "place_episode"}
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        if "pg_try_advisory_xact_lock" in query:
+            return True
+        raise AssertionError(query)
 
     async def execute(self, query: str, *args: Any) -> str:
         self.executed.append((query, args))

@@ -135,7 +135,7 @@ def _local_day_bounds_utc(local_date: date, tzinfo: ZoneInfo) -> tuple[datetime,
 
 
 async def materialize_daily_rollups(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     timezone: str = DEFAULT_TIMEZONE,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,

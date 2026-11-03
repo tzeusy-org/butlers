@@ -490,6 +490,15 @@ BEGIN
             _role
         );
 
+        -- Exact invoker boundary installed by core_314. Replay also repairs
+        -- late-created canonical roles without depending on creator defaults.
+        IF to_regprocedure('public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)') IS NOT NULL THEN
+            REVOKE EXECUTE ON FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean) FROM PUBLIC;
+            EXECUTE format('GRANT SELECT, UPDATE ON public.memory_catalog TO %I', _role);
+            EXECUTE format('GRANT SELECT, DELETE ON public.entity_graph_edges TO %I', _role);
+            EXECUTE format('GRANT EXECUTE ON FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean) TO %I', _role);
+        END IF;
+
         -- Butler roles may read connector-owned tables (for dashboards/routes).
         EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, _role);
         EXECUTE format(

@@ -152,7 +152,7 @@ def category_for(
 
 # Top-level life-balance lanes. The frontend LANE_TAXONOMY maps these to
 # display labels/colours/icons. These — not data sources — are what every
-# time/balance aggregate buckets by. ``music``/``gaming`` fold into Play;
+# time/balance aggregate buckets by. counted gaming folds into Play; music remains evidence;
 # ``calendar`` is intent and never reaches a lane. See design.md §"Activity
 # lane taxonomy".
 LANES: frozenset[str] = frozenset(

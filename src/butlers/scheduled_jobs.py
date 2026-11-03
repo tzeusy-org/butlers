@@ -1920,6 +1920,16 @@ async def _run_chronicler_project_occupation_inferred_job(
     return await run_project_occupation_inferred(pool, job_args)
 
 
+async def _run_chronicler_rebuild_daily_rollups_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run a bounded historical quantitative rebuild."""
+    from butlers.chronicler.jobs import run_rebuild_daily_rollups
+
+    return await run_rebuild_daily_rollups(pool, job_args)
+
+
 async def _run_chronicler_project_situation_inferred_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2239,6 +2249,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_occupation_inferred": (
                 _run_chronicler_project_occupation_inferred_job
             ),
+            "chronicler_rebuild_daily_rollups": _run_chronicler_rebuild_daily_rollups_job,
             "chronicler_project_situation_inferred": (
                 _run_chronicler_project_situation_inferred_job
             ),

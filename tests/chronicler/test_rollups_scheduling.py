@@ -13,8 +13,9 @@ Pure-unit tests — no Docker / PostgreSQL required.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -71,19 +72,39 @@ async def test_run_rollup_daily_rejects_empty_timezone() -> None:
         await run_rollup_daily(AsyncMock(), job_args={"timezone": ""})
 
 
+def _ready_pool(timezone="Asia/Singapore"):
+    conn = AsyncMock()
+    conn.transaction = MagicMock(side_effect=lambda: nullcontext())
+    conn.fetchrow.return_value = {
+        "timezone": timezone,
+        "blocked_reason": None,
+        "replay_ack": 1,
+        "replay_epoch": 1,
+    }
+    conn.fetchval.side_effect = lambda sql, *args: "pg_try_advisory_xact_lock" in sql
+    pool = MagicMock()
+    pool.acquire.side_effect = lambda: nullcontext(conn)
+    pool.repair_connection = conn
+    return pool
+
+
 async def test_run_rollup_daily_accepts_no_job_args(monkeypatch) -> None:
     """No job_args -> defaults (lookback_days=7, timezone=Asia/Singapore)
     reach materialize_daily_rollups."""
     captured: dict[str, Any] = {}
 
     async def _fake_materialize(pool, *, timezone, lookback_days):
+        assert pool is ready.repair_connection
         captured["timezone"] = timezone
         captured["lookback_days"] = lookback_days
         return {"timezone": timezone, "lookback_days": lookback_days}
 
     monkeypatch.setattr("butlers.chronicler.rollups.materialize_daily_rollups", _fake_materialize)
 
-    result = await run_rollup_daily(AsyncMock(), job_args=None)
+    ready = _ready_pool()
+    result = await run_rollup_daily(ready, job_args=None)
+    ready.acquire.assert_called_once()
+    ready.repair_connection.transaction.assert_called_once()
 
     assert captured == {"timezone": "Asia/Singapore", "lookback_days": 7}
     # No days_processed in the fake materializer result -> no flag evaluation
@@ -96,13 +117,17 @@ async def test_run_rollup_daily_honors_explicit_overrides(monkeypatch) -> None:
     captured: dict[str, Any] = {}
 
     async def _fake_materialize(pool, *, timezone, lookback_days):
+        assert pool is ready.repair_connection
         captured["timezone"] = timezone
         captured["lookback_days"] = lookback_days
         return {}
 
     monkeypatch.setattr("butlers.chronicler.rollups.materialize_daily_rollups", _fake_materialize)
 
-    await run_rollup_daily(AsyncMock(), job_args={"lookback_days": 14, "timezone": "UTC"})
+    ready = _ready_pool("UTC")
+    await run_rollup_daily(ready, job_args={"lookback_days": 14, "timezone": "UTC"})
+    ready.acquire.assert_called_once()
+    ready.repair_connection.transaction.assert_called_once()
 
     assert captured == {"timezone": "UTC", "lookback_days": 14}
 

@@ -293,3 +293,10 @@ dispatch_mode = "job"
 job_name = "chronicler_gap_interview"
 
 # RFC 0015: core always registers the error relay; no module opt-in is required.
+
+# Finite old-date repair driver; waits for durable :10/:40 situation replay.
+[[butler.schedule]]
+name = "chronicler_rebuild_daily_rollups"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_rebuild_daily_rollups"
