@@ -10,12 +10,9 @@ import asyncio
 import shutil
 import uuid
 
-import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.jobs.external_deadman import run_external_deadman_check
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [
     pytest.mark.integration,
@@ -24,26 +21,12 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 async def test_real_committed_tick_claim_refuses_concurrent_duplicate_and_unhealthy_fleet(
-    migrated_db_url,
+    db,
     monkeypatch,
 ):
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
+    pool = await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
     started, release = asyncio.Event(), asyncio.Event()
     sends = []
@@ -142,12 +125,5 @@ async def test_real_committed_tick_claim_refuses_concurrent_duplicate_and_unheal
         for task in tasks:
             if not task.done():
                 task.cancel()
-        try:
-            async with asyncio.timeout(5):
-                await asyncio.gather(*tasks, return_exceptions=True)
-        finally:
-            try:
-                await asyncio.wait_for(pool.close(), 5)
-            except BaseException:
-                pool.terminate()
-                raise
+        async with asyncio.timeout(5):
+            await asyncio.gather(*tasks, return_exceptions=True)

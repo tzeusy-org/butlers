@@ -25,6 +25,7 @@ import pytest
 from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db as _sessions_get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -106,12 +107,6 @@ def _make_prompt_row(session_id) -> dict:
     }
 
 
-def _make_record(row: dict):
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
-
-
 def _make_app(
     *, owning_butler: str, row: dict | None, degraded: list[str] | None = None, app=None
 ) -> object:
@@ -126,7 +121,7 @@ def _make_app(
     async def _fan_out(sql, args, **kw):
         result = {"atlas": [], "general": []}
         if row is not None:
-            result[owning_butler] = [_make_record(row)]
+            result[owning_butler] = [Record(row)]
         return result, list(degraded or [])
 
     owning_pool = AsyncMock()

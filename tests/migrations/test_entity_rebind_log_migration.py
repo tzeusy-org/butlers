@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,16 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
 _PATH = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_243_entity_rebind_log.py"
+_ENTITY_INSERT = (
+    "INSERT INTO public.entities (canonical_name) "
+    "VALUES ('rebind ' || gen_random_uuid()) RETURNING id"
+)
+
+
+@asynccontextmanager
+async def _pre_core_243(db, **pool_kwargs):
+    """The real core_242 schema: public.entities exists, the ledger does not."""
+    yield await db("core", revisions={"core": "core_242"}, **pool_kwargs)
 
 
 def _load_migration():
@@ -64,14 +75,11 @@ def test_entity_rebind_log_preflights_protected_downgrade_before_mutation() -> N
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_entity_rebind_log_forward_and_backward(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            "CREATE TABLE public.entities (id UUID PRIMARY KEY DEFAULT gen_random_uuid())"
-        )
+async def test_entity_rebind_log_forward_and_backward(db) -> None:
+    async with _pre_core_243(db) as pool:
         await _run(pool, "upgrade")
-        source = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
-        target = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+        source = await pool.fetchval(_ENTITY_INSERT)
+        target = await pool.fetchval(_ENTITY_INSERT)
         rebind = await pool.fetchval("SELECT gen_random_uuid()")
 
         await pool.execute(
@@ -103,13 +111,9 @@ async def test_entity_rebind_log_forward_and_backward(provisioned_postgres_pool)
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_entity_rebind_log_install_is_concurrent_replay_safe(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=2) as pool:
-        await pool.execute(
-            "CREATE TABLE public.entities (id UUID PRIMARY KEY DEFAULT gen_random_uuid())"
-        )
-
+    async with _pre_core_243(db, min_size=2, max_size=2) as pool:
         await asyncio.gather(_run(pool, "upgrade"), _run(pool, "upgrade"))
 
         assert await pool.fetchval("SELECT to_regclass('public.entity_rebind_log')") == (
@@ -126,19 +130,13 @@ async def test_entity_rebind_log_install_is_concurrent_replay_safe(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_entity_rebind_log_enforces_role_bound_cohort_and_settlement(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        for role in ("butler_relationship_rw", "butler_general_rw", "butler_finance_rw"):
-            await pool.execute(
-                f"DO $$ BEGIN CREATE ROLE {role}; EXCEPTION WHEN duplicate_object THEN NULL; END $$"
-            )
-        await pool.execute(
-            "CREATE TABLE public.entities (id UUID PRIMARY KEY DEFAULT gen_random_uuid())"
-        )
+    # The real bootstrap provisions butler_{relationship,general,finance}_rw.
+    async with _pre_core_243(db) as pool:
         await _run(pool, "upgrade")
-        source = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
-        target = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+        source = await pool.fetchval(_ENTITY_INSERT)
+        target = await pool.fetchval(_ENTITY_INSERT)
         rebind = await pool.fetchval("SELECT gen_random_uuid()")
 
         # init-db.sql can re-widen public-table grants after migrations. Prove

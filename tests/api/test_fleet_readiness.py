@@ -309,20 +309,28 @@ def _mounted(readiness: Any) -> Any:
 
 async def test_exact_get_ready_is_public_cached_and_independent_of_process_health():
     pool_calls: list[str] = []
+    preflight_calls: list[str] = []
 
     def forbidden_pool() -> Any:
         pool_calls.append("pool")
         raise AssertionError("public /ready must not touch the database")
 
+    def forbidden_preflight() -> Any:
+        preflight_calls.append("preflight")
+        raise AssertionError("public /ready must not initiate preflight")
+
     clock = _Clock()
-    readiness = FleetReadiness(forbidden_pool, _configs(), None, clock=clock)
+    readiness = FleetReadiness(
+        forbidden_pool, _configs(), None, clock=clock, client_factory=forbidden_preflight
+    )
     app = _mounted(readiness)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
     ) as client:
         missing = await client.get("/ready")
         assert missing.status_code == 503
         assert missing.json() == {"ready": False, "checks": dict.fromkeys(CHECK_KEYS, False)}
+        assert missing.headers["cache-control"] == "no-store"
         assert (await client.get("/health")).status_code == 200
 
         readiness._snapshot = ReadinessSnapshot(dict.fromkeys(CHECK_KEYS, True), clock.now)
@@ -336,6 +344,21 @@ async def test_exact_get_ready_is_public_cached_and_independent_of_process_healt
         assert not_ready.status_code == 503
         # Fixed Boolean categories only: no names, endpoints, or diagnostics.
         assert not_ready.json() == {"ready": False, "checks": failing}
+        assert not_ready.headers["cache-control"] == "no-store"
+        assert set(not_ready.json()) == {"ready", "checks"}
+        assert set(not_ready.json()["checks"]) == set(CHECK_KEYS)
+        assert all(type(value) is bool for value in not_ready.json()["checks"].values())
+
+        readiness._snapshot = ReadinessSnapshot(dict.fromkeys(CHECK_KEYS, True), clock.now)
+        clock.now += readiness.sample_interval_s * 3 + 1
+        stale = await client.get("/ready")
+        assert (stale.status_code, stale.json()) == (503, missing.json())
+        assert stale.headers["cache-control"] == "no-store"
+        assert (await client.get("/health")).status_code == 200
+
+        slash = await client.get("/ready/")
+        assert slash.status_code == 404
+        assert "location" not in slash.headers
 
         # The exception is exact: another method on /ready is refused by owner
         # auth exactly like a protected API (no auth service here: 503 closed).
@@ -346,4 +369,14 @@ async def test_exact_get_ready_is_public_cached_and_independent_of_process_healt
             protected.status_code,
             protected.json(),
         )
+        head = await client.head("/ready")
+        assert head.status_code == protected.status_code
+        assert head.content == b""
+        assert "location" not in head.headers
+        assert [
+            route.path
+            for route in app.routes
+            if getattr(route, "path", None) == "/ready" and "GET" in route.methods
+        ] == ["/ready"]
     assert pool_calls == []
+    assert preflight_calls == []

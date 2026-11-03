@@ -247,7 +247,8 @@ curl -s http://localhost:41101/metrics 2>/dev/null | grep butlers_spawner
 - Shared dashboard defaults live in `public.state` under `settings.general`
   (`GENERAL_SETTINGS_STATE_KEY`), edited through `/api/settings/general`: `timezone`, `language`,
   `date_format`, `time_format`, `week_starts_on`, `currency`. `measurement_system` is response-only
-  `metric`. `Spawner` injects the block into every butler's system prompt.
+  `metric`. `Spawner` injects the block into every butler's system prompt. `public.state` is
+  read-only to butler and connector roles (core_306); only the dashboard's owner login writes it.
 - `notify` and `memory_store_fact` tool metadata document required and optional fields with a valid
   JSON example and constrained enums (`channel`, `intent`, `permanence`); `tags` is a JSON array.
   Scheduled prompts that do not reply to ingress use `intent="send"`.
