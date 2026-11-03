@@ -51,6 +51,90 @@ data:
   pg_dump.sh: |-
 {{ .Files.Get "files/pg_dump.sh" | indent 4 }}
 {{- end }}
+{{- if .Values.offsiteCopy.enabled }}
+{{- if not .Values.backup.enabled }}
+{{- fail "offsiteCopy requires backup.enabled: it copies the backup dumps volume" }}
+{{- end }}
+{{- $c := .Values.offsiteCopy }}
+---
+# Off-node restic copy of the dumps volume (bu-ivuf9u). Credentials come only
+# from the owner-created Secret named by offsiteCopy.secretName.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Release.Name }}-offsite-copy
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  schedule: {{ $c.schedule | quote }}
+  suspend: {{ $.Values.suspend }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "butlers.selector" (dict "root" . "component" "offsite-copy") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: restic
+              image: {{ $c.image | quote }}
+              command: ["sh", "/offsite/restic_offsite_copy.sh"]
+              env:
+                - {name: BACKUP_DIR, value: /backups}
+                - {name: OFFSITE_HOST, value: {{ required "offsiteCopy.host is required (the owner's tailnet device)" $c.host | quote }}}
+                - {name: OFFSITE_REPO_PATH, value: {{ required "offsiteCopy.repoPath is required" $c.repoPath | quote }}}
+                - {name: OFFSITE_USER, value: {{ $c.user | quote }}}
+                - {name: OFFSITE_PORT, value: {{ $c.port | quote }}}
+                - {name: OFFSITE_SOURCE_HOST, value: {{ $c.sourceHostLabel | quote }}}
+                - {name: OFFSITE_INIT_REPOSITORY, value: {{ $c.initRepository | toString | quote }}}
+                - {name: OFFSITE_KEEP_DAILY, value: {{ $c.keep.daily | quote }}}
+                - {name: OFFSITE_KEEP_WEEKLY, value: {{ $c.keep.weekly | quote }}}
+                - {name: OFFSITE_KEEP_MONTHLY, value: {{ $c.keep.monthly | quote }}}
+                - {name: RESTIC_PASSWORD_FILE, value: /offsite-secret/restic-password}
+                - {name: OFFSITE_SSH_KEY_FILE, value: /offsite-secret/ssh-private-key}
+                - {name: OFFSITE_KNOWN_HOSTS_FILE, value: /offsite-secret/known-hosts}
+                - {name: RESTIC_CACHE_DIR, value: /cache}
+              resources:
+                {{- toYaml $c.resources | nindent 16 }}
+              volumeMounts:
+                - {name: script, mountPath: /offsite}
+                - {name: backups, mountPath: /backups}
+                - {name: secret, mountPath: /offsite-secret, readOnly: true}
+                - {name: cache, mountPath: /cache}
+          volumes:
+            - name: script
+              configMap:
+                name: {{ .Release.Name }}-offsite-copy-script
+            # Read-write only for offsite_last_run.json; the dumps are not changed.
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ .Release.Name }}-backups
+            - name: secret
+              secret:
+                secretName: {{ required "offsiteCopy.secretName is required (an existing Secret; the chart never creates it)" $c.secretName | quote }}
+                defaultMode: 0400
+                items:
+                  - {key: restic-password, path: restic-password}
+                  - {key: ssh-private-key, path: ssh-private-key}
+                  - {key: known-hosts, path: known-hosts}
+            - name: cache
+              emptyDir: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-offsite-copy-script
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+data:
+  restic_offsite_copy.sh: |-
+{{ .Files.Get "files/restic_offsite_copy.sh" | indent 4 }}
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: CronJob

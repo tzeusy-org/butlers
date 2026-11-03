@@ -44,60 +44,6 @@ _NEW_CHECK = "('reasoning', 'workhorse', 'cheap', 'specialty', 'local', 'legacy'
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Helpers to materialise the three affected tables in a test DB
-# (no FK wiring — only what the migration itself touches)
-# ---------------------------------------------------------------------------
-
-
-async def _create_prerequisite_tables(pool: asyncpg.Pool) -> None:
-    """Create minimal versions of the three tables with old-vocabulary CHECK constraints."""
-    await pool.execute(f"""
-        CREATE TABLE public.model_catalog (
-            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            alias           TEXT NOT NULL UNIQUE,
-            runtime_type    TEXT NOT NULL DEFAULT 'codex',
-            model_id        TEXT NOT NULL DEFAULT 'dummy',
-            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
-            complexity_tier TEXT NOT NULL DEFAULT 'medium',
-            enabled         BOOLEAN NOT NULL DEFAULT true,
-            priority        INTEGER NOT NULL DEFAULT 0,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT chk_model_catalog_complexity_tier
-                CHECK (complexity_tier IN {_OLD_CHECK})
-        )
-    """)
-
-    await pool.execute(f"""
-        CREATE TABLE public.butler_model_overrides (
-            id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            butler_name      TEXT NOT NULL,
-            catalog_entry_id UUID NOT NULL REFERENCES public.model_catalog(id) ON DELETE CASCADE,
-            enabled          BOOLEAN NOT NULL DEFAULT true,
-            priority         INTEGER,
-            complexity_tier  TEXT,
-            source           TEXT,
-            CONSTRAINT uq_butler_model_overrides_butler_entry
-                UNIQUE (butler_name, catalog_entry_id),
-            CONSTRAINT chk_butler_model_overrides_complexity_tier
-                CHECK (complexity_tier IS NULL OR complexity_tier IN {_OLD_CHECK})
-        )
-    """)
-
-    await pool.execute(f"""
-        CREATE TABLE public.model_round_robin_counters (
-            butler_name      TEXT NOT NULL,
-            complexity_tier  TEXT NOT NULL,
-            counter          BIGINT NOT NULL DEFAULT 0,
-            updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (butler_name, complexity_tier),
-            CONSTRAINT chk_rr_complexity_tier
-                CHECK (complexity_tier IN {_OLD_CHECK})
-        )
-    """)
-
-
 async def _run_upgrade(pool: asyncpg.Pool) -> None:
     """Replay upgrade() SQL statements against the live pool."""
     mod = load_migration(_MIGRATION_PATH, "core_093")
@@ -128,11 +74,9 @@ async def _run_downgrade(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def migration_pool(provisioned_postgres_pool):
-    """Fresh DB with pre-migration schema already in place."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_prerequisite_tables(pool)
-        yield pool
+async def migration_pool(db):
+    """core_093's predecessor: the real tables with their old-vocabulary CHECKs."""
+    return await db("core", revisions={"core": "core_092"})
 
 
 # ---------------------------------------------------------------------------

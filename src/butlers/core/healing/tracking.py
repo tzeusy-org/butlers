@@ -87,7 +87,8 @@ VALID_STATUSES = frozenset(
     }
 )
 
-#: Terminal states — no further transitions are allowed once reached.
+#: Terminal states — no further transitions are allowed once reached.  The core_305
+#: ``closed_at`` stamp trigger and the core_301 export prune guard repeat this set.
 TERMINAL_STATUSES = frozenset(
     {"pr_merged", "failed", "unfixable", "anonymization_failed", "timeout"}
 )

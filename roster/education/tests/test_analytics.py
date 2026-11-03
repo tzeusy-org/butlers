@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.testing.records import Record as _MockRecord
 from butlers.testing.records import Record as _make_row
 
@@ -33,72 +34,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers: mock asyncpg pool / connection builder
 # ---------------------------------------------------------------------------
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool (direct pool calls)."""
-    pool = AsyncMock()
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    return pool
-
-
-def _make_conn(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg connection."""
-    conn = AsyncMock()
-
-    if fetchrow_returns is not None:
-        conn.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        conn.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        conn.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        conn.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        conn.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        conn.fetchval = AsyncMock(return_value=0)
-
-    if execute_returns is not None:
-        conn.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        conn.execute = AsyncMock(return_value="UPDATE 1")
-
-    return conn
 
 
 def _make_pool_with_conn(conn: AsyncMock) -> MagicMock:
@@ -736,13 +671,15 @@ class TestAnalyticsComputeAll:
                 }
             ),
         ):
-            pool = _make_pool(
-                fetch_returns=[
-                    [
-                        _make_row({"id": map_id_1}),
-                        _make_row({"id": map_id_2}),
+            pool = fake_pool(
+                fetch=AsyncMock(
+                    side_effect=[
+                        [
+                            _make_row({"id": map_id_1}),
+                            _make_row({"id": map_id_2}),
+                        ]
                     ]
-                ]
+                )
             )
 
             count = await analytics_compute_all(pool, date(2026, 2, 26))
@@ -772,7 +709,7 @@ class TestAnalyticsComputeAll:
             "butlers.tools.education.analytics.analytics_compute_snapshot",
             new=AsyncMock(return_value=struggling_metrics),
         ):
-            pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+            pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row({"id": map_id})]]))
 
             await analytics_compute_all(pool, date(2026, 2, 26), curriculum_replan=mock_replan)
 
@@ -802,7 +739,7 @@ class TestAnalyticsComputeAll:
             "butlers.tools.education.analytics.analytics_compute_snapshot",
             new=AsyncMock(return_value=low_retention_metrics),
         ):
-            pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+            pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row({"id": map_id})]]))
 
             await analytics_compute_all(pool, date(2026, 2, 26), curriculum_replan=mock_replan)
 
@@ -831,7 +768,7 @@ class TestAnalyticsComputeAll:
             "butlers.tools.education.analytics.analytics_compute_snapshot",
             new=AsyncMock(return_value=healthy_metrics),
         ):
-            pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+            pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row({"id": map_id})]]))
 
             await analytics_compute_all(pool, date(2026, 2, 26), curriculum_replan=mock_replan)
 
@@ -860,7 +797,7 @@ class TestAnalyticsComputeAll:
             "butlers.tools.education.analytics.analytics_compute_snapshot",
             new=AsyncMock(return_value=no_reviews_metrics),
         ):
-            pool = _make_pool(fetch_returns=[[_make_row({"id": map_id})]])
+            pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row({"id": map_id})]]))
 
             await analytics_compute_all(pool, date(2026, 2, 26), curriculum_replan=mock_replan)
 
@@ -870,7 +807,7 @@ class TestAnalyticsComputeAll:
         """When no active maps exist, returns 0."""
         from butlers.tools.education.analytics import analytics_compute_all
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         count = await analytics_compute_all(pool, date(2026, 2, 26))
 
@@ -896,7 +833,7 @@ class TestAnalyticsGetSnapshot:
             metrics={"mastery_pct": 0.5},
         )
 
-        pool = _make_pool(fetchrow_returns=[_make_row(snap)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row(snap)]))
 
         result = await analytics_get_snapshot(pool, map_id)
 
@@ -911,7 +848,7 @@ class TestAnalyticsGetSnapshot:
         target_date = date(2026, 2, 20)
         snap = _snapshot_row(mind_map_id=map_id, snapshot_date=target_date)
 
-        pool = _make_pool(fetchrow_returns=[_make_row(snap)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row(snap)]))
 
         result = await analytics_get_snapshot(pool, map_id, date=target_date)
 
@@ -921,7 +858,7 @@ class TestAnalyticsGetSnapshot:
         """Returns None when no snapshot exists."""
         from butlers.tools.education.analytics import analytics_get_snapshot
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
 
         result = await analytics_get_snapshot(pool, str(uuid.uuid4()))
 
@@ -947,7 +884,7 @@ class TestAnalyticsGetTrend:
             _snapshot_row(mind_map_id=map_id, snapshot_date=date(2026, 2, 26)),
         ]
 
-        pool = _make_pool(fetch_returns=[[_make_row(s) for s in snaps]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[_make_row(s) for s in snaps]]))
 
         results = await analytics_get_trend(pool, map_id, days=30)
 
@@ -960,7 +897,7 @@ class TestAnalyticsGetTrend:
         """Returns empty list when no snapshots exist in the date range."""
         from butlers.tools.education.analytics import analytics_get_trend
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         results = await analytics_get_trend(pool, str(uuid.uuid4()), days=30)
 
@@ -970,7 +907,7 @@ class TestAnalyticsGetTrend:
         """Default days parameter is 30."""
         from butlers.tools.education.analytics import analytics_get_trend
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         # Should not raise and uses 30 as default
         results = await analytics_get_trend(pool, str(uuid.uuid4()))
@@ -1029,7 +966,7 @@ class TestAnalyticsGetCrossTopic:
             ),
         ]
 
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
 
         result = await analytics_get_cross_topic(pool)
 
@@ -1078,7 +1015,7 @@ class TestAnalyticsGetCrossTopic:
             ),
         ]
 
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
 
         result = await analytics_get_cross_topic(pool)
 
@@ -1124,7 +1061,7 @@ class TestAnalyticsGetCrossTopic:
             ),
         ]
 
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
 
         result = await analytics_get_cross_topic(pool)
 
@@ -1167,7 +1104,7 @@ class TestAnalyticsGetCrossTopic:
             ),
         ]
 
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
 
         result = await analytics_get_cross_topic(pool)
 
@@ -1178,7 +1115,7 @@ class TestAnalyticsGetCrossTopic:
         """Returns empty topics list and sensible defaults when no active maps."""
         from butlers.tools.education.analytics import analytics_get_cross_topic
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         result = await analytics_get_cross_topic(pool)
 
@@ -1209,7 +1146,7 @@ class TestAnalyticsGetCrossTopic:
             ),
         ]
 
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
 
         result = await analytics_get_cross_topic(pool)
 
@@ -1235,7 +1172,7 @@ class TestAnalyticsGetCrossTopic:
             ),
         ]
 
-        pool = _make_pool(fetch_returns=[rows])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[rows]))
 
         result = await analytics_get_cross_topic(pool)
 

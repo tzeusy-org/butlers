@@ -10,7 +10,7 @@ tests/relationship/test_jsonb_codec.py). The mocked-session unit tests in
 tests/core/qa/test_journal.py only assert on the Python value handed to the
 mock -- they cannot prove what actually lands in a real jsonb column. This
 test writes via the real ``record_event()`` code path against a
-migrated-shape Postgres table and reads the row back directly.
+core-migrated Postgres table and reads the row back directly.
 
 ``record_patrol_tick_events()`` (same module) is NOT covered here: it binds a
 ``text[]`` parameter and casts ``data::jsonb`` server-side inside the query,
@@ -35,61 +35,68 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-# Mirrors core_091's qa_investigation_events DDL closely enough to exercise
-# the real INSERT: parent FKs (healing_attempts, qa_findings) are dropped
-# since record_event() only needs a valid attempt_id/finding_id value, not a
-# real referential integrity check, for this encoding-focused test.
-_QA_INVESTIGATION_EVENTS_DDL = """
-CREATE TABLE IF NOT EXISTS public.qa_investigation_events (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attempt_id UUID NOT NULL,
-    finding_id UUID,
-    ts         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    step       TEXT NOT NULL,
-    text       TEXT NOT NULL,
-    detail     TEXT,
-    data       JSONB NOT NULL DEFAULT '{}'::jsonb
-)
-"""
+
+async def _attempt_and_finding(pool) -> tuple[uuid.UUID, uuid.UUID]:
+    """Real parent rows for qa_investigation_events' FKs (core_091)."""
+    attempt_id = await pool.fetchval(
+        """
+        INSERT INTO public.healing_attempts
+            (fingerprint, butler_name, severity, exception_type, call_site)
+        VALUES ($1, 'general', 2, 'ValueError', 'module:1')
+        RETURNING id
+        """,
+        "a" * 64,
+    )
+    patrol_id = await pool.fetchval(
+        "INSERT INTO public.qa_patrols (status) VALUES ('running') RETURNING id"
+    )
+    finding_id = await pool.fetchval(
+        """
+        INSERT INTO public.qa_findings
+            (patrol_id, fingerprint, source_type, source_butler, severity, exception_type,
+             event_summary, call_site, first_seen, last_seen)
+        VALUES ($1, $2, 'log_scanner', 'general', 2, 'ValueError', 'Failure spotted',
+                'module:1', now(), now())
+        RETURNING id
+        """,
+        patrol_id,
+        "a" * 64,
+    )
+    return attempt_id, finding_id
 
 
-async def test_record_event_data_roundtrips_as_dict_not_double_encoded_string(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_QA_INVESTIGATION_EVENTS_DDL)
-
-        attempt_id = uuid.uuid4()
-        finding_id = uuid.uuid4()
-        non_json_safe_value = uuid.uuid4()
-        event_id = await record_event(
-            pool,
-            attempt_id=attempt_id,
-            finding_id=finding_id,
-            step="flagged",
-            text="Failure spotted",
-            detail="ValueError at module:1",
-            data={
-                "fingerprint": "a" * 64,
-                "extra": {"nested": True},
-                "correlation_id": non_json_safe_value,
-            },
-            ts=datetime(2026, 5, 15, 4, 30, tzinfo=UTC),
-        )
-        assert event_id.version == 7
-
-        row = await pool.fetchrow(
-            "SELECT data FROM public.qa_investigation_events WHERE id = $1", event_id
-        )
-        assert row is not None
-        stored_data = row["data"]
-        assert isinstance(stored_data, dict), (
-            f"data arrived as {type(stored_data).__name__!r}, not a dict — "
-            "the jsonb column was double-encoded into a string."
-        )
-        assert stored_data == {
+async def test_record_event_data_roundtrips_as_dict_not_double_encoded_string(db_pool) -> None:
+    pool = db_pool
+    attempt_id, finding_id = await _attempt_and_finding(pool)
+    non_json_safe_value = uuid.uuid4()
+    event_id = await record_event(
+        pool,
+        attempt_id=attempt_id,
+        finding_id=finding_id,
+        step="flagged",
+        text="Failure spotted",
+        detail="ValueError at module:1",
+        data={
             "fingerprint": "a" * 64,
             "extra": {"nested": True},
-            # UUID sanitized to str by the json.dumps(default=str)/json.loads round-trip.
-            "correlation_id": str(non_json_safe_value),
-        }
+            "correlation_id": non_json_safe_value,
+        },
+        ts=datetime(2026, 5, 15, 4, 30, tzinfo=UTC),
+    )
+    assert event_id.version == 7
+
+    row = await pool.fetchrow(
+        "SELECT data FROM public.qa_investigation_events WHERE id = $1", event_id
+    )
+    assert row is not None
+    stored_data = row["data"]
+    assert isinstance(stored_data, dict), (
+        f"data arrived as {type(stored_data).__name__!r}, not a dict — "
+        "the jsonb column was double-encoded into a string."
+    )
+    assert stored_data == {
+        "fingerprint": "a" * 64,
+        "extra": {"nested": True},
+        # UUID sanitized to str by the json.dumps(default=str)/json.loads round-trip.
+        "correlation_id": str(non_json_safe_value),
+    }

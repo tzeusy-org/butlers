@@ -2442,6 +2442,70 @@ export interface GeneralStats {
 }
 
 // ---------------------------------------------------------------------------
+// General butler — owner projects (bu-jv1moa.12)
+// ---------------------------------------------------------------------------
+
+export type GeneralProjectKind = "project" | "responsibility" | "decision";
+/** Effective state: a draft past its horizon reads as expired. */
+export type GeneralProjectState = "draft" | "closed" | "expired";
+export type GeneralProjectLinkKind =
+  | "deadline"
+  | "owner_condition"
+  | "trip"
+  | "drive_file"
+  | "calendar_event";
+
+export interface GeneralProjectConstraints {
+  /** Descriptive only: a stated budget authorises no spend. */
+  budget: { amount: string; currency: string } | null;
+  must_keep: string[];
+}
+
+export interface GeneralProjectCharterInput {
+  title: string;
+  horizon_end: string;
+  objective: string;
+  done_condition: string;
+  constraints: GeneralProjectConstraints;
+}
+
+export interface GeneralProjectCharter extends GeneralProjectCharterInput {
+  version: number;
+  created_by: string;
+  created_at: string;
+}
+
+export interface GeneralProjectLink {
+  id: string;
+  ref_kind: GeneralProjectLinkKind;
+  ref_id: string;
+  created_at: string;
+}
+
+export interface GeneralProjectSummary {
+  id: string;
+  kind: GeneralProjectKind;
+  title: string;
+  state: GeneralProjectState;
+  current_charter_version: number;
+  horizon_end: string;
+  closed_at: string | null;
+  link_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GeneralProjectDetail extends GeneralProjectSummary {
+  charter: GeneralProjectCharter;
+  links: GeneralProjectLink[];
+}
+
+export interface GeneralProjectCreateRequest extends GeneralProjectCharterInput {
+  kind: GeneralProjectKind;
+  idempotency_key: string;
+}
+
+// ---------------------------------------------------------------------------
 // Health — new endpoints (bu-iuol4.24)
 // ---------------------------------------------------------------------------
 
@@ -3623,6 +3687,59 @@ export interface ApprovalsPolicy {
   quiet_start_hour?: number | null;
   quiet_end_hour?: number | null;
   timezone: string;
+}
+
+/**
+ * An inactive standing-reply template draft (`/approvals/reply-templates`).
+ * `state` is `draft` or `revoked`, never active: drafts carry no authority.
+ */
+export interface StandingReplyTemplateDraft {
+  id: string;
+  butler: string;
+  tool_name: string;
+  /** Content argument name -> template source, e.g. `"Running {mins:duration} late"`. */
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+  state: "draft" | "revoked";
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string | null;
+}
+
+export interface StandingReplyTemplateDraftCreateRequest {
+  butler: string;
+  tool_name: string;
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+  idempotency_key: string;
+}
+
+export interface StandingReplyTemplateDraftEditRequest {
+  expected_revision: number;
+  templates: Record<string, string>;
+  recipient_entity_ids: string[];
+  description: string;
+}
+
+/** A hypothetical send call to test against a draft. Nothing is sent or approved. */
+export interface StandingReplyTemplatePreviewRequest {
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+}
+
+/** Preview-only match result; `authority` is always `none`. */
+export interface StandingReplyTemplatePreview {
+  draft_id: string;
+  revision: number;
+  matched: boolean;
+  eligible: boolean;
+  reasons: string[];
+  /** Content argument name -> slot name -> captured value. */
+  slots: Record<string, Record<string, string>>;
+  authority: "none";
 }
 
 export interface ApprovalApproveRequest {
@@ -6332,7 +6449,8 @@ export interface QaInvestigationNotes {
 /** Pull request summary embedded in a QA case dossier. */
 export interface QaPrSummary {
   number: number;
-  state: "drafted" | "open" | "merged" | "closed";
+  /** Null means known PR identity with unavailable lifecycle, not absence. */
+  state: "drafted" | "open" | "merged" | "closed" | null;
   title: string;
   branch: string;
   ci_status: "passing" | "failing" | "pending" | "unknown" | null;
@@ -7757,6 +7875,21 @@ export interface BackupRunFacts {
   reason: string | null;
 }
 
+/** Most recent off-node restic copy of the dump directory (bu-ivuf9u).
+ *
+ * `"disabled"` means this deployment runs no copy job; `"unknown"` means it
+ * should but no readable receipt exists. `stale` is true when an enabled copy
+ * has not reported any run within 36 hours. `reason` is a fixed vocabulary
+ * (or "unrecognized reason"), and `snapshot_id` is hex or null.
+ */
+export interface OffsiteCopyFacts {
+  result: "success" | "failed" | "unknown" | "disabled";
+  finished_at: string | null;
+  reason: string | null;
+  snapshot_id: string | null;
+  stale: boolean;
+}
+
 /** Backup recency, verified artifact health, run outcome, and drill facts.
  *
  * `last_backup_status`/`backup_stale`/`restore_drill`/`last_run` are optional
@@ -7774,6 +7907,8 @@ export interface BackupFacts {
   backup_stale?: boolean;
   last_run?: BackupRunFacts;
   restore_drill?: RestoreDrillFacts;
+  /** Absent on older backends; rendered as "not configured". */
+  offsite_copy?: OffsiteCopyFacts;
 }
 
 /** A single external actor that has received data from this instance. */

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -61,35 +62,19 @@ class TestMigrationStructure:
 # (b) Integration: backfill behaviour against a live DB
 # ---------------------------------------------------------------------------
 
-_PROVISION_SCHEMA = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name VARCHAR NOT NULL,
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.contacts (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name       TEXT NOT NULL,
-    entity_id  UUID REFERENCES public.entities(id) ON DELETE SET NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.entities_canonical_name_bak_core_130 (
-    entity_id          UUID PRIMARY KEY,
-    old_canonical_name VARCHAR
-);
-"""
+_PRE_STATE = {"core": "core_129"}  # core_130's predecessor: entities + contacts
 
 
-def _snapshot_sql():
-    return load_migration(_MIGRATION_PATH, "_core_130")._SNAPSHOT_SQL.text
-
-
-def _backfill_sql():
-    return load_migration(_MIGRATION_PATH, "_core_130")._BACKFILL_SQL.text
+async def _upgrade(pool) -> None:
+    """Replay core_130's upgrade() SQL (snapshot table, guarded snapshot + backfill)."""
+    mod = load_migration(_MIGRATION_PATH, "_core_130")
+    sqls: list[str] = []
+    fake_op = MagicMock()
+    fake_op.execute.side_effect = lambda sql: sqls.append(sql)
+    with patch.object(mod, "op", fake_op):
+        mod.upgrade()
+    for sql in sqls:
+        await pool.execute(sql)
 
 
 async def _name(pool, entity_id):
@@ -101,100 +86,91 @@ async def _name(pool, entity_id):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_backfill_fills_blank_and_preserves_existing(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_PROVISION_SCHEMA)
+async def test_backfill_fills_blank_and_preserves_existing(db) -> None:
+    pool = await db("core", revisions=_PRE_STATE)
 
-        # Entity with a blank name + a linked, named contact -> gets filled.
-        blank = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('') RETURNING id"
-        )
-        await pool.execute(
-            "INSERT INTO public.contacts (name, entity_id) VALUES ('Alice', $1)", blank
-        )
+    # Entity with a blank name + a linked, named contact -> gets filled.
+    blank = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('') RETURNING id"
+    )
+    await pool.execute("INSERT INTO public.contacts (name, entity_id) VALUES ('Alice', $1)", blank)
 
-        # Entity that already has a real name -> must NOT be overwritten.
-        named = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('Curated Name') RETURNING id"
-        )
-        await pool.execute(
-            "INSERT INTO public.contacts (name, entity_id) VALUES ('Other Name', $1)", named
-        )
+    # Entity that already has a real name -> must NOT be overwritten.
+    named = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('Curated Name') RETURNING id"
+    )
+    await pool.execute(
+        "INSERT INTO public.contacts (name, entity_id) VALUES ('Other Name', $1)", named
+    )
 
-        # Orphan contact (no entity) must be skipped without error.
-        await pool.execute("INSERT INTO public.contacts (name, entity_id) VALUES ('Carol', NULL)")
+    # Orphan contact (no entity) must be skipped without error.
+    await pool.execute("INSERT INTO public.contacts (name, entity_id) VALUES ('Carol', NULL)")
 
-        await pool.execute(_snapshot_sql())
-        await pool.execute(_backfill_sql())
+    await _upgrade(pool)
 
-        assert await _name(pool, blank) == "Alice"
-        assert await _name(pool, named) == "Curated Name"
+    assert await _name(pool, blank) == "Alice"
+    assert await _name(pool, named) == "Curated Name"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_backfill_most_recent_contact_wins(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_PROVISION_SCHEMA)
+async def test_backfill_most_recent_contact_wins(db) -> None:
+    pool = await db("core", revisions=_PRE_STATE)
 
-        entity_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('') RETURNING id"
-        )
-        await pool.execute(
-            "INSERT INTO public.contacts (name, entity_id, updated_at) "
-            "VALUES ('Older', $1, now() - interval '1 day')",
-            entity_id,
-        )
-        await pool.execute(
-            "INSERT INTO public.contacts (name, entity_id, updated_at) VALUES ('Newer', $1, now())",
-            entity_id,
-        )
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('') RETURNING id"
+    )
+    await pool.execute(
+        "INSERT INTO public.contacts (name, entity_id, updated_at) "
+        "VALUES ('Older', $1, now() - interval '1 day')",
+        entity_id,
+    )
+    await pool.execute(
+        "INSERT INTO public.contacts (name, entity_id, updated_at) VALUES ('Newer', $1, now())",
+        entity_id,
+    )
 
-        await pool.execute(_snapshot_sql())
-        await pool.execute(_backfill_sql())
+    await _upgrade(pool)
 
-        assert await _name(pool, entity_id) == "Newer"
+    assert await _name(pool, entity_id) == "Newer"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_backfill_is_idempotent_and_reversible(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_PROVISION_SCHEMA)
+async def test_backfill_is_idempotent_and_reversible(db) -> None:
+    pool = await db("core", revisions=_PRE_STATE)
 
-        entity_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('') RETURNING id"
-        )
-        await pool.execute(
-            "INSERT INTO public.contacts (name, entity_id) VALUES ('Alice', $1)", entity_id
-        )
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('') RETURNING id"
+    )
+    await pool.execute(
+        "INSERT INTO public.contacts (name, entity_id) VALUES ('Alice', $1)", entity_id
+    )
 
-        await pool.execute(_snapshot_sql())
-        await pool.execute(_backfill_sql())
-        # Re-running must not change the result.
-        await pool.execute(_snapshot_sql())
-        await pool.execute(_backfill_sql())
-        assert await _name(pool, entity_id) == "Alice"
+    await _upgrade(pool)
+    # Re-running must not change the result.
+    await _upgrade(pool)
+    assert await _name(pool, entity_id) == "Alice"
 
-        # Downgrade restores the snapshotted prior value (empty string).
-        mod = load_migration(_MIGRATION_PATH, "_core_130")
-        restore_sql = (
-            "UPDATE public.entities e "
-            "SET canonical_name = b.old_canonical_name "
-            "FROM public.entities_canonical_name_bak_core_130 b "
-            "WHERE e.id = b.entity_id AND b.old_canonical_name IS NOT NULL"
-        )
-        # old value was '' (blank) — restore only happens for non-blank in the
-        # real downgrade, so the fill is intentionally retained. Assert the
-        # snapshot captured the prior blank value so a future restore is possible.
-        snap = await pool.fetchval(
-            "SELECT old_canonical_name FROM public.entities_canonical_name_bak_core_130 "
-            "WHERE entity_id = $1",
-            entity_id,
-        )
-        assert snap == ""
-        assert mod._SNAPSHOT_TABLE == "public.entities_canonical_name_bak_core_130"
-        # The restore SQL is valid against the live schema (smoke).
-        await pool.execute(restore_sql)
+    # Downgrade restores the snapshotted prior value (empty string).
+    mod = load_migration(_MIGRATION_PATH, "_core_130")
+    restore_sql = (
+        "UPDATE public.entities e "
+        "SET canonical_name = b.old_canonical_name "
+        "FROM public.entities_canonical_name_bak_core_130 b "
+        "WHERE e.id = b.entity_id AND b.old_canonical_name IS NOT NULL"
+    )
+    # old value was '' (blank) — restore only happens for non-blank in the
+    # real downgrade, so the fill is intentionally retained. Assert the
+    # snapshot captured the prior blank value so a future restore is possible.
+    snap = await pool.fetchval(
+        "SELECT old_canonical_name FROM public.entities_canonical_name_bak_core_130 "
+        "WHERE entity_id = $1",
+        entity_id,
+    )
+    assert snap == ""
+    assert mod._SNAPSHOT_TABLE == "public.entities_canonical_name_bak_core_130"
+    # The restore SQL is valid against the live schema (smoke).
+    await pool.execute(restore_sql)

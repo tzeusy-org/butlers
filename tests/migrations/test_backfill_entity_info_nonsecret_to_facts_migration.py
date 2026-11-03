@@ -123,63 +123,23 @@ class TestUpgradeGuards:
 # ---------------------------------------------------------------------------
 
 
-async def _provision_schema(pool) -> None:
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name        TEXT NOT NULL DEFAULT '',
-            entity_type TEXT NOT NULL DEFAULT 'person',
-            roles       TEXT[] NOT NULL DEFAULT '{}',
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entity_info (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            entity_id   UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            type        VARCHAR NOT NULL,
-            value       TEXT NOT NULL,
-            label       VARCHAR,
-            is_primary  BOOLEAN DEFAULT false,
-            secured     BOOLEAN NOT NULL DEFAULT false,
-            created_at  TIMESTAMPTZ DEFAULT now(),
-            CONSTRAINT uq_entity_info_entity_type UNIQUE (entity_id, type)
-        )
-    """)
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-            subject     UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            predicate   TEXT NOT NULL,
-            object      TEXT NOT NULL,
-            object_kind TEXT NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT NOT NULL,
-            conf        FLOAT NOT NULL DEFAULT 1.0 CHECK (conf >= 0.0 AND conf <= 1.0),
-            last_seen   TIMESTAMPTZ,
-            weight      INT,
-            verified    BOOL NOT NULL DEFAULT false,
-            "primary"   BOOL,
-            validity    TEXT NOT NULL DEFAULT 'active'
-                            CHECK (validity IN ('active', 'retracted', 'superseded')),
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await pool.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-            ON relationship.entity_facts (subject, predicate, object)
-            WHERE validity = 'active'
-    """)
+async def _pre_state(db):
+    """rel_028's pre-state: core (entities + entity_info) and relationship at rel_027."""
+    return await db(
+        "core",
+        "relationship",
+        schemas={"relationship": "relationship"},
+        revisions={"relationship": "rel_027"},
+    )
 
 
 async def _new_entity(pool, *, owner: bool = False) -> uuid.UUID:
     eid = uuid.uuid4()
     roles = ["owner"] if owner else []
     await pool.execute(
-        "INSERT INTO public.entities (id, name, roles) VALUES ($1, $2, $3)",
+        "INSERT INTO public.entities (id, canonical_name, roles) VALUES ($1, $2, $3)",
         eid,
-        "owner" if owner else "person",
+        f"{'owner' if owner else 'person'}-{eid}",
         roles,
     )
     return eid
@@ -207,146 +167,142 @@ pytestmark_integration = [
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_projection_produces_correct_triples(provisioned_postgres_pool) -> None:
+async def test_projection_produces_correct_triples(db) -> None:
     mod = load_migration(_MIGRATION_PATH, "rel_028")
-    async with provisioned_postgres_pool() as pool:
-        await _provision_schema(pool)
+    pool = await _pre_state(db)
 
-        owner = await _new_entity(pool, owner=True)
-        person = await _new_entity(pool)
+    owner = await _new_entity(pool, owner=True)
+    person = await _new_entity(pool)
 
-        await _add_info(pool, owner, "telegram_chat_id", "12345", is_primary=True)
-        await _add_info(pool, person, "email", "a@b.com", is_primary=True)
-        await _add_info(pool, person, "phone", "+15551230000")
-        await _add_info(pool, person, "whatsapp_phone", "+19998887777")
-        await _add_info(pool, person, "website", "https://example.com")
-        await _add_info(pool, person, "telegram", "@handle")
-        # secured credential — must NOT be projected
-        await _add_info(pool, person, "telegram_bot_token", "secret-token", secured=True)
-        # technical config — must NOT be projected
-        await _add_info(pool, person, "home_assistant_url", "http://ha.local")
+    await _add_info(pool, owner, "telegram_chat_id", "12345", is_primary=True)
+    await _add_info(pool, person, "email", "a@b.com", is_primary=True)
+    await _add_info(pool, person, "phone", "+15551230000")
+    await _add_info(pool, person, "whatsapp_phone", "+19998887777")
+    await _add_info(pool, person, "website", "https://example.com")
+    await _add_info(pool, person, "telegram", "@handle")
+    # secured credential — must NOT be projected
+    await _add_info(pool, person, "telegram_bot_token", "secret-token", secured=True)
+    # technical config — must NOT be projected
+    await _add_info(pool, person, "home_assistant_url", "http://ha.local")
 
-        await pool.execute(mod.projection_insert_sql())
+    await pool.execute(mod.projection_insert_sql())
 
-        # Owner Telegram chat id → prefixed has-handle, primary preserved.
-        row = await pool.fetchrow(
-            'SELECT object, "primary" FROM relationship.entity_facts '
-            "WHERE subject = $1 AND predicate = 'has-handle' AND validity = 'active'",
-            owner,
-        )
-        assert row is not None
-        assert row["object"] == "telegram:12345"
-        assert row["primary"] is True
+    # Owner Telegram chat id → prefixed has-handle, primary preserved.
+    row = await pool.fetchrow(
+        'SELECT object, "primary" FROM relationship.entity_facts '
+        "WHERE subject = $1 AND predicate = 'has-handle' AND validity = 'active'",
+        owner,
+    )
+    assert row is not None
+    assert row["object"] == "telegram:12345"
+    assert row["primary"] is True
 
-        # Channel facts for the regular person.
-        async def _obj(pred):
-            return await pool.fetchval(
-                "SELECT object FROM relationship.entity_facts "
-                "WHERE subject = $1 AND predicate = $2 AND validity = 'active'",
-                person,
-                pred,
-            )
-
-        assert await _obj("has-email") == "a@b.com"
-        assert await _obj("has-website") == "https://example.com"
-        # telegram '@handle' → 'telegram:handle' (leading @ stripped, prefix added)
-        assert (
-            await pool.fetchval(
-                "SELECT object FROM relationship.entity_facts "
-                "WHERE subject = $1 AND predicate = 'has-handle' AND validity = 'active'",
-                person,
-            )
-            == "telegram:handle"
-        )
-        # phone + whatsapp_phone both map to has-phone.
-        phones = await pool.fetch(
+    # Channel facts for the regular person.
+    async def _obj(pred):
+        return await pool.fetchval(
             "SELECT object FROM relationship.entity_facts "
-            "WHERE subject = $1 AND predicate = 'has-phone' AND validity = 'active' "
-            "ORDER BY object",
+            "WHERE subject = $1 AND predicate = $2 AND validity = 'active'",
+            person,
+            pred,
+        )
+
+    assert await _obj("has-email") == "a@b.com"
+    assert await _obj("has-website") == "https://example.com"
+    # telegram '@handle' → 'telegram:handle' (leading @ stripped, prefix added)
+    assert (
+        await pool.fetchval(
+            "SELECT object FROM relationship.entity_facts "
+            "WHERE subject = $1 AND predicate = 'has-handle' AND validity = 'active'",
             person,
         )
-        assert {r["object"] for r in phones} == {"+15551230000", "+19998887777"}
+        == "telegram:handle"
+    )
+    # phone + whatsapp_phone both map to has-phone.
+    phones = await pool.fetch(
+        "SELECT object FROM relationship.entity_facts "
+        "WHERE subject = $1 AND predicate = 'has-phone' AND validity = 'active' "
+        "ORDER BY object",
+        person,
+    )
+    assert {r["object"] for r in phones} == {"+15551230000", "+19998887777"}
 
-        # secured + technical-config rows produced no triple at all.
-        bot = await pool.fetchval(
-            "SELECT count(*) FROM relationship.entity_facts WHERE object = 'secret-token'"
-        )
-        assert bot == 0
-        ha = await pool.fetchval(
-            "SELECT count(*) FROM relationship.entity_facts WHERE object = 'http://ha.local'"
-        )
-        assert ha == 0
+    # secured + technical-config rows produced no triple at all.
+    bot = await pool.fetchval(
+        "SELECT count(*) FROM relationship.entity_facts WHERE object = 'secret-token'"
+    )
+    assert bot == 0
+    ha = await pool.fetchval(
+        "SELECT count(*) FROM relationship.entity_facts WHERE object = 'http://ha.local'"
+    )
+    assert ha == 0
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_parity_and_idempotency(provisioned_postgres_pool) -> None:
+async def test_parity_and_idempotency(db) -> None:
     mod = load_migration(_MIGRATION_PATH, "rel_028")
-    async with provisioned_postgres_pool() as pool:
-        await _provision_schema(pool)
-        person = await _new_entity(pool)
-        await _add_info(pool, person, "email", "p@q.com")
-        await _add_info(pool, person, "telegram_chat_id", "987")
+    pool = await _pre_state(db)
+    person = await _new_entity(pool)
+    await _add_info(pool, person, "email", "p@q.com")
+    await _add_info(pool, person, "telegram_chat_id", "987")
 
-        await pool.execute(mod.projection_insert_sql())
+    await pool.execute(mod.projection_insert_sql())
 
-        # Parity: zero projectable rows lacking a triple.
-        assert await pool.fetchval(mod.parity_missing_sql()) == 0
+    # Parity: zero projectable rows lacking a triple.
+    assert await pool.fetchval(mod.parity_missing_sql()) == 0
 
-        count_after_first = await pool.fetchval(
-            "SELECT count(*) FROM relationship.entity_facts WHERE validity = 'active'"
-        )
+    count_after_first = await pool.fetchval(
+        "SELECT count(*) FROM relationship.entity_facts WHERE validity = 'active'"
+    )
 
-        # Re-run: idempotent no-op (ON CONFLICT DO NOTHING).
-        await pool.execute(mod.projection_insert_sql())
-        count_after_second = await pool.fetchval(
-            "SELECT count(*) FROM relationship.entity_facts WHERE validity = 'active'"
-        )
-        assert count_after_first == count_after_second == 2
-        assert await pool.fetchval(mod.parity_missing_sql()) == 0
+    # Re-run: idempotent no-op (ON CONFLICT DO NOTHING).
+    await pool.execute(mod.projection_insert_sql())
+    count_after_second = await pool.fetchval(
+        "SELECT count(*) FROM relationship.entity_facts WHERE validity = 'active'"
+    )
+    assert count_after_first == count_after_second == 2
+    assert await pool.fetchval(mod.parity_missing_sql()) == 0
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_unexpected_type_surfaced_by_guard(provisioned_postgres_pool) -> None:
+async def test_unexpected_type_surfaced_by_guard(db) -> None:
     mod = load_migration(_MIGRATION_PATH, "rel_028")
-    async with provisioned_postgres_pool() as pool:
-        await _provision_schema(pool)
-        person = await _new_entity(pool)
-        await _add_info(pool, person, "myspace", "tom")  # non-secret, unmapped
+    pool = await _pre_state(db)
+    person = await _new_entity(pool)
+    await _add_info(pool, person, "myspace", "tom")  # non-secret, unmapped
 
-        surfaced = await pool.fetchval(mod.unexpected_types_sql())
-        assert surfaced is not None and "myspace" in surfaced
+    surfaced = await pool.fetchval(mod.unexpected_types_sql())
+    assert surfaced is not None and "myspace" in surfaced
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_owner_seed_subsumed_no_duplicate(provisioned_postgres_pool) -> None:
+async def test_owner_seed_subsumed_no_duplicate(db) -> None:
     """A pre-existing owner-bootstrap triple is not duplicated by the backfill."""
     mod = load_migration(_MIGRATION_PATH, "rel_028")
-    async with provisioned_postgres_pool() as pool:
-        await _provision_schema(pool)
-        owner = await _new_entity(pool, owner=True)
-        await _add_info(pool, owner, "telegram_chat_id", "555")
-        # Simulate the PR #2465 owner-bootstrap seed already present.
-        await pool.execute(
-            "INSERT INTO relationship.entity_facts "
-            '(subject, predicate, object, object_kind, src, "primary", verified, validity) '
-            "VALUES ($1, 'has-handle', 'telegram:555', 'literal', 'owner-bootstrap', true, true, 'active')",
-            owner,
-        )
+    pool = await _pre_state(db)
+    owner = await _new_entity(pool, owner=True)
+    await _add_info(pool, owner, "telegram_chat_id", "555")
+    # Simulate the PR #2465 owner-bootstrap seed already present.
+    await pool.execute(
+        "INSERT INTO relationship.entity_facts "
+        '(subject, predicate, object, object_kind, src, "primary", verified, validity) '
+        "VALUES ($1, 'has-handle', 'telegram:555', 'literal', 'owner-bootstrap', true, true, 'active')",
+        owner,
+    )
 
-        await pool.execute(mod.projection_insert_sql())
+    await pool.execute(mod.projection_insert_sql())
 
-        rows = await pool.fetch(
-            "SELECT src, verified FROM relationship.entity_facts "
-            "WHERE subject = $1 AND predicate = 'has-handle' AND object = 'telegram:555' "
-            "AND validity = 'active'",
-            owner,
-        )
-        assert len(rows) == 1  # converged to one active row
-        assert rows[0]["src"] == "owner-bootstrap"  # original seed preserved
-        assert rows[0]["verified"] is True
+    rows = await pool.fetch(
+        "SELECT src, verified FROM relationship.entity_facts "
+        "WHERE subject = $1 AND predicate = 'has-handle' AND object = 'telegram:555' "
+        "AND validity = 'active'",
+        owner,
+    )
+    assert len(rows) == 1  # converged to one active row
+    assert rows[0]["src"] == "owner-bootstrap"  # original seed preserved
+    assert rows[0]["verified"] is True

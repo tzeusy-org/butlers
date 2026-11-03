@@ -32,48 +32,9 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
 
 
 @pytest.fixture
-async def ghost_collapse_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_conversations (
-                id UUID PRIMARY KEY,
-                butler_name TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                message_count INTEGER NOT NULL DEFAULT 0,
-                routed_butler TEXT,
-                source_channel TEXT NOT NULL DEFAULT 'dashboard',
-                source_thread_identity TEXT,
-                provider_session_id TEXT,
-                provider_runtime_type TEXT,
-                provider_session_updated_at TIMESTAMPTZ
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_messages (
-                id UUID PRIMARY KEY,
-                conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id)
-                    ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                session_id UUID,
-                model_name TEXT,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                duration_ms INTEGER,
-                tool_calls JSONB,
-                error TEXT,
-                request_id UUID
-            )
-            """
-        )
-        yield pool
+async def ghost_collapse_pool(db):
+    """core_214's predecessor: the real dashboard conversation tables."""
+    return await db("core", revisions={"core": "core_213"})
 
 
 async def _insert_conversation(

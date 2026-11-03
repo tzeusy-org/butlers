@@ -96,6 +96,7 @@ from butlers.core.backup_facts import (
     BACKUP_DIR_ENV,
     BackupFacts,
     RestoreDrillFacts,
+    offsite_copy_expected_from_env,
     read_backup_facts_from_dir,
 )
 from butlers.core.fleet_conditions import (
@@ -810,7 +811,7 @@ async def get_database_facts(
             FROM information_schema.tables t
             WHERE t.table_schema NOT IN ('public', 'pg_catalog', 'information_schema',
                                           'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
-              AND t.table_schema NOT LIKE 'pg_%'
+              AND left(t.table_schema, 3) <> 'pg_'
               AND t.table_type = 'BASE TABLE'
             GROUP BY t.table_schema
             ORDER BY size_bytes DESC
@@ -841,7 +842,7 @@ async def get_database_facts(
             FROM information_schema.tables t
             WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema',
                                           'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
-              AND t.table_schema NOT LIKE 'pg_%'
+              AND left(t.table_schema, 3) <> 'pg_'
               AND t.table_type = 'BASE TABLE'
             ORDER BY size_bytes DESC
             LIMIT 10
@@ -911,7 +912,10 @@ async def get_backup_facts(
     Graceful degradation: always returns HTTP 200, never HTTP 503.
     """
     backup_dir_env = os.environ.get(BACKUP_DIR_ENV, "").strip()
-    facts = read_backup_facts_from_dir(Path(backup_dir_env) if backup_dir_env else None)
+    facts = read_backup_facts_from_dir(
+        Path(backup_dir_env) if backup_dir_env else None,
+        offsite_copy_expected=offsite_copy_expected_from_env(),
+    )
 
     facts.restore_drill = await _read_restore_drill_facts(db)
     return ApiResponse(data=facts)

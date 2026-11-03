@@ -118,6 +118,8 @@ import os
 
 from opentelemetry import metrics
 
+from butlers.core.logging import get_butler_context
+
 logger = logging.getLogger(__name__)
 
 _METER_NAME = "butlers"
@@ -437,6 +439,38 @@ def record_domain_event_delivery_failed_permanent(
             "destination_butler": destination_butler,
             "reason": reason,
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Memory knowledge-gap instruments
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES = frozenset({"closure", "reservation"})
+_UNKNOWN_BUTLER = "unknown"
+
+
+def _knowledge_gap_closure_failures_total() -> metrics.Counter:
+    """Counter: swallowed knowledge-gap bookkeeping failures (butler and stage labels)."""
+    return get_meter().create_counter(
+        name="butlers.memory.knowledge_gap_closure_failures_total",
+        description="Knowledge-gap bookkeeping failures swallowed so the fact write could commit",
+        unit="failures",
+    )
+
+
+def record_knowledge_gap_closure_failure(*, stage: str) -> None:
+    """Record one swallowed knowledge-gap closure failure.
+
+    ``stage`` is closed to the bookkeeping steps that run on a fact write's connection.
+    ``butler`` is the registered butler name from the logging context, or ``unknown`` when
+    the write runs outside any butler context. Entity, predicate, fact IDs and exception
+    text are never metric attributes.
+    """
+    if stage not in _KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES:
+        raise ValueError(f"unsupported knowledge-gap closure failure stage: {stage!r}")
+    _knowledge_gap_closure_failures_total().add(
+        1, {"butler": get_butler_context() or _UNKNOWN_BUTLER, "stage": stage}
     )
 
 
