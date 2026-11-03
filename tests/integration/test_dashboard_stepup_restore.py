@@ -20,7 +20,7 @@ from butlers.modules.approvals import operations
 from butlers.testing.migration import migration_bootstrap_db_url
 from scripts.ci_test_images import prepare_alias_on_hosted_runner
 from tests.integration.test_dashboard_stepup import authority as authority
-from tests.integration.test_dashboard_stepup import migrated_db_url as migrated_db_url
+from tests.integration.test_dashboard_stepup import authority_db_url as authority_db_url
 from tests.integration.test_dashboard_stepup import proof_for
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -69,7 +69,7 @@ def client(container, shell, password, mounts=(), **environment):
 
 
 async def test_ordinary_dump_privileged_restore_preserves_receipts_owners_and_acl(
-    authority, migrated_db_url, postgres_container, tmp_path
+    authority, authority_db_url, postgres_container, tmp_path
 ):
     pool, _, _, _, _, _ = authority
     parameters = dict(
@@ -89,7 +89,7 @@ async def test_ordinary_dump_privileged_restore_preserves_receipts_owners_and_ac
     before = await pool.fetch(
         "SELECT to_jsonb(b) AS value FROM dashboard_stepup.bindings b ORDER BY id"
     )
-    source = urlparse(migrated_db_url)
+    source = urlparse(authority_db_url)
     backup = await asyncio.to_thread(
         client,
         postgres_container,
