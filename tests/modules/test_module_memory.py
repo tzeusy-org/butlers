@@ -1389,7 +1389,7 @@ class TestMemoryStoreFactSenderEntityIdFallback:
 
         with _patch(
             "butlers.modules.memory.get_current_runtime_session_routing_context",
-            return_value={"source_contact_id": "contact-123"},
+            return_value={"source_channel": "telegram"},
         ):
             result = await fact_tool(subject="user", predicate="likes", content="coffee")
 

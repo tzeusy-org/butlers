@@ -60,7 +60,6 @@ class RouteRequestContextV1(BaseModel):
     source_channel: SourceChannel
     source_endpoint_identity: NonEmptyStr
     source_sender_identity: NonEmptyStr
-    source_sender_contact_id: NonEmptyStr | None = None
     source_sender_entity_id: NonEmptyStr | None = None
     source_thread_identity: NonEmptyStr | None = None
     external_conversation_id: NonEmptyStr | None = None

@@ -95,8 +95,6 @@ async def test_owner_message_gets_owner_preamble():
     assert result.is_owner is True
     assert result.is_known is True
     assert result.is_unknown is False
-    # IdentityResolutionResult.contact_id is a compatibility field (bu-60pwv6.39).
-    assert result.contact_id is None
     assert result.sender_roles == ["owner"]
 
 
@@ -127,7 +125,6 @@ async def test_unknown_sender_creates_entity_only_identity_context():
 
     assert "pending disambiguation" in result.preamble
     assert str(_TEMP_ENTITY_ID) in result.preamble
-    assert result.contact_id is None
     assert result.entity_id == _TEMP_ENTITY_ID
     assert result.is_unknown is True
     assert result.is_known is False
@@ -284,7 +281,6 @@ async def test_empty_channel_value_returns_empty_result():
     pool = AsyncMock()
     result = await resolve_and_inject_identity(pool, "telegram", None)
     assert result.preamble == ""
-    assert result.contact_id is None
     assert result.is_owner is False
     assert result.is_known is False
     assert result.is_unknown is False
@@ -296,7 +292,6 @@ async def test_batch_resolution_deduplicates_and_reuses_bulk_known_results():
     known = _resolved_known()
     unknown_result = MagicMock(
         preamble="[Source: Unknown sender]",
-        contact_id=None,
         entity_id=_TEMP_ENTITY_ID,
         sender_roles=None,
         is_owner=False,
@@ -612,7 +607,6 @@ async def test_second_batch_reuses_transitory_entity_without_displaying_identifi
     transitory.name = sentinel
     first_result = MagicMock(
         preamble=f"[Source: Unknown sender (entity_id: {_TEMP_ENTITY_ID})]",
-        contact_id=None,
         entity_id=_TEMP_ENTITY_ID,
         sender_roles=None,
         is_owner=False,
@@ -657,7 +651,6 @@ async def test_empty_string_channel_value_returns_empty_result():
     result = await resolve_and_inject_identity(pool, "telegram", "")
 
     assert result.preamble == ""
-    assert result.contact_id is None
     assert result.is_owner is False
     assert result.is_known is False
     assert result.is_unknown is False

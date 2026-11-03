@@ -595,7 +595,7 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
     context = pipeline._set_routing_context.call_args.kwargs
     assert context["identity_preamble"] is None
     assert context["source_entity_id"] is None
-    assert context["source_contact_id"] is None
+    assert "source_contact_id" not in context
     warning = next(
         record
         for record in caplog.records

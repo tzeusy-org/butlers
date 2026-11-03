@@ -274,6 +274,7 @@ async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
         clear_runtime_session_routing_context(runtime_session_id)
     assert result2["status"] == "accepted"
     assert captured["request_context"]["source_channel"] == "telegram_bot"
+    assert "source_sender_contact_id" not in captured["request_context"]
 
     # Complexity: reasoning explicit; invalid → workhorse; missing → workhorse
     captured.clear()

@@ -1284,7 +1284,6 @@ class MessagePipeline:
         request_context: dict[str, Any] | None = None,
         request_id: str = "unknown",
         identity_preamble: str | None = None,
-        source_contact_id: str | None = None,
         source_entity_id: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         dashboard_context: dict[str, Any] | None = None,
@@ -1311,7 +1310,6 @@ class MessagePipeline:
                 "request_context": request_context,
                 "request_id": request_id,
                 "identity_preamble": identity_preamble,
-                "source_contact_id": source_contact_id,
                 "source_entity_id": source_entity_id,
                 "attachments": attachments,
                 "dashboard_context": dashboard_context,
@@ -3080,7 +3078,6 @@ class MessagePipeline:
 
                     # Identity resolution: resolve sender → preamble injection
                     identity_preamble: str | None = None
-                    source_contact_id: str | None = None
                     source_entity_id: str | None = None
                     if self._enable_identity_resolution:
                         with tracer.start_as_current_span(
@@ -3123,8 +3120,6 @@ class MessagePipeline:
 
                                 if identity_result is not None:
                                     identity_preamble = identity_result.preamble or None
-                                    if identity_result.contact_id is not None:
-                                        source_contact_id = str(identity_result.contact_id)
                                     if identity_result.entity_id is not None:
                                         source_entity_id = str(identity_result.entity_id)
 
@@ -3238,7 +3233,6 @@ class MessagePipeline:
                         request_context=request_context,
                         request_id=request_id,
                         identity_preamble=identity_preamble,
-                        source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,
                         attachments=attachments,
                         dashboard_context=dashboard_context,

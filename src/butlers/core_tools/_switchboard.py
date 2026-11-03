@@ -747,10 +747,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "external_conversation_id": external_conversation_id,
             "trace_context": {},
         }
-        _src_contact_id = routing_ctx.get("source_contact_id")
         _src_entity_id = routing_ctx.get("source_entity_id")
-        if _src_contact_id:
-            rc["source_sender_contact_id"] = _src_contact_id
         if _src_entity_id:
             rc["source_sender_entity_id"] = _src_entity_id
 

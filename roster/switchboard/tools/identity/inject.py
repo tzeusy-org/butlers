@@ -22,8 +22,7 @@ Preamble formats (``entity_id`` is the canonical identifier post bu-akads):
 * Unknown (no entity_id):    ``[Source: Unknown sender, via {channel} -- pending disambiguation]``
 
 The result includes ``entity_id`` and ``sender_roles`` for population in
-``routing_log``. ``contact_id`` is retained only as a compatibility field;
-the entity-first unknown-sender path always leaves it ``None``.
+``routing_log``.
 """
 
 from __future__ import annotations
@@ -69,10 +68,6 @@ class IdentityResolutionResult:
     preamble:
         The structured identity preamble line to prepend to the routed prompt.
         Empty string when resolution was skipped (no channel_value provided).
-    contact_id:
-        Optional compatibility UUID for an independently resolved legacy
-        contact. The entity-first unknown-sender path always leaves it
-        ``None`` and does not create a contact record.
     entity_id:
         UUID of the linked memory entity, or ``None``.
     sender_roles:
@@ -100,7 +95,6 @@ class IdentityResolutionResult:
     """
 
     preamble: str = ""
-    contact_id: UUID | None = None
     entity_id: UUID | None = None
     sender_roles: list[str] | None = None
     is_owner: bool = False
@@ -155,7 +149,7 @@ async def resolve_and_inject_identity(
     Returns
     -------
     IdentityResolutionResult
-        Populated result with preamble, contact_id, entity_id, sender_roles,
+        Populated result with preamble, entity_id, sender_roles,
         and boolean flags.
     """
     if not channel_value:
