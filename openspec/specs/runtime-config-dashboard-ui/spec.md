@@ -9,6 +9,7 @@ Defines the dashboard butler-detail UX for viewing and editing per-butler runtim
 
 The butler detail Management tab SHALL display the effective runtime config read from the `runtime-config` API endpoint (via the `RuntimeConfigCard` component), not from the raw toml.
 
+ID: REQ-runtime-config-dashboard-ui-001
 Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
@@ -28,10 +29,18 @@ Scope: v1-mandatory
 - **WHEN** a cold field (core_groups, max_concurrent, max_queued) is displayed
 - **THEN** the field SHALL show a visual indicator that changes require a daemon restart
 
+#### Scenario: Stored exposure policy can be edited
+
+- **WHEN** the Management-tab runtime config card has loaded
+- **THEN** it SHALL offer `Eager filtered` and `Automatic verified discovery` choices for `tool_exposure_policy`
+- **AND** selecting a choice SHALL stage an edit for the existing Save action
+- **AND** the control SHALL NOT constitute evidence of runtime-native discovery support
+
 ### Requirement: Config tab supports inline editing
 
 The config tab SHALL allow the user to edit runtime config fields and save via the PATCH endpoint.
 
+ID: REQ-runtime-config-dashboard-ui-002
 Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
@@ -42,6 +51,18 @@ Scope: v1-mandatory
 #### Scenario: Restart-required feedback after saving cold field
 - **WHEN** the user saves a change that includes cold fields
 - **THEN** the UI SHALL display a notification listing which fields require a daemon restart to take effect
+
+#### Scenario: Policy save uses the existing PATCH result
+
+- **WHEN** the user saves a policy-only edit successfully
+- **THEN** the card SHALL clear the pending edit and use the returned `restart_required` list
+- **AND** an empty list SHALL not produce a restart-required notification
+
+#### Scenario: Failed policy save discards the unconfirmed policy edit
+
+- **WHEN** the policy PATCH fails
+- **THEN** the card SHALL remove the pending exposure-policy edit and retain the server-confirmed value
+- **AND** other pending field edits SHALL remain available for retry
 
 ### Requirement: Core groups editor supports array input
 
