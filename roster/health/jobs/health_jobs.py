@@ -34,6 +34,9 @@ from butlers.tools.health._medication_utils import (
 from butlers.tools.health._medication_utils import (
     frequency_to_doses_per_day as _frequency_to_doses_per_day,
 )
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+    scheduled_doses_per_day as _scheduled_doses_per_day,
+)
 
 # A reader that returns Home Assistant environmental readings owned by the
 # ``home`` butler. Each reading is a dict with at least::
@@ -826,7 +829,7 @@ async def _scan_adherence_symptom_correlation(
         med_id = str(med_row["id"])
         med_name = med_row["name"]
         frequency = med_row["frequency"] or "daily"
-        doses_per_day = _frequency_to_doses_per_day(frequency)
+        doses_per_day = _scheduled_doses_per_day(frequency)
 
         # Same frequency x window arithmetic as trend_report and the adherence
         # route (via the shared expected_dose_count), but deliberately without

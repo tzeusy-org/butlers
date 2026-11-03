@@ -9,7 +9,7 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.health._helpers import _row_to_dict
-from butlers.tools.health._medication_utils import expected_dose_count, frequency_to_doses_per_day
+from butlers.tools.health._medication_utils import expected_dose_count, scheduled_doses_per_day
 from butlers.tools.health.measurements import VALID_MEASUREMENT_TYPES as _LOGGABLE_MEASUREMENT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -225,7 +225,7 @@ async def trend_report(
         total = len(dose_rows)
         taken = sum(1 for d in dose_rows if d["skipped"] not in (True, "true", "True", "1"))
         expected = expected_dose_count(
-            doses_per_day=frequency_to_doses_per_day(frequency),
+            doses_per_day=scheduled_doses_per_day(frequency),
             window_start=since,
             window_end=now,
             medication_created_at=med.get("created_at"),

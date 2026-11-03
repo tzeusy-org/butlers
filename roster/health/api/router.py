@@ -772,7 +772,7 @@ async def get_medication_adherence(
     from butlers.tools.health import medication_history
     from butlers.tools.health._medication_utils import (
         expected_dose_count,
-        frequency_to_doses_per_day,
+        scheduled_doses_per_day,
     )
 
     pool = _pool(db)
@@ -818,7 +818,7 @@ async def get_medication_adherence(
     # doses expected before it existed.
     medication = result.get("medication") or {}
     frequency = medication.get("frequency") or "daily"
-    doses_per_day = frequency_to_doses_per_day(frequency)
+    doses_per_day = scheduled_doses_per_day(frequency)
     expected = expected_dose_count(
         doses_per_day=doses_per_day,
         window_start=effective_start,
