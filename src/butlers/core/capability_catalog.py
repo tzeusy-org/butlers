@@ -37,7 +37,7 @@ class PublishedCapability:
     @property
     def input_schema(self) -> dict:
         # Fresh wire-shaped copy; a consumer cannot mutate the publication.
-        return _wire(self.descriptor.input_schema)
+        return {key: _wire(value) for key, value in self.descriptor.input_schema.items()}
 
 
 @dataclass(frozen=True, slots=True)
