@@ -47,11 +47,11 @@ async def _recipient() -> str:
             "https://dashboard.example/butlers-dev/",
             "https://dashboard.example/butlers-dev/settings/models?highlight=e1",
         ),
-        (None, "/settings/models?highlight=e1"),
+        (None, None),
     ),
 )
 async def test_transport_anchors_the_door_at_the_dashboard_origin(
-    dashboard_base_url: str | None, expected_door: str
+    dashboard_base_url: str | None, expected_door: str | None
 ) -> None:
     with patch(
         "butlers.tools.switchboard.runtime_attention.worker.deliver",
@@ -64,9 +64,12 @@ async def test_transport_anchors_the_door_at_the_dashboard_origin(
         result = await transport(_breaker_episode())
 
     assert result.outcome is TransportOutcome.CONFIRMED
-    assert deliver_mock.await_args.kwargs["notify_request"]["delivery"]["message"] == (
-        f"Runtime attention: model_breaker_open. Open {expected_door} to review."
-    )
+    message = deliver_mock.await_args.kwargs["notify_request"]["delivery"]["message"]
+    if expected_door is None:
+        # No dashboard origin: no link at all, never a relative path a phone cannot open.
+        assert message == "Runtime attention: model_breaker_open."
+    else:
+        assert message == f"Runtime attention: model_breaker_open. Open {expected_door} to review."
 
 
 @pytest.mark.parametrize("pending", [False, True])
