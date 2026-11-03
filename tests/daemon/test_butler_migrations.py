@@ -593,8 +593,10 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
         "privilege": "INSERT",
     } in profile
 
+    # The checks themselves, in order; the planner-bound wrapper around them is
+    # pinned in tests/config/test_bootstrap_admission_planner_bounds.py.
     accepted = Connection()
-    prerequisite.check_bootstrap_connection(accepted)
+    prerequisite._admit(accepted)
     assert len(accepted.calls) == 12
     assert all(query.lstrip().startswith(("SELECT", "WITH")) for query, _ in accepted.calls)
     assert not any("bootstrap_configuration WHERE" in query for query, _ in accepted.calls)
@@ -604,11 +606,11 @@ def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection
             with pytest.raises(
                 prerequisite.BootstrapPrerequisiteError, match="missing or untrusted|unreadable"
             ):
-                prerequisite.check_bootstrap_connection(Connection(index, value))
+                prerequisite._admit(Connection(index, value))
     with pytest.raises(prerequisite.BootstrapPrerequisiteError, match="unreadable"):
-        prerequisite.check_bootstrap_connection(Connection(installed=None))
+        prerequisite._admit(Connection(installed=None))
     finalized = Connection(installed=True)
-    prerequisite.check_bootstrap_connection(finalized)
+    prerequisite._admit(finalized)
     assert all("pg_catalog.pg_roles" in finalized.calls[index][0] for index in (7, 9, 11))
     assert all(":migration_role" in finalized.calls[index][0] for index in (7, 9, 11))
     assert prerequisite._qualified_predicate(

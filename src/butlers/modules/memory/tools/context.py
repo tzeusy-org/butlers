@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
+from butlers.modules.memory.knowledge_class import NOT_EVENT_CLASS_SQL
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
 
@@ -75,7 +76,9 @@ async def _fetch_profile_facts(
     Only owner-class ``content_authority`` is admitted: a fact anchored to the
     owner but written from a third party's session (or a legacy row with no
     stamp) is not Profile Facts; it can still surface, attributed, as a
-    Task-Relevant Fact.
+    Task-Relevant Fact. Event-class predicates (registry ``is_temporal``, see
+    ``knowledge_class``) are likewise excluded even when owner-authored; they
+    stay recallable.
 
     Sorted by importance DESC, created_at DESC, id ASC. The read ceiling is
     applied in SQL, matching ``search_catalog``'s sensitivity filter, so an
@@ -94,6 +97,7 @@ async def _fetch_profile_facts(
         "f.content_authority IN ('owner', 'owner_device')",
     ]
     params: list[Any] = [tenant_id]
+    conditions.append(NOT_EVENT_CLASS_SQL)
     if allowed_sensitivities is not None:
         params.append(list(allowed_sensitivities))
         conditions.append(f"COALESCE(f.sensitivity, 'normal') = ANY(${len(params)})")
@@ -118,7 +122,7 @@ async def _fetch_profile_facts(
     if allowed_sensitivities is None:
         return facts, 0
 
-    withheld_sql = """
+    withheld_sql = f"""
         SELECT COUNT(*)
         FROM facts f
         JOIN public.entities e ON f.entity_id = e.id
@@ -126,6 +130,7 @@ async def _fetch_profile_facts(
           AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
           AND f.content_authority IN ('owner', 'owner_device')
+          AND {NOT_EVENT_CLASS_SQL}
           AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($2))
     """
     try:

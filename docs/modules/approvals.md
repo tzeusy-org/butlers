@@ -171,6 +171,18 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   Protected peer admission and the owning source's durable presentation proof
   are separate prerequisites. Ordinary TCP or caller correlation cannot enable
   recovery, and constructing the opt-in transport does not activate rollout.
+- The recovery worker reports each scan/claim/handoff outcome on
+  `approval_delivery_worker_outcomes_total{schema,stage,outcome,reason}` and a matching log
+  line. Labels come only from the closed vocabularies in
+  `src/butlers/core/approval_delivery_worker.py` (`OBSERVATION_OUTCOMES`, `SAFE_REASON_CODES`);
+  identifiers, recipients, callback material, provider references and exception text never
+  appear. A handoff outcome is recorded only after its repository write commits; a refused
+  compare-and-set records `start_refused`/`write_refused`, and a failed transaction records only
+  `scan/failed`. Observer failures are swallowed and never change the action or presentation.
+- Only `transition_pending_action` (`delivery_lifecycle.py`) may move an action out of
+  `pending`. `tests/contracts/test_relationship_pending_actions_choke_point.py` pins the full
+  inventory of `UPDATE pending_actions SET status` writers; the other writers move `approved` to
+  `executed`/`abandoned` and must bind `ActionStatus.APPROVED` as their guard.
 
 - Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
   (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
@@ -198,6 +210,17 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
+- Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
+  `src/butlers/modules/calendar_approval.py`) first checks the requested tool name and argument
+  digest against the locked approved row; a mismatch refuses before dispatch. The executor then
+  dispatches, and binds the execution context to, the canonical public call built from the stored
+  row. Rows parked before bu-svqpzo.1 carry a literal `_approval_bypass: true` marker (and, for
+  `calendar_update_event_instance`, `clear_entity_ids: false`); only those exact values are dropped.
+  Any other value or unknown key refuses before effect. The marker is never forwarded and grants
+  nothing; delete this retirement once no pending calendar row carries it.
+  A row for a tool that takes `calendar_id` must bind it concretely: rows parked before bu-eio2my
+  with `calendar_id: null` are refused before effect (the owner never saw the calendar a replay
+  would resolve to) and must be re-requested.
 - `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
   tool handlers when an approved action's
   `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
