@@ -27,7 +27,7 @@ interface PRPanelProps {
   className?: string;
 }
 
-const PR_STATE_TONES: Record<QaPrSummary["state"], keyof typeof TONE_COLORS> = {
+const PR_STATE_TONES: Record<NonNullable<QaPrSummary["state"]>, keyof typeof TONE_COLORS> = {
   closed: "neutral",
   drafted: "neutral",
   open: "amber",
@@ -35,7 +35,7 @@ const PR_STATE_TONES: Record<QaPrSummary["state"], keyof typeof TONE_COLORS> = {
 };
 
 function prStateStyle(state: QaPrSummary["state"]) {
-  const tone = PR_STATE_TONES[state];
+  const tone = state === null ? "neutral" : PR_STATE_TONES[state];
   return {
     borderColor: TONE_COLORS[tone],
     color: tone === "amber" ? "var(--amber-text)" : TONE_COLORS[tone],
@@ -157,10 +157,10 @@ export function PRPanel({
             )}
             style={prStateStyle(pr.state)}
           >
-            {pr.state}
+            {pr.state ?? "PR state unknown"}
           </span>
           <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground tnum">
-            pr #{pr.number} · {pr.state}
+            pr #{pr.number} · {pr.state ?? "state unknown"}
           </p>
           <a
             href={pr.url}
@@ -186,12 +186,14 @@ export function PRPanel({
 
       <p className="font-mono text-[10px] leading-none text-muted-foreground tnum">
         opened <Time value={pr.opened_at} mode="absolute" precision="time" /> ·{" "}
-        {pr.merged_at ? (
+        {pr.state === null ? (
+          "merge status unavailable"
+        ) : pr.merged_at ? (
           <>
             merged <Time value={pr.merged_at} mode="absolute" precision="time" />
           </>
         ) : (
-          "not merged"
+          pr.state === "merged" ? "merge time unavailable" : "not merged"
         )}
       </p>
     </section>

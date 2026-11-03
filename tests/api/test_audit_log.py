@@ -31,7 +31,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
-from butlers.api.routers.audit import AuditTableNotAvailableError, append, audit_log_appended_total
+from butlers.api.routers.audit import AuditTableNotAvailableError, append
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -432,14 +432,6 @@ def test_audit_log_entry_from_record_full():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def prometheus_clean(monkeypatch):
-    """Reset the audit_log_appended_total counter between tests."""
-    # Access the underlying _metrics dict to reset sample values; in unit tests
-    # we just read the current count before and after to verify increment.
-    yield
-
-
 async def test_append_inserts_row_and_returns_id():
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=7)
@@ -592,14 +584,37 @@ def test_audit_log_entry_new_fields_default_none():
     assert populated.error == "boom"
 
 
-async def test_append_increments_prometheus_counter():
-    pool = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=1)
+async def test_append_adds_to_otel_counter_with_action_attribute():
+    from opentelemetry import metrics
+    from opentelemetry.metrics import _internal as metrics_internal
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.util._once import Once
 
-    before = audit_log_appended_total.labels(action="test_counter_increment")._value.get()
-    await append(pool, "owner", "test_counter_increment")
-    after = audit_log_appended_total.labels(action="test_counter_increment")._value.get()
-    assert after == before + 1
+    reader = InMemoryMetricReader()
+    previous = metrics_internal._METER_PROVIDER
+    metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+    metrics_internal._METER_PROVIDER = None
+    metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+    try:
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=1)
+        await append(pool, "owner", "test_counter_increment")
+
+        points = [
+            (m.name, dp)
+            for rm in reader.get_metrics_data().resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+            for dp in m.data.data_points
+        ]
+    finally:
+        metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+        metrics_internal._METER_PROVIDER = previous
+
+    assert [(n, dict(dp.attributes), dp.value) for n, dp in points] == [
+        ("butlers.audit.log.appended", {"action": "test_counter_increment"}, 1)
+    ]
 
 
 async def test_append_raises_audit_table_not_available_error_on_undefined_table():
