@@ -34,6 +34,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DURATIONS_PATH = ".test_durations"
 COUNT_FILE = "collected.json"
 DURATIONS_FILE = "durations.json"
+# The root conftest turns a "Docker not available" skip into a failure when this
+# is set, so a lane that guarantees Docker cannot pass green on a runner that
+# lost it (bu-u5euwb.37). Local runs leave it unset and keep skipping.
+REQUIRE_DOCKER_ENV = "BUTLERS_REQUIRE_DOCKER"
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,7 @@ class Lane:
     maxfail: int
     ignore_e2e: bool
     workers: str
+    requires_docker: bool = False
 
 
 LANES: dict[str, Lane] = {
@@ -61,6 +66,7 @@ LANES: dict[str, Lane] = {
         maxfail=5,
         ignore_e2e=False,
         workers="auto",
+        requires_docker=True,
     ),
 }
 
@@ -161,12 +167,8 @@ def pytest_command(lane: str, group: int, *, output: Path, coverage: bool) -> li
     return command
 
 
-def run(lane: str, group: int, *, output: Path, repo_root: Path = REPO_ROOT) -> int:
-    """Run one lane group, then publish its collected count."""
-    output.mkdir(parents=True, exist_ok=True)
-    count_path = output / COUNT_FILE
-    count_path.unlink(missing_ok=True)
-    coverage = coverage_enabled()
+def lane_environment(lane: str, *, output: Path, count_path: Path) -> dict[str, str]:
+    """The environment one lane group's pytest child runs under."""
     environment = {
         **os.environ,
         "CI_GROUP_COUNT_FILE": str(count_path),
@@ -175,6 +177,18 @@ def run(lane: str, group: int, *, output: Path, repo_root: Path = REPO_ROOT) -> 
             [str(Path(__file__).resolve().parent), os.environ.get("PYTHONPATH", "")]
         ),
     }
+    if lane_config(lane).requires_docker:
+        environment[REQUIRE_DOCKER_ENV] = "1"
+    return environment
+
+
+def run(lane: str, group: int, *, output: Path, repo_root: Path = REPO_ROOT) -> int:
+    """Run one lane group, then publish its collected count."""
+    output.mkdir(parents=True, exist_ok=True)
+    count_path = output / COUNT_FILE
+    count_path.unlink(missing_ok=True)
+    coverage = coverage_enabled()
+    environment = lane_environment(lane, output=output, count_path=count_path)
     if coverage and not environment.get("COVERAGE_FILE"):
         raise ValueError("COVERAGE_FILE is required when CI_COVERAGE is enabled")
     if coverage:
