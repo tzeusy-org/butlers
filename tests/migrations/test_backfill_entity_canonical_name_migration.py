@@ -16,12 +16,13 @@ Parent: bu-oluyt.7 (retire public.contacts).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -32,14 +33,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # (a) Unit: module structure + source guards
 # ---------------------------------------------------------------------------
@@ -48,7 +41,7 @@ def _load_migration(path: Path, name: str):
 @pytest.mark.unit
 class TestMigrationStructure:
     def test_backfill_is_additive_only_fills_blank(self):
-        sql = _load_migration(_MIGRATION_PATH, "_core_130")._BACKFILL_SQL.text
+        sql = load_migration(_MIGRATION_PATH, "_core_130")._BACKFILL_SQL.text
         # Only touch entities whose name is missing — never overwrite a real one.
         assert "canonical_name IS NULL OR btrim(e.canonical_name) = ''" in sql
         # Single-valued: most-recently-updated contact wins.
@@ -74,7 +67,7 @@ _PRE_STATE = {"core": "core_129"}  # core_130's predecessor: entities + contacts
 
 async def _upgrade(pool) -> None:
     """Replay core_130's upgrade() SQL (snapshot table, guarded snapshot + backfill)."""
-    mod = _load_migration(_MIGRATION_PATH, "_core_130")
+    mod = load_migration(_MIGRATION_PATH, "_core_130")
     sqls: list[str] = []
     fake_op = MagicMock()
     fake_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -162,7 +155,7 @@ async def test_backfill_is_idempotent_and_reversible(db) -> None:
     assert await _name(pool, entity_id) == "Alice"
 
     # Downgrade restores the snapshotted prior value (empty string).
-    mod = _load_migration(_MIGRATION_PATH, "_core_130")
+    mod = load_migration(_MIGRATION_PATH, "_core_130")
     restore_sql = (
         "UPDATE public.entities e "
         "SET canonical_name = b.old_canonical_name "
