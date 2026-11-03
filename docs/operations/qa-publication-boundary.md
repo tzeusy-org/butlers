@@ -140,6 +140,14 @@ kept, and no remote branch or PR is deleted.
 
 ## Durable operations and holds
 
+The case dossier observes PR lifecycle read-only through the existing bounded GitHub metadata
+client and TTL cache. An adopted PR's number, URL and branch remain visible when that lifecycle is
+unavailable: the panel says `PR state unknown` and keeps Open PR. A failed, timed-out or otherwise
+terminal investigation never proves that its PR closed. Explicit provider lifecycle supersedes the
+local positive state, and only a positively merged observation supplies a merge timestamp; attempt
+closure time is not that evidence. A checks lookup failure preserves a successful PR observation.
+This display does not change attempt history, publication receipts, lineage holds or activation gates.
+
 `public.qa_publication_operations` (migration `core_266`) holds one row per `(attempt, operation
 kind)`, where the kind is one of the closed set `branch_push`, `pr_create`, `pr_update`, `pr_labels`.
 A row records the stage, a digest of the dispatcher-held binding (repository, branch, base, head SHA,
