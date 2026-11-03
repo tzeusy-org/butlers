@@ -85,8 +85,10 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
   own copy of the same provider event and the `origin_ref` dedup keeps the most recently synced
   one, so the surviving instance id, and `overlap_pair_id` over it, rotates between schemas. The
   condition's pair id is therefore `overlap_pair_id` over each entry's provider identity (its
-  `origin_ref` cluster key, exposed as `CalendarConflictScan.entry_identity_keys`); the radar's
-  own pair id and proposal join are unchanged. A dedup-store read failure is now reported as
+  `origin_ref` cluster key, exposed as `CalendarConflictScan.entry_identity_keys`). The radar
+  re-keys its own `DetectedIssue.pair_id` the same way (bu-nd32y3), so a fix proposal stays
+  attached across a resync; its proposal join also matches the old instance-based pair id, so
+  proposals stored before the change still attach (no migration). A dedup-store read failure is now reported as
   `CalendarConflictScan.dedup_available = false`, and the producer reconciles nothing on such a
   tick.
 - Grace: `initial_grace_seconds` defaults to 3600, mirroring Finance.

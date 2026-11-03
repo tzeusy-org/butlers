@@ -88,7 +88,10 @@ The dashboard-api process runs a supervised `calendar_overcommitment` loop
 reconciles `public.owner_conditions` under source `calendar:overcommitment`. Only `warning`
 `overlap` and `overloaded_day` issues qualify; `back_to_back` never does. An overlap's identity
 is a pair of provider identities (`origin_ref`, plus start for a recurring occurrence), not
-instance ids, because the dedup survivor rotates between butler schemas as each one syncs. An
+instance ids, because the dedup survivor rotates between butler schemas as each one syncs. The
+radar's own overlap `pair_id` uses the same provider-identity pair, so a pending fix proposal
+(`calendar_event_proposals.source_event_id`) stays attached across a resync; the join also
+accepts the legacy instance-based pair id so proposals stored before that change still attach. An
 overloaded day's identity is its owner-local date. Condition text carries the kind, date,
 severity, overlap minutes and entry ids, or meeting hours and event count, never a title,
 attendee or location.

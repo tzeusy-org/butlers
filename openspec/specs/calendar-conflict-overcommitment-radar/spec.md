@@ -48,7 +48,10 @@ default strategy with no overrides (fail-open) rather than failing the scan.
   - `events`: the two overlapping `ConflictEventRef` objects
   - `proposal_ids`: UUIDs of any `pending` proposals in `calendar_event_proposals`
     whose `source_event_id` matches the canonical overlap-pair id (deterministic
-    UUID5 of the sorted `entry_id` pair)
+    UUID5 of the sorted pair of the two entries' provider identities, so it does not
+    rotate when a resync makes another butler schema's copy survive the dedup) or,
+    for proposals stored before that keying, the legacy UUID5 of the sorted
+    `entry_id` pair
 - **AND** `issues_available: true`
 
 #### Scenario: Back-to-back density detected
@@ -185,6 +188,13 @@ accepted or dismissed proposals MUST NOT appear in this list.
   containing those events
 - **THEN** the matching `ConflictIssue` includes that proposal's UUID in `proposal_ids`
 - **AND** the proposal UUID is NOT included if its status is `accepted` or `dismissed`
+
+#### Scenario: Proposal stays attached when a resync rotates the surviving copy
+
+- **GIVEN** a `pending` proposal stored under an overlap's canonical pair id
+- **WHEN** a resync makes another butler schema's copy of one event survive the dedup,
+  changing that event's `entry_id`
+- **THEN** the overlap issue still includes that proposal's UUID in `proposal_ids`
 
 ### Requirement: FE Radar Banner
 
