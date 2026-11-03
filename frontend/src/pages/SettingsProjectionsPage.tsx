@@ -111,7 +111,7 @@ export default function SettingsProjectionsPage() {
   const [revoking, setRevoking] = useState<ProjectionGrant | null>(null);
   const [minted, setMinted] = useState<MintedProjection | null>(null);
 
-  const grants = data?.data ?? [];
+  const grants = !isError && data ? data.data : [];
 
   function onRotate() {
     if (!rotating) return;
