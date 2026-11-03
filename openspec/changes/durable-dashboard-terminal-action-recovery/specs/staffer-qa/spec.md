@@ -34,19 +34,15 @@ Scope: v1-mandatory
 #### Scenario: DiscoverySource protocol definition
 
 - **WHEN** a new discovery source is implemented
-- **THEN** it implements the `DiscoverySource` protocol with a `name` string
-  property and `async discover(lookback_minutes: int) -> list[QaFinding]`
-  method
-- **AND** the protocol requires no LLM invocation; all sources use tool-based
-  filtering such as regex, SQL queries, and file parsing
+- **THEN** it implements the `DiscoverySource` protocol with: `name` (str property), `async discover(lookback_minutes: int) -> list[QaFinding]` method
+- **AND** the protocol requires no LLM invocation — all sources use tool-based filtering (regex, SQL queries, file parsing) to avoid context wastage
 
 #### Scenario: Source registration at startup
 
 - **WHEN** the QA Staffer daemon starts
 - **THEN** it registers all enabled discovery sources from
   `[modules.qa].enabled_sources` configuration
-- **AND** default enabled sources remain `log_scanner`, `session_records`,
-  `butler_reports`, `tool_call_failures`, and `infra_state`
+- **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports", "tool_call_failures", "infra_state"]`
 - **AND** disabled sources are logged at INFO and skipped during patrol
 - **AND** adapter diagnostics useful only through structured session records are
   suppressed by `log_scanner` only when `session_records` registered successfully
@@ -78,23 +74,13 @@ trusted service interface and complete validated identity.
 - **AND** `report_finding` and `get_dashboard_report_receipt` are service-only,
   never LLM-presentable or reachable from the session listener; `force_patrol`
   and `get_qa_status` retain their existing non-presentable control descriptors
-- **AND** `report_finding` accepts `fingerprint` (a hint; QA recomputes the
-  canonical fingerprint via `compute_fingerprint_from_report` and logs a debug
-  mismatch warning), `exception_type`, `call_site`, `severity` (0-4, clamped
-  with WARNING when out of range; authoritative canonical scoring overrides
-  caller intent for critical/high errors), `event_summary`, optional `context`,
-  `source_butler`, and optional `trigger_source` propagated as
-  `source_session_trigger_source` for QA self-recursion suppression
-- **AND** a non-dashboard `report_finding` call queues the finding with canonical
-  fingerprint/severity in the `butler_reports` source buffer and returns
-  `{"accepted": true}` synchronously
+- **AND** `report_finding` accepts: `fingerprint` (str, treated as a hint; the QA module recomputes the canonical fingerprint via `compute_fingerprint_from_report` and logs a debug warning on mismatch), `exception_type` (str), `call_site` (str), `severity` (int 0-4, clamped to range with a WARNING if out-of-range; authoritative canonical scoring overrides caller intent for critical/high errors), `event_summary` (str), `context` (str, optional), `source_butler` (str), and `trigger_source` (str, optional, carrying the calling session's trigger_source such as "healing" or "qa", propagated as `source_session_trigger_source` for QA self-recursion suppression)
+- **AND** a non-dashboard `report_finding` call queues the finding (with canonical fingerprint and severity) in the `butler_reports` source buffer and returns `{"accepted": true}` synchronously
 - **AND** an authenticated internal Switchboard caller MAY additionally supply
   all of `terminal_action_id` (UUID), `terminal_effect_id` (UUID), and
   `terminal_effect_idempotency_key` (opaque stable string) to select the durable
   dashboard mode
-- **AND** `tool_metadata()` declares `context` and `event_summary` sensitive on
-  `report_finding` because they may contain agent reasoning about user-related
-  errors
+- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agent reasoning about user-related errors)
 
 #### Scenario: Reactive finding buffer is volatile for ordinary reports
 

@@ -81,12 +81,17 @@ def normalize_premise(premise: Mapping[str, Any] | None) -> dict[str, Any] | Non
 async def enqueue_premise_amendments(
     conn: asyncpg.Connection, transitions: Sequence[ConditionTransition]
 ) -> int:
-    """``reconcile_snapshot`` ``post_write`` hook: amend delivered insights on resolution.
+    """Resolution ``post_write`` hook: amend delivered insights on resolution.
+
+    Bound to both owner-condition resolution paths, ``reconcile_snapshot`` and the
+    explicit ``resolve_condition`` (bu-q7vx1q.32). The definer verifies the resolved
+    ``public.owner_conditions`` row itself (core_312), so it amends nothing for a
+    transition the ledger does not hold.
 
     For every ``resolved`` transition, enqueue one amendment per delivered
     candidate whose premise names that condition, through the narrow
     ``public.enqueue_premise_amendments`` definer (so a producer role needs no
-    access to the Switchboard-owned tables). Runs inside the reconcile
+    access to the Switchboard-owned tables). Runs inside the resolving
     transaction: the amendment and the resolution commit or roll back together.
     The definer is idempotent on ``(candidate, fingerprint@resolved_at)``, so a
     replayed reconcile never queues a second amendment. Returns the number of
