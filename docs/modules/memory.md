@@ -106,6 +106,11 @@ A later write of a matching active fact -- `store_fact`, or the relationship but
 recording the fact reference, a value excerpt and the fact's server-stamped authority. A gap
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
+A closure that raises never fails the fact write: the write commits, the gap stays open, and
+`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, or `stage=reservation` when the pair
+reservation fails; per `butler`) is
+incremented after a warning log; a failure to record the counter is logged and never fails
+the write.
 
 When `store_fact` creates a registered inverse or symmetric narrative edge, the generated
 active row also answers the original object's gap. Its citation is the inverse row's own UUID,
@@ -118,7 +123,7 @@ projections. Identity and registry-relational predicates still belong to the Rel
 Gap bookkeeping is best effort: a missing local gap table skips it; an ordinary reservation
 failure skips both closures, while an individual closure failure leaves that gap open without
 discarding a successful sibling. Savepoints protect the canonical fact transaction, and failures
-use the existing warning/count. Cancellation or a canonical write/projection error still rolls
+use the warning and the counter above. Cancellation or a canonical write/projection error still rolls
 back the enclosing write. Temporal replay and an already-existing inverse key create no new
 answer; inactive retained rows are never reactivated. There is no historical repair scan, and
 later retraction retains the existing answer snapshot. Gaps retain the local single-owner contract:
@@ -261,6 +266,8 @@ path before any fact, rule, link or completion write; the sibling partitions sti
 commit independently, and valid third-party evidence stays `third_party`. Each
 successful partition writes its own `public.consolidation_runs` row, and the run's
 `groups_consolidated` counts partitions.
+The row is inserted as the daemon's own `butler_<name>_rw` role; the table is
+append-only for runtime roles (SELECT and INSERT, no UPDATE or DELETE; core_308).
 
 The partitions stop new laundering; they do not reclassify facts consolidated
 before this change. A historical demotion mechanism (operator-only, default
