@@ -39,28 +39,9 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
 
 
 @pytest.fixture
-async def dashboard_messages_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_conversations (
-                id UUID PRIMARY KEY,
-                butler_name TEXT NOT NULL
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_messages (
-                id UUID PRIMARY KEY,
-                conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id),
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                sources JSONB
-            )
-            """
-        )
-        yield pool
+async def dashboard_messages_pool(db):
+    """The real dashboard tables as core_247's predecessor (core_246) left them."""
+    return await db("core", revisions={"core": "core_246"})
 
 
 @pytest.mark.asyncio(loop_scope="session")
