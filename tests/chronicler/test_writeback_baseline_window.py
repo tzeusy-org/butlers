@@ -22,7 +22,9 @@ _HOUR = 3600
 
 
 def _row(day: date, seconds: int) -> SimpleNamespace:
-    return SimpleNamespace(lane="work", local_date=day, seconds=seconds)
+    return SimpleNamespace(
+        lane="work", local_date=day, seconds=seconds, episode_count=1, timezone="UTC"
+    )
 
 
 async def _skew_insights(monkeypatch: pytest.MonkeyPatch, offsets: list[int]) -> int:
@@ -41,9 +43,13 @@ async def _skew_insights(monkeypatch: pytest.MonkeyPatch, offsets: list[int]) ->
     async def no_flags(_pool, *, local_date):
         return []
 
+    async def no_flags_range(_pool, *, start_date, end_date):
+        return []
+
     monkeypatch.setattr(storage, "list_daily_rollups", day_rollups)
     monkeypatch.setattr(storage, "list_daily_rollups_range", range_rollups)
     monkeypatch.setattr(storage, "list_daily_rollup_flags", no_flags)
+    monkeypatch.setattr(storage, "list_daily_rollup_flags_range", no_flags_range)
 
     stored: list[dict] = []
 

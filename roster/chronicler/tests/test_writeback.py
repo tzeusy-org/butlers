@@ -15,6 +15,7 @@ co-presence SQL) is exercised separately in
 
 from __future__ import annotations
 
+import statistics
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -86,7 +87,7 @@ def test_lane_skew_insight_fires_on_anomaly():
 
 def test_lane_skew_confidence_tracks_baseline_coverage():
     def skew(sample_days: int) -> float:
-        balance = LaneBalance("work", 0, 8 * 3600, -8 * 3600, sample_days)
+        balance = LaneBalance("work", 0, 8 * 3600, -8 * 3600, sample_days, state="below")
         return synthesize_lane_skew_insights(_DAY, [balance], window_days=28)[0].confidence
 
     thin, full = skew(7), skew(28)
@@ -365,8 +366,8 @@ async def test_actual_writeback_binds_historical_availability_to_each_baseline_d
     assert PREDICATE_LANE_SKEW in store.predicates
     assert PREDICATE_SLEEP_DEBT not in store.predicates
     skew = next(c for c in store.calls if c["predicate"] == PREDICATE_LANE_SKEW)
-    assert skew["metadata"]["baseline_seconds"] == sum(row.seconds for row in baseline[1:]) / len(
-        baseline[1:]
+    assert skew["metadata"]["baseline_seconds"] == statistics.median(
+        row.seconds for row in baseline[1:]
     )
     # The unavailable date is not a sample, so it lowers the stored confidence.
     assert skew["confidence"] == evidence_confidence(
