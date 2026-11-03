@@ -3033,6 +3033,20 @@ export interface Fact {
   last_confirmed_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  /** Owner vouch (bu-jv1moa.14): when the owner stood behind a reported fact. */
+  endorsed_at?: string | null;
+  endorsed_by?: string | null;
+  /** True while a live fact is a non-owner report the owner has not vouched for. */
+  held?: boolean;
+}
+
+/** Receipt for an owner vouch of a held fact (idempotent). */
+export interface FactVouch {
+  fact_id: string;
+  content_authority: string | null;
+  endorsed_at: string | null;
+  endorsed_by: string | null;
+  changed: boolean;
 }
 
 /** A behavioral rule from the long-term memory tier. */
@@ -3295,6 +3309,8 @@ export interface FactParams {
    * to list the facts derived from that episode (the reverse provenance link).
    */
   source_episode_id?: string;
+  /** true: only held facts (reported, not vouched for); false: everything else. */
+  held?: boolean;
   offset?: number;
   limit?: number;
 }

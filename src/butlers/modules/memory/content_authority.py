@@ -60,6 +60,14 @@ SYSTEM_PARTITION = "system"
 NON_OWNER_PARTITION = "non_owner"
 PARTITIONS: tuple[str, ...] = (OWNER_PARTITION, SYSTEM_PARTITION, NON_OWNER_PARTITION)
 
+#: A fact is held while it is an attributed report from a non-owner source: third-party
+#: or mixed authority, no owner vouch, still live.  NULL (legacy) and ``system`` are not
+#: held; they are noise rather than a stranger's claim waiting on the owner.
+HELD_FACT_SQL = (
+    "(content_authority IN ('third_party', 'mixed') AND endorsed_at IS NULL"
+    " AND validity IN ('active', 'fading'))"
+)
+
 _DASHBOARD_CHANNEL = "dashboard"
 
 
@@ -124,6 +132,15 @@ def catalog_attribution(authority: str | None) -> str | None:
     if authority == MIXED:
         return "partly from a third party"
     return "from a third party"
+
+
+def is_fact_held(authority: str | None, endorsed_at: Any, validity: str | None) -> bool:
+    """True when a live fact is a non-owner report the owner has not vouched for."""
+    return (
+        authority in (THIRD_PARTY, MIXED)
+        and endorsed_at is None
+        and validity in ("active", "fading")
+    )
 
 
 def _parse_uuid(value: object) -> uuid.UUID | None:
