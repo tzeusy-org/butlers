@@ -15,8 +15,10 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +30,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner_context import compose_effective_system_prompt_receipt
-from butlers.testing.fake_pool import fake_pool
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import Record, records
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -49,6 +51,30 @@ def _now_str() -> str:
 
 
 def _make_db(pool: AsyncMock) -> MagicMock:
+    if isinstance(pool, FakePool):
+        # Keep the shared kit's strict SQL mocks; model only this file's
+        # acquired connection ownership and the audit scope's liveness probe.
+        connection: Any = pool.connection
+        depth = 0
+        original_execute = connection.execute
+
+        @asynccontextmanager
+        async def transaction():
+            nonlocal depth
+            depth += 1
+            try:
+                yield
+            finally:
+                depth -= 1
+
+        async def execute(query, *args):
+            if query == "SELECT 1" and not args:
+                return "SELECT 1"
+            return await original_execute(query, *args)
+
+        connection.is_in_transaction = MagicMock(side_effect=lambda: depth > 0)
+        connection.transaction = MagicMock(side_effect=transaction)
+        connection.execute = AsyncMock(side_effect=execute)
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool = MagicMock(return_value=pool)
     return db

@@ -64,6 +64,7 @@ from butlers.api.models.memory import (
 )
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as _audit
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import is_rule_admitted
@@ -3121,7 +3122,7 @@ async def update_retention_policies(
 
     updated: list[MemoryRetentionPolicy] = []
     for entry in body.policies:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn, audit_transaction(conn):
             row = await conn.fetchrow(
                 "INSERT INTO public.memory_retention_policies"
                 " (kind, ttl_days, max_rows, updated_by)"
