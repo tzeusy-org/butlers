@@ -1,0 +1,144 @@
+"""Refill supply survives medication edits (bu-uc6wh2).
+
+``medication_log_dose`` stamps each dose with the medication fact id current at log
+time, and ``medication_update`` supersedes that fact (new id) on any edit. The refill
+scan used to count only doses carrying the *current* id, so editing the dosage,
+schedule or notes forgot every dose since the last fill and overstated supply. Doses
+now count by the medication's stable subject; a quantity change (a refill) still
+resets the count through ``quantity_updated_at``.
+
+These run the real write tools and ``run_insight_scan`` against Postgres (CI-only).
+"""
+
+from __future__ import annotations
+
+import importlib
+import shutil
+
+import pytest
+
+docker_available = shutil.which("docker") is not None
+pytestmark = [
+    pytest.mark.asyncio(loop_scope="session"),
+    pytest.mark.integration,
+    pytest.mark.skipif(not docker_available, reason="Docker not available"),
+]
+
+
+@pytest.fixture
+async def health_pool(db):
+    """Core and memory (``public.facts``), the health chain, and switchboard for the
+    insight tables the scan submits into (mirrors ``test_jobs.health_pool``)."""
+    return await db(
+        "core",
+        "memory",
+        "health",
+        "switchboard",
+        schemas={"health": "health", "switchboard": "switchboard"},
+        schema="health",
+    )
+
+
+async def _log_doses(pool, medication_id: str, count: int) -> None:
+    medication_log_dose = importlib.import_module("butlers.tools.health").medication_log_dose
+
+    for _ in range(count):
+        await medication_log_dose(pool, medication_id)
+
+
+async def _refill_messages(pool) -> list[str]:
+    run_insight_scan = importlib.import_module("butlers.jobs._roster.health_jobs").run_insight_scan
+
+    await run_insight_scan(pool)
+    rows = await pool.fetch(
+        "SELECT message FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    return [r["message"] for r in rows]
+
+
+async def test_a_dosage_edit_between_doses_keeps_the_dose_count(health_pool):
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
+
+    med = await medication_add(health_pool, "Metformin", "500mg", "daily", quantity=10)
+    await _log_doses(health_pool, str(med["id"]), 3)
+    edited = await medication_update(health_pool, str(med["id"]), dosage="850mg")
+    await medication_update(health_pool, str(edited["id"]), notes="with dinner")
+    await _log_doses(health_pool, str(edited["id"]), 3)
+
+    # 10 pills - 6 doses = 4 days left; forgetting the first 3 would say 7.
+    (message,) = await _refill_messages(health_pool)
+    assert "Metformin supply estimated to run out in 4 day(s)" in message
+
+
+async def test_a_quantity_change_resets_the_dose_count(health_pool):
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
+
+    med = await medication_add(health_pool, "Lisinopril", "10mg", "daily", quantity=10)
+    await _log_doses(health_pool, str(med["id"]), 6)
+    refilled = await medication_update(health_pool, str(med["id"]), quantity=20)
+    await _log_doses(health_pool, str(refilled["id"]), 8)
+
+    # 20 pills - 8 doses since the refill = 12 days; the 6 earlier doses drew the old supply.
+    (message,) = await _refill_messages(health_pool)
+    assert "Lisinopril supply estimated to run out in 12 day(s)" in message
+
+
+@pytest.fixture
+async def health_schema_pool(db):
+    """The production layout: Health's memory facts live in ``health.facts``, the table
+    the Switchboard's send-time definer (core_311) reads."""
+    return await db(
+        "core",
+        "memory",
+        "health",
+        "switchboard",
+        schemas={"memory": "health", "health": "health", "switchboard": "switchboard"},
+        schema="health",
+    )
+
+
+async def test_the_scan_and_the_send_time_probe_agree_after_a_dosage_edit(health_schema_pool):
+    from butlers.core.insight_premise import probe_premise
+
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
+    premises = importlib.import_module("butlers.tools.switchboard.insight").premises
+
+    pool = health_schema_pool
+    med = await medication_add(pool, "Metformin", "500mg", "daily", quantity=10)
+    await _log_doses(pool, str(med["id"]), 3)
+    edited = await medication_update(pool, str(med["id"]), dosage="850mg")
+    await _log_doses(pool, str(edited["id"]), 3)
+
+    (message,) = await _refill_messages(pool)
+    assert "Metformin supply estimated to run out in 4 day(s)" in message
+
+    async def probe(warning_days: int) -> bool | None:
+        args = {
+            "subject": "medication:Metformin",
+            "doses_per_day": 1.0,
+            "warning_days": warning_days,
+        }
+        premise = probe_premise("health", "medication_refill_still_due", args)
+        return await premises.check_premise(pool, premise)
+
+    # The probe sees the same 4 days left: due at a 4-day window, not at 3.
+    assert await probe(4) is True
+    assert await probe(3) is False
+
+
+async def test_another_medications_doses_are_not_counted(health_pool):
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
+
+    metformin = await medication_add(health_pool, "Metformin", "500mg", "daily", quantity=10)
+    other = await medication_add(health_pool, "Aspirin", "100mg", "daily", quantity=100)
+    await medication_update(health_pool, str(other["id"]), dosage="75mg")
+    await _log_doses(health_pool, str(other["id"]), 5)
+    await _log_doses(health_pool, str(metformin["id"]), 2)
+
+    # Aspirin (100 - 5) stays outside the window; Metformin counts only its own 2 doses.
+    (message,) = await _refill_messages(health_pool)
+    assert "Metformin supply estimated to run out in 8 day(s)" in message
