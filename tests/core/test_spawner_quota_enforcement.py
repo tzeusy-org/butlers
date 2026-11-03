@@ -212,7 +212,7 @@ class TestSpawnerQuotaEnforcement:
     async def test_quota_denial_writes_no_provider_allowance_state(self, tmp_path: Path) -> None:
         """An owner token-quota denial is not a provider rejection: no allowance write.
 
-        REQ-catalog-token-limits-003. Only a provider usage-limit rejection may mark an
+        Only a provider usage-limit rejection may mark an
         account exhausted; a local budget denial would otherwise block every entry
         sharing the account until a reset that no provider ever announced.
         """
