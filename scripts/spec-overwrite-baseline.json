@@ -73,6 +73,12 @@
       "excerpt": "| Existing episode type / source | Lane | |---|---| | `google_health` sleep | `sleep` | | `google_health` workout, in...",
       "kind": "prose",
       "scenario": null
+    },
+    {
+      "digest": "e011aaaeaf17",
+      "excerpt": "- **WHEN** Spotify listening and Steam play activities are aggregated",
+      "kind": "clause",
+      "scenario": "Music and gaming roll into Play"
     }
   ],
   "confine-qa-publication-authority/qa-investigation-dispatch/Anonymization-on-Egress Guarantee": [

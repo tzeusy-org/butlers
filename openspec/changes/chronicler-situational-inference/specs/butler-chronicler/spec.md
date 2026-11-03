@@ -63,7 +63,7 @@ Scope: v1-mandatory
 
 ### Requirement: Situational Activity Precedence
 
-Chronicler SHALL derive the owner's activity from where they were, using a deterministic adapter (`chronicler.situation_inferred`) that applies one fixed precedence: sleep, exercise, travel, at the work place (Work), play, eat, at another place (Social), at home with nothing else (Rest). A derived block SHALL never re-count time a higher-precedence activity already owns, and this projection SHALL NOT call an LLM.
+Chronicler SHALL derive the owner's activity from where they were, using a deterministic adapter (`chronicler.situation_inferred`) that applies one fixed precedence: sleep, a trip away from home (Travel, REQ-butler-chronicler-021), exercise, travel, at the work place (Work), play, eat, at another place (Social), at home with nothing else (Rest). A derived block SHALL never re-count time a higher-precedence activity already owns, and this projection SHALL NOT call an LLM.
 
 ID: REQ-butler-chronicler-016
 Source: bu-r3fmja; owner request 2026-11-03 ("registered work location → working; at home and Steam on → gaming"); owner decision 2026-11-03 (unregistered stays count as Social)
@@ -83,7 +83,7 @@ Scope: v1-mandatory
 - **WHEN** a place stay within 50 km of home matches no anchor
 - **THEN** an `outing_block` in the Social lane SHALL cover it minus higher-precedence spans
 - **AND** its payload SHALL give the distance from home rounded to 100 m
-- **AND** a stay more than 50 km from home SHALL produce no situational block
+- **AND** a stay more than 50 km from home SHALL produce no `outing_block`; trip time is counted as Travel instead (REQ-butler-chronicler-021, change `chronicler-activity-tree-refinement`)
 
 #### Scenario: Hold at the last known place
 - **WHEN** the latest accepted location fix is later than every place and movement episode end
