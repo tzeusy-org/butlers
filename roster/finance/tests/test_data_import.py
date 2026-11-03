@@ -660,6 +660,7 @@ class TestDeduplication:
         blob_store = self._make_blob_store(CHASE_CSV)
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])  # no duplicates found
         pool.execute = AsyncMock()
 
@@ -850,6 +851,7 @@ class TestBatchProcessing:
         content = self._build_large_csv(1000)
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])  # no duplicates in batch query
         pool.execute = AsyncMock()
 
@@ -872,6 +874,7 @@ class TestBatchProcessing:
         content = self._build_large_csv(501)
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])  # no duplicates
         pool.execute = AsyncMock()
 
@@ -982,6 +985,7 @@ class TestErrorHandling:
         )
         blob_store = self._make_blob_store(content)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1023,6 +1027,7 @@ class TestErrorHandling:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1053,6 +1058,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1070,6 +1076,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(AMEX_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1087,6 +1094,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(CAPITAL_ONE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1104,6 +1112,7 @@ class TestReturnShape:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.execute = AsyncMock()
 
@@ -1218,6 +1227,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
@@ -1241,6 +1251,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         # First fetchrow call is _lookup_account_currency, returns GBP.
         pool.fetchrow = AsyncMock(return_value={"currency": "GBP"})
         pool.fetch = AsyncMock(return_value=[])
@@ -1266,6 +1277,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetchrow = AsyncMock(return_value=None)
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
@@ -1288,6 +1300,7 @@ class TestCurrencyInference:
 
         blob_store = self._make_blob_store(CHASE_CSV)
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         # Account found but currency field is empty.
         pool.fetchrow = AsyncMock(return_value={"currency": ""})
         pool.fetch = AsyncMock(return_value=[])
@@ -1386,39 +1399,32 @@ class TestCurrencyInference:
         assert cur == "USD"
         assert warn is not None
 
-    async def test_file_import_infers_currency_from_account(self):
-        """import_transactions_from_file also infers currency from the account record."""
-        import os
-        import tempfile
+    async def test_import_infers_currency_from_account_with_full_pipeline(self):
+        """The storage_ref import infers currency from the account through the full pipeline."""
+        from butlers.tools.finance.data_import import import_transactions
 
-        from butlers.tools.finance.data_import import import_transactions_from_file
+        blob_store = AsyncMock(scheme="s3")
+        blob_store.get = AsyncMock(return_value=CHASE_CSV.encode("utf-8"))
+        pool = MagicMock()
+        # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
+        pool.fetchrow = AsyncMock(
+            side_effect=[
+                {"currency": "AUD"},  # _lookup_account_currency
+                None,  # dedup check rows (fetchrow fallback)
+            ]
+        )
+        pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
+        pool.fetch = AsyncMock(return_value=[])  # batch dedup
+        pool.execute = AsyncMock()
 
-        # Write a small Chase CSV to a temp file.
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as fh:
-            fh.write(CHASE_CSV)
-            tmp_path = fh.name
-
-        try:
-            pool = MagicMock()
-            # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
-            pool.fetchrow = AsyncMock(
-                side_effect=[
-                    {"currency": "AUD"},  # _lookup_account_currency
-                    None,  # dedup check rows (fetchrow fallback)
-                ]
-            )
-            pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
-            pool.fetch = AsyncMock(return_value=[])  # batch dedup
-            pool.execute = AsyncMock()
-
-            result = await import_transactions_from_file(
-                pool=pool,
-                file_path=tmp_path,
-                account_id="33333333-3333-3333-3333-333333333333",
-                currency=None,
-            )
-        finally:
-            os.unlink(tmp_path)
+        result = await import_transactions(
+            pool=pool,
+            blob_store=blob_store,
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
+            account_id="33333333-3333-3333-3333-333333333333",
+            currency=None,
+        )
 
         assert result.get("currency_warning") is None
         assert "import_batch_id" in result
@@ -1453,6 +1459,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1476,6 +1483,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1500,6 +1508,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1530,6 +1539,7 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
@@ -1554,6 +1564,7 @@ class TestProgressNotify:
         notify_fn = AsyncMock()
 
         pool = MagicMock()
+        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
         pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock()
 
