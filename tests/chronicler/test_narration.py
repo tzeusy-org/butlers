@@ -89,24 +89,24 @@ def _episode(
 def test_selects_top_n_titles_by_duration_per_lane() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="short session",
             start=_DAY_START,
             end=_DAY_START.replace(hour=18),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="long session",
             start=_DAY_START.replace(hour=19),
             end=_DAY_START.replace(hour=23),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="third session",
             start=_DAY_START.replace(hour=23),
@@ -127,8 +127,8 @@ def test_selects_top_n_titles_by_duration_per_lane() -> None:
 def test_untitled_episodes_are_excluded() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="",
             start=_DAY_START,
@@ -137,6 +137,10 @@ def test_untitled_episodes_are_excluded() -> None:
     ]
     result = select_top_episode_titles(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result == {}
+    titled = [{**episodes[0], "title": "counted Play"}]
+    assert select_top_episode_titles(titled, day_start_utc=_DAY_START, day_end_utc=_DAY_END) == {
+        "play": ["counted Play"]
+    }
 
 
 def test_episodes_with_no_lane_are_excluded() -> None:
@@ -159,8 +163,8 @@ def test_episodes_outside_window_are_excluded() -> None:
     outside_end = datetime(2026, 6, 1, 1, 0, tzinfo=UTC)
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="way before the window",
             start=outside_start,
@@ -169,6 +173,9 @@ def test_episodes_outside_window_are_excluded() -> None:
     ]
     result = select_top_episode_titles(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result == {}
+    assert select_top_episode_titles(
+        episodes, day_start_utc=outside_start, day_end_utc=outside_end
+    ) == {"play": ["way before the window"]}
 
 
 # ---------------------------------------------------------------------------

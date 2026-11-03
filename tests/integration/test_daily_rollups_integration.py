@@ -79,9 +79,9 @@ async def _seed_representative_day(pool) -> None:
     await upsert_episode(
         pool,
         Episode(
-            source_name="spotify.session_summary",
+            source_name="chronicler.situation_inferred",
             source_ref="rollup-it-play-1",
-            episode_type="listening_episode",
+            episode_type="play_block",
             start_at=_local(d, 9, 0),
             end_at=_local(d, 10, 0),
             layer=Layer.ACTIVITY,
@@ -91,9 +91,9 @@ async def _seed_representative_day(pool) -> None:
     await upsert_episode(
         pool,
         Episode(
-            source_name="spotify.session_summary",
+            source_name="chronicler.situation_inferred",
             source_ref="rollup-it-play-2",
-            episode_type="listening_episode",
+            episode_type="play_block",
             start_at=_local(d, 9, 30),
             end_at=_local(d, 11, 0),
             layer=Layer.ACTIVITY,
@@ -113,9 +113,9 @@ async def _seed_representative_day(pool) -> None:
     await upsert_episode(
         pool,
         Episode(
-            source_name="steam.play_history",
+            source_name="chronicler.situation_inferred",
             source_ref="rollup-it-gaming-1",
-            episode_type="play_episode",
+            episode_type="play_block",
             start_at=_local(d, 20, 0),
             end_at=_local(d, 22, 0),
             layer=Layer.ACTIVITY,
@@ -203,10 +203,9 @@ async def test_rollup_matches_live_aggregate_by_category_bit_for_bit(chronicler_
             assert row.seconds == 0
             assert row.episode_count == 0
 
-    # Sanity: the play lane folds both "music" (Spotify) and "gaming" (Steam)
-    # categories. The two overlapping Spotify episodes ([9:00,10:00) and
-    # [9:30,11:00)) union to 2h (not sum to 2.5h), plus the separate,
-    # non-overlapping 2h Steam session = 4h total, 3 episodes.
+    # Sanity: counted situation Play blocks ([9:00,10:00) and [9:30,11:00))
+    # union to 2h (not sum to 2.5h), plus the separate non-overlapping 2h
+    # Play block = 4h total, 3 episodes.
     assert live_buckets["play"]["total_seconds"] == pytest.approx(4 * 3600.0)
     assert rollup_by_lane["play"].seconds == 4 * 3600
     assert rollup_by_lane["play"].episode_count == 3

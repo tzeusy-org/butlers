@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
 from alembic import command
+from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
@@ -218,6 +219,7 @@ def test_changed_old_steam_evidence_removes_stale_counted_play(postgres_containe
         pool = await asyncpg.create_pool(
             url.replace("postgresql+psycopg2://", "postgresql://"),
             server_settings={"search_path": "chronicler, public"},
+            init=register_jsonb_codec,
         )
         now = datetime(2026, 11, 3, 12, tzinfo=UTC)
         old = now - timedelta(days=10)
