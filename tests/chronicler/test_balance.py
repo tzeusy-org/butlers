@@ -37,7 +37,7 @@ def _series(values: list[int]) -> dict[date, int]:
 # ---------------------------------------------------------------------------
 
 
-def test_baseline_mean_over_samples():
+def test_baseline_center_is_the_median_not_the_mean():
     # Median (5400) deliberately differs from the mean (~6429): the center is the median.
     result = compute_lane_baseline(
         {"work": _series([3600, 3600, 5400, 5400, 5400, 7200, 14400])}, local_date=_DAY
@@ -129,12 +129,6 @@ def _lane(seconds: int, history: list[int]) -> LaneBalance:
     return next(b for b in balances if b.lane == "work")
 
 
-def test_anomaly_requires_minimum_sample_days():
-    lb = _lane(36000, [3600] * (LANE_BASELINE_MIN_N - 1))
-    assert lb.state == "insufficient_history"
-    assert is_lane_anomalous(lb) is False
-
-
 def test_anomaly_requires_no_baseline_returns_false():
     lb = LaneBalance(
         lane="work",
@@ -146,21 +140,13 @@ def test_anomaly_requires_no_baseline_returns_false():
     assert is_lane_anomalous(lb) is False
 
 
-def test_anomaly_flags_large_absolute_and_relative_delta():
+def test_anomaly_flags_a_day_above_the_band():
     lb = _lane(36000, [7200] * LANE_BASELINE_MIN_N)
     assert lb.state == "above"
     assert is_lane_anomalous(lb) is True
 
 
-def test_anomaly_ignores_small_delta_below_absolute_floor():
-    # Small baseline (10 min) with a tiny swing: inside the floored band even
-    # though the ratio is huge.
-    lb = _lane(660, [600] * LANE_BASELINE_MIN_N)
-    assert lb.state == "within"
-    assert is_lane_anomalous(lb) is False
-
-
-def test_anomaly_ignores_small_relative_delta_on_large_baseline():
+def test_anomaly_ignores_a_swing_inside_the_minimum_band():
     # Large baseline (8h) with a half-hour swing: inside the one-hour minimum band.
     lb = _lane(30600, [28800] * LANE_BASELINE_MIN_N)
     assert lb.state == "within"

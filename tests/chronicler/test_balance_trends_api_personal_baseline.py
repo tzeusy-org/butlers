@@ -84,6 +84,8 @@ async def test_trends_median_center_is_not_dragged_by_an_earlier_spike(
     today = next(d for d in work["days"] if d["local_date"] == _DAY.isoformat())
     assert today["baseline_seconds"] == 8 * _HOUR  # a mean would be above 8h30m
     assert today["state"] == "within"
+    assert today["band_low"] < 8 * _HOUR < today["band_high"]
+    assert today["baseline_sample_days"] == 28
     # The spike day itself is correctly an anomaly; today, judged against the median, is not.
     flagged = {(x["lane"], x["local_date"]) for x in resp.json()["data"]["anomalies"]}
     assert ("work", _DAY.isoformat()) not in flagged

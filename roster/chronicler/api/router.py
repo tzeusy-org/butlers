@@ -2264,6 +2264,9 @@ async def get_trends(
                             baseline_seconds=lb.baseline_seconds,
                             delta_seconds=lb.delta_seconds,
                             state=lb.state,
+                            band_low=lb.band_low,
+                            band_high=lb.band_high,
+                            baseline_sample_days=lb.baseline_sample_days,
                             unavailable=unavailable,
                         )
                     )

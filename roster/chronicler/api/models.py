@@ -708,6 +708,11 @@ class TrendLaneDay(BaseModel):
     delta_seconds: float | None = None
     state: str | None = None
     """``BalanceLaneRow.state`` for a materialized day; null otherwise."""
+    band_low: float | None = None
+    band_high: float | None = None
+    """Personal-baseline band edges (seconds); null without a ready band."""
+    baseline_sample_days: int = 0
+    """Observed days the band rests on (``BalanceLaneRow.baseline_sample_days``)."""
     unavailable: bool = False
     """See ``BalanceLaneRow.unavailable`` — same feeder_dark cross-reference,
     evaluated per day."""

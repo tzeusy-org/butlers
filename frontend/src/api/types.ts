@@ -6902,6 +6902,11 @@ export interface ChroniclerBalanceLaneRow {
   /** `seconds - baseline_seconds`. Null whenever `baseline_seconds` is null. */
   delta_seconds: number | null;
   baseline_sample_days: number;
+  /** Scorer state: `within` / `above` / `below` / `insufficient_history`. */
+  state?: string | null;
+  /** Personal-baseline band edges in seconds; null without a ready band. */
+  band_low?: number | null;
+  band_high?: number | null;
   /**
    * True when a source contributing to this lane is `feeder_dark` for the
    * target day. Render as "data unavailable" — never as a truthful zero/delta.
@@ -6948,6 +6953,11 @@ export interface ChroniclerTrendLaneDay {
   seconds: number;
   baseline_seconds: number | null;
   delta_seconds: number | null;
+  /** Scorer state for a materialized day; null otherwise. */
+  state?: string | null;
+  band_low?: number | null;
+  band_high?: number | null;
+  baseline_sample_days?: number;
   unavailable: boolean;
 }
 

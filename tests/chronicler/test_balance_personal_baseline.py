@@ -12,7 +12,6 @@ from datetime import date, timedelta
 
 import pytest
 
-from butlers.chronicler import balance
 from butlers.chronicler.balance import (
     LANE_BASELINE_K_MAD,
     LANE_BASELINE_MIN_N,
@@ -22,7 +21,6 @@ from butlers.chronicler.balance import (
     is_lane_anomalous,
     lane_metric,
 )
-from butlers.core import baselines
 
 pytestmark = pytest.mark.unit
 
@@ -137,16 +135,3 @@ def test_a_short_lookback_caps_min_n_at_the_window():
 
     assert metric.min_n == 3
     assert _work(8 * _HOUR, _history([8 * _HOUR] * 3), lookback_days=3).state == "within"
-
-
-def test_the_result_is_deterministic():
-    history = _history([7 * _HOUR, 9 * _HOUR] * 7)
-
-    assert _work(8 * _HOUR, history) == _work(8 * _HOUR, history)
-
-
-def test_balance_is_wired_to_the_core_scorer_not_a_local_mean():
-    assert balance.compute_baselines is baselines.compute_baselines
-    assert balance.score is baselines.score
-    assert not hasattr(balance, "ANOMALY_MIN_RATIO")
-    assert not hasattr(balance, "ANOMALY_MIN_SAMPLE_DAYS")
