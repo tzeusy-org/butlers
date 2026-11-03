@@ -197,7 +197,7 @@ check-for-update-joins:
 # tests in the same PR, or raise the budget with
 # `uv run --no-sync python scripts/check_test_budget.py --update-baseline` and
 # state the net test delta and why in the PR body. Mirrors the CI
-# check-preflight step.
+# smoke job's budget step.
 check-test-budget:
 	uv run --no-sync python scripts/check_test_budget.py
 

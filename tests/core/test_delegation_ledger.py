@@ -61,6 +61,7 @@ class TestRecordAsk:
             target_butler="relationship",
             catalog_match_id=uuid.uuid4(),
             catalog_score=0.83,
+            metadata={"origin_key": "k1"},
         )
         assert result == str(row_id)
 
@@ -71,6 +72,9 @@ class TestRecordAsk:
         assert params[1] == "Who is Alice's employer?"
         assert params[2] == "relationship"
         assert params[5] == "pending"
+        # Bound as an object: the pools' JSONB codec serializes it (a pre-dumped
+        # str would be stored as a JSON string scalar, bu-yuuk69).
+        assert params[7] == {"origin_key": "k1"}
 
     async def test_unroutable_insert_allows_null_target(self):
         pool = AsyncMock()

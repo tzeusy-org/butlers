@@ -290,9 +290,12 @@ def test_shared_parser_contract_json_messages() -> None:
 
 
 def test_extract_tool_call_shared_contract() -> None:
-    """Both codex and gemini _extract_tool_call handle standard and missing fields."""
+    """Both codex and gemini _extract_tool_call handle standard and missing fields.
+
+    Gemini also tags non-``mcp_`` names ``builtin``; that is adapter-specific."""
     for extract in [codex_extract_tool_call, gemini_extract_tool_call]:
         tc = extract({"id": "t1", "name": "my_tool", "input": {"key": "val"}})
+        tc.pop("builtin", None)
         assert tc == {"id": "t1", "name": "my_tool", "input": {"key": "val"}}
         tc_empty = extract({})
         assert tc_empty["id"] == "" and tc_empty["name"] == ""

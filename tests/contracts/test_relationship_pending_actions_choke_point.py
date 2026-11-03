@@ -120,24 +120,27 @@ def test_atomic_helper_owns_exactly_one_pending_insert() -> None:
 
 
 def test_production_parking_never_calls_legacy_push_writer() -> None:
-    """The additive admission rollout leaves approval_push_emissions read-only."""
+    """Retired senders cannot reappear or bypass durable admission anywhere."""
     violations: list[str] = []
     repo_root = _repo_root()
     for source_root in (repo_root / "src", repo_root / "roster"):
         for py_file in sorted(source_root.rglob("*.py")):
             if any(part in {"tests", "testing", "migrations"} for part in py_file.parts):
                 continue
-            if py_file.name == "notifications.py":
-                continue
             tree = ast.parse(py_file.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                called = node.func
-                name = called.id if isinstance(called, ast.Name) else None
-                if isinstance(called, ast.Attribute):
-                    name = called.attr
-                if name == "emit_approval_push":
+                names: set[str | None] = set()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    names.add(node.name)
+                elif isinstance(node, ast.Call):
+                    called = node.func
+                    if isinstance(called, ast.Name):
+                        names.add(called.id)
+                    elif isinstance(called, ast.Attribute):
+                        names.add(called.attr)
+                elif isinstance(node, ast.ImportFrom):
+                    names.update(alias.name for alias in node.names)
+                if names & {"emit_approval_push", "reserve_approval_push"}:
                     violations.append(f"{py_file.relative_to(repo_root)}:{node.lineno}")
     assert not violations, "Legacy approval push writer called from production:\n" + "\n".join(
         violations

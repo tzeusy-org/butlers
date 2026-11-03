@@ -65,14 +65,22 @@ from butlers.api.models.approval import (
     EntityRef,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
+    StandingReplyTemplateDraft,
+    StandingReplyTemplateDraftCreateRequest,
+    StandingReplyTemplateDraftEditRequest,
+    StandingReplyTemplateDraftRevokeRequest,
+    StandingReplyTemplatePreview,
+    StandingReplyTemplatePreviewRequest,
     TargetContact,
     UnroutableAttentionItem,
     UnroutableRetryResult,
 )
 from butlers.api.owner_auth.service import AuthError
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as audit_router
 from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.modules.approvals import operations as approvals_ops
+from butlers.modules.approvals import reply_templates
 from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
     memory_pool_for_schema,
@@ -2078,6 +2086,234 @@ async def get_rule_suggestions(
 
 
 # ---------------------------------------------------------------------------
+# Standing-reply template drafts (inactive; bu-jv1moa.10)
+#
+# Owner-only authoring of typed template drafts.  Drafts live outside
+# approval_rules and carry no authority: there is no activation endpoint and
+# preview results always report ``authority: "none"``.  Activation belongs to
+# bu-jv1moa.28.  No MCP tool exposes these routes.
+# ---------------------------------------------------------------------------
+
+_DRAFTS_TABLE = "standing_reply_template_drafts"
+_DRAFTS_CURSOR_SCOPE = "approvals-reply-template-drafts"
+
+
+def _require_owner_dashboard_session() -> None:
+    """Refuse every caller except the owner's verified dashboard session.
+
+    An API key, connector callback or runtime session never carries a dashboard
+    session digest, so none of them can author or inspect drafts.
+    """
+    if verified_dashboard_session.get() is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "owner_dashboard_session_required", "open_dashboard": "/approvals"},
+        )
+
+
+def _template_draft_to_api(butler: str, draft: dict[str, Any]) -> StandingReplyTemplateDraft:
+    return StandingReplyTemplateDraft(
+        id=str(draft["id"]),
+        butler=butler,
+        tool_name=draft["tool_name"],
+        templates={
+            arg: reply_templates.render_template(segments)
+            for arg, segments in draft["content_templates"].items()
+        },
+        recipient_entity_ids=[str(e) for e in draft["recipient_entity_ids"]],
+        description=draft["description"],
+        state=draft["status"],
+        revision=draft["revision"],
+        created_at=draft["created_at"],
+        updated_at=draft["updated_at"],
+        revoked_at=draft["revoked_at"],
+    )
+
+
+def _raise_template_draft_error(exc: reply_templates.TemplateDraftError) -> None:
+    raise HTTPException(status_code=exc.status_code, detail={"error": exc.code}) from None
+
+
+async def _find_template_draft_pool(db_mgr: DatabaseManager, draft_id: UUID) -> tuple[str, Any]:
+    named = await _find_named_approvals_pools(db_mgr, _DRAFTS_TABLE)
+    if not named:
+        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
+    for butler_name, pool in named:
+        async with pool.acquire() as conn:
+            found = await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM standing_reply_template_drafts WHERE id = $1)",
+                draft_id,
+            )
+        if found:
+            return butler_name, pool
+    raise HTTPException(status_code=404, detail={"error": "draft_not_found"})
+
+
+@router.post("/reply-templates")
+async def create_reply_template_draft(
+    request: StandingReplyTemplateDraftCreateRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    """Save an inactive draft in the named butler's schema; replays return the original."""
+    _require_owner_dashboard_session()
+    if request.butler not in db_mgr.butler_names:
+        raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
+    named = await _find_named_approvals_pools(db_mgr, _DRAFTS_TABLE)
+    pool = next((p for n, p in named if n == request.butler), None)
+    if pool is None:
+        raise HTTPException(
+            status_code=503, detail=f"Approvals unavailable for butler: {request.butler}"
+        )
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.create_template_draft(
+                conn,
+                tool_name=request.tool_name,
+                templates=request.templates,
+                recipient_entity_ids=request.recipient_entity_ids,
+                description=request.description,
+                idempotency_key=request.idempotency_key,
+            )
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(request.butler, draft))
+
+
+@router.get("/reply-templates")
+async def list_reply_template_drafts(
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    *,
+    db_mgr: Db,
+) -> Page[StandingReplyTemplateDraft]:
+    """List drafts across butlers, newest first."""
+    _require_owner_dashboard_session()
+    after = (
+        tuple(decode_cursor(cursor, (datetime, UUID), scope=_DRAFTS_CURSOR_SCOPE))
+        if cursor
+        else None
+    )
+    tracker = DegradedSources(logger)
+    merged: list[tuple[str, dict[str, Any]]] = []
+    for butler_name, pool in await _find_named_approvals_pools(
+        db_mgr, _DRAFTS_TABLE, tracker=tracker
+    ):
+        try:
+            async with pool.acquire() as conn:
+                rows = await reply_templates.list_template_drafts(
+                    conn, limit=limit + 1, after=after
+                )
+        except Exception:
+            tracker.mark(butler_name, msg="Could not read standing-reply template drafts")
+            continue
+        merged.extend((butler_name, row) for row in rows)
+    merged.sort(key=lambda item: (item[1]["created_at"], item[1]["id"]), reverse=True)
+    page = merged[:limit]
+    next_cursor = None
+    if len(merged) > limit:
+        last = page[-1][1]
+        next_cursor = encode_cursor((last["created_at"], last["id"]), scope=_DRAFTS_CURSOR_SCOPE)
+    return Page[StandingReplyTemplateDraft](
+        items=[_template_draft_to_api(name, row) for name, row in page],
+        next_cursor=next_cursor,
+        limit=limit,
+        sources_degraded=tracker.names or None,
+    )
+
+
+@router.get("/reply-templates/{draft_id}")
+async def get_reply_template_draft(
+    draft_id: UUID, *, db_mgr: Db
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    _require_owner_dashboard_session()
+    butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.get_template_draft(conn, draft_id)
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(butler_name, draft))
+
+
+@router.put("/reply-templates/{draft_id}")
+async def edit_reply_template_draft(
+    draft_id: UUID,
+    request: StandingReplyTemplateDraftEditRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    """Replace a draft's content; a stale ``expected_revision`` returns 409."""
+    _require_owner_dashboard_session()
+    butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.edit_template_draft(
+                conn,
+                draft_id=draft_id,
+                expected_revision=request.expected_revision,
+                templates=request.templates,
+                recipient_entity_ids=request.recipient_entity_ids,
+                description=request.description,
+            )
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(butler_name, draft))
+
+
+@router.post("/reply-templates/{draft_id}/revoke")
+async def revoke_reply_template_draft(
+    draft_id: UUID,
+    request: StandingReplyTemplateDraftRevokeRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplateDraft]:
+    """Mark a draft unavailable; the row is retained as history."""
+    _require_owner_dashboard_session()
+    butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.revoke_template_draft(
+                conn, draft_id=draft_id, expected_revision=request.expected_revision
+            )
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    return ApiResponse(data=_template_draft_to_api(butler_name, draft))
+
+
+@router.post("/reply-templates/{draft_id}/preview")
+async def preview_reply_template_draft(
+    draft_id: UUID,
+    request: StandingReplyTemplatePreviewRequest = Body(...),
+    *,
+    db_mgr: Db,
+) -> ApiResponse[StandingReplyTemplatePreview]:
+    """Report whether a hypothetical call matches; nothing is sent, parked or approved."""
+    _require_owner_dashboard_session()
+    _butler_name, pool = await _find_template_draft_pool(db_mgr, draft_id)
+    try:
+        async with pool.acquire() as conn:
+            draft = await reply_templates.get_template_draft(conn, draft_id)
+    except reply_templates.TemplateDraftError as exc:
+        _raise_template_draft_error(exc)
+    contact = await _resolve_template_recipient(pool, request.tool_args)
+    preview = reply_templates.preview_template_draft(
+        draft,
+        tool_name=request.tool_name,
+        tool_args=request.tool_args,
+        resolved_recipient_entity_id=contact.entity_id if contact is not None else None,
+    )
+    return ApiResponse(data=StandingReplyTemplatePreview(**preview))
+
+
+async def _resolve_template_recipient(pool: Any, tool_args: dict[str, Any]) -> Any:
+    """Resolve the call's recipient with the gate's own target resolution."""
+    from butlers.modules.approvals.gate import resolve_action_target_contact
+
+    return await resolve_action_target_contact(pool, tool_args)
+
+
+# ---------------------------------------------------------------------------
 # Metrics endpoint
 # ---------------------------------------------------------------------------
 
@@ -2312,13 +2548,11 @@ async def get_metrics(
 async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
     """Return whether APPROVAL_CALLBACK_SECRET resolves via the shared credential store.
 
-    Missing this Tier 1 secret structurally disables every approval push
-    (``emit_approval_push`` resolves 'failed' before dispatch, every time) --
-    previously visible only as a per-push warning log line an operator would
-    have to go looking for. Surfacing it on the metrics endpoint that the
-    dashboard already polls makes it a loud, always-visible degraded signal
-    instead (bu-mda0r). Returns ``None`` (undetermined, not "missing") when
-    the shared credential pool itself is unavailable.
+    Durable delivery needs this Tier 1 secret to sign single-action callbacks.
+    Surfacing its availability on the metrics endpoint that the dashboard
+    already polls keeps missing configuration visible without enabling delivery.
+    Returns ``None`` (undetermined, not "missing") when the shared credential
+    pool itself is unavailable.
     """
     from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
     from butlers.credential_store import CredentialStore

@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,23 +28,9 @@ from butlers.api.audit_grouping import (
     issue_from_audit_group_row,
 )
 from butlers.api.models.audit import CREDENTIAL_TARGET_PATTERN
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_row(data: dict) -> MagicMock:
-    """Build a minimal asyncpg-like row mock."""
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
-    row.get = MagicMock(side_effect=lambda k, default=None: data.get(k, default))
-    for k, v in data.items():
-        setattr(row, k, v)
-    return row
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +243,7 @@ class TestIssueFromAuditGroupRow:
         self, has_schedule, schedule_names, expected_severity, type_prefix
     ):
         """Scheduled failure -> critical + scheduled slug; non-scheduled -> warning + generic slug."""
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "OAuth token expired",
                 "butlers": ["calendar"],
@@ -276,7 +261,7 @@ class TestIssueFromAuditGroupRow:
             assert schedule_names[0] in issue.type
 
     def test_scheduled_single_butler_single_schedule_description(self):
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Token expired",
                 "butlers": ["calendar"],
@@ -293,7 +278,7 @@ class TestIssueFromAuditGroupRow:
         assert "Token expired" in issue.description
 
     def test_non_scheduled_single_butler_description(self):
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "DB connection timeout",
                 "butlers": ["health"],
@@ -315,7 +300,7 @@ class TestIssueFromAuditGroupRow:
     )
     def test_multi_butler_description_uses_count(self, has_schedule, schedule_names):
         """Both scheduled and non-scheduled multi-butler groups roll up to a count + 'multiple'."""
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Token expired",
                 "butlers": ["calendar", "health"],
@@ -334,7 +319,7 @@ class TestIssueFromAuditGroupRow:
         # Param names must match what GET /api/audit-log and AuditLogPage's
         # filter bar actually read: `actor`/`action`, not `butler`/`operation`
         # (which nothing on the consuming end recognizes).
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Error",
                 "butlers": ["calendar"],
@@ -349,7 +334,7 @@ class TestIssueFromAuditGroupRow:
         assert "actor=calendar" in (issue.link or "")
         assert "result=error" in (issue.link or "")
 
-        scheduled = _make_row(
+        scheduled = Record(
             {
                 "error_summary": "Error",
                 "butlers": ["calendar"],
@@ -367,7 +352,7 @@ class TestIssueFromAuditGroupRow:
         """JARVIS audit move 6: a multi-butler, non-scheduled group previously
         had no disambiguating param at all and emitted a bare `/audit-log`
         link. It must now at least carry `result=error`."""
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Token expired",
                 "butlers": ["calendar", "health"],
@@ -383,7 +368,7 @@ class TestIssueFromAuditGroupRow:
         assert issue.link == "/audit-log?result=error"
 
     def test_empty_butlers_list_falls_back_to_unknown(self):
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Error",
                 "butlers": [],
@@ -403,7 +388,7 @@ class TestIssueFromAuditGroupRow:
         not compute_issue_key(type, butler) -- so it must equal the former and
         must NOT equal the latter (which is what the old, buggy composition
         would have produced)."""
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Connection refused",
                 "butlers": ["general"],
@@ -422,7 +407,7 @@ class TestIssueFromAuditGroupRow:
         error_summary must produce the SAME issue_key whether the query
         aggregated it as single-butler or multi-butler, since that aggregate
         is window-dependent and is not part of the group's identity."""
-        single_butler_row = _make_row(
+        single_butler_row = Record(
             {
                 "error_summary": "Connection refused",
                 "butlers": ["switchboard"],
@@ -433,7 +418,7 @@ class TestIssueFromAuditGroupRow:
                 "last_seen_at": None,
             }
         )
-        multi_butler_row = _make_row(
+        multi_butler_row = Record(
             {
                 "error_summary": "Connection refused",
                 "butlers": ["switchboard", "general"],
@@ -452,7 +437,7 @@ class TestIssueFromAuditGroupRow:
     def test_occurrences_and_timestamps_passed_through(self):
         first = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
         last = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Error",
                 "butlers": ["health"],
@@ -487,7 +472,7 @@ class TestAttentionItemFromAuditGroupRow:
         self, has_schedule, schedule_names, expected_severity, expected_type
     ):
         """Scheduled -> high/scheduled_task_failure; non-scheduled -> medium/audit_error_group."""
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Token expired",
                 "butlers": ["calendar"],
@@ -503,7 +488,7 @@ class TestAttentionItemFromAuditGroupRow:
         assert item["type"] == expected_type
 
     def test_source_is_audit_log(self):
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Error",
                 "butlers": ["health"],
@@ -520,7 +505,7 @@ class TestAttentionItemFromAuditGroupRow:
     def test_timestamps_serialized_to_iso_string(self):
         first = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
         last = datetime(2026, 5, 13, 12, 0, tzinfo=UTC)
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Error",
                 "butlers": ["health"],
@@ -538,7 +523,7 @@ class TestAttentionItemFromAuditGroupRow:
         assert "2026-05-13" in item["last_seen_at"]
 
     def test_none_timestamps_produce_none(self):
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Error",
                 "butlers": ["health"],
@@ -554,7 +539,7 @@ class TestAttentionItemFromAuditGroupRow:
         assert item["last_seen_at"] is None
 
     def test_multi_butler_description_and_butler_field(self):
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": "Quota exceeded",
                 "butlers": ["calendar", "health"],
@@ -734,7 +719,7 @@ class TestCredentialTargetGroupIdentity:
         the summary, so two credentials must not collide in it either.
         """
         rows = [
-            _make_row(
+            Record(
                 {
                     "error_summary": f"Credential failed: {target} (diagnostic withheld)",
                     "butlers": ["owner"],
@@ -765,7 +750,7 @@ class TestCredentialTargetGroupIdentity:
         assertions together cover the whole path.
         """
         summary = "Credential failed: u:google (diagnostic withheld)"
-        row = _make_row(
+        row = Record(
             {
                 "error_summary": summary,
                 "butlers": ["owner"],

@@ -1185,11 +1185,8 @@ class TestCredentialPassthrough:
 
             healing = await spawner.trigger("repair", "healing")
             assert healing.error is None
-            assert adapter.calls[1]["env"] == {
-                "PATH": "/tmp/node-bin",
-                "GH_TOKEN": "synthetic-healing-token",
-                **trace,
-            }
+            # Historical healing provenance gets no GitHub credential, even when one is ambient.
+            assert adapter.calls[1]["env"] == {"PATH": "/tmp/node-bin", **trace}
             assert adapter.calls[1]["mcp_servers"] == {}
 
     async def test_db_credential_resolution(self):

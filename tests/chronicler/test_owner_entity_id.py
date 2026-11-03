@@ -443,7 +443,11 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
 
     adapter = OwnTracksPointAdapter()
     with (
-        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[point_row, second_row])),
+        patch.object(
+            adapter,
+            "_fetch_points",
+            new=AsyncMock(return_value=([point_row, second_row], None)),
+        ),
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event", new=AsyncMock()),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_upsert),
         patch(

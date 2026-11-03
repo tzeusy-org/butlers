@@ -7,6 +7,7 @@ tool under three different name forms:
 - opencode-prefixed: ``{butler_name}_memory_entity_resolve`` (opencode parser)
 - claude-code/codex prefixed: ``mcp__{butler_name}__memory_entity_resolve``
   (claude_code / codex parsers)
+- gemini-prefixed: ``mcp_{butler_name}_memory_entity_resolve`` (gemini parser)
 - endpoint-prefixed: ``mcp__http://127.0.0.1:.../mcp__memory_entity_resolve``
   (runtime builds that echo the MCP endpoint as the server identity)
 
@@ -25,56 +26,50 @@ from butlers.core.tool_call_capture import fingerprint_tool_call_payload
 pytestmark = pytest.mark.unit
 
 
-def test_merge_dedupes_prefixed_and_bare_names_against_capture():
-    """mcp__{butler}__x, {butler}_x, and bare x all collapse to one entry."""
-    butler_name = "lifestyle"
+@pytest.mark.parametrize("butler_name", ["lifestyle", "home_ops"])
+def test_merge_dedupes_prefixed_and_bare_names_against_capture(butler_name):
+    """mcp__{butler}__x, mcp_{butler}_x, {butler}_x, and bare x collapse to one entry.
+
+    ``home_ops`` pins that an underscore in the butler name never splits the
+    Gemini prefix in the wrong place.
+    """
 
     # Parser-side records (what claude_code / codex / opencode emit)
+    queries = ["alice", "bob", "carol"]
     parsed = [
         {
-            "id": "t1",
-            "name": "mcp__lifestyle__memory_entity_resolve",
-            "input": {"query": "alice"},
-        },
-        {
-            "id": "t2",
-            "name": "lifestyle_memory_entity_resolve",
-            "input": {"query": "bob"},
-        },
+            "id": f"t{i}",
+            "name": f"{prefix}memory_entity_resolve",
+            "input": {"query": query},
+        }
+        for i, (prefix, query) in enumerate(
+            zip(
+                [f"mcp__{butler_name}__", f"{butler_name}_", f"mcp_{butler_name}_"],
+                queries,
+                strict=True,
+            ),
+            start=1,
+        )
     ]
     # Capture-side records (server-side _SpanWrappingMCP.tool uses fn.__name__)
     executed = [
         {
             "name": "memory_entity_resolve",
-            "input": {"query": "alice"},
+            "input": {"query": query},
             "outcome": "success",
-            "result": {"entity_id": "e-alice"},
-        },
-        {
-            "name": "memory_entity_resolve",
-            "input": {"query": "bob"},
-            "outcome": "success",
-            "result": {"entity_id": "e-bob"},
-        },
+            "result": {"entity_id": f"e-{query}"},
+        }
+        for query in queries
     ]
 
     merged = _merge_tool_call_records(parsed, executed, butler_name=butler_name)
 
-    # Exactly N entries, not 2N or 3N — one per real invocation
-    assert len(merged) == 2
-
-    # Canonical stored name is the bare (fn.__name__) form
-    names = [m["name"] for m in merged]
-    assert names == ["memory_entity_resolve", "memory_entity_resolve"]
-
-    # Parser metadata (ids) preserved
-    ids = sorted(m.get("id", "") for m in merged)
-    assert ids == ["t1", "t2"]
-
-    # Capture metadata (outcome/result) preserved
-    for m in merged:
-        assert m["outcome"] == "success"
-        assert m["result"]["entity_id"] in {"e-alice", "e-bob"}
+    # Exactly N entries, not 2N — one per real invocation, each paired
+    assert [(m["id"], m["name"], m["result"]["entity_id"]) for m in merged] == [
+        ("t1", "memory_entity_resolve", "e-alice"),
+        ("t2", "memory_entity_resolve", "e-bob"),
+        ("t3", "memory_entity_resolve", "e-carol"),
+    ]
 
 
 def test_merge_handles_mixed_prefixed_forms_without_capture():
@@ -223,3 +218,51 @@ def test_merge_matches_raw_parser_payload_to_capture_fingerprint():
     assert [call["id"] for call in merged] == ["t1", "t2"]
     assert [call["name"] for call in merged] == ["contact_resolve", "contact_resolve"]
     assert all(call["outcome"] == "success" for call in merged)
+
+
+def test_merge_keeps_stream_order_between_mcp_and_builtin_calls():
+    """A subagent alternating Bash with one MCP call stays interleaved, not a loop.
+
+    Capture only sees MCP calls; built-ins exist only on the parser side. Merging
+    must keep the parser's stream order so the per-thread loop guard does not
+    read the MCP calls as consecutive. A capture record without a parser
+    counterpart lands before the next paired call that executed after it.
+    """
+    from butlers.core.spawner_guardrails import (
+        _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD,
+        _check_degenerate_tool_loop,
+    )
+
+    rounds = _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD
+    parsed: list[dict] = []
+    for i in range(rounds):
+        parsed.append(
+            {
+                "id": f"bash{i}",
+                "name": "Bash",
+                "input": {"command": f"ls {i}"},
+                "builtin": True,
+                "parent_tool_use_id": "agent1",
+            }
+        )
+        parsed.append(
+            {
+                "id": f"mcp{i}",
+                "name": "mcp__lifestyle__state_get",
+                "input": {"key": "k"},
+                "parent_tool_use_id": "agent1",
+            }
+        )
+    executed = [{"name": "state_get", "input": {"key": "k"}, "outcome": "success"}] * rounds
+    executed = [{"name": "notify", "input": {"msg": "hi"}, "outcome": "success"}, *executed]
+
+    merged = _merge_tool_call_records(parsed, executed, butler_name="lifestyle")
+
+    assert [call.get("id", call["name"]) for call in merged] == [
+        "bash0",
+        "notify",
+        "mcp0",
+        *[f"{kind}{i}" for i in range(1, rounds) for kind in ("bash", "mcp")],
+    ]
+    assert all(c["outcome"] == "success" for c in merged if c["name"] == "state_get")
+    assert _check_degenerate_tool_loop(merged) is None

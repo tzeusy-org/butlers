@@ -33,6 +33,7 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 | `butlers-up` | Deployment + Service `butlers-up:41100-41112` |
 | `connector-*` | One Deployment per entry in `values.connectors` |
 | `backup-cron` | CronJob `butlers-backup` writing to PVC `butlers-backups` (read by the dashboard) |
+| — | CronJob `butlers-offsite-copy` (disabled by default) copying that PVC to an encrypted off-node restic repository; see [Off-Node Backup Copy](offsite-backup-copy.md) |
 | `log-init`, `log-cleanup` | Shared PVC `butlers-logs` + CronJob `butlers-log-cleanup` |
 | `wa_bridge_socket` volume | PVC `butlers-wa-bridge` (Unix socket shared by three pods on one node) |
 | `runtime_*` CLI volumes | PVC `butlers-runtime-home`, one subPath per CLI |

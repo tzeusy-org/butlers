@@ -26,7 +26,10 @@ __all__ = [
     "BackupEvent",
     "BackupFacts",
     "BackupRunFacts",
+    "OFFSITE_COPY_ENABLED_ENV",
+    "OffsiteCopyFacts",
     "RestoreDrillFacts",
+    "offsite_copy_expected_from_env",
     "read_backup_facts_from_dir",
 ]
 
@@ -70,6 +73,22 @@ class BackupRunFacts(BaseModel):
     reason: str | None
 
 
+class OffsiteCopyFacts(BaseModel):
+    """Outcome of the most recent off-node restic copy of the dump directory.
+
+    ``"disabled"`` means this deployment does not run the copy job at all;
+    ``"unknown"`` means it should, but no readable receipt exists yet. Neither
+    is a success. ``stale`` is true when an enabled copy has not reported a
+    run within :data:`BACKUP_STALE_THRESHOLD_HOURS`, whatever that run's result.
+    """
+
+    result: str  # "success" | "failed" | "unknown" | "disabled"
+    finished_at: str | None
+    reason: str | None
+    snapshot_id: str | None
+    stale: bool
+
+
 class BackupFacts(BaseModel):
     """Backup recency, artifact health, and source reachability facts."""
 
@@ -81,6 +100,7 @@ class BackupFacts(BaseModel):
     backup_stale: bool
     last_run: BackupRunFacts
     restore_drill: RestoreDrillFacts
+    offsite_copy: OffsiteCopyFacts
 
 
 #: Env var naming the directory written by deploy/backup/pg_dump.sh.
@@ -147,6 +167,102 @@ _UNREADABLE_BACKUP_RUN = BackupRunFacts(
 )
 _PENDING_RESTORE_DRILL = RestoreDrillFacts(checked_at=None, result="pending", detail=None)
 
+#: Env var the chart sets on the dashboard API only when the off-node copy
+#: CronJob exists (deploy/helm/butlers, ``offsiteCopy.enabled``).
+OFFSITE_COPY_ENABLED_ENV = "BUTLERS_OFFSITE_COPY_ENABLED"
+
+#: Filename deploy/backup/restic_offsite_copy.sh rewrites after every run.
+OFFSITE_COPY_RECEIPT_FILENAME = "offsite_last_run.json"
+
+#: Fixed receipt vocabulary, mirrored by the copy script. Keep them in step.
+_OFFSITE_COPY_REASONS = frozenset(
+    {
+        "ok",
+        "config_missing",
+        "no_dumps",
+        "repo_unreachable",
+        "repo_init_failed",
+        "backup_failed",
+        "retention_failed",
+        "unexpected_error",
+    }
+)
+_OFFSITE_COPY_ABSENT_DETAIL = "no copy outcome recorded"
+_OFFSITE_COPY_UNREADABLE_DETAIL = "copy outcome unreadable"
+_SNAPSHOT_ID_CHARS = frozenset("0123456789abcdef")
+
+_DISABLED_OFFSITE_COPY = OffsiteCopyFacts(
+    result="disabled", finished_at=None, reason=None, snapshot_id=None, stale=False
+)
+
+
+def offsite_copy_expected_from_env() -> bool:
+    """Return whether this deployment runs the off-node copy job."""
+    return os.environ.get(OFFSITE_COPY_ENABLED_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _unknown_offsite_copy(reason: str) -> OffsiteCopyFacts:
+    return OffsiteCopyFacts(
+        result="unknown", finished_at=None, reason=reason, snapshot_id=None, stale=True
+    )
+
+
+def _read_offsite_copy_facts(backup_dir: Path | None, *, expected: bool) -> OffsiteCopyFacts:
+    """Return the most recent off-node copy outcome without raising.
+
+    The receipt sits on a mounted volume next to the dumps, so every field is
+    reduced to a fixed vocabulary, a timestamp, or a short hex snapshot id
+    before it can reach the dashboard. A missing or malformed receipt for an
+    enabled copy is ``"unknown"`` and stale: absence is not an off-node copy.
+    """
+    if not expected:
+        return _DISABLED_OFFSITE_COPY
+    if backup_dir is None:
+        return _unknown_offsite_copy(_OFFSITE_COPY_ABSENT_DETAIL)
+
+    try:
+        raw = (backup_dir / OFFSITE_COPY_RECEIPT_FILENAME).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _unknown_offsite_copy(_OFFSITE_COPY_ABSENT_DETAIL)
+    except OSError:
+        return _unknown_offsite_copy(_OFFSITE_COPY_UNREADABLE_DETAIL)
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return _unknown_offsite_copy(_OFFSITE_COPY_UNREADABLE_DETAIL)
+    if not isinstance(payload, dict) or payload.get("result") not in ("success", "failed"):
+        return _unknown_offsite_copy(_OFFSITE_COPY_UNREADABLE_DETAIL)
+
+    reason = payload.get("reason")
+    if not isinstance(reason, str):
+        reason = None
+    elif reason not in _OFFSITE_COPY_REASONS:
+        reason = _BACKUP_RUN_REASON_UNRECOGNIZED
+
+    snapshot_id = payload.get("snapshot_id")
+    if not (
+        isinstance(snapshot_id, str)
+        and 0 < len(snapshot_id) <= 64
+        and set(snapshot_id) <= _SNAPSHOT_ID_CHARS
+    ):
+        snapshot_id = None
+
+    finished_at = _parse_sentinel_timestamp(payload.get("finished_at"))
+    stale = (
+        finished_at is None
+        or (datetime.now(UTC) - datetime.fromisoformat(finished_at)).total_seconds() / 3600
+        > BACKUP_STALE_THRESHOLD_HOURS
+    )
+
+    return OffsiteCopyFacts(
+        result=payload["result"],
+        finished_at=finished_at,
+        reason=reason,
+        snapshot_id=snapshot_id,
+        stale=stale,
+    )
+
 
 def _read_backup_run_facts(backup_dir: Path) -> BackupRunFacts:
     """Return the most recent backup-run outcome without raising.
@@ -204,7 +320,7 @@ def _parse_sentinel_timestamp(value: object) -> str | None:
     return parsed.astimezone(UTC).isoformat()
 
 
-def _unreachable_backup_facts() -> BackupFacts:
+def _unreachable_backup_facts(*, offsite_copy_expected: bool) -> BackupFacts:
     return BackupFacts(
         last_backup_at=None,
         last_backup_size_bytes=None,
@@ -214,26 +330,30 @@ def _unreachable_backup_facts() -> BackupFacts:
         backup_stale=False,
         last_run=_UNKNOWN_BACKUP_RUN,
         restore_drill=_PENDING_RESTORE_DRILL,
+        offsite_copy=_read_offsite_copy_facts(None, expected=offsite_copy_expected),
     )
 
 
-def read_backup_facts_from_dir(backup_dir: Path | None) -> BackupFacts:
+def read_backup_facts_from_dir(
+    backup_dir: Path | None, *, offsite_copy_expected: bool = False
+) -> BackupFacts:
     """Read DB-free artifact and run-receipt facts from ``backup_dir``.
 
     Files match ``butlers_*.sql.gz`` and are sorted by mtime descending.  The
     returned restore-drill value is always the honest ``"pending"`` default;
     the system API overlays its DB-backed ledger result separately.  ``None``
     and inaccessible directories yield the existing degraded payload rather
-    than raising.
+    than raising.  ``offsite_copy_expected`` says whether this deployment runs
+    the off-node copy job; without it the copy is reported ``"disabled"``.
     """
     if backup_dir is None or not backup_dir.is_dir():
-        return _unreachable_backup_facts()
+        return _unreachable_backup_facts(offsite_copy_expected=offsite_copy_expected)
 
     try:
         candidates = list(backup_dir.glob("butlers_*.sql.gz"))
     except OSError as exc:
         logger.warning("Cannot read backup directory %s: %s", backup_dir, exc)
-        return _unreachable_backup_facts()
+        return _unreachable_backup_facts(offsite_copy_expected=offsite_copy_expected)
 
     stamped: list[tuple[float, os.stat_result, Path]] = []
     for candidate in candidates:
@@ -266,6 +386,7 @@ def read_backup_facts_from_dir(backup_dir: Path | None) -> BackupFacts:
             backup_stale=False,
             last_run=_read_backup_run_facts(backup_dir),
             restore_drill=_PENDING_RESTORE_DRILL,
+            offsite_copy=_read_offsite_copy_facts(backup_dir, expected=offsite_copy_expected),
         )
 
     latest = history[0]
@@ -281,4 +402,5 @@ def read_backup_facts_from_dir(backup_dir: Path | None) -> BackupFacts:
         backup_stale=age_hours > BACKUP_STALE_THRESHOLD_HOURS,
         last_run=_read_backup_run_facts(backup_dir),
         restore_drill=_PENDING_RESTORE_DRILL,
+        offsite_copy=_read_offsite_copy_facts(backup_dir, expected=offsite_copy_expected),
     )
