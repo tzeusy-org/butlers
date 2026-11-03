@@ -42,9 +42,9 @@ Scope: v1-mandatory
   - `source.channel`: `"dashboard"`
   - `source.provider`: `"internal"`
   - `source.endpoint_identity`: `"dashboard:web:{conversation_id}"`
-  - `event.external_event_id`: `"{message_id}"`, where `message_id` is
-    client-generated for a new user message and reused for a retry of that
-    message
+  - `event.external_event_id`: `"{message_id}"`, where dashboard UI provides
+    one immutable client-generated ID for a new user message and reuses it for
+    retry and Stop
   - `event.external_thread_id`: `"{conversation_id}"`
   - `event.observed_at`: current timestamp
   - `sender.identity`: `"dashboard:operator"`

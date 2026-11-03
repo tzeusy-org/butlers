@@ -16,9 +16,6 @@ import asyncpg
 import httpx
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 _DOCKER_AVAILABLE = shutil.which("docker") is not None
 _NOW = datetime(2026, 7, 28, 4, 17, tzinfo=UTC)
 _ACCESS_URL_USER = "fixture-user"
@@ -41,42 +38,16 @@ class _CredentialStore:
         return self.value
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the existing core + finance receiving schema once."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-    )
+@pytest.fixture
+async def finance_pool(db):
+    """A private clone migrated with the core and finance chains."""
+    return await db("core", "finance", max_size=4)
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return a clean, migration-faithful Finance pool for every test."""
-    database_pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=4,
-        init=register_jsonb_codec,
-    )
-    await database_pool.execute("TRUNCATE TABLE transactions, accounts CASCADE")
-    yield database_pool
-    await database_pool.close()
-
-
-@pytest.fixture
-async def single_connection_pool(migrated_db_url: str):
-    """Return a migration-faithful pool that exposes nested-acquisition deadlocks."""
-    database_pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=1,
-        init=register_jsonb_codec,
-    )
-    await database_pool.execute("TRUNCATE TABLE transactions, accounts CASCADE")
-    yield database_pool
-    await database_pool.close()
+async def single_connection_pool(db):
+    """A one-connection pool that exposes nested-acquisition deadlocks."""
+    return await db("core", "finance", max_size=1)
 
 
 async def _insert_bound_account(
@@ -157,7 +128,7 @@ def test_simplefin_sync_entrypoint_is_available() -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
-async def test_missing_access_url_skips_without_http_or_writes(pool: asyncpg.Pool) -> None:
+async def test_missing_access_url_skips_without_http_or_writes(finance_pool: asyncpg.Pool) -> None:
     """An absent DB secret is honest and never reaches the network boundary."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
@@ -170,7 +141,7 @@ async def test_missing_access_url_skips_without_http_or_writes(pool: asyncpg.Poo
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=credential_store,
             http_client=client,
             now=_NOW,
@@ -179,12 +150,14 @@ async def test_missing_access_url_skips_without_http_or_writes(pool: asyncpg.Poo
     assert result == {"status": "not_configured", "reason": "access_url_missing"}
     assert credential_store.calls == [("SIMPLEFIN_ACCESS_URL", False)]
     assert requests == []
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
-async def test_malformed_access_url_skips_without_http_or_writes(pool: asyncpg.Pool) -> None:
+async def test_malformed_access_url_skips_without_http_or_writes(
+    finance_pool: asyncpg.Pool,
+) -> None:
     """A malformed access URL is rejected before the HTTP client is used."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
@@ -197,7 +170,7 @@ async def test_malformed_access_url_skips_without_http_or_writes(pool: asyncpg.P
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=credential_store,
             http_client=client,
             now=_NOW,
@@ -206,13 +179,13 @@ async def test_malformed_access_url_skips_without_http_or_writes(pool: asyncpg.P
     assert result == {"status": "not_configured", "reason": "access_url_invalid"}
     assert requests == []
     assert "not-a-url" not in repr(result)
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_first_valid_response_creates_exact_provider_bound_account(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """The credential is enough to bootstrap one exact remote account safely."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
@@ -233,7 +206,7 @@ async def test_first_valid_response_creates_exact_provider_bound_account(
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
@@ -245,7 +218,7 @@ async def test_first_valid_response_creates_exact_provider_bound_account(
         "skipped_pending": 0,
         "account_created": True,
     }
-    account = await pool.fetchrow(
+    account = await finance_pool.fetchrow(
         """
         SELECT institution, type, name, currency, metadata, last_synced_at
         FROM accounts
@@ -264,15 +237,15 @@ async def test_first_valid_response_creates_exact_provider_bound_account(
         }
     }
     assert account["last_synced_at"] == _NOW
-    assert await pool.fetchval(
+    assert await finance_pool.fetchval(
         "SELECT account_id FROM transactions WHERE external_id = 'bootstrap-fixture-1'"
-    ) == await pool.fetchval("SELECT id FROM accounts")
+    ) == await finance_pool.fetchval("SELECT id FROM accounts")
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_ambiguous_local_binding_skips_without_http(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """Multiple explicit provider bindings remain a no-request configuration error."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
@@ -284,14 +257,14 @@ async def test_ambiguous_local_binding_skips_without_http(
         raise AssertionError("an unbound or ambiguous account must not make HTTP requests")
 
     async with _http_client(handler) as client:
-        await _insert_bound_account(pool)
+        await _insert_bound_account(finance_pool)
         await _insert_bound_account(
-            pool,
+            finance_pool,
             conn_id="second-connection",
             account_id="second-account",
         )
         ambiguous = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
@@ -299,13 +272,13 @@ async def test_ambiguous_local_binding_skips_without_http(
 
     assert ambiguous == {"status": "not_configured", "reason": "account_binding_ambiguous"}
     assert requests == []
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_first_response_is_fully_validated_before_account_creation(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """Invalid discovery metadata cannot leave a partially provisioned account."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
@@ -318,15 +291,15 @@ async def test_first_response_is_fully_validated_before_account_creation(
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
         )
 
     assert result == {"status": "degraded", "reason": "invalid_response"}
-    assert await pool.fetchval("SELECT COUNT(*) FROM accounts") == 0
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM accounts") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
 
 
 @pytest.mark.parametrize(
@@ -355,7 +328,7 @@ async def test_first_response_is_fully_validated_before_account_creation(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_missing_or_malformed_required_v2_fields_prevent_all_writes_and_freshness(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
     section: str,
     field: str,
     invalid_value: object,
@@ -363,7 +336,7 @@ async def test_missing_or_malformed_required_v2_fields_prevent_all_writes_and_fr
     """Every required v2 connection/account field is validated before writes."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     response = _account_set(
         transactions=[
             {
@@ -385,16 +358,18 @@ async def test_missing_or_malformed_required_v2_fields_prevent_all_writes_and_fr
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
         )
 
     assert result == {"status": "degraded", "reason": "invalid_response"}
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         is None
     )
 
@@ -402,12 +377,12 @@ async def test_missing_or_malformed_required_v2_fields_prevent_all_writes_and_fr
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_upstream_403_is_sanitized_and_does_not_advance_freshness(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """Revocation is observable only through a sanitized failed request."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -416,7 +391,7 @@ async def test_upstream_403_is_sanitized_and_does_not_advance_freshness(
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
@@ -427,9 +402,11 @@ async def test_upstream_403_is_sanitized_and_does_not_advance_freshness(
     assert "fixture-user" not in repr(result)
     assert "fixture-password" not in repr(result)
     assert "provider details" not in repr(result)
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         is None
     )
 
@@ -437,13 +414,13 @@ async def test_upstream_403_is_sanitized_and_does_not_advance_freshness(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_access_url_userinfo_is_not_passed_to_httpx_or_its_info_logs(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The credential-bearing Access URL becomes Basic auth, never request authority."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    await _insert_bound_account(pool)
+    await _insert_bound_account(finance_pool)
     requests: list[httpx.Request] = []
     access_url = "https://fixture%40user:fixture%3Apassword@simplefin.invalid/simplefin"
     decoded_credentials = "fixture@user:fixture:password"
@@ -455,7 +432,7 @@ async def test_access_url_userinfo_is_not_passed_to_httpx_or_its_info_logs(
     caplog.set_level(logging.INFO, logger="httpx")
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(access_url),
             http_client=client,
             now=_NOW,
@@ -480,19 +457,19 @@ async def test_access_url_userinfo_is_not_passed_to_httpx_or_its_info_logs(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_upstream_timeout_is_sanitized_and_does_not_advance_freshness(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """A transport timeout does not become a credential or provider-text disclosure."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
 
     async def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("fixture timeout details must not escape", request=request)
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
@@ -500,9 +477,11 @@ async def test_upstream_timeout_is_sanitized_and_does_not_advance_freshness(
 
     assert result == {"status": "degraded", "reason": "upstream_unavailable"}
     assert "fixture timeout details" not in repr(result)
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         is None
     )
 
@@ -510,14 +489,14 @@ async def test_upstream_timeout_is_sanitized_and_does_not_advance_freshness(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_complete_one_account_response_records_settled_transactions_with_provenance(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """The bridge uses provider IDs and skips pending/unposted data."""
     from butlers.tools.finance.transactions import record_transaction
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
     assert "source" not in inspect.signature(record_transaction).parameters
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     requests: list[httpx.Request] = []
     response = _account_set(
         transactions=[
@@ -547,7 +526,7 @@ async def test_complete_one_account_response_records_settled_transactions_with_p
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
@@ -561,7 +540,7 @@ async def test_complete_one_account_response_records_settled_transactions_with_p
     assert requests[0].url.params["end-date"] == str(int(_NOW.timestamp()))
     assert "pending" not in requests[0].url.params
 
-    rows = await pool.fetch(
+    rows = await finance_pool.fetch(
         "SELECT account_id, external_id, source, metadata FROM transactions ORDER BY posted_at"
     )
     assert len(rows) == 1
@@ -572,7 +551,9 @@ async def test_complete_one_account_response_records_settled_transactions_with_p
         "provider": {"name": "simplefin", "conn_id": _CONN_ID, "account_id": _REMOTE_ACCOUNT_ID}
     }
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         == _NOW
     )
 
@@ -580,16 +561,16 @@ async def test_complete_one_account_response_records_settled_transactions_with_p
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_provider_id_preserves_aggregator_provenance_after_email_collision(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """A new provider ID must not collapse into an equal email-ledger row."""
     from butlers.tools.finance.feed_reconciliation import reconcile_feed_vs_email
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     sync_now = datetime.now(UTC).replace(microsecond=0)
     posted_at = sync_now - timedelta(hours=3)
-    email_row = await pool.fetchrow(
+    email_row = await finance_pool.fetchrow(
         """
         INSERT INTO transactions (
             account_id, merchant, amount, currency, direction, category,
@@ -619,14 +600,14 @@ async def test_provider_id_preserves_aggregator_provenance_after_email_collision
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=sync_now,
         )
 
     assert result == {"status": "ok", "recorded": 1, "skipped_pending": 0}
-    rows = await pool.fetch(
+    rows = await finance_pool.fetch(
         """
         SELECT source, source_message_id, external_id
         FROM transactions
@@ -647,7 +628,7 @@ async def test_provider_id_preserves_aggregator_provenance_after_email_collision
         },
     ]
 
-    reconciliation = await reconcile_feed_vs_email(pool)
+    reconciliation = await reconcile_feed_vs_email(finance_pool)
     assert reconciliation["configured"] is True
     assert reconciliation["feed_transactions_checked"] == 1
     assert len(reconciliation["matched"]) == 1
@@ -702,12 +683,12 @@ async def test_sync_records_on_a_migrated_single_connection_pool(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_error_list_or_multiple_remote_accounts_prevents_all_writes(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """Any incomplete or ambiguous remote response fails before a ledger write."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     incomplete = _account_set(
         transactions=[
             {
@@ -725,7 +706,7 @@ async def test_error_list_or_multiple_remote_accounts_prevents_all_writes(
 
     async with _http_client(incomplete_handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
@@ -733,9 +714,11 @@ async def test_error_list_or_multiple_remote_accounts_prevents_all_writes(
 
     assert result == {"status": "degraded", "reason": "upstream_incomplete"}
     assert "raw text" not in repr(result)
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         is None
     )
 
@@ -757,25 +740,25 @@ async def test_error_list_or_multiple_remote_accounts_prevents_all_writes(
 
     async with _http_client(multiple_handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
         )
 
     assert result == {"status": "degraded", "reason": "invalid_response"}
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_malformed_settled_transaction_prevents_earlier_valid_write(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """The complete payload is validated before its first transaction is recorded."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     response = _account_set(
         transactions=[
             {
@@ -798,16 +781,18 @@ async def test_malformed_settled_transaction_prevents_earlier_valid_write(
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
         )
 
     assert result == {"status": "degraded", "reason": "invalid_response"}
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         is None
     )
 
@@ -815,12 +800,12 @@ async def test_malformed_settled_transaction_prevents_earlier_valid_write(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_storage_unrepresentable_settled_transaction_prevents_earlier_valid_write(
-    pool: asyncpg.Pool,
+    finance_pool: asyncpg.Pool,
 ) -> None:
     """All settled values must fit Finance storage before the first ledger write."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    account = await _insert_bound_account(pool)
+    account = await _insert_bound_account(finance_pool)
     response = _account_set(
         transactions=[
             {
@@ -843,28 +828,32 @@ async def test_storage_unrepresentable_settled_transaction_prevents_earlier_vali
 
     async with _http_client(handler) as client:
         result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
         )
 
     assert result == {"status": "degraded", "reason": "invalid_response"}
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 0
     assert (
-        await pool.fetchval("SELECT last_synced_at FROM accounts WHERE id = $1", account["id"])
+        await finance_pool.fetchval(
+            "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
+        )
         is None
     )
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
-async def test_overlap_window_replays_by_external_id_without_duplicate(pool: asyncpg.Pool) -> None:
+async def test_overlap_window_replays_by_external_id_without_duplicate(
+    finance_pool: asyncpg.Pool,
+) -> None:
     """Five-day overlap retries converge on the existing provider-ID dedup key."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
     previous_sync = _NOW - timedelta(days=2)
-    account = await _insert_bound_account(pool, last_synced_at=previous_sync)
+    account = await _insert_bound_account(finance_pool, last_synced_at=previous_sync)
     response = _account_set(
         transactions=[
             {
@@ -883,13 +872,13 @@ async def test_overlap_window_replays_by_external_id_without_duplicate(pool: asy
 
     async with _http_client(handler) as client:
         first = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,
         )
         second = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW + timedelta(hours=1),
@@ -900,20 +889,22 @@ async def test_overlap_window_replays_by_external_id_without_duplicate(pool: asy
     assert requests[0].url.params["start-date"] == str(
         int((previous_sync - timedelta(days=5)).timestamp())
     )
-    assert await pool.fetchval("SELECT COUNT(*) FROM transactions") == 1
-    assert await pool.fetchval("SELECT external_id FROM transactions") == "replayed-fixture-1"
-    assert await pool.fetchval(
+    assert await finance_pool.fetchval("SELECT COUNT(*) FROM transactions") == 1
+    assert (
+        await finance_pool.fetchval("SELECT external_id FROM transactions") == "replayed-fixture-1"
+    )
+    assert await finance_pool.fetchval(
         "SELECT last_synced_at FROM accounts WHERE id = $1", account["id"]
     ) == (_NOW + timedelta(hours=1))
 
 
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
-async def test_concurrent_sync_skips_before_second_http_request(pool: asyncpg.Pool) -> None:
+async def test_concurrent_sync_skips_before_second_http_request(finance_pool: asyncpg.Pool) -> None:
     """The losing invocation leaves the winner's serialized fetch/write path alone."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
 
-    await _insert_bound_account(pool)
+    await _insert_bound_account(finance_pool)
     first_request_started = asyncio.Event()
     release_first_request = asyncio.Event()
     requests: list[httpx.Request] = []
@@ -927,7 +918,7 @@ async def test_concurrent_sync_skips_before_second_http_request(pool: asyncpg.Po
     async with _http_client(handler) as client:
         first_task = asyncio.create_task(
             run_simplefin_sync(
-                pool,
+                finance_pool,
                 credential_store=_CredentialStore(_ACCESS_URL),
                 http_client=client,
                 now=_NOW,
@@ -935,7 +926,7 @@ async def test_concurrent_sync_skips_before_second_http_request(pool: asyncpg.Po
         )
         await first_request_started.wait()
         losing_result = await run_simplefin_sync(
-            pool,
+            finance_pool,
             credential_store=_CredentialStore(_ACCESS_URL),
             http_client=client,
             now=_NOW,

@@ -2510,8 +2510,9 @@ class Spawner:
             # Build credential env.
             # Caller-supplied env_override replaces the default env entirely (used by
             # the QA dispatcher to pass a sandboxed environment).
-            # Healing sessions get a minimal env: only PATH + GH_TOKEN for PR creation.
-            # No butler-specific credentials are passed to the isolated healing agent.
+            # Historical healing provenance gets a minimal env: PATH and tracing only.
+            # No GitHub or butler-specific credential reaches it; QA publication goes
+            # only through the restricted QA publisher (REQ-qa-investigation-dispatch-001).
             if env_override is not None:
                 env: dict[str, str] = dict(env_override)
             elif trigger_source == "healing":
@@ -2519,14 +2520,6 @@ class Spawner:
                 host_path = os.environ.get("PATH")
                 if host_path:
                     env["PATH"] = host_path
-                # Resolve GH_TOKEN for PR creation via credential store or env fallback
-                gh_token_key = "GH_TOKEN"
-                if self._credential_store is not None:
-                    gh_token_value = await self._credential_store.resolve(gh_token_key)
-                else:
-                    gh_token_value = os.environ.get(gh_token_key)
-                if gh_token_value:
-                    env[gh_token_key] = gh_token_value
                 # Include traceparent for distributed tracing continuity
                 env.update(get_traceparent_env())
             else:
@@ -2537,7 +2530,7 @@ class Spawner:
             env = without_owner_auth(env)
 
             # Build MCP server config for the adapter.
-            # Healing sessions use a minimal env (PATH + GH_TOKEN only) and no MCP servers.
+            # Healing sessions use a minimal env (PATH and tracing only) and no MCP servers.
             # QA sessions use a sandboxed env supplied via env_override by the QA dispatcher
             # (env isolation is the caller's responsibility, not enforced here) and also
             # receive no MCP servers — both to prevent access to live production state and

@@ -267,6 +267,25 @@ describe("QA case dossier composition", () => {
     expect(screen.getByText("No PR. Escalated to user.")).toBeTruthy();
   });
 
+  it("keeps adopted PR identity beside failed history with unknown lifecycle", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        case: { ...fullCase.case, state: "failed", pr_state: null },
+        state_track_stage: "failed",
+        pr: { ...fullCase.pr!, state: null, merged_at: null },
+        error_detail: "publication_pr_create_ambiguous",
+      }),
+    );
+    renderDossier("case-1");
+    expect(screen.getByRole("link", { name: "Open PR" }).getAttribute("href")).toBe(fullCase.pr!.url);
+    expect(screen.getByText("PR state unknown")).toBeTruthy();
+    expect(screen.queryByText(/No PR|not merged|pr #1677 · (closed|merged)/)).toBeNull();
+    expect(screen.getByTestId("qa-case-failure-banner")).toBeTruthy();
+    expect(screen.getAllByTestId("qa-session-door")).toHaveLength(3);
+    expect(screen.getByText("Patrol journal · every QA decision on this case")).toBeTruthy();
+  });
+
   it("renders the failure banner with a concise sentence and a scrollable raw-error box", () => {
     const rawError =
       "Traceback (most recent call last):\n" +
