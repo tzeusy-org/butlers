@@ -19,20 +19,9 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    """A fresh database migrated through the real General chain."""
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["general"],
-        schemas={"general": "general"},
-        pool_schema="general",
-    )
-    try:
-        yield p
-    finally:
-        await p.close()
+async def general_pool(db):
+    """A private clone migrated with the real General chain."""
+    return await db("general", schemas={"general": "general"}, schema="general")
 
 
 # ------------------------------------------------------------------
@@ -40,37 +29,37 @@ async def pool(postgres_container):
 # ------------------------------------------------------------------
 
 
-async def test_collection_create(pool):
+async def test_collection_create(general_pool):
     """collection_create inserts a new collection and returns its UUID."""
     from butlers.tools.general import collection_create
 
-    cid = await collection_create(pool, "books", description="My book collection")
+    cid = await collection_create(general_pool, "books", description="My book collection")
     assert isinstance(cid, uuid.UUID)
 
-    row = await pool.fetchrow("SELECT * FROM collections WHERE id = $1", cid)
+    row = await general_pool.fetchrow("SELECT * FROM collections WHERE id = $1", cid)
     assert row is not None
     assert row["name"] == "books"
     assert row["description"] == "My book collection"
 
 
-async def test_collection_create_no_description(pool):
+async def test_collection_create_no_description(general_pool):
     """collection_create works without a description."""
     from butlers.tools.general import collection_create
 
-    cid = await collection_create(pool, "movies")
+    cid = await collection_create(general_pool, "movies")
     assert isinstance(cid, uuid.UUID)
 
-    row = await pool.fetchrow("SELECT * FROM collections WHERE id = $1", cid)
+    row = await general_pool.fetchrow("SELECT * FROM collections WHERE id = $1", cid)
     assert row["description"] is None
 
 
-async def test_collection_create_duplicate_name(pool):
+async def test_collection_create_duplicate_name(general_pool):
     """collection_create raises on duplicate collection name."""
     from butlers.tools.general import collection_create
 
-    await collection_create(pool, "unique_coll")
+    await collection_create(general_pool, "unique_coll")
     with pytest.raises(asyncpg.UniqueViolationError):
-        await collection_create(pool, "unique_coll")
+        await collection_create(general_pool, "unique_coll")
 
 
 # ------------------------------------------------------------------
@@ -78,14 +67,14 @@ async def test_collection_create_duplicate_name(pool):
 # ------------------------------------------------------------------
 
 
-async def test_collection_list(pool):
+async def test_collection_list(general_pool):
     """collection_list returns all collections ordered by name."""
     from butlers.tools.general import collection_create, collection_list
 
-    await collection_create(pool, "zeta_list")
-    await collection_create(pool, "alpha_list")
+    await collection_create(general_pool, "zeta_list")
+    await collection_create(general_pool, "alpha_list")
 
-    colls = await collection_list(pool)
+    colls = await collection_list(general_pool)
     names = [c["name"] for c in colls]
     assert "alpha_list" in names
     assert "zeta_list" in names
@@ -100,27 +89,27 @@ async def test_collection_list(pool):
 # ------------------------------------------------------------------
 
 
-async def test_collection_delete(pool):
+async def test_collection_delete(general_pool):
     """collection_delete removes the collection."""
     from butlers.tools.general import collection_create, collection_delete, collection_list
 
-    cid = await collection_create(pool, "doomed_coll")
-    await collection_delete(pool, cid)
+    cid = await collection_create(general_pool, "doomed_coll")
+    await collection_delete(general_pool, cid)
 
-    colls = await collection_list(pool)
+    colls = await collection_list(general_pool)
     names = [c["name"] for c in colls]
     assert "doomed_coll" not in names
 
 
-async def test_collection_delete_not_found(pool):
+async def test_collection_delete_not_found(general_pool):
     """collection_delete raises ValueError for non-existent collection."""
     from butlers.tools.general import collection_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await collection_delete(pool, uuid.uuid4())
+        await collection_delete(general_pool, uuid.uuid4())
 
 
-async def test_collection_delete_cascades_items(pool):
+async def test_collection_delete_cascades_items(general_pool):
     """Deleting a collection cascades to its items."""
     from butlers.tools.general import (
         collection_create,
@@ -129,13 +118,13 @@ async def test_collection_delete_cascades_items(pool):
         item_get,
     )
 
-    cid = await collection_create(pool, "cascade_test")
-    eid = await item_create(pool, "cascade_test", {"key": "value"})
+    cid = await collection_create(general_pool, "cascade_test")
+    eid = await item_create(general_pool, "cascade_test", {"key": "value"})
 
-    await collection_delete(pool, cid)
+    await collection_delete(general_pool, cid)
 
     # Entity should be gone too
-    result = await item_get(pool, eid)
+    result = await item_get(general_pool, eid)
     assert result is None
 
 
@@ -144,61 +133,63 @@ async def test_collection_delete_cascades_items(pool):
 # ------------------------------------------------------------------
 
 
-async def test_item_create(pool):
+async def test_item_create(general_pool):
     """item_create stores an item with JSON data."""
     from butlers.tools.general import collection_create, item_create, item_get
 
-    await collection_create(pool, "people")
-    eid = await item_create(pool, "people", {"name": "Alice", "age": 30})
+    await collection_create(general_pool, "people")
+    eid = await item_create(general_pool, "people", {"name": "Alice", "age": 30})
     assert isinstance(eid, uuid.UUID)
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity is not None
     assert entity["data"]["name"] == "Alice"
     assert entity["data"]["age"] == 30
 
 
-async def test_item_create_auto_creates_missing_collection(pool):
+async def test_item_create_auto_creates_missing_collection(general_pool):
     """item_create auto-creates a collection so capture does not fail."""
     from butlers.tools.general import collection_list, item_create, item_get
 
     eid = await item_create(
-        pool,
+        general_pool,
         "episodes",
         {"summary": "Captured note"},
         tags=["auto-created"],
     )
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity is not None
     assert entity["data"] == {"summary": "Captured note"}
     assert entity["tags"] == ["auto-created"]
 
-    collections = await collection_list(pool)
+    collections = await collection_list(general_pool)
     assert [c["name"] for c in collections] == ["episodes"]
 
 
-async def test_item_create_with_tags(pool):
+async def test_item_create_with_tags(general_pool):
     """item_create stores tags as JSONB array."""
     from butlers.tools.general import collection_create, item_create, item_get
 
-    await collection_create(pool, "tagged_entities")
-    eid = await item_create(pool, "tagged_entities", {"type": "recipe"}, tags=["italian", "dinner"])
+    await collection_create(general_pool, "tagged_entities")
+    eid = await item_create(
+        general_pool, "tagged_entities", {"type": "recipe"}, tags=["italian", "dinner"]
+    )
     assert isinstance(eid, uuid.UUID)
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity is not None
     assert entity["tags"] == ["italian", "dinner"]
 
 
-async def test_item_create_without_tags_defaults_to_empty_list(pool):
+async def test_item_create_without_tags_defaults_to_empty_list(general_pool):
     """item_create with no tags stores an empty JSONB array."""
     from butlers.tools.general import collection_create, item_create, item_get
 
-    await collection_create(pool, "no_tags_coll")
-    eid = await item_create(pool, "no_tags_coll", {"x": 1})
+    await collection_create(general_pool, "no_tags_coll")
+    eid = await item_create(general_pool, "no_tags_coll", {"x": 1})
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity is not None
     assert entity["tags"] == []
 
@@ -208,22 +199,22 @@ async def test_item_create_without_tags_defaults_to_empty_list(pool):
 # ------------------------------------------------------------------
 
 
-async def test_item_get_missing(pool):
+async def test_item_get_missing(general_pool):
     """item_get returns None for a non-existent item."""
     from butlers.tools.general import item_get
 
-    result = await item_get(pool, uuid.uuid4())
+    result = await item_get(general_pool, uuid.uuid4())
     assert result is None
 
 
-async def test_item_get_includes_tags(pool):
+async def test_item_get_includes_tags(general_pool):
     """item_get returns the tags field."""
     from butlers.tools.general import collection_create, item_create, item_get
 
-    await collection_create(pool, "get_tags_coll")
-    eid = await item_create(pool, "get_tags_coll", {"a": 1}, tags=["alpha", "beta"])
+    await collection_create(general_pool, "get_tags_coll")
+    eid = await item_create(general_pool, "get_tags_coll", {"a": 1}, tags=["alpha", "beta"])
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity is not None
     assert "tags" in entity
     assert entity["tags"] == ["alpha", "beta"]
@@ -234,84 +225,84 @@ async def test_item_get_includes_tags(pool):
 # ------------------------------------------------------------------
 
 
-async def test_item_update_shallow(pool):
+async def test_item_update_shallow(general_pool):
     """item_update merges top-level keys."""
     from butlers.tools.general import collection_create, item_create, item_get, item_update
 
-    await collection_create(pool, "update_shallow")
-    eid = await item_create(pool, "update_shallow", {"a": 1, "b": 2})
+    await collection_create(general_pool, "update_shallow")
+    eid = await item_create(general_pool, "update_shallow", {"a": 1, "b": 2})
 
-    await item_update(pool, eid, {"b": 99, "c": 3})
+    await item_update(general_pool, eid, {"b": 99, "c": 3})
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity["data"] == {"a": 1, "b": 99, "c": 3}
 
 
-async def test_item_update_deep_merge(pool):
+async def test_item_update_deep_merge(general_pool):
     """item_update deep merges nested objects."""
     from butlers.tools.general import collection_create, item_create, item_get, item_update
 
-    await collection_create(pool, "update_deep")
+    await collection_create(general_pool, "update_deep")
     eid = await item_create(
-        pool,
+        general_pool,
         "update_deep",
         {"config": {"theme": "dark", "lang": "en"}, "name": "test"},
     )
 
-    await item_update(pool, eid, {"config": {"lang": "fr", "font_size": 14}})
+    await item_update(general_pool, eid, {"config": {"lang": "fr", "font_size": 14}})
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity["data"]["config"] == {"theme": "dark", "lang": "fr", "font_size": 14}
     assert entity["data"]["name"] == "test"
 
 
-async def test_item_update_not_found(pool):
+async def test_item_update_not_found(general_pool):
     """item_update raises ValueError for non-existent item."""
     from butlers.tools.general import item_update
 
     with pytest.raises(ValueError, match="not found"):
-        await item_update(pool, uuid.uuid4(), {"a": 1})
+        await item_update(general_pool, uuid.uuid4(), {"a": 1})
 
 
-async def test_item_update_tags(pool):
+async def test_item_update_tags(general_pool):
     """item_update replaces tags when provided."""
     from butlers.tools.general import collection_create, item_create, item_get, item_update
 
-    await collection_create(pool, "update_tags_coll")
-    eid = await item_create(pool, "update_tags_coll", {"x": 1}, tags=["old_tag", "shared"])
+    await collection_create(general_pool, "update_tags_coll")
+    eid = await item_create(general_pool, "update_tags_coll", {"x": 1}, tags=["old_tag", "shared"])
 
-    await item_update(pool, eid, {}, tags=["new_tag", "updated"])
+    await item_update(general_pool, eid, {}, tags=["new_tag", "updated"])
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity["tags"] == ["new_tag", "updated"]
     # Data should remain unchanged (empty merge)
     assert entity["data"] == {"x": 1}
 
 
-async def test_item_update_tags_none_preserves(pool):
+async def test_item_update_tags_none_preserves(general_pool):
     """item_update with tags=None preserves existing tags."""
     from butlers.tools.general import collection_create, item_create, item_get, item_update
 
-    await collection_create(pool, "update_tags_preserve")
-    eid = await item_create(pool, "update_tags_preserve", {"x": 1}, tags=["keep_me"])
+    await collection_create(general_pool, "update_tags_preserve")
+    eid = await item_create(general_pool, "update_tags_preserve", {"x": 1}, tags=["keep_me"])
 
-    await item_update(pool, eid, {"x": 2})  # No tags param
+    await item_update(general_pool, eid, {"x": 2})  # No tags param
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity["tags"] == ["keep_me"]
     assert entity["data"] == {"x": 2}
 
 
-async def test_item_update_tags_to_empty(pool):
+async def test_item_update_tags_to_empty(general_pool):
     """item_update can clear tags by passing an empty list."""
     from butlers.tools.general import collection_create, item_create, item_get, item_update
 
-    await collection_create(pool, "update_tags_clear")
-    eid = await item_create(pool, "update_tags_clear", {"x": 1}, tags=["remove_me"])
+    await collection_create(general_pool, "update_tags_clear")
+    eid = await item_create(general_pool, "update_tags_clear", {"x": 1}, tags=["remove_me"])
 
-    await item_update(pool, eid, {}, tags=[])
+    await item_update(general_pool, eid, {}, tags=[])
 
-    entity = await item_get(pool, eid)
+    entity = await item_get(general_pool, eid)
     assert entity["tags"] == []
 
 
@@ -320,23 +311,23 @@ async def test_item_update_tags_to_empty(pool):
 # ------------------------------------------------------------------
 
 
-async def test_item_delete(pool):
+async def test_item_delete(general_pool):
     """item_delete removes the item."""
     from butlers.tools.general import collection_create, item_create, item_delete, item_get
 
-    await collection_create(pool, "del_entity")
-    eid = await item_create(pool, "del_entity", {"x": 1})
+    await collection_create(general_pool, "del_entity")
+    eid = await item_create(general_pool, "del_entity", {"x": 1})
 
-    await item_delete(pool, eid)
-    assert await item_get(pool, eid) is None
+    await item_delete(general_pool, eid)
+    assert await item_get(general_pool, eid) is None
 
 
-async def test_item_delete_not_found(pool):
+async def test_item_delete_not_found(general_pool):
     """item_delete raises ValueError for non-existent item."""
     from butlers.tools.general import item_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await item_delete(pool, uuid.uuid4())
+        await item_delete(general_pool, uuid.uuid4())
 
 
 # ------------------------------------------------------------------
@@ -344,144 +335,158 @@ async def test_item_delete_not_found(pool):
 # ------------------------------------------------------------------
 
 
-async def test_item_search_by_collection(pool):
+async def test_item_search_by_collection(general_pool):
     """item_search filters by collection name."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_a")
-    await collection_create(pool, "search_b")
-    await item_create(pool, "search_a", {"type": "alpha"})
-    await item_create(pool, "search_b", {"type": "beta"})
+    await collection_create(general_pool, "search_a")
+    await collection_create(general_pool, "search_b")
+    await item_create(general_pool, "search_a", {"type": "alpha"})
+    await item_create(general_pool, "search_b", {"type": "beta"})
 
-    results = await item_search(pool, collection_name="search_a")
+    results = await item_search(general_pool, collection_name="search_a")
     assert len(results) == 1
     assert results[0]["data"]["type"] == "alpha"
     assert results[0]["collection_name"] == "search_a"
 
 
-async def test_item_search_by_jsonb_query(pool):
+async def test_item_search_by_jsonb_query(general_pool):
     """item_search filters by JSONB containment."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_jsonb")
-    await item_create(pool, "search_jsonb", {"color": "red", "size": "large"})
-    await item_create(pool, "search_jsonb", {"color": "blue", "size": "small"})
-    await item_create(pool, "search_jsonb", {"color": "red", "size": "small"})
+    await collection_create(general_pool, "search_jsonb")
+    await item_create(general_pool, "search_jsonb", {"color": "red", "size": "large"})
+    await item_create(general_pool, "search_jsonb", {"color": "blue", "size": "small"})
+    await item_create(general_pool, "search_jsonb", {"color": "red", "size": "small"})
 
-    results = await item_search(pool, query={"color": "red"})
+    results = await item_search(general_pool, query={"color": "red"})
     assert len(results) == 2
     for r in results:
         assert r["data"]["color"] == "red"
 
 
-async def test_item_search_combined(pool):
+async def test_item_search_combined(general_pool):
     """item_search filters by both collection and JSONB query."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_combo_x")
-    await collection_create(pool, "search_combo_y")
-    await item_create(pool, "search_combo_x", {"status": "active"})
-    await item_create(pool, "search_combo_y", {"status": "active"})
-    await item_create(pool, "search_combo_x", {"status": "inactive"})
+    await collection_create(general_pool, "search_combo_x")
+    await collection_create(general_pool, "search_combo_y")
+    await item_create(general_pool, "search_combo_x", {"status": "active"})
+    await item_create(general_pool, "search_combo_y", {"status": "active"})
+    await item_create(general_pool, "search_combo_x", {"status": "inactive"})
 
-    results = await item_search(pool, collection_name="search_combo_x", query={"status": "active"})
+    results = await item_search(
+        general_pool, collection_name="search_combo_x", query={"status": "active"}
+    )
     assert len(results) == 1
     assert results[0]["data"]["status"] == "active"
     assert results[0]["collection_name"] == "search_combo_x"
 
 
-async def test_item_search_no_filters(pool):
+async def test_item_search_no_filters(general_pool):
     """item_search with no filters returns all items."""
     from butlers.tools.general import item_search
 
-    results = await item_search(pool)
+    results = await item_search(general_pool)
     # Just verify it returns a list (other tests may have populated items)
     assert isinstance(results, list)
 
 
-async def test_item_search_by_single_tag(pool):
+async def test_item_search_by_single_tag(general_pool):
     """item_search filters by a single tag."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_tag_single")
-    await item_create(pool, "search_tag_single", {"name": "pasta"}, tags=["italian", "dinner"])
-    await item_create(pool, "search_tag_single", {"name": "sushi"}, tags=["japanese", "dinner"])
-    await item_create(pool, "search_tag_single", {"name": "tiramisu"}, tags=["italian", "dessert"])
+    await collection_create(general_pool, "search_tag_single")
+    await item_create(
+        general_pool, "search_tag_single", {"name": "pasta"}, tags=["italian", "dinner"]
+    )
+    await item_create(
+        general_pool, "search_tag_single", {"name": "sushi"}, tags=["japanese", "dinner"]
+    )
+    await item_create(
+        general_pool, "search_tag_single", {"name": "tiramisu"}, tags=["italian", "dessert"]
+    )
 
-    results = await item_search(pool, tags=["italian"])
+    results = await item_search(general_pool, tags=["italian"])
     assert len(results) == 2
     names = {r["data"]["name"] for r in results}
     assert names == {"pasta", "tiramisu"}
 
 
-async def test_item_search_by_multiple_tags(pool):
+async def test_item_search_by_multiple_tags(general_pool):
     """item_search with multiple tags uses AND semantics (all tags must match)."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_tag_multi")
-    await item_create(pool, "search_tag_multi", {"name": "pasta"}, tags=["italian", "dinner"])
-    await item_create(pool, "search_tag_multi", {"name": "tiramisu"}, tags=["italian", "dessert"])
+    await collection_create(general_pool, "search_tag_multi")
     await item_create(
-        pool, "search_tag_multi", {"name": "pizza"}, tags=["italian", "dinner", "fast"]
+        general_pool, "search_tag_multi", {"name": "pasta"}, tags=["italian", "dinner"]
+    )
+    await item_create(
+        general_pool, "search_tag_multi", {"name": "tiramisu"}, tags=["italian", "dessert"]
+    )
+    await item_create(
+        general_pool, "search_tag_multi", {"name": "pizza"}, tags=["italian", "dinner", "fast"]
     )
 
-    results = await item_search(pool, tags=["italian", "dinner"])
+    results = await item_search(general_pool, tags=["italian", "dinner"])
     assert len(results) == 2
     names = {r["data"]["name"] for r in results}
     assert names == {"pasta", "pizza"}
 
 
-async def test_item_search_by_tag_no_matches(pool):
+async def test_item_search_by_tag_no_matches(general_pool):
     """item_search returns empty list when no items match the tag."""
     from butlers.tools.general import item_search
 
-    results = await item_search(pool, tags=["nonexistent_tag_xyz"])
+    results = await item_search(general_pool, tags=["nonexistent_tag_xyz"])
     assert results == []
 
 
-async def test_item_search_tag_and_collection(pool):
+async def test_item_search_tag_and_collection(general_pool):
     """item_search combines tag filter with collection filter."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_tag_coll_a")
-    await collection_create(pool, "search_tag_coll_b")
-    await item_create(pool, "search_tag_coll_a", {"name": "item1"}, tags=["important"])
-    await item_create(pool, "search_tag_coll_b", {"name": "item2"}, tags=["important"])
-    await item_create(pool, "search_tag_coll_a", {"name": "item3"}, tags=["trivial"])
+    await collection_create(general_pool, "search_tag_coll_a")
+    await collection_create(general_pool, "search_tag_coll_b")
+    await item_create(general_pool, "search_tag_coll_a", {"name": "item1"}, tags=["important"])
+    await item_create(general_pool, "search_tag_coll_b", {"name": "item2"}, tags=["important"])
+    await item_create(general_pool, "search_tag_coll_a", {"name": "item3"}, tags=["trivial"])
 
-    results = await item_search(pool, collection_name="search_tag_coll_a", tags=["important"])
+    results = await item_search(
+        general_pool, collection_name="search_tag_coll_a", tags=["important"]
+    )
     assert len(results) == 1
     assert results[0]["data"]["name"] == "item1"
 
 
-async def test_item_search_tag_and_jsonb_query(pool):
+async def test_item_search_tag_and_jsonb_query(general_pool):
     """item_search combines tag filter with JSONB query filter."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_tag_jsonb")
-    await item_create(pool, "search_tag_jsonb", {"status": "active"}, tags=["priority"])
-    await item_create(pool, "search_tag_jsonb", {"status": "inactive"}, tags=["priority"])
-    await item_create(pool, "search_tag_jsonb", {"status": "active"}, tags=["low"])
+    await collection_create(general_pool, "search_tag_jsonb")
+    await item_create(general_pool, "search_tag_jsonb", {"status": "active"}, tags=["priority"])
+    await item_create(general_pool, "search_tag_jsonb", {"status": "inactive"}, tags=["priority"])
+    await item_create(general_pool, "search_tag_jsonb", {"status": "active"}, tags=["low"])
 
-    results = await item_search(pool, query={"status": "active"}, tags=["priority"])
+    results = await item_search(general_pool, query={"status": "active"}, tags=["priority"])
     assert len(results) == 1
     assert results[0]["data"]["status"] == "active"
     assert results[0]["tags"] == ["priority"]
 
 
-async def test_item_search_all_filters_combined(pool):
+async def test_item_search_all_filters_combined(general_pool):
     """item_search combines collection, JSONB query, and tag filters."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_all_a")
-    await collection_create(pool, "search_all_b")
-    await item_create(pool, "search_all_a", {"color": "red"}, tags=["hot"])
-    await item_create(pool, "search_all_a", {"color": "blue"}, tags=["hot"])
-    await item_create(pool, "search_all_b", {"color": "red"}, tags=["hot"])
-    await item_create(pool, "search_all_a", {"color": "red"}, tags=["cold"])
+    await collection_create(general_pool, "search_all_a")
+    await collection_create(general_pool, "search_all_b")
+    await item_create(general_pool, "search_all_a", {"color": "red"}, tags=["hot"])
+    await item_create(general_pool, "search_all_a", {"color": "blue"}, tags=["hot"])
+    await item_create(general_pool, "search_all_b", {"color": "red"}, tags=["hot"])
+    await item_create(general_pool, "search_all_a", {"color": "red"}, tags=["cold"])
 
     results = await item_search(
-        pool,
+        general_pool,
         collection_name="search_all_a",
         query={"color": "red"},
         tags=["hot"],
@@ -497,14 +502,14 @@ async def test_item_search_all_filters_combined(pool):
 # ------------------------------------------------------------------
 
 
-async def test_item_search_results_include_tags(pool):
+async def test_item_search_results_include_tags(general_pool):
     """item_search results include the tags field."""
     from butlers.tools.general import collection_create, item_create, item_search
 
-    await collection_create(pool, "search_includes_tags")
-    await item_create(pool, "search_includes_tags", {"v": 1}, tags=["alpha", "beta"])
+    await collection_create(general_pool, "search_includes_tags")
+    await item_create(general_pool, "search_includes_tags", {"v": 1}, tags=["alpha", "beta"])
 
-    results = await item_search(pool, collection_name="search_includes_tags")
+    results = await item_search(general_pool, collection_name="search_includes_tags")
     assert len(results) == 1
     assert "tags" in results[0]
     assert results[0]["tags"] == ["alpha", "beta"]
@@ -515,38 +520,38 @@ async def test_item_search_results_include_tags(pool):
 # ------------------------------------------------------------------
 
 
-async def test_collection_export(pool):
+async def test_collection_export(general_pool):
     """collection_export returns all items from a collection."""
     from butlers.tools.general import collection_create, collection_export, item_create
 
-    await collection_create(pool, "export_coll")
-    await item_create(pool, "export_coll", {"item": 1})
-    await item_create(pool, "export_coll", {"item": 2})
-    await item_create(pool, "export_coll", {"item": 3})
+    await collection_create(general_pool, "export_coll")
+    await item_create(general_pool, "export_coll", {"item": 1})
+    await item_create(general_pool, "export_coll", {"item": 2})
+    await item_create(general_pool, "export_coll", {"item": 3})
 
-    exported = await collection_export(pool, "export_coll")
+    exported = await collection_export(general_pool, "export_coll")
     assert len(exported) == 3
     items = [e["data"]["item"] for e in exported]
     assert sorted(items) == [1, 2, 3]
 
 
-async def test_collection_export_empty(pool):
+async def test_collection_export_empty(general_pool):
     """collection_export returns empty list for a collection with no items."""
     from butlers.tools.general import collection_create, collection_export
 
-    await collection_create(pool, "empty_export")
-    exported = await collection_export(pool, "empty_export")
+    await collection_create(general_pool, "empty_export")
+    exported = await collection_export(general_pool, "empty_export")
     assert exported == []
 
 
-async def test_collection_export_includes_tags(pool):
+async def test_collection_export_includes_tags(general_pool):
     """collection_export results include the tags field."""
     from butlers.tools.general import collection_create, collection_export, item_create
 
-    await collection_create(pool, "export_tags_coll")
-    await item_create(pool, "export_tags_coll", {"x": 1}, tags=["exported"])
+    await collection_create(general_pool, "export_tags_coll")
+    await item_create(general_pool, "export_tags_coll", {"x": 1}, tags=["exported"])
 
-    exported = await collection_export(pool, "export_tags_coll")
+    exported = await collection_export(general_pool, "export_tags_coll")
     assert len(exported) == 1
     assert "tags" in exported[0]
     assert exported[0]["tags"] == ["exported"]
@@ -610,16 +615,16 @@ def test_deep_merge_empty_override():
     ],
     ids=["string", "integer", "float", "boolean", "null", "list", "nested", "mixed"],
 )
-async def test_item_freeform_jsonb_types(pool, data):
+async def test_item_freeform_jsonb_types(general_pool, data):
     """Entities accept various freeform JSONB data types."""
     from butlers.tools.general import collection_create, item_create, item_get
 
     coll_name = f"jsonb_types_{list(data.keys())[0]}"
     try:
-        await collection_create(pool, coll_name)
+        await collection_create(general_pool, coll_name)
     except Exception:
         pass  # May already exist from parametrize
 
-    eid = await item_create(pool, coll_name, data)
-    entity = await item_get(pool, eid)
+    eid = await item_create(general_pool, coll_name, data)
+    entity = await item_get(general_pool, eid)
     assert entity["data"] == data

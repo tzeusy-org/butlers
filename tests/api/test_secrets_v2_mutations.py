@@ -35,6 +35,8 @@ from fastapi.testclient import TestClient
 import butlers.api.routers.secrets_v2 as _secrets_v2
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -44,13 +46,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC)
-
-
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
 
 
 def _make_entity_info_row(
@@ -63,10 +58,10 @@ def _make_entity_info_row(
     last_test_ok: bool | None = True,
     last_test_code: int | None = None,
     last_test_message: str | None = None,
-) -> MagicMock:
+) -> Record:
     row_id = uuid4()
     eid = entity_id or str(uuid4())
-    return _make_row(
+    return make_row(
         id=row_id,
         entity_id=eid,
         type=info_type,
@@ -80,9 +75,9 @@ def _make_entity_info_row(
     )
 
 
-def _make_rotate_returning_row(row: MagicMock) -> MagicMock:
+def _make_rotate_returning_row(row: MagicMock) -> Record:
     """Build the deliberately non-secret row returned by rotation UPDATE."""
-    return _make_row(
+    return make_row(
         id=row["id"],
         entity_id=row["entity_id"],
         type=row["type"],
@@ -117,7 +112,7 @@ def _make_shared_pool(
         if "secret_probe_log" in sql:
             return probe_row
         if "butler_secrets" in sql:
-            return _make_row(secret_value="app-cred") if oauth_app_configured else None
+            return make_row(secret_value="app-cred") if oauth_app_configured else None
         if "entity_info" in sql or "entities" in sql:
             return user_row
         return None

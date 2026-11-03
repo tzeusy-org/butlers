@@ -90,6 +90,9 @@ const ButlerGeneralCollectionsTab = lazy(
 const ButlerGeneralEntitiesTab = lazy(
   () => import("@/components/general/ButlerGeneralEntitiesTab.tsx"),
 );
+const ButlerGeneralProjectsTab = lazy(
+  () => import("@/components/general/ButlerGeneralProjectsTab.tsx"),
+);
 
 // Spend tab (lazy) — bu-iuol4.19
 const ButlerSpendTab = lazy(
@@ -181,6 +184,7 @@ export default function ButlerDetailPage() {
 
   const showCollectionsTab = name === "general";
   const showEntitiesTab = name === "general";
+  const showProjectsTab = name === "general";
   const showHealthTab = name === "health";
   const showReviewsTab = name === "education";
   const showTimelinesTab = name === "chronicler";
@@ -261,6 +265,9 @@ export default function ButlerDetailPage() {
             {showEntitiesTab && (
               <DetailTabTrigger value="entities">Entities</DetailTabTrigger>
             )}
+            {showProjectsTab && (
+              <DetailTabTrigger value="projects">Projects</DetailTabTrigger>
+            )}
             {showHealthTab && <DetailTabTrigger value="health">Measurements</DetailTabTrigger>}
             {isSwitchboard && (
               <>
@@ -319,6 +326,14 @@ export default function ButlerDetailPage() {
             <TabsContent value="entities">
               <Suspense fallback={<TabFallback label="entities" />}>
                 <ButlerGeneralEntitiesTab />
+              </Suspense>
+            </TabsContent>
+          )}
+
+          {showProjectsTab && (
+            <TabsContent value="projects">
+              <Suspense fallback={<TabFallback label="projects" />}>
+                <ButlerGeneralProjectsTab />
               </Suspense>
             </TabsContent>
           )}

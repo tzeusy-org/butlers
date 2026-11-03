@@ -13,7 +13,9 @@ remote resource, and any doubt leaves the hold in place:
 - ``pr_create``: the operation bound no PR number before egress, so the adoption
   rule is a head/base match.  Exactly one PR (open or closed) from the bound head
   branch onto the bound base is adopted as ``resource_found``; none is
-  ``resource_absent``; more than one stays held.
+  ``resource_absent``; more than one stays held.  The same write records the
+  adopted PR's number and URL on the attempt (``healing_attempts.pr_number`` /
+  ``pr_url``) when it names no PR yet, so the case API shows the PR.
 - ``pr_update`` and ``pr_labels`` bind the bound PR's number as their expected
   object (:func:`binding.expected_object_id`), and the reconciler reads that PR.
   It must still run from the bound head onto the bound base; anything else stays
@@ -66,6 +68,7 @@ from butlers.core.qa.publication.binding import (
     PublicationBinding,
     labels_payload,
     pr_text_payload,
+    pull_request_url,
     request_digest,
 )
 from butlers.core.qa.publication.state import (
@@ -134,6 +137,7 @@ class ReconciliationLedger(Protocol):
         observed_object_id: str | None,
         expected_stage: str,
         absence_settle: timedelta,
+        adopted_pr_url: str | None = None,
     ) -> bool: ...
 
 
@@ -154,6 +158,7 @@ class PoolReconciliationLedger:
         observed_object_id: str | None,
         expected_stage: str,
         absence_settle: timedelta,
+        adopted_pr_url: str | None = None,
     ) -> bool:
         return await state.record_reconciliation(
             self._pool,
@@ -162,6 +167,7 @@ class PoolReconciliationLedger:
             observed_object_id=observed_object_id,
             expected_stage=expected_stage,
             absence_settle=absence_settle,
+            adopted_pr_url=adopted_pr_url,
         )
 
 
@@ -306,6 +312,11 @@ async def reconcile_operation(
             return _held("absence_unanchored")
         if now() - anchor < settle:
             return _held("absence_settling")
+    adopted_pr_url = None
+    if kind is OperationKind.PR_CREATE and observation == "resource_found" and object_id:
+        # The attempt never learned this PR (its create response was lost): name it on
+        # the attempt in the same write so the case API shows the adopted PR.
+        adopted_pr_url = pull_request_url(binding.repository, int(object_id))
     try:
         recorded = await ledger.reconcile(
             operation.id,
@@ -313,6 +324,7 @@ async def reconcile_operation(
             observed_object_id=object_id,
             expected_stage=operation.stage,
             absence_settle=settle,
+            adopted_pr_url=adopted_pr_url,
         )
     except PublicationRefused as exc:
         return _held(exc.code)

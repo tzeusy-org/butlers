@@ -37,22 +37,12 @@ from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 5, 8, 9, 0, tzinfo=UTC)
 
 
 # ── shared mock scaffolding ────────────────────────────────────────────────
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 class _NullCtx:
@@ -73,7 +63,7 @@ def _chronicler_pool(fetch_rows: list[object] | None = None) -> AsyncMock:
     conn.fetch = AsyncMock(return_value=list(fetch_rows or []))
     conn.fetchrow = AsyncMock(return_value=None)  # no overlapping stored episode
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -415,7 +405,7 @@ async def test_late_hr_on_an_empty_movement_tick_promotes_existing_exercise() ->
         ]
     )
     chronicler_pool = AsyncMock()
-    chronicler_pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    chronicler_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     with (
         patch(
@@ -477,7 +467,7 @@ async def test_exercise_late_hr_recheck_is_bounded_and_shares_the_hr_predicate()
     conn = AsyncMock()
     conn.fetch = AsyncMock(return_value=[movement])
     chronicler_pool = AsyncMock()
-    chronicler_pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    chronicler_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     with (
         patch.object(adapter, "_corroborator_event_ids", predicate),
@@ -516,7 +506,7 @@ async def test_exercise_project_is_pure_deterministic_no_llm() -> None:
         ]
     )
     chron_pool = AsyncMock()
-    chron_pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    chron_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     with (
         patch(

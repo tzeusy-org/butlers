@@ -19,8 +19,6 @@ import asyncpg
 import pytest
 
 from butlers.core.ingestion_events import ingestion_event_replay_request
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
@@ -34,32 +32,10 @@ _PUBLIC_ENDPOINT = "telegram:bot:test"
 _FILTERED_ENDPOINT = "telegram:user:test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the real core and switchboard migration chains."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def migrated_pool(migrated_db_url: str) -> AsyncIterator[asyncpg.Pool]:
-    """Yield a clean pool to a single fully migrated database."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=4,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE TABLE connectors.filtered_events, public.ingestion_events, "
-        "switchboard.connector_registry CASCADE"
-    )
-    yield pool
-    await pool.close()
+async def migrated_pool(db) -> asyncpg.Pool:
+    """A clone migrated by the real core and switchboard chains."""
+    return await db("core", "switchboard", schemas={"switchboard": "switchboard"}, max_size=4)
 
 
 async def _seed_public_failed_event(

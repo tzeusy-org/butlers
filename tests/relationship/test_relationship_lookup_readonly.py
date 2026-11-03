@@ -22,11 +22,9 @@ helper assigns.
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import asyncpg
 import pytest
@@ -45,107 +43,17 @@ pytestmark = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Schema provisioning — the three tables the lookup reads.
-# ---------------------------------------------------------------------------
-
-
-def _apply_evidence_schema():
-    """Load ``roster/relationship/tests/evidence_schema.py`` by path.
-
-    ``roster/`` is not importable from ``tests/`` on its own, and the rel_034 /
-    rel_035 DDL must not be copied here (same loader as
-    ``tests/integration/test_email_identity_enrichment_db.py``).
-    """
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
-    spec = importlib.util.spec_from_file_location("_relationship_evidence_schema", schema_path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.apply_evidence_schema
-
-
-async def _provision_lookup_schema(p: asyncpg.Pool) -> None:
-    """Create public.entities, relationship.entity_facts, and a minimal facts table.
-
-    These mirror the columns the read path touches; the narrative ``facts`` table
-    is created minimal-but-sufficient so its SELECTs run and return nothing,
-    keeping the read-only assertions focused on the identity store + entities.
-    """
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL DEFAULT '',
-            name           TEXT        NOT NULL DEFAULT '',
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            aliases        TEXT[]      NOT NULL DEFAULT '{}',
-            metadata       JSONB       DEFAULT '{}'::jsonb,
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-            subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            predicate   TEXT        NOT NULL,
-            object      TEXT        NOT NULL,
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT        NOT NULL,
-            conf        FLOAT       NOT NULL DEFAULT 1.0,
-            last_seen   TIMESTAMPTZ,
-            observed_at TIMESTAMPTZ,
-            metadata    JSONB,
-            weight      INT,
-            verified    BOOL        NOT NULL DEFAULT false,
-            "primary"   BOOL,
-            validity    TEXT        NOT NULL DEFAULT 'active',
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    # rel_034/rel_035 stores: the identity fact below carries effective time.
-    await _apply_evidence_schema()(p)
-    # Minimal narrative facts table — only the columns the lookup SELECTs touch.
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS facts (
-            content_authority TEXT, authority_entity_id UUID,
-            id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            entity_id         UUID,
-            object_entity_id  UUID,
-            predicate         TEXT        NOT NULL DEFAULT '',
-            content           TEXT        NOT NULL DEFAULT '',
-            source_butler     TEXT,
-            confidence        FLOAT,
-            scope             TEXT        NOT NULL DEFAULT 'relationship',
-            validity          TEXT        NOT NULL DEFAULT 'active',
-            observed_at       TIMESTAMPTZ,
-            last_confirmed_at TIMESTAMPTZ,
-            valid_at          TIMESTAMPTZ,
-            created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
+@pytest.fixture
+async def lookup_pool(db):
+    """public.entities (core), relationship.entity_facts and narrative facts (memory)."""
+    schemas = {"memory": "relationship", "relationship": "relationship"}
+    return await db("core", "memory", "relationship", schemas=schemas, schema="relationship")
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as p:
-        await _provision_lookup_schema(p)
-        yield p
-
-
-@pytest.fixture
-async def seeded_entity(pool: asyncpg.Pool) -> uuid.UUID:
+async def seeded_entity(lookup_pool: asyncpg.Pool) -> uuid.UUID:
     """An entity with one active identity fact and one narrative fact."""
-    eid = await pool.fetchval(
+    eid = await lookup_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Northwind Plumbing', 'organization', '{}')
@@ -155,7 +63,7 @@ async def seeded_entity(pool: asyncpg.Pool) -> uuid.UUID:
     # The identity fact's effective interval closed years ago; it is still the
     # current assertion, so assertion-current readers must keep returning it
     # (relationship-fact-effective-time adds no implicit effective-now filter).
-    await pool.execute(
+    await lookup_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, conf, observed_at, validity,
@@ -165,10 +73,12 @@ async def seeded_entity(pool: asyncpg.Pool) -> uuid.UUID:
         """,
         eid,
     )
-    await pool.execute(
+    await lookup_pool.execute(
         """
-        INSERT INTO facts (entity_id, predicate, content, source_butler, confidence, scope, observed_at)
-        VALUES ($1, 'prefers', 'morning calls', 'memory', 0.8, 'relationship', now())
+        INSERT INTO facts (entity_id, subject, predicate, content, source_butler, confidence,
+                           scope, observed_at)
+        VALUES ($1, 'Northwind Plumbing', 'prefers', 'morning calls', 'memory', 0.8,
+                'relationship', now())
         """,
         eid,
     )
@@ -208,32 +118,32 @@ async def _db_snapshot(p: asyncpg.Pool) -> dict[str, tuple[int, str]]:
 # ---------------------------------------------------------------------------
 
 
-async def test_lookup_leaves_db_byte_identical(pool, seeded_entity):
-    before = await _db_snapshot(pool)
+async def test_lookup_leaves_db_byte_identical(lookup_pool, seeded_entity):
+    before = await _db_snapshot(lookup_pool)
 
-    result = await relationship_lookup(pool, entity_id=seeded_entity)
+    result = await relationship_lookup(lookup_pool, entity_id=seeded_entity)
     assert result["entity"]["id"] == str(seeded_entity)
     # Sanity: the lookup actually read the seeded facts (otherwise the snapshot
     # parity would be trivially true against an untouched empty read path).
     stores = {f["store"] for f in result["facts"]}
     assert stores == {"identity", "narrative"}
 
-    after = await _db_snapshot(pool)
+    after = await _db_snapshot(lookup_pool)
     assert after == before, (
         "relationship_lookup mutated the database; the spec requires repeated "
         f"identical calls to leave it byte-identical. before={before} after={after}"
     )
 
     # Repeat the call — still no drift.
-    await relationship_lookup(pool, entity_id=seeded_entity)
-    assert await _db_snapshot(pool) == before
+    await relationship_lookup(lookup_pool, entity_id=seeded_entity)
+    assert await _db_snapshot(lookup_pool) == before
 
 
-async def test_lookup_by_ref_leaves_db_byte_identical(pool, seeded_entity):
-    before = await _db_snapshot(pool)
-    result = await relationship_lookup(pool, entity_ref="Northwind Plumbing")
+async def test_lookup_by_ref_leaves_db_byte_identical(lookup_pool, seeded_entity):
+    before = await _db_snapshot(lookup_pool)
+    result = await relationship_lookup(lookup_pool, entity_ref="Northwind Plumbing")
     assert result["entity"]["id"] == str(seeded_entity)
-    assert await _db_snapshot(pool) == before
+    assert await _db_snapshot(lookup_pool) == before
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +156,7 @@ async def test_lookup_by_ref_leaves_db_byte_identical(pool, seeded_entity):
     [0, FRESH_MAX_DAYS, FRESH_MAX_DAYS + 1, AGING_MAX_DAYS, AGING_MAX_DAYS + 1, 400],
 )
 @pytest.mark.pg_clock
-async def test_sql_band_matches_python_at_boundaries(pool, age_days):
+async def test_sql_band_matches_python_at_boundaries(lookup_pool, age_days):
     """The lookup's SQL band must equal the Python helper at exact boundaries.
 
     Insert a fact whose ``observed_at`` is exactly ``age_days`` ago, read it back
@@ -263,7 +173,7 @@ async def test_sql_band_matches_python_at_boundaries(pool, age_days):
     structurally in ``test_staleness.py::test_band_comparison_is_inclusive_to_match_python``;
     a strict ``>`` regression would be caught there.
     """
-    eid = await pool.fetchval(
+    eid = await lookup_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Boundary Co', 'organization', '{}')
@@ -271,7 +181,7 @@ async def test_sql_band_matches_python_at_boundaries(pool, age_days):
         """
     )
     observed = datetime.now(UTC) - timedelta(days=age_days)
-    await pool.execute(
+    await lookup_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, conf, observed_at, validity)
@@ -281,7 +191,7 @@ async def test_sql_band_matches_python_at_boundaries(pool, age_days):
         observed,
     )
 
-    result = await relationship_lookup(pool, entity_id=eid)
+    result = await relationship_lookup(lookup_pool, entity_id=eid)
     identity = next(f for f in result["facts"] if f["store"] == "identity")
     sql_band = identity["staleness_band"]
 
@@ -301,7 +211,7 @@ async def test_sql_band_matches_python_at_boundaries(pool, age_days):
 
 @pytest.mark.parametrize("age_days", [5, 90, 365])
 @pytest.mark.pg_clock
-async def test_recency_band_matches_python_via_shared_builder(pool, age_days):
+async def test_recency_band_matches_python_via_shared_builder(lookup_pool, age_days):
     """The whole-entity recency band agrees with the Python helper.
 
     ``_fetch_recency`` derives the entity band from ``max(last_seen)`` through the
@@ -311,7 +221,7 @@ async def test_recency_band_matches_python_via_shared_builder(pool, age_days):
     and the DB's ``now()`` cannot flip the expected band; the inclusive-boundary
     ``>=`` semantics are pinned structurally in ``test_staleness.py``.
     """
-    eid = await pool.fetchval(
+    eid = await lookup_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Recency Co', 'organization', '{}')
@@ -319,7 +229,7 @@ async def test_recency_band_matches_python_via_shared_builder(pool, age_days):
         """
     )
     last_seen = datetime.now(UTC) - timedelta(days=age_days)
-    await pool.execute(
+    await lookup_pool.execute(
         """
         INSERT INTO relationship.entity_facts
             (subject, predicate, object, object_kind, src, conf, last_seen, validity)
@@ -328,7 +238,7 @@ async def test_recency_band_matches_python_via_shared_builder(pool, age_days):
         eid,
         last_seen,
     )
-    result = await relationship_lookup(pool, entity_id=eid)
+    result = await relationship_lookup(lookup_pool, entity_id=eid)
     # live-clock: as above — the recency band comes from the same SQL builder
     # evaluated against Postgres now(), so the Python side reads the real clock.
     expected = staleness_band(

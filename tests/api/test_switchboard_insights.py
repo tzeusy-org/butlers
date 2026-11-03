@@ -29,6 +29,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -41,15 +42,6 @@ def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
         importlib.import_module("butlers.api._roster.switchboard.router")
     return get_db
-
-
-def _make_row(data: dict):
-    row = MagicMock()
-    row.__getitem__ = lambda self, k: data[k]
-    row.get = lambda k, default=None: data.get(k, default)
-    row.keys = lambda: data.keys()
-    row.__iter__ = lambda self: iter(data)
-    return row
 
 
 def _app_with_mock(
@@ -103,7 +95,7 @@ def _sample_row(**overrides):
 
 
 async def test_insights_happy_path_maps_all_fields(app):
-    app, _ = _app_with_mock(app, fetch_rows=[_make_row(_sample_row())])
+    app, _ = _app_with_mock(app, fetch_rows=[Record(_sample_row())])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -132,9 +124,7 @@ async def test_insights_happy_path_maps_all_fields(app):
 
 async def test_insights_surfaces_prepared_action_id(app):
     prepared_id = "22222222-2222-2222-2222-222222222222"
-    app, _ = _app_with_mock(
-        app, fetch_rows=[_make_row(_sample_row(prepared_action_id=prepared_id))]
-    )
+    app, _ = _app_with_mock(app, fetch_rows=[Record(_sample_row(prepared_action_id=prepared_id))])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

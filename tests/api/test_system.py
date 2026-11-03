@@ -37,6 +37,7 @@ from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.api.routers import system as system_router
 from butlers.api.routers.system import _commits_behind_main
 from butlers.core.backup_facts import read_backup_facts_from_dir
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -104,15 +105,6 @@ def _make_app_with_db(mock_db):
     return app
 
 
-def _make_record(row: dict) -> MagicMock:
-    rec = MagicMock()
-    rec.__getitem__ = MagicMock(side_effect=lambda k: row[k])
-    rec.get = MagicMock(side_effect=lambda k, default=None: row.get(k, default))
-    for k, v in row.items():
-        setattr(rec, k, v)
-    return rec
-
-
 # ---------------------------------------------------------------------------
 # GET /api/system/instance
 # ---------------------------------------------------------------------------
@@ -156,8 +148,8 @@ def _make_db_endpoint_mock(*, fail_at=None, schema_rows=None, table_rows=None):
         if fail_at in ("schema", "table"):
             raise RuntimeError("permission denied")
         if "GROUP BY" in sql:
-            return [_make_record(r) for r in schema_rows]
-        return [_make_record(r) for r in table_rows]
+            return [Record(r) for r in schema_rows]
+        return [Record(r) for r in table_rows]
 
     pool.fetchval = AsyncMock(side_effect=_fetchval)
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -1396,6 +1388,114 @@ async def test_backups_run_receipt_survives_a_directory_with_no_dump_at_all(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/system/backups -- off-node restic copy (bu-ivuf9u)
+#
+# deploy/backup/restic_offsite_copy.sh rewrites offsite_last_run.json in the
+# same volume. The chart sets BUTLERS_OFFSITE_COPY_ENABLED only when the copy
+# job exists, so an absent receipt is "no copy yet" there and "not configured"
+# everywhere else.
+# ---------------------------------------------------------------------------
+
+
+def _offsite_receipt(finished_at: datetime, *, result: str = "success", reason: str = "ok") -> str:
+    exit_code = 0 if result == "success" else 1
+    stamp = finished_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f'{{"result":"{result}","reason":"{reason}","exit_code":{exit_code},'
+        f'"finished_at":"{stamp}","snapshot_id":"0a1b2c3d"}}\n'
+    )
+
+
+async def test_backups_offsite_copy_not_configured_is_reported_as_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Without the chart flag the copy is "disabled", even if a stale receipt lingers."""
+    monkeypatch.delenv("BUTLERS_OFFSITE_COPY_ENABLED", raising=False)
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "offsite_last_run.json").write_text(
+        _offsite_receipt(datetime.now(UTC) - timedelta(days=30)), encoding="utf-8"
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    assert data["offsite_copy"] == {
+        "result": "disabled",
+        "finished_at": None,
+        "reason": None,
+        "snapshot_id": None,
+        "stale": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("receipt_age", "result", "reason", "expected_stale"),
+    [
+        (timedelta(hours=2), "success", "ok", False),
+        (timedelta(hours=40), "success", "ok", True),
+        (timedelta(hours=2), "failed", "repo_unreachable", False),
+    ],
+)
+async def test_backups_offsite_copy_reports_outcome_and_staleness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_age: timedelta,
+    result: str,
+    reason: str,
+    expected_stale: bool,
+):
+    """An enabled copy reports its last run, and a run older than 36h is stale."""
+    monkeypatch.setenv("BUTLERS_OFFSITE_COPY_ENABLED", "1")
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "offsite_last_run.json").write_text(
+        _offsite_receipt(datetime.now(UTC) - receipt_age, result=result, reason=reason),
+        encoding="utf-8",
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    copy = data["offsite_copy"]
+    assert copy["result"] == result
+    assert copy["reason"] == reason
+    assert copy["snapshot_id"] == "0a1b2c3d"
+    assert copy["stale"] is expected_stale
+    # The local dump is untouched by the off-node verdict.
+    assert data["last_backup_status"] == "healthy"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        None,
+        "not json",
+        '{"result":"failed","reason":"ssh -i /secret/key user@100.64.0.9 refused",'
+        '"exit_code":1,"finished_at":"2026-05-03T02:00:11Z","snapshot_id":"zz; rm -rf /"}',
+    ],
+)
+async def test_backups_offsite_copy_never_reads_absence_or_hostile_text_as_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt: str | None
+):
+    """Enabled with no readable receipt is unknown and stale; free text never escapes."""
+    monkeypatch.setenv("BUTLERS_OFFSITE_COPY_ENABLED", "1")
+    _write_fresh_dump(tmp_path)
+    if receipt is not None:
+        (tmp_path / "offsite_last_run.json").write_text(receipt, encoding="utf-8")
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    copy = data["offsite_copy"]
+    if receipt is not None and receipt.startswith("{"):
+        assert copy["result"] == "failed"
+        assert copy["reason"] == "unrecognized reason"
+        assert copy["snapshot_id"] is None
+    else:
+        assert copy["result"] == "unknown"
+        assert copy["stale"] is True
+    serialized = json.dumps(data)
+    for leaked in ("/secret/key", "100.64.0.9", "rm -rf"):
+        assert leaked not in serialized
+
+
+# ---------------------------------------------------------------------------
 # GET /api/system/backups -- restore_drill ledger read (bu-9r3hd.5)
 # ---------------------------------------------------------------------------
 
@@ -1641,7 +1741,7 @@ def _make_egress_db(
     async def _fetch(sql, *args):
         if audit_fails:
             raise RuntimeError("DB error")
-        return [_make_record(r) for r in audit_rows]
+        return [Record(r) for r in audit_rows]
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -1781,7 +1881,7 @@ def _make_heartbeat_db(
     async def _sw_fetch(sql, *args):
         if registry_fails:
             raise RuntimeError("DB error")
-        return [_make_record(r) for r in registry_rows]
+        return [Record(r) for r in registry_rows]
 
     sw_pool.fetch = AsyncMock(side_effect=_sw_fetch)
     butler_pool = AsyncMock()
@@ -1856,7 +1956,7 @@ async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_
             observed = fresh_receiver_timestamp if receiver_observation_present else None
         else:
             observed = old_legacy_timestamp
-        return [_make_record({"name": "general", "last_seen_at": observed})]
+        return [Record({"name": "general", "last_seen_at": observed})]
 
     switchboard_pool.fetch.side_effect = _registry_rows
     async with httpx.AsyncClient(
@@ -2143,7 +2243,7 @@ class TestEgressSpan:
             return None
 
         async def _fetch(sql, *args):
-            return [_make_record(r) for r in audit_rows]
+            return [Record(r) for r in audit_rows]
 
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         pool.fetch = AsyncMock(side_effect=_fetch)

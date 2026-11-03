@@ -45,7 +45,7 @@ def migrated_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core", "education"],
-        schemas={"education": "education"},
+        schemas={"core": "education", "education": "education"},
     )
 
 
@@ -53,7 +53,7 @@ def migrated_db_url(postgres_container) -> str:
 async def pool(postgres_container, migrated_db_url: str):
     owner = await asyncpg.connect(migrated_db_url)
     await owner.execute("TRUNCATE TABLE education.mind_maps CASCADE")
-    await owner.execute("DELETE FROM public.state WHERE key LIKE 'flow:%'")
+    await owner.execute("DELETE FROM education.state WHERE key LIKE 'flow:%'")
     await owner.close()
 
     async def setup(connection):

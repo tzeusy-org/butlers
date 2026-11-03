@@ -41,20 +41,19 @@ The `public.model_catalog` table is the global registry of available models. Eac
 the chosen catalog entry id and its `session_timeout_s`, and are edited via the dashboard's **Models
 tab** / `GET/PATCH /api/model-settings` (`src/butlers/api/routers/model_settings.py`).
 
-`{schema}.runtime_config` holds `core_groups`, `max_concurrent`, and `max_queued` (cold: require a
-daemon restart to take effect) alongside `catalog_read_sensitivity` and `tool_exposure_policy` (hot: a PATCH takes effect for the next
-planned session with no restart). All five fields are seeded from `[butler.runtime_seed]` in
-`butler.toml` on first boot and edited via `GET/PATCH /api/butlers/{name}/runtime-config`
-(`src/butlers/api/routers/runtime_config.py`), which reports each field's tier in the response's
-`field_tiers` map.
+`{schema}.runtime_config` stores `core_groups`, `max_concurrent`, and `max_queued`
+(cold: require a daemon restart), alongside call-time `catalog_read_sensitivity` and the stored
+`tool_exposure_policy`. These operational fields are seeded from `[butler.runtime_seed]` on first boot
+and edited via `GET/PATCH /api/butlers/{name}/runtime-config`, which reports field tiers. The API marks
+`tool_exposure_policy` hot and accepts `eager_filtered` (default) or `auto` without a restart.
 
-Cold fields are read through the 30s TTL cache in `RuntimeConfigAccessor`
-(`src/butlers/core/runtime_config.py`). `tool_exposure_policy` is closed to `eager_filtered` (default,
-conservative) or `auto`, and every per-attempt caller MUST resolve it through
-`RuntimeConfigAccessor.get_tool_exposure_policy()`, which always reads the DB directly instead of the
-TTL cache --- the dashboard API and the butler daemon can be separate processes, so a cached read
-cannot guarantee the first session planned after a committed PATCH sees the new policy. Do not look
-for model settings on the runtime-config surface, and do not add operational limits to the catalog.
+`RuntimeConfigAccessor.get_tool_exposure_policy()` reads the DB directly instead of the general
+30-second TTL cache, but there is currently no runtime source consumer of that accessor. A stored
+`auto` value, API tier, or dashboard copy does not establish per-attempt planning, host filtering, or
+native tool search. That unlanded work belongs to the RFC 0038 broker (`bu-r980fk`) and adapters
+(`bu-kiuh8v`). Whether to keep or delete this policy at that cutover remains explicitly undecided in
+the `bu-li92cu` collision lineage. Do not look for model settings on the runtime-config surface or add
+operational limits to the model catalog.
 
 ### Verification evidence is not routing evidence
 

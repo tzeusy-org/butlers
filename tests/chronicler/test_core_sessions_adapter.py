@@ -25,6 +25,8 @@ from butlers.chronicler.adapters.sessions import (
     CoreSessionsAdapter,
 )
 from butlers.chronicler.models import Episode, PointEvent
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 4, 29, 10, 0, 0, tzinfo=UTC)
 
@@ -34,7 +36,7 @@ _NOW = datetime(2026, 4, 29, 10, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _session_row(
     session_id: int = 1,
     started_at: datetime = _NOW,
     completed_at: datetime | None = None,
@@ -57,21 +59,6 @@ def _make_row(
     }
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 class _NullCtx:
     async def __aenter__(self) -> None:
         return None
@@ -84,9 +71,9 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     """Return a mock asyncpg pool whose fetch() returns the given rows."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -96,7 +83,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -136,11 +123,11 @@ async def test_only_user_rows_projected() -> None:
     """Only rows with non-excluded trigger_source values produce episodes."""
     t_base = _NOW
     included_rows = [
-        _make_row(session_id=10, started_at=t_base, trigger_source="route"),
-        _make_row(
+        _session_row(session_id=10, started_at=t_base, trigger_source="route"),
+        _session_row(
             session_id=11, started_at=t_base + timedelta(minutes=1), trigger_source="trigger"
         ),
-        _make_row(session_id=12, started_at=t_base + timedelta(minutes=2), trigger_source=None),
+        _session_row(session_id=12, started_at=t_base + timedelta(minutes=2), trigger_source=None),
     ]
 
     pool = _pool_returning(*included_rows)
@@ -183,7 +170,7 @@ async def test_deadline_rows_are_projected() -> None:
 
     See roster/chronicler/AGENTS.md for the decision rationale (bu-ve8ne).
     """
-    deadline_row = _make_row(
+    deadline_row = _session_row(
         session_id=99,
         started_at=_NOW,
         completed_at=_NOW + timedelta(minutes=2),
@@ -234,8 +221,8 @@ async def test_watermark_advances_over_included_rows_only() -> None:
     t2 = _NOW + timedelta(hours=1)
 
     included_rows = [
-        _make_row(session_id=20, started_at=t1, trigger_source="route"),
-        _make_row(session_id=21, started_at=t2, trigger_source="trigger"),
+        _session_row(session_id=20, started_at=t1, trigger_source="route"),
+        _session_row(session_id=21, started_at=t2, trigger_source="trigger"),
     ]
 
     pool = _pool_returning(*included_rows)
@@ -297,7 +284,7 @@ async def test_route_session_title_contains_display_name_regression() -> None:
     """
     event_uuid = UUID("01900000-0000-7000-8000-000000000001")
 
-    row = _make_row(
+    row = _session_row(
         session_id=200,
         started_at=_NOW,
         completed_at=_NOW + timedelta(minutes=5),
@@ -309,7 +296,7 @@ async def test_route_session_title_contains_display_name_regression() -> None:
     source_conn.fetchval = AsyncMock(return_value=True)
     source_conn.fetch = AsyncMock(side_effect=_make_source_fetch(row, event_uuid))
     source_pool = AsyncMock()
-    source_pool.acquire = MagicMock(return_value=_AsyncCtx(source_conn))
+    source_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(source_conn))
 
     cp = _chronicler_pool()
     adapter = _adapter("relationship")
@@ -350,7 +337,7 @@ async def test_route_session_unresolved_contact_falls_back_to_channel() -> None:
     """When contact cannot be resolved, title must be 'Conversation via {channel}'."""
     event_uuid = UUID("01900000-0000-7000-8000-000000000002")
 
-    row = _make_row(
+    row = _session_row(
         session_id=201,
         started_at=_NOW,
         completed_at=_NOW + timedelta(minutes=3),
@@ -364,7 +351,7 @@ async def test_route_session_unresolved_contact_falls_back_to_channel() -> None:
         side_effect=_make_source_fetch(row, event_uuid, display_name=None, channel="telegram")
     )
     source_pool = AsyncMock()
-    source_pool.acquire = MagicMock(return_value=_AsyncCtx(source_conn))
+    source_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(source_conn))
 
     cp = _chronicler_pool()
     adapter = _adapter("relationship")
@@ -425,7 +412,7 @@ def _make_source_fetch(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return [_make_mock_row(row)]
+            return [Record(row)]
         return [contact_row_mock]
 
     return _side_effect
