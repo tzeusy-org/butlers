@@ -275,6 +275,42 @@ def test_generated_route_context_keeps_the_payload_fence_unambiguous(
     assert derive_session_summary(persisted_prompt, trigger_source="route") == "Terminal payload"
 
 
+@pytest.mark.parametrize(
+    "build_context",
+    (_build_route_runtime_context, _build_recovery_route_runtime_context),
+    ids=("primary", "recovery"),
+)
+def test_attachments_block_tells_a_lazy_mail_ref_from_a_failed_fetch(build_context) -> None:
+    """A lazy Gmail ref was never downloaded, which is not the same as a failed fetch."""
+    context = build_context(
+        route_context={"request_id": "018f6f4e-5b3b-7b2d-9c2f-fe0cefe0ce01"},
+        source_channel="email",
+        conversation_history=None,
+        input_context=None,
+        attachments=[
+            {"media_type": "image/png", "filename": "a.png", "storage_ref": "s3://b/c/a.png"},
+            {
+                "media_type": "application/pdf",
+                "filename": "bill.pdf",
+                "size_bytes": 2048,
+                "storage_ref": None,
+                "source_message_id": "m1",
+                "source_attachment_id": "a1",
+            },
+            {"media_type": "application/pdf", "filename": "lost.pdf", "storage_ref": None},
+        ],
+    )
+
+    lines = {
+        line.split(",")[0].strip(): line for line in context.splitlines() if "filename=" in line
+    }
+    assert "storage_ref=s3://b/c/a.png" in lines["- filename=a.png"]
+    assert "status=not_fetched" in lines["- filename=bill.pdf"]
+    assert "status=unavailable" in lines["- filename=lost.pdf"]
+    assert "status=not_fetched or status=unavailable cannot be retrieved" in context
+    assert "attachment_materialize" not in context  # dark until the RFC 0038 cutover
+
+
 class TestRouteExecutePromptFencing:
     """Verify routed prompts are structurally fenced with XML tags."""
 

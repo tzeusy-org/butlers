@@ -44,6 +44,7 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -83,7 +84,7 @@ from butlers.credential_store import (
 from butlers.db import db_params_from_env
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
-from butlers.storage import BlobStorageStartupError, BlobStore, S3BlobStore
+from butlers.storage import BlobStore
 from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
 
 _DESCRIPTOR = connector_descriptor("telegram_bot")
@@ -2408,55 +2409,14 @@ async def _resolve_telegram_blob_store() -> BlobStore | None:
         )
         return None
 
-    primary_db_name, primary_pool = connected_pools[0]
+    _, primary_pool = connected_pools[0]
     fallback_pools = [pool for _, pool in connected_pools[1:]]
     store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
-
     try:
-        s3_endpoint = await store.resolve("BLOB_S3_ENDPOINT_URL", env_fallback=False)
-        s3_bucket = await store.resolve("BLOB_S3_BUCKET", env_fallback=False)
-        s3_region = await store.resolve("BLOB_S3_REGION", env_fallback=False)
-        s3_access_key = await store.resolve("BLOB_S3_ACCESS_KEY_ID", env_fallback=False)
-        s3_secret_key = await store.resolve("BLOB_S3_SECRET_ACCESS_KEY", env_fallback=False)
-    except Exception as exc:
-        logger.warning(
-            "Telegram bot connector: BLOB_S3_* credential resolution failed (non-fatal): %s",
-            exc,
-        )
-        return None
+        return await connector_blob_store(store, label="Telegram bot connector")
     finally:
         for _, pool in connected_pools:
             await pool.close()
-
-    if not s3_endpoint or not s3_bucket:
-        logger.warning(
-            "Telegram bot connector: S3 blob storage not configured (missing "
-            "BLOB_S3_ENDPOINT_URL / BLOB_S3_BUCKET); photo/document attachments will be "
-            "recorded as unavailable. Configure via the dashboard secrets UI (/secrets)."
-        )
-        return None
-
-    blob_store = S3BlobStore(
-        bucket=s3_bucket,
-        # Connector-owned blobs belong to no single butler's schema — they are
-        # routing-layer input materialized before any butler is chosen — so
-        # the S3 key prefix names the connector, not a butler.
-        butler_name="connectors",
-        endpoint_url=s3_endpoint,
-        access_key_id=s3_access_key,
-        secret_access_key=s3_secret_key,
-        region=s3_region or "us-east-1",
-    )
-    try:
-        await blob_store.startup_check()
-    except BlobStorageStartupError as exc:
-        logger.warning(
-            "Telegram bot connector: S3 blob storage unavailable; photo/document "
-            "attachments will be recorded as unavailable: %s",
-            exc,
-        )
-        return None
-    return blob_store
 
 
 async def resolve_telegram_endpoint_identity(token: str) -> str:
