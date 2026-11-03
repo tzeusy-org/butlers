@@ -863,6 +863,148 @@ class TestTickIntegration:
             await document_deadline_set(tick_pool, renewal)
         assert refused.value.reason == "name_conflict"
 
+    async def test_document_deadlines_supersede_across_documents_and_cap_per_issuer(
+        self, tick_pool, monkeypatch
+    ):
+        """A later notice from the same issuer and kind disables older ones but keeps them,
+        and keeps an owner's disable; an earlier or far-later date keeps both; caps refuse."""
+        from butlers.core.scheduler import tick
+        from butlers.core.temporal import document_deadlines as dd
+
+        def plan(doc: str, days: int, issuer: str | None = "AXA", kind: str = "due"):
+            return dd.plan_document_deadline(
+                document_id=f"s3://bucket/general/{doc}.pdf",
+                kind=kind,
+                target_date=_future_date(days).isoformat(),
+                issuer=issuer,
+            )
+
+        async def put(doc: str, days: int, issuer: str | None = "AXA", kind: str = "due"):
+            return await dd.document_deadline_set(tick_pool, plan(doc, days, issuer, kind))
+
+        def doc_of(job_args: dict[str, Any]) -> str:
+            return job_args["document_id"].rsplit("/", 1)[1][:-4]
+
+        async def rows() -> dict[str, tuple[bool, int, str | None]]:
+            """document -> (enabled, days ahead, document that superseded it)."""
+            found = await tick_pool.fetch(
+                "SELECT id, job_args, enabled, target_date FROM scheduled_tasks "
+                "WHERE job_name = $1",
+                dd.NOTICE_JOB_NAME,
+            )
+            docs = {str(r["id"]): doc_of(r["job_args"]) for r in found}
+            today = datetime.now(UTC).date()
+            return {
+                doc_of(r["job_args"]): (
+                    r["enabled"],
+                    (r["target_date"] - today).days,
+                    docs.get(r["job_args"].get("superseded_by")),
+                )
+                for r in found
+            }
+
+        older = await put("axa-1", 30)
+        await tick_pool.execute(
+            "UPDATE scheduled_tasks SET enabled = false WHERE id = $1::uuid", older["id"]
+        )
+        # Same issuer (case-insensitive) and kind, later date: the older row is disabled
+        # and kept with a pointer, and the owner's disable carries over to the newer one.
+        newer = await put("axa-2", 40, issuer="axa")
+        assert (newer["status"], newer["replaced"]) == ("created", [older["id"]])
+        # An earlier date, or one over 400 days past the one it would replace, keeps both.
+        assert (await put("axa-3", 20))["replaced"] == []
+        assert (await put("axa-4", 50, kind="renewal"))["replaced"] == []
+        assert (await put("axa-5", 500, kind="renewal"))["replaced"] == []
+        # Documents without an issuer never supersede.
+        await put("anon-1", 10, issuer=None)
+        assert (await put("anon-2", 20, issuer=None))["replaced"] == []
+        assert await rows() == {
+            "axa-1": (False, 30, "axa-2"),
+            "axa-2": (False, 40, None),
+            "axa-3": (True, 20, None),
+            "axa-4": (True, 50, None),
+            "axa-5": (True, 500, None),
+            "anon-1": (True, 10, None),
+            "anon-2": (True, 20, None),
+        }
+
+        # A superseded row never fires, is not superseded again and carries no disable;
+        # a completed predecessor is finished business, not an owner's disable either.
+        sp1 = await put("sp-1", 10, issuer="SP Group")
+        sp2 = await put("sp-2", 20, issuer="SP Group")
+        assert sp2["replaced"] == [sp1["id"]]
+        await tick_pool.execute(
+            "UPDATE scheduled_tasks SET deadline_status = 'completed', enabled = false "
+            "WHERE id = $1::uuid",
+            sp2["id"],
+        )
+        assert (await put("sp-3", 30, issuer="SP Group"))["replaced"] == [sp2["id"]]
+        assert (await rows())["sp-3"] == (True, 30, None)
+        calls: list[dict[str, Any]] = []
+
+        async def capture(**kwargs):
+            calls.append(kwargs)
+
+        await tick(tick_pool, capture)
+        fired = {c["trigger_source"] for c in calls}
+        assert f"deadline:{plan('anon-1', 10, None).name}" in fired
+        assert f"deadline:{plan('sp-1', 10, 'SP Group').name}" not in fired
+
+        # Caps count active, unsuperseded rows; a refusal writes nothing.
+        monkeypatch.setattr(dd, "MAX_ACTIVE_PER_ISSUER", 3)
+        before = await rows()
+        with pytest.raises(dd.DocumentDeadlineRefused) as refused:
+            await put("axa-6", 15)
+        assert refused.value.reason == "issuer_cap_reached"
+        # Moving an existing document into a full issuer bucket is capped too.
+        with pytest.raises(dd.DocumentDeadlineRefused) as refused:
+            await put("anon-1", 10, issuer="AXA")
+        assert refused.value.reason == "issuer_cap_reached"
+        assert await rows() == before
+        # Re-dating an existing document in its own bucket adds no row: not capped.
+        assert (await put("axa-3", 25))["status"] == "superseded"
+        # Replacing both active AXA due rows fits, since superseded axa-1 is not counted.
+        assert len((await put("axa-7", 60))["replaced"]) == 2
+        monkeypatch.setattr(dd, "MAX_ACTIVE_DOCUMENT_DEADLINES", 1)
+        with pytest.raises(dd.DocumentDeadlineRefused) as refused:
+            await put("new-issuer", 15, issuer="Acme")
+        assert refused.value.reason == "total_cap_reached"
+
+    async def test_redating_a_superseded_document_restores_only_an_untouched_flag(self, tick_pool):
+        """Re-dating a superseded document restores its pre-supersession flag only while
+        the owner has not acted on it since; otherwise the owner's current choice stands."""
+        from butlers.core.temporal import document_deadlines as dd
+        from butlers.core.temporal.deadlines_db import deadline_update
+
+        async def put(doc: str, days: int, issuer: str):
+            plan = dd.plan_document_deadline(
+                document_id=f"s3://bucket/general/{doc}.pdf",
+                kind="due",
+                target_date=_future_date(days).isoformat(),
+                issuer=issuer,
+            )
+            return await dd.document_deadline_set(tick_pool, plan)
+
+        async def enabled(task_id: str) -> bool:
+            return await tick_pool.fetchval(
+                "SELECT enabled FROM scheduled_tasks WHERE id = $1::uuid", task_id
+            )
+
+        # Untouched since supersession: the earlier flag comes back.
+        plain = await put("plain-1", 10, "Plain Co")
+        await put("plain-2", 20, "Plain Co")
+        assert await enabled(plain["id"]) is False
+        assert (await put("plain-1", 30, "Plain Co"))["status"] == "superseded"
+        assert await enabled(plain["id"]) is True
+
+        # The owner re-enabled, then disabled it again: document text keeps that disable.
+        touched = await put("touched-1", 10, "Touched Co")
+        await put("touched-2", 20, "Touched Co")
+        await deadline_update(tick_pool, touched["id"], enabled=True)
+        await deadline_update(tick_pool, touched["id"], enabled=False)
+        assert (await put("touched-1", 30, "Touched Co"))["status"] == "superseded"
+        assert await enabled(touched["id"]) is False
+
     async def test_tick_deferred_notification_delivery_and_expiry(self, tick_pool):
         """tick() delivers pending notifications via notify_fn; failure/missing → pending;
         expired (>24h) → expired; deferred_flushed span set."""

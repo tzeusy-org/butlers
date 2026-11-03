@@ -26,6 +26,30 @@ Butlers SHALL register a date read from a document through a `paperwork_deadline
 - **WHEN** the deadline name for a document and kind is already held by a prompt-mode deadline
 - **THEN** the call returns `status = "refused"` with reason `name_conflict` and the existing task is unchanged
 
+### Requirement: Document deadline supersession across documents and caps
+
+ID: REQ-deadline-tracking-003
+Source: bu-jv1moa.52; RFC 0038 D6; Finance MANIFESTO
+Scope: v1-mandatory
+
+When `paperwork_deadline_set` creates a document deadline or supersedes one in place, it SHALL retire every other document's live job-mode document deadline with the same `kind`, the same issuer (sanitized text compared case-insensitively) and a target date on or before the new one and at most 400 days before it, and SHALL return their ids as `replaced`. A retired deadline SHALL NOT be deleted: it SHALL be disabled and keep its row, with `job_args` recording `superseded_by` (the replacing task's id) and its prior `enabled` flag, so it never fires, stays visible to the owner and can be restored. A superseded deadline SHALL NOT count toward the caps, SHALL NOT be retired again and SHALL carry no disable; re-dating a superseded document SHALL restore its prior `enabled` flag only while no write has touched the row since its supersession (`job_args.superseded_at` still equals `updated_at`); after an owner's enable or disable it SHALL keep its current flag, so document text never re-enables an owner's disable. A deadline without an issuer SHALL neither replace nor be replaced by another document's. A deadline with a later target date, or one more than 400 days before the new date, SHALL be kept, so neither a newer nor a forged far-future document drops a reminder still ahead of it. If any retired deadline was disabled by the owner, that is, disabled while its status was neither `expired` nor `completed`, the new or superseded deadline SHALL be disabled too, so supersession never re-enables a reminder the owner turned off; an `expired` or `completed` predecessor carries no disable. A write SHALL be refused with reason `issuer_cap_reached` when it would add an active deadline to an issuer that already holds 10 (a new row, a re-dated expired, completed or superseded row, or an existing row whose issuer changes), counting live deadlines whose status is not `expired` or `completed`, after retirement, with documents without an issuer sharing one bucket; a write that adds an active row SHALL be refused with reason `total_cap_reached` when the butler already holds 200. Every refusal SHALL write nothing, and concurrent calls in one butler schema SHALL be serialized so the caps hold.
+
+#### Scenario: A renewed notice retires the older one and keeps the owner's disable
+
+- **WHEN** the owner disabled the `due` deadline from AXA's first bill and AXA's next bill sets a later `due` date
+- **THEN** the first bill's deadline is disabled, marked `superseded_by` the new one and listed in `replaced`
+- **AND** the new deadline is created disabled
+
+#### Scenario: An earlier or far later date keeps both reminders
+
+- **WHEN** a second AXA document sets a `due` date before the existing AXA `due` deadline, or more than 400 days after it
+- **THEN** both deadlines stay live and `replaced` is empty
+
+#### Scenario: The issuer cap refuses
+
+- **WHEN** an issuer already holds 10 active document deadlines and an eleventh document from it is set with an earlier date, or another document's deadline is re-set naming that issuer
+- **THEN** the call returns `status = "refused"` with reason `issuer_cap_reached` and nothing is written
+
 ### Requirement: Job-mode deadline dispatch and fixed-template notice
 
 ID: REQ-deadline-tracking-002

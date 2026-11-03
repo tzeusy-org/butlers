@@ -58,7 +58,6 @@ def render_document_deadline_notice(job_args: dict[str, Any]) -> str | None:
 async def run_paperwork_deadline_notice(
     pool: asyncpg.Pool, job_args: dict[str, Any] | None, *, origin_butler: str
 ) -> dict[str, Any]:
-    """Send one templated reminder to the owner and return the recorded outcome."""
     """Send one templated reminder to the owner, or raise so the threshold stays unfired.
 
     A deadline threshold has no later run, so a notice that is not delivered must not
