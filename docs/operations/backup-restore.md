@@ -41,6 +41,9 @@ BACKUP_RETAIN_DAYS=14
 The `butlers_backups` volume remains the local recovery artifact store. Keep a
 separate, owner-controlled off-host copy for disaster recovery: a host failure
 can otherwise destroy both the database and the volume that holds its dumps.
+On k8s, the chart's `offsiteCopy` CronJob provides that copy: an encrypted
+restic repository on the owner's tailnet device. It ships disabled. See
+[Off-Node Backup Copy](offsite-backup-copy.md) for the owner-gated steps.
 
 ### How a failed run reports itself
 
@@ -299,9 +302,17 @@ epoch prerequisite remain independent of the Fleet audit.
 ### Confidential signed-confirm history
 
 `public.pending_confirms` is durable application state. A backup preserves the
-whole immutable prompt, accepted answer, application receipt, claim and delivery
-state; losing these rows could send another prompt or apply a recorded choice
-again. The table remains protected by enabled and forced RLS. Its schema,
+prompt, accepted answer, application receipt, claim and delivery state; losing
+these rows could send another prompt or apply a recorded choice again.
+
+Prompt copy is bounded in the database, not by a backup exclusion. Fourteen days
+after a row settles, the confirm worker replaces its question, quotes and option
+labels with a digest tombstone ([prompt retention](../runtime/signed-confirms.md#prompt-retention)),
+and later dumps carry only the tombstone. A dump taken before that still holds the
+content until the dump itself is pruned: about 14 more days on the node
+(`BACKUP_RETAIN_DAYS`), and up to the monthly horizon of the
+[off-node copy](offsite-backup-copy.md) when it is enabled. Restoring an older dump
+brings the content back until the next worker cycle redacts it again. The table remains protected by enabled and forced RLS. Its schema,
 ownership, policies and functions travel through ordinary `pg_dump`, while its
 rows use a separate hex-wrapped JSON staging block bound to the same exported
 snapshot as the ordinary dump and cost-claim export.

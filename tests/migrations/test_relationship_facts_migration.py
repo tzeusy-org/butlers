@@ -182,18 +182,15 @@ async def _run_sqls(pool, sqls: list[str]) -> None:
             pass  # idempotent
 
 
-async def _provision_prerequisites(pool) -> None:
-    """Create public.entities (minimal) required by the subject FK."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL,
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
+_RELATIONSHIP = {"relationship": "relationship"}
+
+
+@pytest.fixture
+async def rel_012_pool(db):
+    """Core (public.entities) plus relationship at rel_013's predecessor."""
+    return await db(
+        "core", "relationship", schemas=_RELATIONSHIP, revisions={"relationship": "rel_012"}
+    )
 
 
 async def _run_upgrade(pool) -> None:
@@ -212,135 +209,125 @@ async def _run_downgrade(pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_table_exists_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_table_exists_after_upgrade(rel_012_pool) -> None:
     """relationship.entity_facts table exists and has the expected columns after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_012_pool
+    await _run_upgrade(pool)
 
-        # Table exists
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
-        assert table_oid is not None, "relationship.entity_facts must exist after upgrade"
+    # Table exists
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+    assert table_oid is not None, "relationship.entity_facts must exist after upgrade"
 
-        # Expected columns
-        rows = await pool.fetch(
+    # Expected columns
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'relationship'
+          AND table_name   = 'entity_facts'
+        ORDER BY column_name
+        """
+    )
+    columns = {r["column_name"] for r in rows}
+    required_columns = {
+        "id",
+        "subject",
+        "predicate",
+        "object",
+        "object_kind",
+        "src",
+        "conf",
+        "last_seen",
+        "weight",
+        "verified",
+        "primary",
+        "validity",
+        "created_at",
+        "updated_at",
+    }
+    missing = required_columns - columns
+    assert not missing, f"Missing columns in relationship.entity_facts: {missing}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_upgrade_tolerates_existing_memory_facts_table(db) -> None:
+    """rel_013 must not collide with the relationship memory module's facts table."""
+    # The relationship butler runs the memory module, whose chain owns relationship.facts.
+    pool = await db(
+        "core",
+        "memory",
+        "relationship",
+        schemas={"memory": "relationship", **_RELATIONSHIP},
+        revisions={"relationship": "rel_012"},
+    )
+
+    await _run_upgrade(pool)
+
+    legacy_columns = {
+        row["column_name"]
+        for row in await pool.fetch(
             """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'relationship'
-              AND table_name   = 'entity_facts'
-            ORDER BY column_name
+              AND table_name = 'facts'
             """
         )
-        columns = {r["column_name"] for r in rows}
-        required_columns = {
-            "id",
-            "subject",
-            "predicate",
-            "object",
-            "object_kind",
-            "src",
-            "conf",
-            "last_seen",
-            "weight",
-            "verified",
-            "primary",
-            "validity",
-            "created_at",
-            "updated_at",
-        }
-        missing = required_columns - columns
-        assert not missing, f"Missing columns in relationship.entity_facts: {missing}"
+    }
+    triple_columns = {
+        row["column_name"]
+        for row in await pool.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'relationship'
+              AND table_name = 'entity_facts'
+            """
+        )
+    }
+
+    assert "content" in legacy_columns
+    assert "object_kind" not in legacy_columns
+    assert {"subject", "predicate", "object", "object_kind", "src"} <= triple_columns
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_tolerates_existing_memory_facts_table(
-    provisioned_postgres_pool,
-) -> None:
-    """rel_013 must not collide with the relationship memory module's facts table."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await pool.execute("""
-            CREATE TABLE relationship.facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                scope TEXT NOT NULL DEFAULT 'relationship',
-                entity_id UUID,
-                validity TEXT NOT NULL DEFAULT 'active'
-            )
-        """)
-
-        await _run_upgrade(pool)
-
-        legacy_columns = {
-            row["column_name"]
-            for row in await pool.fetch(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'relationship'
-                  AND table_name = 'facts'
-                """
-            )
-        }
-        triple_columns = {
-            row["column_name"]
-            for row in await pool.fetch(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'relationship'
-                  AND table_name = 'entity_facts'
-                """
-            )
-        }
-
-        assert "content" in legacy_columns
-        assert "object_kind" not in legacy_columns
-        assert {"subject", "predicate", "object", "object_kind", "src"} <= triple_columns
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_indexes_exist_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_indexes_exist_after_upgrade(rel_012_pool) -> None:
     """All required indexes exist on relationship.entity_facts after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_012_pool
+    await _run_upgrade(pool)
 
-        rows = await pool.fetch(
-            """
-            SELECT indexname
-            FROM pg_indexes
-            WHERE schemaname = 'relationship'
-              AND tablename  = 'entity_facts'
-            """
-        )
-        index_names = {r["indexname"] for r in rows}
+    rows = await pool.fetch(
+        """
+        SELECT indexname
+        FROM pg_indexes
+        WHERE schemaname = 'relationship'
+          AND tablename  = 'entity_facts'
+        """
+    )
+    index_names = {r["indexname"] for r in rows}
 
-        required_indexes = {
-            "idx_ef_subject_predicate",
-            "idx_ef_predicate_object_literal",
-            "idx_ef_predicate_active",
-            "idx_ef_last_seen",
-            "idx_ef_subject_has_active",
-            "uq_ef_spo_active",
-        }
-        missing = required_indexes - index_names
-        assert not missing, f"Missing indexes on relationship.entity_facts: {missing}"
+    required_indexes = {
+        "idx_ef_subject_predicate",
+        "idx_ef_predicate_object_literal",
+        "idx_ef_predicate_active",
+        "idx_ef_last_seen",
+        "idx_ef_subject_has_active",
+        "uq_ef_spo_active",
+    }
+    missing = required_indexes - index_names
+    assert not missing, f"Missing indexes on relationship.entity_facts: {missing}"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_unique_partial_index_enforces_spo_idempotency(
-    provisioned_postgres_pool,
+    rel_012_pool,
 ) -> None:
     """The UNIQUE partial index prevents duplicate active triples.
 
@@ -351,103 +338,97 @@ async def test_unique_partial_index_enforces_spo_idempotency(
     """
     import asyncpg
 
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_012_pool
+    await _run_upgrade(pool)
 
-        # Mint an entity so the FK on subject is satisfied
-        entity_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('Alice') RETURNING id"
-        )
+    # Mint an entity so the FK on subject is satisfied
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('Alice') RETURNING id"
+    )
 
-        insert = """
-            INSERT INTO relationship.entity_facts
-                (subject, predicate, object, object_kind, src)
-            VALUES ($1, $2, $3, $4, $5)
-        """
+    insert = """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src)
+        VALUES ($1, $2, $3, $4, $5)
+    """
 
-        # First active triple — must succeed
+    # First active triple — must succeed
+    await pool.execute(insert, entity_id, "has-email", "alice@example.com", "literal", "test")
+
+    # Duplicate active triple — must fail with UniqueViolationError
+    with pytest.raises(asyncpg.UniqueViolationError):
         await pool.execute(insert, entity_id, "has-email", "alice@example.com", "literal", "test")
 
-        # Duplicate active triple — must fail with UniqueViolationError
-        with pytest.raises(asyncpg.UniqueViolationError):
-            await pool.execute(
-                insert, entity_id, "has-email", "alice@example.com", "literal", "test"
-            )
+    # Retracted triple with same SPO — must succeed (not covered by partial index)
+    await pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src, validity)
+        VALUES ($1, $2, $3, $4, $5, 'retracted')
+    """,
+        entity_id,
+        "has-email",
+        "alice@example.com",
+        "literal",
+        "test",
+    )
 
-        # Retracted triple with same SPO — must succeed (not covered by partial index)
-        await pool.execute(
-            """
-            INSERT INTO relationship.entity_facts
-                (subject, predicate, object, object_kind, src, validity)
-            VALUES ($1, $2, $3, $4, $5, 'retracted')
-        """,
-            entity_id,
-            "has-email",
-            "alice@example.com",
-            "literal",
-            "test",
-        )
-
-        # Verify: 1 active + 1 retracted row exist
-        count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1", entity_id
-        )
-        assert count == 2, f"Expected 2 rows (1 active + 1 retracted), got {count}"
+    # Verify: 1 active + 1 retracted row exist
+    count = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1", entity_id
+    )
+    assert count == 2, f"Expected 2 rows (1 active + 1 retracted), got {count}"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_drops_table(provisioned_postgres_pool) -> None:
+async def test_downgrade_drops_table(rel_012_pool) -> None:
     """relationship.entity_facts is absent after downgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = rel_012_pool
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
-        assert table_oid is None, "relationship.entity_facts must be absent after downgrade"
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+    assert table_oid is None, "relationship.entity_facts must be absent after downgrade"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_does_not_drop_schema(provisioned_postgres_pool) -> None:
+async def test_downgrade_does_not_drop_schema(rel_012_pool) -> None:
     """The relationship schema survives downgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = rel_012_pool
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        schema_exists = await pool.fetchval(
-            "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'relationship'"
-        )
-        assert schema_exists is not None, (
-            "relationship schema must survive downgrade — other tables may coexist"
-        )
+    schema_exists = await pool.fetchval(
+        "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'relationship'"
+    )
+    assert schema_exists is not None, (
+        "relationship schema must survive downgrade — other tables may coexist"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_is_reversible(provisioned_postgres_pool) -> None:
+async def test_upgrade_is_reversible(rel_012_pool) -> None:
     """Upgrade → downgrade → upgrade again succeeds (reversibility contract)."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
+    pool = rel_012_pool
 
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
-        await _run_upgrade(pool)  # must not raise
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
+    await _run_upgrade(pool)  # must not raise
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
-        assert table_oid is not None, "relationship.entity_facts must exist after second upgrade"
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+    assert table_oid is not None, "relationship.entity_facts must exist after second upgrade"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upsert_on_conflict_pattern(provisioned_postgres_pool) -> None:
+async def test_upsert_on_conflict_pattern(rel_012_pool) -> None:
     """The uniqueness index supports ON CONFLICT DO UPDATE (Amendment 14 upsert).
 
     Simulates the central writer's idempotency pattern:
@@ -455,28 +436,27 @@ async def test_upsert_on_conflict_pattern(provisioned_postgres_pool) -> None:
         WHERE validity='active' DO UPDATE SET src = EXCLUDED.src
     Must produce exactly one active row after two upserts with the same SPO.
     """
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_012_pool
+    await _run_upgrade(pool)
 
-        entity_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name) VALUES ('Bob') RETURNING id"
-        )
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('Bob') RETURNING id"
+    )
 
-        upsert = """
-            INSERT INTO relationship.entity_facts
-                (subject, predicate, object, object_kind, src)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (subject, predicate, object)
-            WHERE validity = 'active'
-            DO UPDATE SET src = EXCLUDED.src, updated_at = now()
-        """
-        await pool.execute(upsert, entity_id, "knows", str(entity_id), "entity", "butler-a")
-        await pool.execute(upsert, entity_id, "knows", str(entity_id), "entity", "butler-b")
+    upsert = """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (subject, predicate, object)
+        WHERE validity = 'active'
+        DO UPDATE SET src = EXCLUDED.src, updated_at = now()
+    """
+    await pool.execute(upsert, entity_id, "knows", str(entity_id), "entity", "butler-a")
+    await pool.execute(upsert, entity_id, "knows", str(entity_id), "entity", "butler-b")
 
-        rows = await pool.fetch(
-            "SELECT src, validity FROM relationship.entity_facts WHERE subject = $1", entity_id
-        )
-        assert len(rows) == 1, f"Expected exactly 1 row after upsert; got {len(rows)}"
-        assert rows[0]["validity"] == "active"
-        assert rows[0]["src"] == "butler-b", "src should be updated to the latest upsert value"
+    rows = await pool.fetch(
+        "SELECT src, validity FROM relationship.entity_facts WHERE subject = $1", entity_id
+    )
+    assert len(rows) == 1, f"Expected exactly 1 row after upsert; got {len(rows)}"
+    assert rows[0]["validity"] == "active"
+    assert rows[0]["src"] == "butler-b", "src should be updated to the latest upsert value"

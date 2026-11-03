@@ -100,6 +100,9 @@ async def test_found_resource_releases_the_hold_and_a_rerun_finishes(lost, kind)
     assert (result.status, result.observation) == ("reconciled", "resource_found")
     assert provider.calls == effects  # reads only: no effect reached the provider
     assert not ledger.row(attempt_id, kind).holds_lineage
+    # Only an adoption names a PR the attempt did not know; the case API reads it there.
+    adopted = {attempt_id: (_PR, f"https://github.com/{_BINDING.repository}/pull/{_PR}")}
+    assert ledger.attempt_prs == (adopted if kind is OperationKind.PR_CREATE else {})
 
     provider.lose_response_on = None
     again = await _publish(provider, ledger, attempt_id)

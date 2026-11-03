@@ -29,24 +29,20 @@ async def _run_migration(pool, path: Path, direction: str) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_column_defaults_true_and_downgrade_drops_it(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            "CREATE TABLE runtime_config (butler_name TEXT PRIMARY KEY, max_concurrent INT)"
-        )
-        await pool.execute(
-            "INSERT INTO runtime_config (butler_name, max_concurrent) VALUES ('x', 3)"
-        )
+async def test_column_defaults_true_and_downgrade_drops_it(db) -> None:
+    # The real runtime_config as core_228's predecessor left it.
+    pool = await db("core", revisions={"core": "core_227"})
+    await pool.execute("INSERT INTO runtime_config (butler_name, max_concurrent) VALUES ('x', 3)")
 
-        await _run_migration(pool, _MIGRATION_PATH, "upgrade")
+    await _run_migration(pool, _MIGRATION_PATH, "upgrade")
 
-        value = await pool.fetchval(
-            "SELECT blind_spot_preamble_enabled FROM runtime_config WHERE butler_name = 'x'"
-        )
-        assert value is True
+    value = await pool.fetchval(
+        "SELECT blind_spot_preamble_enabled FROM runtime_config WHERE butler_name = 'x'"
+    )
+    assert value is True
 
-        await _run_migration(pool, _MIGRATION_PATH, "downgrade")
-        assert not await pool.fetchval(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'runtime_config' AND column_name = 'blind_spot_preamble_enabled'"
-        )
+    await _run_migration(pool, _MIGRATION_PATH, "downgrade")
+    assert not await pool.fetchval(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'runtime_config' AND column_name = 'blind_spot_preamble_enabled'"
+    )

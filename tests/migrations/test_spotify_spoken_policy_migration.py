@@ -34,39 +34,32 @@ async def _apply(pool, operation: str) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_upgrade_seeds_only_spotify_spoken_metadata_rule_and_downgrade_removes_it(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE ingestion_rules (
-                id UUID PRIMARY KEY,
-                scope TEXT NOT NULL,
-                rule_type TEXT NOT NULL,
-                condition JSONB NOT NULL,
-                action TEXT NOT NULL,
-                priority INTEGER NOT NULL,
-                enabled BOOLEAN NOT NULL,
-                name TEXT NOT NULL,
-                description TEXT NOT NULL,
-                created_by TEXT NOT NULL
-            )
-            """
-        )
+    # The real switchboard.ingestion_rules as sw_030's predecessor left it.
+    pool = await db(
+        "core",
+        "switchboard",
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        schema="switchboard",
+        revisions={"switchboard": "sw_029"},
+    )
+    # Earlier revisions seed their own rules; clear them so only sw_030's row is observed.
+    await pool.execute("DELETE FROM ingestion_rules")
 
-        await _apply(pool, "upgrade")
-        await _apply(pool, "upgrade")
-        row = await pool.fetchrow(
-            "SELECT scope, rule_type, condition, action, enabled FROM ingestion_rules"
-        )
-        assert row is not None
-        assert dict(row) == {
-            "scope": "global",
-            "rule_type": "substring",
-            "condition": {"pattern": "spotify:spoken:"},
-            "action": "metadata_only",
-            "enabled": True,
-        }
+    await _apply(pool, "upgrade")
+    await _apply(pool, "upgrade")
+    row = await pool.fetchrow(
+        "SELECT scope, rule_type, condition, action, enabled FROM ingestion_rules"
+    )
+    assert row is not None
+    assert dict(row) == {
+        "scope": "global",
+        "rule_type": "substring",
+        "condition": {"pattern": "spotify:spoken:"},
+        "action": "metadata_only",
+        "enabled": True,
+    }
 
-        await _apply(pool, "downgrade")
-        assert await pool.fetchval("SELECT count(*) FROM ingestion_rules") == 0
+    await _apply(pool, "downgrade")
+    assert await pool.fetchval("SELECT count(*) FROM ingestion_rules") == 0

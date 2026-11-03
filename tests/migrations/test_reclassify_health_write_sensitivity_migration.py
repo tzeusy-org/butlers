@@ -105,39 +105,11 @@ class TestReclassifyMigrationIntegration:
             yield pool
 
     @pytest.fixture
-    async def health_pool(self, provisioned_postgres_pool):
-        """A fresh DB with a "health" schema (minimal facts table) plus
-        public.memory_catalog, mirroring the real memory-module schema shape
-        just enough for this migration's two passes."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS health.facts (
-                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    scope       TEXT NOT NULL DEFAULT 'global',
-                    predicate   TEXT NOT NULL,
-                    sensitivity TEXT
-                )
-                """
-            )
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tenant_id     TEXT NOT NULL DEFAULT 'shared',
-                    source_schema TEXT NOT NULL,
-                    source_table  TEXT NOT NULL,
-                    source_id     UUID NOT NULL,
-                    source_butler TEXT NOT NULL DEFAULT 'health',
-                    memory_type   TEXT NOT NULL DEFAULT 'fact',
-                    summary       TEXT,
-                    sensitivity   TEXT,
-                    invalid_at    TIMESTAMPTZ
-                )
-                """
-            )
-            yield pool
+    async def health_pool(self, db):
+        """Core at core_234's predecessor (public.memory_catalog) plus a "health"
+        butler schema with the real memory-module facts table."""
+        health = {"core": "health", "memory": "health"}
+        return await db("core", "memory", schemas=health, revisions={"core": "core_233"})
 
     async def _run_upgrade(self, pool) -> None:
         mod = load_migration(_MIGRATION_PATH, "core_234")
@@ -151,8 +123,8 @@ class TestReclassifyMigrationIntegration:
 
     async def _insert_fact(self, pool, *, predicate: str, sensitivity: str | None) -> uuid.UUID:
         row = await pool.fetchrow(
-            "INSERT INTO health.facts (scope, predicate, sensitivity)"
-            " VALUES ('health', $1, $2) RETURNING id",
+            "INSERT INTO health.facts (subject, content, scope, predicate, sensitivity)"
+            " VALUES ('owner', 'health fact', 'health', $1, $2) RETURNING id",
             predicate,
             sensitivity,
         )

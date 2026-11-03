@@ -36,6 +36,14 @@ class AsyncCtx:
 class FakeConnection:
     """Configured async call mocks and a fresh transaction context per call."""
 
+    # Set via setattr below; declared so type checkers see the mock attributes.
+    fetch: AsyncMock
+    fetchrow: AsyncMock
+    fetchval: AsyncMock
+    execute: AsyncMock
+    executemany: AsyncMock
+    transaction: MagicMock
+
     def __init__(self, **configured: Any) -> None:
         unknown = configured.keys() - _METHODS
         if unknown:
@@ -57,6 +65,13 @@ class FakeConnection:
 
 class FakePool:
     """Pool and acquired connection share mocks; each acquire releases exactly once."""
+
+    # Shared with ``connection`` via setattr below; declared for type checkers.
+    fetch: AsyncMock
+    fetchrow: AsyncMock
+    fetchval: AsyncMock
+    execute: AsyncMock
+    executemany: AsyncMock
 
     def __init__(self, **configured: Any) -> None:
         self.connection = FakeConnection(**configured)

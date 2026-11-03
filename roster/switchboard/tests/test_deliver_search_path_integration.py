@@ -25,20 +25,14 @@ holds once every hop in the path is schema-qualified.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import uuid
 from contextlib import AsyncExitStack
-from typing import Any
 
-import asyncpg
 import pytest
 
-from butlers.db import (
-    Database,
-    register_jsonb_codec,
-    schema_search_path,
-    should_retry_with_ssl_disable,
-)
+from butlers.testing.db import open_pool
 
 docker_available = shutil.which("docker") is not None
 
@@ -49,137 +43,23 @@ pytestmark = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_deliver_sp_{uuid.uuid4().hex[:12]}"
-
-
 @pytest.fixture
-async def dual_scoped_pools(postgres_container):
-    """Administrative pools in one disposable DB with distinct query search paths.
+async def dual_scoped_pools(fresh_db):
+    """Administrative pools on one migrated clone with distinct query search paths.
 
     These seed and exercise cross-schema delivery SQL, not runtime-role
-    isolation. Provisioning does not open a runtime Database connection.
+    isolation. The clone carries the real core + switchboard chains.
     """
-    db_name = _unique_db_name()
-    conn_kwargs: dict[str, Any] = {
-        "host": postgres_container.get_container_host_ip(),
-        "port": int(postgres_container.get_exposed_port(5432)),
-        "user": postgres_container.username,
-        "password": postgres_container.password,
-    }
-
-    search_paths = {schema: schema_search_path(schema) for schema in ("switchboard", "public")}
-    admin_db = Database(db_name=db_name, **conn_kwargs)
-    await admin_db.provision()
-
-    async def open_pool(schema: str) -> asyncpg.Pool:
-        pool_kwargs = {
-            **conn_kwargs,
-            "database": admin_db.db_name,
-            "min_size": admin_db.min_pool_size,
-            "max_size": admin_db.max_pool_size,
-            "init": register_jsonb_codec,
-            "server_settings": {"search_path": search_paths[schema]},
-        }
-        if admin_db.ssl is not None:
-            pool_kwargs["ssl"] = admin_db.ssl
-
-        async def initialize_pool() -> asyncpg.Pool:
-            # Retain the native candidate through partial initialization so
-            # failures and cancellation terminate its owned connections.
-            candidate = asyncpg.create_pool(**pool_kwargs)
-            try:
-                return await candidate
-            except BaseException:
-                candidate.terminate()
-                raise
-
-        try:
-            return await initialize_pool()
-        except Exception as exc:
-            if not should_retry_with_ssl_disable(exc, admin_db.ssl):
-                raise
-            pool_kwargs["ssl"] = "disable"
-            return await initialize_pool()
-
-    async def close_pool(pool: asyncpg.Pool) -> None:
-        try:
-            await pool.close()
-        except BaseException:
-            pool.terminate()
-            raise
-
+    db_url = await asyncio.to_thread(
+        fresh_db, "core", "switchboard", schemas={"switchboard": "switchboard"}
+    )
     # Register each successful pool immediately. The first remains owned if
     # opening the second fails; stack unwinding attempts both on cancellation.
     async with AsyncExitStack() as stack:
-        switchboard_pool = await open_pool("switchboard")
-        stack.push_async_callback(close_pool, switchboard_pool)
-        public_pool = await open_pool("public")
-        stack.push_async_callback(close_pool, public_pool)
-        await switchboard_pool.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
-        await switchboard_pool.execute("""
-            CREATE TABLE IF NOT EXISTS switchboard.butler_registry (
-                name TEXT PRIMARY KEY,
-                endpoint_url TEXT NOT NULL,
-                description TEXT,
-                modules JSONB NOT NULL DEFAULT '[]',
-                last_seen_at TIMESTAMPTZ,
-                eligibility_state TEXT NOT NULL DEFAULT 'active',
-                liveness_ttl_seconds INTEGER NOT NULL DEFAULT 300,
-                quarantined_at TIMESTAMPTZ,
-                quarantine_reason TEXT,
-                route_contract_min INTEGER NOT NULL DEFAULT 1,
-                route_contract_max INTEGER NOT NULL DEFAULT 1,
-                capabilities JSONB NOT NULL DEFAULT '[]',
-                eligibility_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                agent_type TEXT NOT NULL DEFAULT 'butler'
-            )
-        """)
-        await switchboard_pool.execute("""
-            CREATE TABLE IF NOT EXISTS switchboard.butler_registry_eligibility_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                butler_name TEXT NOT NULL,
-                previous_state TEXT NOT NULL,
-                new_state TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                previous_last_seen_at TIMESTAMPTZ,
-                new_last_seen_at TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await switchboard_pool.execute("""
-            CREATE TABLE IF NOT EXISTS switchboard.routing_log (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_butler TEXT NOT NULL,
-                target_butler TEXT NOT NULL,
-                tool_name TEXT NOT NULL,
-                success BOOLEAN NOT NULL,
-                duration_ms INTEGER,
-                error TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                thread_id TEXT,
-                source_channel TEXT,
-                contact_id UUID,
-                entity_id UUID,
-                sender_roles TEXT[]
-            )
-        """)
-        await switchboard_pool.execute("""
-            CREATE TABLE IF NOT EXISTS switchboard.notifications (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_butler TEXT NOT NULL,
-                channel TEXT NOT NULL,
-                recipient TEXT NOT NULL,
-                message TEXT NOT NULL,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                status TEXT NOT NULL DEFAULT 'sent',
-                error TEXT,
-                session_id UUID,
-                trace_id TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+        switchboard_pool = await open_pool(db_url, schema="switchboard")
+        stack.push_async_callback(switchboard_pool.close)
+        public_pool = await open_pool(db_url, schema="public")
+        stack.push_async_callback(public_pool.close)
         await switchboard_pool.execute(
             """
             INSERT INTO switchboard.butler_registry

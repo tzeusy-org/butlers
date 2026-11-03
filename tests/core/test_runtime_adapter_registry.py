@@ -127,6 +127,24 @@ async def test_probe_codex_skips_provider_lookup_and_passes_only_the_authority()
     assert create.call_args_list[1].kwargs == {"provider_config": _PROVIDER}
 
 
+async def test_probe_gives_non_codex_runtimes_the_credential_store() -> None:
+    """A Claude probe must load ``cli-auth/claude`` exactly as a daemon session does."""
+    authority, generic = MagicMock(name="authority"), MagicMock(name="generic")
+    with (
+        patch("butlers.core.spawner.resolve_provider_config", AsyncMock(return_value=None)),
+        patch("butlers.core.runtimes.base.create_adapter") as create,
+    ):
+        await coordinator.build_probe_adapter(
+            MagicMock(), "claude", "claude-opus-5-5", credential_store=generic
+        )
+        await coordinator.build_probe_adapter(
+            MagicMock(), "codex", "gpt-5", codex_auth_authority=authority, credential_store=generic
+        )
+
+    assert create.call_args_list[0].kwargs["credential_store"] is generic
+    assert create.call_args_list[1].kwargs == {"credential_store": authority}
+
+
 @pytest.mark.parametrize(
     "factory",
     [

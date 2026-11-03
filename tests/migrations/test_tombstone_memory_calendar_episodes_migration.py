@@ -161,56 +161,21 @@ class TestTombstoneMemoryCalendarEpisodesIntegration:
     """
 
     @pytest.fixture
-    async def episodes_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with the chronicler episodes schema."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS source_adapter_state (
-                    source_name TEXT PRIMARY KEY,
-                    chronicler_compatibility TEXT NOT NULL DEFAULT 'supported',
-                    read_surface TEXT,
-                    boundary_semantics TEXT,
-                    optional_schema BOOLEAN NOT NULL DEFAULT false,
-                    active BOOLEAN NOT NULL DEFAULT false,
-                    inactive_reason TEXT,
-                    schema_version INTEGER NOT NULL DEFAULT 1,
-                    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    source_name TEXT NOT NULL
-                        REFERENCES source_adapter_state(source_name),
-                    source_ref TEXT NOT NULL,
-                    episode_type TEXT NOT NULL,
-                    start_at TIMESTAMPTZ NOT NULL,
-                    end_at TIMESTAMPTZ,
-                    precision TEXT NOT NULL DEFAULT 'exact',
-                    title TEXT,
-                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    privacy TEXT NOT NULL DEFAULT 'normal',
-                    retention_days INTEGER,
-                    tombstone_at TIMESTAMPTZ,
-                    tombstone_reason TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    UNIQUE (source_name, source_ref)
-                )
-            """)
-            # Register the two source adapters needed for the tests.
-            await pool.execute("""
-                INSERT INTO source_adapter_state (source_name)
-                VALUES ('google_calendar.completed')
-                ON CONFLICT DO NOTHING
-            """)
-            await pool.execute("""
-                INSERT INTO source_adapter_state (source_name)
-                VALUES ('core.sessions')
-                ON CONFLICT DO NOTHING
-            """)
-            yield pool
+    async def episodes_pool(self, db):
+        """The real chronicler schema as chronicler_008's predecessor left it."""
+        pool = await db("chronicler", revisions={"chronicler": "chronicler_007"})
+        # Register the two source adapters needed for the tests.
+        await pool.execute("""
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('google_calendar.completed', 'supported')
+            ON CONFLICT DO NOTHING
+        """)
+        await pool.execute("""
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('core.sessions', 'supported')
+            ON CONFLICT DO NOTHING
+        """)
+        return pool
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""

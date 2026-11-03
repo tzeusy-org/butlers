@@ -8,7 +8,7 @@ Covers:
 5. Metadata fields (scope, status, is_temporal, expected_subject_type) match spec.
 
 Integration tests (marked pytest.mark.integration) require Docker + Postgres
-provisioned via the shared ``provisioned_postgres_pool`` fixture.
+provisioned via the shared ``db`` factory at the subject's predecessor revision.
 """
 
 from __future__ import annotations
@@ -88,35 +88,19 @@ class TestWellnessPredicatesMigrationIntegration:
     """Integration tests requiring a real PostgreSQL instance.
 
     These tests exercise the full upgrade / downgrade round-trip against
-    a real database with the predicate_registry table created inline
-    (mirrors the shape from 001_memory_schema.py).
+    a real database migrated to mem_002, the revision before the subject.
     """
 
     @pytest.fixture
-    async def predicate_registry_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with predicate_registry and return a pool."""
-        async with provisioned_postgres_pool() as pool:
-            # Create the predicate_registry table mirroring 001_memory_schema.py
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS predicate_registry (
-                    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    name           TEXT NOT NULL UNIQUE,
-                    description    TEXT,
-                    expected_subject_type TEXT,
-                    expected_object_type  TEXT,
-                    is_edge        BOOLEAN NOT NULL DEFAULT false,
-                    is_temporal    BOOLEAN NOT NULL DEFAULT false,
-                    scope          TEXT NOT NULL DEFAULT 'global',
-                    status         TEXT NOT NULL DEFAULT 'active',
-                    superseded_by  TEXT,
-                    deprecated_at  TIMESTAMPTZ,
-                    inverse_of     TEXT,
-                    is_symmetric   BOOLEAN NOT NULL DEFAULT false,
-                    example_json   JSONB,
-                    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            yield pool
+    async def predicate_registry_pool(self, db):
+        """The real memory predicate_registry as mem_003's predecessor left it."""
+        return await db(
+            "core",
+            "memory",
+            schemas={"core": "health", "memory": "health"},
+            schema="health",
+            revisions={"memory": "mem_002"},
+        )
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
@@ -268,6 +252,8 @@ class TestWellnessPredicatesMigrationIntegration:
     async def test_no_measurement_heart_rate_in_upgrade(self, predicate_registry_pool) -> None:
         """upgrade() must not insert measurement_heart_rate (collision guard)."""
         pool = predicate_registry_pool
+        # mem_002 seeds measurement_heart_rate; remove it so only upgrade() could re-add it.
+        await pool.execute("DELETE FROM predicate_registry WHERE name = 'measurement_heart_rate'")
 
         await self._run_upgrade(pool)
 
