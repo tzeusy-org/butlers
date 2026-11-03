@@ -217,7 +217,7 @@ def _is_mcp_tool_call(call: dict[str, Any]) -> bool:
     """Return whether a record is MCP work rather than a runtime-native tool.
 
     Runtime-native work is Codex/OpenCode shell (``command_execution``) or a
-    Claude CLI built-in, which the Claude adapter marks ``builtin``.
+    Claude or Gemini CLI built-in, which those adapters mark ``builtin``.
     """
     if call.get("builtin") is True:
         return False
