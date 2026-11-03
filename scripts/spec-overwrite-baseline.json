@@ -265,6 +265,152 @@
       "scenario": null
     }
   ],
+  "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/Conversation React Query Hooks": [
+    {
+      "digest": "b75b6e52a37c",
+      "excerpt": "- **THEN** it returns a paginated list of conversations using `useQuery` with key `[\"conversations\", butlerName, \"lis...",
+      "kind": "clause",
+      "scenario": "useConversations hook"
+    },
+    {
+      "digest": "3dee0565bb57",
+      "excerpt": "- **AND** `staleTime` is 10 seconds (conversations update frequently during active chat)",
+      "kind": "clause",
+      "scenario": "useConversations hook"
+    },
+    {
+      "digest": "06efa1041feb",
+      "excerpt": "- **AND** `staleTime` is 0 (always refetch when switching conversations)",
+      "kind": "clause",
+      "scenario": "useConversationMessages hook"
+    }
+  ],
+  "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/SSE Client Integration": [
+    {
+      "digest": "da46c7c45089",
+      "excerpt": "- **THEN** the frontend reads the SSE stream using the Fetch API with `ReadableStream`",
+      "kind": "clause",
+      "scenario": "SSE connection for new conversation"
+    },
+    {
+      "digest": "ef7b1cc6ddeb",
+      "excerpt": "- **AND** `conversation_created` events create the conversation in local state",
+      "kind": "clause",
+      "scenario": "SSE connection for new conversation"
+    },
+    {
+      "digest": "d90f0af5e73b",
+      "excerpt": "- **AND** `token` events append content to the active assistant message",
+      "kind": "clause",
+      "scenario": "SSE connection for new conversation"
+    },
+    {
+      "digest": "30ec2cbaa57c",
+      "excerpt": "- **AND** `message_complete` events finalize the message with metadata (model, tokens, duration, tool calls)",
+      "kind": "clause",
+      "scenario": "SSE connection for new conversation"
+    },
+    {
+      "digest": "4ba63213b44e",
+      "excerpt": "- **AND** `error` events display the error in the message thread",
+      "kind": "clause",
+      "scenario": "SSE connection for new conversation"
+    },
+    {
+      "digest": "ec732ea93320",
+      "excerpt": "- **AND** `done` events close the stream and re-enable the input",
+      "kind": "clause",
+      "scenario": "SSE connection for new conversation"
+    },
+    {
+      "digest": "5c32a6aead66",
+      "excerpt": "- **THEN** the same SSE event handling applies as for new conversations (without `conversation_created`)",
+      "kind": "clause",
+      "scenario": "SSE connection for follow-up"
+    },
+    {
+      "digest": "4cb7470f211a",
+      "excerpt": "- **WHEN** the user clicks the \"Stop\" button during streaming",
+      "kind": "clause",
+      "scenario": "Stream cancellation is a real server-side stop"
+    },
+    {
+      "digest": "0536dec5c529",
+      "excerpt": "- **AND** the backend records cancellation intent against that durable turn, preventing any later Switchboard ingress...",
+      "kind": "clause",
+      "scenario": "Stream cancellation is a real server-side stop"
+    },
+    {
+      "digest": "6dda99764073",
+      "excerpt": "- **AND** if a runtime already crossed the invocation boundary, the backend resolves every exact registered runtime s...",
+      "kind": "clause",
+      "scenario": "Stream cancellation is a real server-side stop"
+    },
+    {
+      "digest": "446cbdd42d87",
+      "excerpt": "- **AND** only once the server confirms `cancelled: true` **or** emits the terminal `SESSION_CANCELLED` SSE outcome f...",
+      "kind": "clause",
+      "scenario": "Stream cancellation is a real server-side stop"
+    },
+    {
+      "digest": "0a333761cae2",
+      "excerpt": "- **AND** the input is re-enabled",
+      "kind": "clause",
+      "scenario": "Stream cancellation is a real server-side stop"
+    }
+  ],
+  "durable-dashboard-terminal-action-recovery/dashboard-conversations/Conversation Pydantic Response Models": [
+    {
+      "digest": "84e0420f6f52",
+      "excerpt": "Conversation endpoint API response models SHALL provide typed response shapes",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "f3b43fd26691",
+      "excerpt": "- **THEN** each entry includes the `ConversationSummary` fields plus `snippet` (the matching message content excerpt)",
+      "kind": "clause",
+      "scenario": "ConversationSearchResult model"
+    }
+  ],
+  "durable-dashboard-terminal-action-recovery/staffer-qa/Pluggable Discovery Source Architecture": [
+    {
+      "digest": "a985bd8f9197",
+      "excerpt": "- **THEN** it implements the `DiscoverySource` protocol with: `name` (str property), `async discover(lookback_minutes...",
+      "kind": "clause",
+      "scenario": "DiscoverySource protocol definition"
+    },
+    {
+      "digest": "1686a3f84377",
+      "excerpt": "- **AND** the protocol requires no LLM invocation — all sources use tool-based filtering (regex, SQL queries, file pa...",
+      "kind": "clause",
+      "scenario": "DiscoverySource protocol definition"
+    },
+    {
+      "digest": "79ce530bff9c",
+      "excerpt": "- **AND** default enabled sources are: `[\"log_scanner\", \"session_records\", \"butler_reports\", \"tool_call_failures\", \"i...",
+      "kind": "clause",
+      "scenario": "Source registration at startup"
+    },
+    {
+      "digest": "af0045f930f4",
+      "excerpt": "- **AND** `report_finding` accepts: `fingerprint` (str, treated as a hint; the QA module recomputes the canonical fin...",
+      "kind": "clause",
+      "scenario": "QA module MCP tool registration"
+    },
+    {
+      "digest": "87ac1d19258f",
+      "excerpt": "- **AND** `report_finding` queues the finding (with canonical fingerprint and severity) in the `butler_reports` sourc...",
+      "kind": "clause",
+      "scenario": "QA module MCP tool registration"
+    },
+    {
+      "digest": "bf06cec9d345",
+      "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen...",
+      "kind": "clause",
+      "scenario": "QA module MCP tool registration"
+    }
+  ],
   "entity-chronicles-and-commitment-doors/dashboard-relationship/Entity activity aggregator (cross-butler read surface)": [
     {
       "digest": "6762d34fac14",
@@ -3437,6 +3583,34 @@
       "excerpt": "- **AND** it SHALL not itself prevent the existing runtime invocation path",
       "kind": "clause",
       "scenario": "Reconciliation remains credential-safe under degradation"
+    }
+  ],
+  "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Catalog Verify-All API": [
+    {
+      "digest": "d87b2b9b4b23",
+      "excerpt": "- **THEN** the system issues a 1-token completion against each enabled model concurrently with a bounded concurrency ...",
+      "kind": "clause",
+      "scenario": "Verify-all parallel execution"
+    },
+    {
+      "digest": "d46b0b842917",
+      "excerpt": "- **AND** for each model, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_erro...",
+      "kind": "clause",
+      "scenario": "Verify-all parallel execution"
+    },
+    {
+      "digest": "f33ee18555cc",
+      "excerpt": "- **AND** `last_verified_error` is set to the truncated exception text on failure (or `\"verification returned an empt...",
+      "kind": "clause",
+      "scenario": "Verify-all parallel execution"
+    }
+  ],
+  "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Hourly Automated Verification Sweep": [
+    {
+      "digest": "273145c68301",
+      "excerpt": "The dashboard-api process SHALL run an hourly background sweep (`butlers.jobs.model_verify.run_model_verify_loop`, st...",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "harden-runtime-auth-and-breaker-attention/dashboard-spend-dashboard/Fleet-Halt Visibility": [
