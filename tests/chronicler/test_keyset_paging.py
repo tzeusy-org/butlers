@@ -4,21 +4,19 @@ Seven adapters used to page ``ts > watermark ... LIMIT n``, so a run of rows
 sharing the batch's last timestamp lost everything past the limit. They now page
 by ``(ts, key) > cursor`` with a hard ``LIMIT``.
 
-Each adapter's real ``_fetch_*`` query is executed here on in-memory SQLite (the
-generated SQL is portable once the Postgres-only casts and ``ANY`` are
-rewritten), draining a table whose same-timestamp run straddles several pages.
+Each adapter's real ``_fetch_*`` query runs against its real table in a clone
+migrated by the ``core`` Alembic chain (the root ``db_pool`` fixture), draining
+a table whose same-timestamp run straddles several pages.
 """
 
 from __future__ import annotations
 
-import json
-import re
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 
@@ -41,59 +39,11 @@ _BATCH = 3
 _RUN = 8  # rows sharing _T2: spans three pages
 
 
-# ── SQLite stand-in for the asyncpg surface the fetch methods use ──────────
+# ── Seeding the real core-migrated tables ──────────────────────────────────
 
 
 def _uuid(n: int) -> str:
     return f"00000000-0000-0000-0000-{n:012d}"
-
-
-sqlite3.register_adapter(datetime, lambda d: d.isoformat())
-sqlite3.register_adapter(date, lambda d: d.isoformat())
-sqlite3.register_converter("TIMESTAMPTZ", lambda b: datetime.fromisoformat(b.decode()))
-sqlite3.register_converter("DATE", lambda b: date.fromisoformat(b.decode()))
-
-
-class _Ctx:
-    def __init__(self, obj: Any = None) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> Any:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-
-class _SqliteConn:
-    """Executes the adapters' Postgres SQL on SQLite."""
-
-    def __init__(self, db: sqlite3.Connection) -> None:
-        self._db = db
-        self.fetch_calls: list[tuple[str, tuple]] = []
-
-    async def fetchval(self, *_: Any) -> bool:
-        return True  # information_schema existence probe
-
-    def transaction(self) -> _Ctx:
-        return _Ctx()
-
-    async def fetch(self, sql: str, *args: Any) -> list[sqlite3.Row]:
-        self.fetch_calls.append((sql, args))
-        sql = re.sub(r"::text::\w+", "", sql)
-        sql = re.sub(r"= ANY\(\$(\d+)::text\[\]\)", r"IN (SELECT value FROM json_each($\1))", sql)
-        params = {
-            str(i + 1): json.dumps(a) if isinstance(a, list) else a for i, a in enumerate(args)
-        }
-        return self._db.execute(sql, params).fetchall()
-
-
-class _SqlitePool:
-    def __init__(self, conn: _SqliteConn) -> None:
-        self._conn = conn
-
-    def acquire(self) -> _Ctx:
-        return _Ctx(self._conn)
 
 
 @dataclass
@@ -102,16 +52,16 @@ class _Spec:
     make_adapter: Callable[[], Any]
     fetch: str
     table: str
-    ddl: str
     ts_col: str
     row: Callable[[int, datetime], dict[str, Any]]
     noise: Callable[[int, datetime], dict[str, Any]] | None = None
     pass_connection: bool = False  # OwnTracks adapters read a pinned connection
+    setup: str | None = None  # SQL run with ``$1 = _T2`` before seeding
 
 
 def _spotify(i: int, ts: datetime) -> dict[str, Any]:
     return {
-        "id": _uuid(i),
+        "id": UUID(_uuid(i)),
         "idempotency_key": f"k{i}",
         "endpoint_identity": "e",
         "spotify_user_id": "u",
@@ -119,7 +69,7 @@ def _spotify(i: int, ts: datetime) -> dict[str, Any]:
         "ended_at": ts,
         "duration_seconds": 1,
         "track_count": 1,
-        "track_names": "[]",
+        "track_names": [],
         "context_uri": None,
         "context_name": None,
         "recorded_at": ts,
@@ -128,11 +78,32 @@ def _spotify(i: int, ts: datetime) -> dict[str, Any]:
 
 def _comms(i: int, ts: datetime) -> dict[str, Any]:
     return {
-        "id": _uuid(i),
+        "id": UUID(_uuid(i)),
         "received_at": ts,
         "source_channel": _COMMS_CHANNELS[0],
+        "source_provider": "p",
+        "source_endpoint_identity": "e",
         "source_sender_identity": "a@example.com",
+        "external_event_id": f"x{i}",
+        "dedupe_key": f"d{i}",
+        "dedupe_strategy": "s",
+        "ingestion_tier": "full",
+        "policy_tier": "default",
         "status": "ingested",
+    }
+
+
+def _filtered(i: int, ts: datetime, connector_type: str) -> dict[str, Any]:
+    return {
+        "id": UUID(_uuid(i)),
+        "received_at": ts,
+        "connector_type": connector_type,
+        "endpoint_identity": "e",
+        "external_message_id": f"m{i}",
+        "source_channel": "home_assistant",
+        "sender_identity": "s",
+        "filter_reason": "r",
+        "full_payload": {},
     }
 
 
@@ -142,9 +113,6 @@ _SPECS = [
         lambda: SpotifySessionAdapter(batch_limit=_BATCH),
         "_fetch_sessions",
         "connectors.spotify_listening_sessions",
-        "id TEXT, idempotency_key TEXT, endpoint_identity TEXT, spotify_user_id TEXT, "
-        "started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, duration_seconds INT, track_count INT, "
-        "track_names TEXT, context_uri TEXT, context_name TEXT, recorded_at TIMESTAMPTZ",
         "recorded_at",
         _spotify,
     ),
@@ -153,14 +121,12 @@ _SPECS = [
         lambda: SteamPlayAdapter(batch_limit=_BATCH),
         "_fetch_rows",
         "connectors.steam_play_history",
-        "id TEXT, steam_id INTEGER, steam_account_id TEXT, app_id INTEGER, app_name TEXT, "
-        "date DATE, playtime_minutes INT, recorded_at TIMESTAMPTZ",
         "recorded_at",
         lambda i, ts: {
-            "id": _uuid(i),
+            "id": UUID(_uuid(i)),
             "steam_id": 76561,
             "steam_account_id": None,
-            "app_id": 1,  # (steam_id, app_id, date) repeats; only ``id`` is unique
+            "app_id": i,  # the keyset tiebreaker is ``id``, not the natural key
             "app_name": "g",
             "date": date(2026, 3, 26),
             "playtime_minutes": 1,
@@ -172,8 +138,6 @@ _SPECS = [
         lambda: CommsSocialAdapter(batch_limit=_BATCH),
         "_fetch_events",
         "public.ingestion_events",
-        "id TEXT, received_at TIMESTAMPTZ, source_channel TEXT, "
-        "source_sender_identity TEXT, status TEXT",
         "received_at",
         _comms,
         # Every filter the query applies must be load-bearing.
@@ -184,26 +148,32 @@ _SPECS = [
         lambda: OwnerOutboundMessageAdapter(batch_limit=_BATCH),
         "_fetch_events",
         "connectors.owner_outbound_events",
-        "id TEXT, channel TEXT, occurred_at TIMESTAMPTZ",
         "occurred_at",
-        lambda i, ts: {"id": _uuid(i), "channel": "telegram", "occurred_at": ts},
+        lambda i, ts: {
+            "id": UUID(_uuid(i)),
+            "idempotency_key": f"k{i}",
+            "channel": "telegram_user_client",
+            "endpoint_identity": "e",
+            "occurred_at": ts,
+        },
     ),
     _Spec(
         "activitywatch",
         lambda: ActivityWatchWindowAdapter(batch_limit=_BATCH),
         "_fetch_events",
         "connectors.activitywatch_events",
-        "id TEXT, idempotency_key TEXT, ts TIMESTAMPTZ, duration_seconds REAL, app_class TEXT, "
-        "browser_domain TEXT, is_afk INT, endpoint_identity TEXT",
         "ts",
         lambda i, ts: {
-            "id": _uuid(i),
+            "id": UUID(_uuid(i)),
             "idempotency_key": f"k{i}",
+            "machine_id": "m",
+            "bucket_id": "b",
+            "app": "a",
             "ts": ts,
             "duration_seconds": 1.0,
             "app_class": "other",
             "browser_domain": None,
-            "is_afk": 0,
+            "is_afk": False,
             "endpoint_identity": "e",
         },
     ),
@@ -212,17 +182,16 @@ _SPECS = [
         lambda: OwnTracksPlaceClusterAdapter(batch_limit=_BATCH),
         "_fetch_points",
         "connectors.owntracks_points",
-        "id TEXT, ts TIMESTAMPTZ, lat REAL, lon REAL, endpoint_identity TEXT, "
-        "recorded_at TIMESTAMPTZ, raw_payload TEXT",
         "ts",
         lambda i, ts: {
-            "id": _uuid(i),
+            "id": UUID(_uuid(i)),
+            "idempotency_key": f"k{i}",
             "ts": ts,
             "lat": 1.0,
             "lon": 2.0,
             "endpoint_identity": "e",
             "recorded_at": ts,
-            "raw_payload": "{}",
+            "raw_payload": {},
         },
         pass_connection=True,
     ),
@@ -231,32 +200,25 @@ _SPECS = [
         lambda: HomeAssistantSensorActivityAdapter(batch_limit=_BATCH),
         "_fetch_rows",
         "connectors.filtered_events",
-        "id TEXT, received_at TIMESTAMPTZ, full_payload TEXT, connector_type TEXT",
         "received_at",
-        lambda i, ts: {
-            "id": _uuid(i),
-            "received_at": ts,
-            "full_payload": "{}",
-            "connector_type": _CONNECTOR_TYPE,
-        },
-        noise=lambda i, ts: {
-            "id": _uuid(i),
-            "received_at": ts,
-            "full_payload": "{}",
-            "connector_type": "not-" + _CONNECTOR_TYPE,
-        },
+        lambda i, ts: _filtered(i, ts, _CONNECTOR_TYPE),
+        noise=lambda i, ts: _filtered(i, ts, "not-" + _CONNECTOR_TYPE),
+        setup="SELECT connectors.connectors_filtered_events_ensure_partition($1)",
     ),
 ]
 
 
-def _seed(spec: _Spec) -> tuple[_SqliteConn, list[str], list[str]]:
-    """Return ``(conn, expected ids in (ts, id) order, noise ids)``."""
-    db = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
-    db.row_factory = sqlite3.Row
-    schema, table = spec.table.split(".")
-    db.execute(f"ATTACH DATABASE ':memory:' AS {schema}")
-    db.execute(f"CREATE TABLE {spec.table} ({spec.ddl})")
+async def _insert(pool: Any, table: str, rows: list[dict[str, Any]]) -> None:
+    async with pool.acquire() as conn:
+        for row in rows:
+            marks = ", ".join(f"${n}" for n in range(1, len(row) + 1))
+            await conn.execute(
+                f"INSERT INTO {table} ({', '.join(row)}) VALUES ({marks})", *row.values()
+            )
 
+
+async def _seed(spec: _Spec, pool: Any) -> tuple[list[str], list[str]]:
+    """Seed ``spec.table``; return ``(expected ids in (ts, id) order, noise ids)``."""
     plan = [(0, _T1), *[(n, _T2) for n in range(1, _RUN + 1)], (_RUN + 1, _T3)]
     expected = [_uuid(n) for n, _ in plan]
     # Insert out of order so ordering must come from the query, not the table.
@@ -266,38 +228,45 @@ def _seed(spec: _Spec) -> tuple[_SqliteConn, list[str], list[str]]:
         for n in (100, 101, 102):  # noise inside the T2 run and at its edges
             rows.append(spec.noise(n, _T2))
             noise_ids.append(_uuid(n))
-    for row in rows:
-        cols = ", ".join(row)
-        marks = ", ".join(f":{c}" for c in row)
-        db.execute(f"INSERT INTO {spec.table} ({cols}) VALUES ({marks})", row)
-    return _SqliteConn(db), expected, noise_ids
+    if spec.setup is not None:
+        await pool.execute(spec.setup, _T2)
+    await _insert(pool, spec.table, rows)
+    return expected, noise_ids
 
 
-def _identity(spec: _Spec, row: sqlite3.Row) -> str:
-    return row["id"]
+def _identity(row: Any) -> str:
+    return str(row["id"])
 
 
-async def _drain(spec: _Spec, conn: _SqliteConn) -> list[list[str]]:
+async def _fetch(spec: _Spec, adapter: Any, pool: Any, since: Any, since_key: Any) -> Any:
+    if not spec.pass_connection:
+        return await getattr(adapter, spec.fetch)(pool, since, since_key)
+    async with pool.acquire() as conn:
+        return await getattr(adapter, spec.fetch)(conn, since, since_key)
+
+
+async def _drain(spec: _Spec, pool: Any) -> list[list[str]]:
     adapter = spec.make_adapter()
-    source = conn if spec.pass_connection else _SqlitePool(conn)
     since: datetime | None = None
     since_key: list[str] | None = None
     pages: list[list[str]] = []
     for _ in range(20):
-        rows = await getattr(adapter, spec.fetch)(source, since, since_key)
+        rows = await _fetch(spec, adapter, pool, since, since_key)
         if not rows:
             return pages
-        pages.append([_identity(spec, r) for r in rows])
+        pages.append([_identity(r) for r in rows])
         since = rows[-1][spec.ts_col]
         since_key = cursor_key(rows[-1], adapter.keyset_cols)
     raise AssertionError("paging did not terminate")
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("spec", _SPECS, ids=lambda s: s.name)
-async def test_same_timestamp_run_across_batches_loses_and_repeats_nothing(spec):
-    conn, expected, noise = _seed(spec)
+async def test_same_timestamp_run_across_batches_loses_and_repeats_nothing(spec, db_pool):
+    expected, noise = await _seed(spec, db_pool)
 
-    pages = await _drain(spec, conn)
+    pages = await _drain(spec, db_pool)
 
     # Every row exactly once, in (ts, key) order, and no filtered-out row.
     assert [i for page in pages for i in page] == expected
@@ -307,16 +276,16 @@ async def test_same_timestamp_run_across_batches_loses_and_repeats_nothing(spec)
     assert [len(p) for p in pages] == [_BATCH, _BATCH, _BATCH, 1]
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("spec", _SPECS, ids=lambda s: s.name)
-async def test_checkpoint_without_tiebreaker_resumes_strictly_after_ts(spec):
+async def test_checkpoint_without_tiebreaker_resumes_strictly_after_ts(spec, db_pool):
     """Stored pre-cursor checkpoints (no key) keep the old ``ts > watermark`` read."""
-    conn, expected, _ = _seed(spec)
-    adapter = spec.make_adapter()
-    source = conn if spec.pass_connection else _SqlitePool(conn)
+    expected, _ = await _seed(spec, db_pool)
 
-    rows = await getattr(adapter, spec.fetch)(source, _T2, None)
+    rows = await _fetch(spec, spec.make_adapter(), db_pool, _T2, None)
 
-    assert [_identity(spec, r) for r in rows] == expected[-1:]
+    assert [_identity(r) for r in rows] == expected[-1:]
 
 
 def test_cursor_is_only_honoured_for_the_watermark_it_belongs_to():
@@ -374,9 +343,11 @@ class _Crash(Exception):
     pass
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("crash_at", [0, 1, 2, 3, 4, 5, 6])
 @pytest.mark.parametrize("crash_in", ["upsert_checkpoint", "set_cursor"])
-async def test_crash_between_cursor_and_watermark_writes_loses_no_rows(crash_at, crash_in):
+async def test_crash_between_cursor_and_watermark_writes_loses_no_rows(crash_at, crash_in, db_pool):
     """A crash at any write of any run, then a retry, still projects every row.
 
     Two long same-timestamp runs (T2, T3) are drained in pages of 3. The fault
@@ -386,16 +357,9 @@ async def test_crash_between_cursor_and_watermark_writes_loses_no_rows(crash_at,
     from unittest.mock import AsyncMock, patch
 
     spec = _SPECS[0]  # spotify
-    db = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
-    db.row_factory = sqlite3.Row
-    db.execute("ATTACH DATABASE ':memory:' AS connectors")
-    db.execute(f"CREATE TABLE {spec.table} ({spec.ddl})")
     plan = [(0, _T1), *[(n, _T2) for n in range(1, 9)], *[(n, _T3) for n in range(9, 17)]]
-    for n, ts in plan:
-        row = spec.row(n, ts)
-        marks = ", ".join(f":{c}" for c in row)
-        db.execute(f"INSERT INTO {spec.table} ({', '.join(row)}) VALUES ({marks})", row)
-    pool = _SqlitePool(_SqliteConn(db))
+    await _insert(db_pool, spec.table, [spec.row(n, ts) for n, ts in plan])
+    pool = db_pool
 
     store: dict[str, Any] = {"wm": None, "cursor": None, "run": 0}
     projected: list[str] = []
@@ -417,7 +381,7 @@ async def test_crash_between_cursor_and_watermark_writes_loses_no_rows(crash_at,
         store["wm"] = watermark
 
     async def project_row(_pool: Any, row: Any, **_: Any) -> None:
-        projected.append(row["id"])
+        projected.append(str(row["id"]))
 
     adapter = SpotifySessionAdapter(batch_limit=_BATCH)
     base = "butlers.chronicler.adapters.base"
