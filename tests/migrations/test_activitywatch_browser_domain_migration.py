@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -16,16 +17,8 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_192", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _collect_sql(method_name: str) -> list[str]:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_192")
     calls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = calls.append

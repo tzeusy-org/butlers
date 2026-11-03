@@ -195,11 +195,11 @@ Optional environment variable:
 ## setup_main_ruleset.sh and the merge queue
 
 `setup_main_ruleset.sh` installs the `main-merge-queue` ruleset for
-`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, and
-the non-strict required contexts `check`, `guards` and `frontend`; `check` and
-`frontend` now only mirror `alls-green`, the fan-in over every CI job. The script
-already writes the single `alls-green` context: running it is the owner's
-cutover act, after which the two mirror jobs are deleted.
+`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, up
+to 9 concurrent merge-group builds, and one non-strict required context:
+`alls-green`, the fan-in over every CI job, reported by GitHub Actions.
+`.github/workflows/merge-queue-sweep.yml` force-cancels runs left behind when
+the queue rebuilds its groups.
 
 After review and the PR-head gates are complete, add the PR to the queue:
 

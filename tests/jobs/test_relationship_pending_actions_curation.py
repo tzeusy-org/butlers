@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+
 _MODULE_KEY = "butlers.jobs._roster.relationship_jobs"
 
 
@@ -24,17 +26,6 @@ def _get_rjobs() -> ModuleType:
 
 
 pytestmark = pytest.mark.unit
-
-
-class _FakePool:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self._rows = rows
-
-    async def fetch(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
-        return self._rows
-
-    async def fetchval(self, *_args: Any, **_kwargs: Any) -> int:
-        return 1
 
 
 @pytest.mark.asyncio
@@ -73,7 +64,7 @@ async def test_pending_actions_curation_tolerates_string_and_scalar_tool_args(
     broker = import_module("butlers.tools.switchboard.insight.broker")
     monkeypatch.setattr(broker, "propose_insight_candidate", fake_propose_insight_candidate)
 
-    result = await rjobs.run_pending_actions_curation(_FakePool(rows))
+    result = await rjobs.run_pending_actions_curation(fake_pool(fetch=rows, fetchval=1))
 
     assert result["scanned"] == 2
     assert result["surfaced"] == 2

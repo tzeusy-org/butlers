@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +15,7 @@ from sqlalchemy.exc import ProgrammingError
 from butlers.migrations import run_migrations
 from butlers.testing.migration import (
     create_migration_db,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -26,14 +26,6 @@ _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / "src/butlers/modules/memory/migrations/011_grant_chronicler_health_facts.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("mem_011", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _run_migration(connection: Connection, module, direction: str, schema: str) -> None:
@@ -111,7 +103,7 @@ def test_memory_chain_does_not_grant_chronicler_select_in_non_health_schema(
 def test_health_migration_noops_when_facts_table_is_absent(postgres_container) -> None:
     """A partial Health deployment must not make either migration direction fail."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "mem_011")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
@@ -125,7 +117,7 @@ def test_health_migration_noops_when_facts_table_is_absent(postgres_container) -
 def test_health_migration_noops_when_chronicler_role_is_absent(postgres_container) -> None:
     """A partial role bootstrap must not grant a different principal by accident."""
     db_url = create_migration_db(postgres_container, migration_db_name())
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "mem_011")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
@@ -156,7 +148,7 @@ def test_health_grant_is_select_only_usable_by_role_and_downgrade_is_scoped(
     """The migration grants one usable read surface and removes only that grant."""
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "mem_011")
 
     engine = create_engine(db_url)
     try:

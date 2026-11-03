@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,7 @@ from sqlalchemy import create_engine
 
 from alembic import command
 from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, load_migration, migration_db_name
 
 pytestmark = pytest.mark.integration
 
@@ -24,19 +23,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "core_247_dashboard_message_citations", _MIGRATION_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
     statements: list[str] = []
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_247_dashboard_message_citations")
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
     with (
@@ -50,28 +39,9 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
 
 
 @pytest.fixture
-async def dashboard_messages_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_conversations (
-                id UUID PRIMARY KEY,
-                butler_name TEXT NOT NULL
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_messages (
-                id UUID PRIMARY KEY,
-                conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id),
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                sources JSONB
-            )
-            """
-        )
-        yield pool
+async def dashboard_messages_pool(db):
+    """The real dashboard tables as core_247's predecessor (core_246) left them."""
+    return await db("core", revisions={"core": "core_246"})
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -137,7 +107,7 @@ async def test_migration_backfills_valid_sources_preserves_unknown_authors_and_r
 
 
 def test_core_247_refuses_protected_deep_downgrade_before_shared_column_drop() -> None:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_247_dashboard_message_citations")
     mocked_op = MagicMock()
     bind = MagicMock()
     mocked_op.get_bind.return_value = bind

@@ -34,7 +34,6 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.jobs.home import _read_entity_snapshot
 from butlers.modules._roster_home import (
     CachedArea,
@@ -42,7 +41,6 @@ from butlers.modules._roster_home import (
     HomeAssistantConfig,
     HomeAssistantModule,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -52,27 +50,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + home chains (flat public topology)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "home"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE ha_entity_snapshot")
-    yield p
-    await p.close()
+async def home_pool(db):
+    """Core + home chains (flat public topology) on a fresh clone per test."""
+    return await db("core", "home")
 
 
 def _module_with_pool(pool: asyncpg.Pool) -> HomeAssistantModule:
@@ -84,9 +65,9 @@ def _module_with_pool(pool: asyncpg.Pool) -> HomeAssistantModule:
     return module
 
 
-async def test_persist_then_read_returns_live_state(pool: asyncpg.Pool) -> None:
+async def test_persist_then_read_returns_live_state(home_pool: asyncpg.Pool) -> None:
     """A persisted entity cache is readable through the job read path."""
-    module = _module_with_pool(pool)
+    module = _module_with_pool(home_pool)
     # The reader guard (bu-8cdl1.12 slice 1) requires a healthy ha_source_health
     # row before it will trust ha_entity_snapshot at all; simulate the successful
     # contact that would normally record this.
@@ -112,25 +93,25 @@ async def test_persist_then_read_returns_live_state(pool: asyncpg.Pool) -> None:
     from butlers.jobs.home import EmptyEntitySnapshotError
 
     with pytest.raises(EmptyEntitySnapshotError):
-        await _read_entity_snapshot(pool)
+        await _read_entity_snapshot(home_pool)
 
     # Writer under test.
     await module._persist_entity_snapshot()
 
     # Canonical job read path now returns the actual current state.
-    rows = await _read_entity_snapshot(pool)
+    rows = await _read_entity_snapshot(home_pool)
     by_id: dict[str, Any] = {r["entity_id"]: r for r in rows}
     assert set(by_id) == {"sensor.living_room_temperature", "light.kitchen"}
     assert by_id["sensor.living_room_temperature"]["state"] == "22.5"
     assert by_id["light.kitchen"]["state"] == "on"
 
     # Domain filter (used by jobs) works too.
-    sensor_rows = await _read_entity_snapshot(pool, domain_filter="sensor")
+    sensor_rows = await _read_entity_snapshot(home_pool, domain_filter="sensor")
     assert [r["entity_id"] for r in sensor_rows] == ["sensor.living_room_temperature"]
 
     # Dashboard-shaped read resolves, including registry-derived area_id merged
     # into the attributes JSONB.
-    row = await pool.fetchrow(
+    row = await home_pool.fetchrow(
         "SELECT entity_id, state, attributes, last_updated, captured_at"
         " FROM ha_entity_snapshot WHERE entity_id = $1",
         "sensor.living_room_temperature",
@@ -142,16 +123,16 @@ async def test_persist_then_read_returns_live_state(pool: asyncpg.Pool) -> None:
     assert attrs["area_id"] == "area_lr"
     assert attrs["area_name"] == "Living Room"
 
-    area_id = await pool.fetchval(
+    area_id = await home_pool.fetchval(
         "SELECT attributes->>'area_id' FROM ha_entity_snapshot WHERE entity_id = $1",
         "sensor.living_room_temperature",
     )
     assert area_id == "area_lr"
 
 
-async def test_state_update_overwrites_in_place(pool: asyncpg.Pool) -> None:
+async def test_state_update_overwrites_in_place(home_pool: asyncpg.Pool) -> None:
     """A later state update supersedes the prior row (one row per entity)."""
-    module = _module_with_pool(pool)
+    module = _module_with_pool(home_pool)
     await module._record_ha_source_success()
     module._entity_cache = {
         "sensor.living_room_temperature": CachedEntity(
@@ -163,7 +144,7 @@ async def test_state_update_overwrites_in_place(pool: asyncpg.Pool) -> None:
         )
     }
     await module._persist_entity_snapshot()
-    assert await _last_changed(pool) == datetime(2026, 6, 27, 9, 0, tzinfo=UTC)
+    assert await _last_changed(home_pool) == datetime(2026, 6, 27, 9, 0, tzinfo=UTC)
 
     # Simulate an HA state_changed update.
     entity = module._entity_cache["sensor.living_room_temperature"]
@@ -172,11 +153,11 @@ async def test_state_update_overwrites_in_place(pool: asyncpg.Pool) -> None:
     entity.last_changed = "2026-06-27T10:05:00+00:00"
     await module._persist_entity_snapshot()
 
-    rows = await _read_entity_snapshot(pool)
+    rows = await _read_entity_snapshot(home_pool)
     assert len(rows) == 1
     assert rows[0]["state"] == "25.0"
     # The safety job measures its hold from last_changed, so a re-persist must move it forward.
-    assert await _last_changed(pool) == datetime(2026, 6, 27, 10, 5, tzinfo=UTC)
+    assert await _last_changed(home_pool) == datetime(2026, 6, 27, 10, 5, tzinfo=UTC)
 
 
 async def _last_changed(pool: asyncpg.Pool) -> datetime | None:
@@ -186,7 +167,7 @@ async def _last_changed(pool: asyncpg.Pool) -> datetime | None:
     )
 
 
-async def test_read_unmeasurable_during_outage_despite_stale_rows(pool: asyncpg.Pool) -> None:
+async def test_read_unmeasurable_during_outage_despite_stale_rows(home_pool: asyncpg.Pool) -> None:
     """A recorded HA source outage renders reads unmeasurable even with rows present.
 
     This is the trust-fix defect itself: ``_persist_entity_snapshot`` always
@@ -195,7 +176,7 @@ async def test_read_unmeasurable_during_outage_despite_stale_rows(pool: asyncpg.
     """
     from butlers.jobs.home import HASourceUnmeasurableError
 
-    module = _module_with_pool(pool)
+    module = _module_with_pool(home_pool)
     await module._record_ha_source_success()
     module._entity_cache = {
         "sensor.living_room_temperature": CachedEntity(
@@ -211,9 +192,9 @@ async def test_read_unmeasurable_during_outage_despite_stale_rows(pool: asyncpg.
     await module._record_ha_source_error("simulated outage")
 
     with pytest.raises(HASourceUnmeasurableError):
-        await _read_entity_snapshot(pool)
+        await _read_entity_snapshot(home_pool)
 
     # Health recovers -> reads succeed again with the last-known state.
     await module._record_ha_source_success()
-    rows = await _read_entity_snapshot(pool)
+    rows = await _read_entity_snapshot(home_pool)
     assert rows[0]["state"] == "22.5"

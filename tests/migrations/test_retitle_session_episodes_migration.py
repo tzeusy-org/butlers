@@ -25,12 +25,13 @@ Dependency: chronicler_008 (bu-aqqx0), chronicler_007 (bu-6t63s)
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -45,15 +46,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "009_reset_watermarks_for_old_session_titles.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("chronicler_009", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -81,17 +73,17 @@ class TestConstants:
 
     def test_source_name_is_core_sessions(self) -> None:
         """_SOURCE_NAME must equal 'core.sessions'."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_009")
         assert mod._SOURCE_NAME == "core.sessions"
 
     def test_title_like_pattern_ends_with_space_session(self) -> None:
         """_TITLE_LIKE_PATTERN must be '% session' (matches all '{schema} session' titles)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_009")
         assert mod._TITLE_LIKE_PATTERN == "% session"
 
     def test_trigger_source_route(self) -> None:
         """_TRIGGER_SOURCE_ROUTE must be 'route'."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_009")
         assert mod._TRIGGER_SOURCE_ROUTE == "route"
 
 
@@ -105,7 +97,7 @@ class TestDowngradeSQLShape:
 
     def test_downgrade_is_noop(self) -> None:
         """downgrade() must emit no SQL statements (watermark resets are permanent)."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_009")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -153,7 +145,7 @@ class TestPrePostMigrationState:
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_009")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
