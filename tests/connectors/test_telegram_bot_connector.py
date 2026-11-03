@@ -784,6 +784,7 @@ async def test_ffmpeg_transcode_is_bounded_sandboxed_and_killed_on_overrun(
 ) -> None:
     """Real pipes, with a Python stand-in for ffmpeg (CI images need not ship ffmpeg)."""
     import asyncio
+    import signal
     import sys
 
     real_exec = asyncio.create_subprocess_exec
@@ -792,7 +793,8 @@ async def test_ffmpeg_transcode_is_bounded_sandboxed_and_killed_on_overrun(
         # Echo stdin back as the "PCM" so the round trip proves stdin was fed.
         "ok": "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
         "hang": "import time; time.sleep(30)",
-        "flood": f"import sys; sys.stdout.buffer.write(b'x' * {ceiling * 4})",
+        # More than the stdout reader buffers plus the pipe holds, so the writer blocks.
+        "flood": f"import sys; sys.stdout.buffer.write(b'x' * {ceiling * 8})",
     }
     seen: dict[str, Any] = {}
 
@@ -800,6 +802,16 @@ async def test_ffmpeg_transcode_is_bounded_sandboxed_and_killed_on_overrun(
         seen["args"], seen["kwargs"] = args, kwargs
         proc = await real_exec(sys.executable, "-c", behaviours[seen["mode"]], **kwargs)
         seen["proc"] = proc
+        if seen["mode"] == "flood":
+            # Let the stdout reader fill past its high-water mark and pause before the first
+            # read, as a loaded host does by chance: a paused reader never sees EOF, so the
+            # overflow path must still drain it for the kill to reap (bu-3x3ttq).
+            stdout_pipe = proc._transport.get_pipe_transport(1)  # type: ignore[attr-defined]
+            for _ in range(1000):
+                if not stdout_pipe.is_reading():
+                    break
+                await asyncio.sleep(0.01)
+            assert not stdout_pipe.is_reading()
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
@@ -820,11 +832,11 @@ async def test_ffmpeg_transcode_is_bounded_sandboxed_and_killed_on_overrun(
 
     seen["mode"] = "hang"
     assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=0.5, max_duration_s=1) is None
-    assert seen["proc"].returncode is not None  # killed and reaped
+    assert seen["proc"].returncode == -signal.SIGKILL  # killed and reaped
 
     seen["mode"] = "flood"
     assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=10, max_duration_s=1) is None
-    assert seen["proc"].returncode is not None
+    assert seen["proc"].returncode == -signal.SIGKILL
 
 
 async def test_unexpected_pipeline_error_keeps_descriptor_with_stage_status(

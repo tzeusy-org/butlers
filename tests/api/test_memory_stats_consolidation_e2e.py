@@ -12,9 +12,9 @@ write → read path against a live PostgreSQL instance:
         → populated last_consolidation_* / dead_letter_episodes fields
 
 The endpoint reads the unqualified ``episodes`` / ``facts`` / ``rules`` tables
-(search-path scoped) plus ``public.consolidation_runs``. We create the minimal
-tables the handler touches so the assertion is about the stats wiring, not the
-full memory migration chain.
+(search-path scoped) plus ``public.consolidation_runs``. Each test runs on a
+fresh clone migrated by the real core + memory chains, so the rows seeded here
+satisfy the real columns and constraints.
 """
 
 from __future__ import annotations
@@ -34,42 +34,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-# Minimal subset of the memory schema that GET /api/memory/stats reads. These
-# mirror the only columns the stats fan-out queries reference.
-_STATS_SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS episodes (
-    content_authority TEXT, authority_entity_id UUID,
-    id                   BIGSERIAL PRIMARY KEY,
-    consolidated         BOOLEAN NOT NULL DEFAULT false,
-    consolidation_status TEXT    NOT NULL DEFAULT 'pending',
-    expires_at           TIMESTAMPTZ
-);
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id       BIGSERIAL PRIMARY KEY,
-    validity TEXT NOT NULL DEFAULT 'active'
-);
-CREATE TABLE IF NOT EXISTS rules (
-    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
-    id         BIGSERIAL PRIMARY KEY,
-    maturity   TEXT NOT NULL DEFAULT 'candidate',
-    metadata   JSONB NOT NULL DEFAULT '{}'::jsonb,
-    retired_at TIMESTAMPTZ
-);
-CREATE TABLE IF NOT EXISTS public.consolidation_runs (
-    id                 BIGSERIAL PRIMARY KEY,
-    butler             TEXT NOT NULL,
-    consolidated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    episodes_processed INT NOT NULL DEFAULT 0,
-    facts_produced     INT NOT NULL DEFAULT 0,
-    facts_updated      INT NOT NULL DEFAULT 0,
-    rules_created      INT NOT NULL DEFAULT 0,
-    confirmations_made INT NOT NULL DEFAULT 0,
-    errors             INT NOT NULL DEFAULT 0
-);
-"""
 
 
 class _SinglePoolDB:
@@ -97,69 +61,72 @@ async def _app_client(db: object):
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_consolidation_run_populates_stats_fields(provisioned_postgres_pool) -> None:
+async def test_consolidation_run_populates_stats_fields(db) -> None:
     """A recorded consolidation run surfaces through GET /api/memory/stats."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_STATS_SCHEMA_SQL)
+    pool = await db("core", "memory")
 
-        # Seed memory rows so the non-consolidation stats are non-trivial and a
-        # dead_letter episode is present for the dead_letter_episodes count.
-        await pool.execute(
-            "INSERT INTO episodes (consolidated, consolidation_status) VALUES "
-            "(true, 'consolidated'), (false, 'pending'), (false, 'dead_letter')"
-        )
-        await pool.execute("INSERT INTO facts (validity) VALUES ('active'), ('fading')")
-        await pool.execute("INSERT INTO rules (maturity) VALUES ('candidate')")
+    # Seed memory rows so the non-consolidation stats are non-trivial and a
+    # dead_letter episode is present for the dead_letter_episodes count.
+    await pool.execute(
+        "INSERT INTO episodes (butler, content, consolidated, consolidation_status) VALUES "
+        "('memory', 'e1', true, 'consolidated'), ('memory', 'e2', false, 'pending'), "
+        "('memory', 'e3', false, 'dead_letter')"
+    )
+    await pool.execute(
+        "INSERT INTO facts (subject, predicate, content, validity) VALUES "
+        "('owner', 'stats_active', 'a', 'active'), ('owner', 'stats_fading', 'f', 'fading')"
+    )
+    await pool.execute("INSERT INTO rules (content, maturity) VALUES ('r1', 'candidate')")
 
-        db = _SinglePoolDB("memory", pool)
+    manager = _SinglePoolDB("memory", pool)
 
-        # Baseline: no consolidation runs yet → consolidation fields are null,
-        # while the seeded counts already populate.
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/stats")
-        assert resp.status_code == 200
-        baseline = resp.json()["data"]
-        assert baseline["last_consolidation_at"] is None
-        assert baseline["last_consolidation_facts_produced"] is None
-        assert baseline["total_episodes"] == 3
-        assert baseline["dead_letter_episodes"] == 1
-        assert baseline["total_facts"] == 2
-        assert baseline["active_facts"] == 1
-        assert baseline["fading_facts"] == 1
-        assert baseline["total_rules"] == 1
+    # Baseline: no consolidation runs yet → consolidation fields are null,
+    # while the seeded counts already populate.
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/stats")
+    assert resp.status_code == 200
+    baseline = resp.json()["data"]
+    assert baseline["last_consolidation_at"] is None
+    assert baseline["last_consolidation_facts_produced"] is None
+    assert baseline["total_episodes"] == 3
+    assert baseline["dead_letter_episodes"] == 1
+    assert baseline["total_facts"] == 2
+    assert baseline["active_facts"] == 1
+    assert baseline["fading_facts"] == 1
+    assert baseline["total_rules"] == 1
 
-        # Record a real consolidation run through the production writer.
-        await _record_consolidation_run(
-            pool,
-            butler="memory",
-            episodes_processed=4,
-            facts_produced=9,
-            facts_updated=2,
-            rules_created=1,
-            confirmations_made=3,
-            errors=0,
-        )
+    # Record a real consolidation run through the production writer.
+    await _record_consolidation_run(
+        pool,
+        butler="memory",
+        episodes_processed=4,
+        facts_produced=9,
+        facts_updated=2,
+        rules_created=1,
+        confirmations_made=3,
+        errors=0,
+    )
 
-        # The audit row must actually exist (writer is best-effort / swallows).
-        run_count = await pool.fetchval("SELECT count(*) FROM public.consolidation_runs")
-        assert run_count == 1, "consolidation run was not recorded"
+    # The audit row must actually exist (writer is best-effort / swallows).
+    run_count = await pool.fetchval("SELECT count(*) FROM public.consolidation_runs")
+    assert run_count == 1, "consolidation run was not recorded"
 
-        # Now the stats endpoint must surface that run.
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/stats")
-        assert resp.status_code == 200
-        after = resp.json()["data"]
+    # Now the stats endpoint must surface that run.
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/stats")
+    assert resp.status_code == 200
+    after = resp.json()["data"]
 
-        assert after["last_consolidation_at"] is not None
-        assert after["last_consolidation_facts_produced"] == 9
-        # Stable counts are unchanged by recording a run.
-        assert after["dead_letter_episodes"] == 1
-        assert after["total_episodes"] == 3
+    assert after["last_consolidation_at"] is not None
+    assert after["last_consolidation_facts_produced"] == 9
+    # Stable counts are unchanged by recording a run.
+    assert after["dead_letter_episodes"] == 1
+    assert after["total_episodes"] == 3
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_stats_reports_complete_expired_retention_observation(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """The read-only stats route counts exactly the cleanup population.
 
@@ -168,24 +135,23 @@ async def test_stats_reports_complete_expired_retention_observation(
     the sweep is deliberately still holding (expired but ``pending`` within the
     grace window) must NOT be counted, even though it is retention-eligible.
     """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_STATS_SCHEMA_SQL)
-        await pool.execute(
-            "INSERT INTO episodes (consolidation_status, expires_at) VALUES "
-            # Reapable expired lag (non-pending) → counted.
-            "('consolidated', now() - interval '1 hour'), "
-            "('failed', now() - interval '1 hour'), "
-            # Expired but pending within grace → intentionally retained, NOT counted.
-            "('pending', now() - interval '1 hour'), "
-            # Not expired → eligible but not retained.
-            "('consolidated', now() + interval '1 hour'), "
-            # No TTL → not eligible.
-            "('pending', NULL)"
-        )
-        db = _SinglePoolDB("memory", pool)
+    pool = await db("core", "memory")
+    await pool.execute(
+        "INSERT INTO episodes (butler, content, consolidation_status, expires_at) VALUES "
+        # Reapable expired lag (non-pending) → counted.
+        "('memory', 'e1', 'consolidated', now() - interval '1 hour'), "
+        "('memory', 'e2', 'failed', now() - interval '1 hour'), "
+        # Expired but pending within grace → intentionally retained, NOT counted.
+        "('memory', 'e3', 'pending', now() - interval '1 hour'), "
+        # Not expired → eligible but not retained.
+        "('memory', 'e4', 'consolidated', now() + interval '1 hour'), "
+        # No TTL → not eligible.
+        "('memory', 'e5', 'pending', NULL)"
+    )
+    manager = _SinglePoolDB("memory", pool)
 
-        async with _app_client(db) as client:
-            resp = await client.get("/api/memory/stats")
+    async with _app_client(manager) as client:
+        resp = await client.get("/api/memory/stats")
 
     assert resp.status_code == 200
     body = resp.json()

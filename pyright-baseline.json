@@ -153,7 +153,7 @@
     "[\"roster/finance/tests/test_budgets.py\", \"reportMissingImports\", \"594bae9992bd2dd22e150575ed26d8560856aab35aa44be112a504608ad5657d\"]": 1,
     "[\"roster/finance/tests/test_budgets.py\", \"reportMissingImports\", \"987d378754abd8023b0fdad708db9436726b02b8e9f4808438f60130396f506c\"]": 1,
     "[\"roster/finance/tests/test_budgets.py\", \"reportMissingImports\", \"bb12c11627caf14db00bb4609e4d022e67be22ccbd5a17feaa00d6b12360d7db\"]": 80,
-    "[\"roster/finance/tests/test_bulk_import_pipeline.py\", \"reportMissingImports\", \"bca8d587df4ff4068da2d44a6586a00e60f0138b8f14bc7673a66ee98030dfcf\"]": 39,
+    "[\"roster/finance/tests/test_bulk_import_pipeline.py\", \"reportMissingImports\", \"bca8d587df4ff4068da2d44a6586a00e60f0138b8f14bc7673a66ee98030dfcf\"]": 38,
     "[\"roster/finance/tests/test_bulk_import_pipeline.py\", \"reportOptionalMemberAccess\", \"1ec83f26bbb1a5cdf5992f00dbe393ae722b545dac3362a8fd16285063fd9b29\"]": 1,
     "[\"roster/finance/tests/test_cancellation_door.py\", \"reportMissingImports\", \"b54c4438efd97562fdb1b1565fa65854d337bfd4089c51c9ed2c2c217ac5907c\"]": 1,
     "[\"roster/finance/tests/test_claim_reconciliation.py\", \"reportAttributeAccessIssue\", \"b14e0eedbd3f9296f4bec162490f07aa8b83ae5d5fe9d1505279c8dc114afa92\"]": 1,

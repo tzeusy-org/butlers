@@ -75,7 +75,10 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
-from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.owner_outbound_events import (
+    record_owner_outbound_point,
+    resolve_dedup_key,
+)
 from butlers.connectors.telegram_spans import telethon_in_reply_to_ref, telethon_message_spans
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
@@ -2825,6 +2828,10 @@ async def run_telegram_user_client_connector() -> None:
             codex_authority=codex_auth_authority,
             context="telegram_user_client",
         )
+
+        # Owner-outbound point events need the keyed dedup HMAC; without it they
+        # are not recorded at all (bu-szrvwu). Warns once, never raises.
+        await resolve_dedup_key(CredentialStore(cursor_pool))
 
         health_task = asyncio.create_task(
             _run_health_server(config.health_port, connector),
