@@ -28,7 +28,7 @@ from butlers.core.expected_signals import (
     upsert_expected_signal,
 )
 from butlers.core.insight_premise import probe_premise
-from butlers.tools.health._medication_utils import (
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
     dose_of_medication_sql,
 )
 from butlers.tools.health._medication_utils import (

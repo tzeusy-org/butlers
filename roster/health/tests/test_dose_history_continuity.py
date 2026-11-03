@@ -40,7 +40,7 @@ async def health_pool(db):
 
 
 async def _log_doses_days_ago(pool, medication_id: str, days: range) -> None:
-    from butlers.tools.health import medication_log_dose
+    from butlers.tools.health import medication_log_dose  # pyright: ignore[reportMissingImports]
 
     now = datetime.now(UTC)
     for day in days:
@@ -48,14 +48,16 @@ async def _log_doses_days_ago(pool, medication_id: str, days: range) -> None:
 
 
 async def _log_flare(pool) -> None:
-    from butlers.tools.health import symptom_log
+    from butlers.tools.health import symptom_log  # pyright: ignore[reportMissingImports]
 
     for _ in range(2):
         await symptom_log(pool, "nausea", 4)
 
 
 async def _adherence_candidates(pool) -> list[str]:
-    from butlers.jobs._roster.health_jobs import run_insight_scan
+    from butlers.jobs._roster.health_jobs import (  # pyright: ignore[reportMissingImports]
+        run_insight_scan,
+    )
 
     await run_insight_scan(pool)
     rows = await pool.fetch(
@@ -65,7 +67,10 @@ async def _adherence_candidates(pool) -> list[str]:
 
 
 async def test_adherence_dip_sees_history_logged_before_an_edit(health_pool):
-    from butlers.tools.health import medication_add, medication_update
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
+        medication_add,
+        medication_update,
+    )
 
     med = await medication_add(health_pool, "Sertraline", "50mg", "daily")
     # Normal logging in the prior week, nothing in the dip week, then an edit.
@@ -79,7 +84,11 @@ async def test_adherence_dip_sees_history_logged_before_an_edit(health_pool):
 
 
 async def test_medication_history_keeps_doses_across_edits_and_excludes_others(health_pool):
-    from butlers.tools.health import medication_add, medication_history, medication_update
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
+        medication_add,
+        medication_history,
+        medication_update,
+    )
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
     other = await medication_add(health_pool, "Aspirin", "100mg", "daily")
@@ -96,8 +105,13 @@ async def test_medication_history_keeps_doses_across_edits_and_excludes_others(h
 
 
 async def test_doses_endpoint_lists_doses_logged_before_an_edit(health_pool):
-    from butlers.api._roster.health.router import list_medication_doses
-    from butlers.tools.health import medication_add, medication_update
+    from butlers.api._roster.health.router import (  # pyright: ignore[reportMissingImports]
+        list_medication_doses,
+    )
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
+        medication_add,
+        medication_update,
+    )
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
     await _log_doses_days_ago(health_pool, str(med["id"]), range(2, 5))
@@ -115,7 +129,11 @@ async def test_doses_endpoint_lists_doses_logged_before_an_edit(health_pool):
 
 
 async def test_trend_report_adherence_counts_doses_logged_before_an_edit(health_pool):
-    from butlers.tools.health import medication_add, medication_update, trend_report
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
+        medication_add,
+        medication_update,
+        trend_report,
+    )
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
     await _log_doses_days_ago(health_pool, str(med["id"]), range(1, 4))
@@ -135,8 +153,13 @@ async def _backdate(pool, fact_id) -> None:
 
 
 async def test_adherence_route_stays_within_100_percent_after_an_edit(health_pool):
-    from butlers.api._roster.health.router import get_medication_adherence
-    from butlers.tools.health import medication_add, medication_update
+    from butlers.api._roster.health.router import (  # pyright: ignore[reportMissingImports]
+        get_medication_adherence,
+    )
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
+        medication_add,
+        medication_update,
+    )
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
     await _backdate(health_pool, med["id"])
@@ -155,7 +178,11 @@ async def test_adherence_route_stays_within_100_percent_after_an_edit(health_poo
 
 
 async def test_trend_report_expected_doses_ignore_the_edit_that_refreshed_created_at(health_pool):
-    from butlers.tools.health import medication_add, medication_update, trend_report
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
+        medication_add,
+        medication_update,
+        trend_report,
+    )
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
     await _backdate(health_pool, med["id"])
@@ -170,7 +197,7 @@ async def test_trend_report_expected_doses_ignore_the_edit_that_refreshed_create
 
 
 async def test_a_delete_ends_the_course_and_a_re_add_starts_a_new_one(health_pool):
-    from butlers.tools.health import (
+    from butlers.tools.health import (  # pyright: ignore[reportMissingImports]
         medication_add,
         medication_delete,
         medication_history,

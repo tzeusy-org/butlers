@@ -15,7 +15,10 @@ from butlers.tools.health._helpers import (
     _normalize_end_date,
     _row_to_dict,
 )
-from butlers.tools.health._medication_utils import dose_of_medication_sql, medication_first_seen
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+    dose_of_medication_sql,
+    medication_first_seen,
+)
 
 logger = logging.getLogger(__name__)
 

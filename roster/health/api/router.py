@@ -589,7 +589,9 @@ async def list_medication_doses(
     matched against every fact of the medication's subject, so doses logged before
     an edit (which supersedes the fact with a new id) stay listed.
     """
-    from butlers.tools.health._medication_utils import dose_of_medication_sql
+    from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+        dose_of_medication_sql,
+    )
 
     pool = _pool(db)
 
