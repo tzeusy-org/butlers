@@ -1156,6 +1156,9 @@ export interface Schedule {
   complexity?: string | null;
   source: string;
   enabled: boolean;
+  /** Id of the deadline that replaced this one; null unless superseded. */
+  superseded_by?: string | null;
+  superseded_at?: string | null;
   next_run_at: string | null;
   last_run_at: string | null;
   created_at: string;

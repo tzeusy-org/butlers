@@ -40,6 +40,7 @@ from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
+from butlers.core.temporal.deadlines_db import supersession_fields
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ def _row_to_schedule(row) -> Schedule:
         if str(raw_mode).strip().lower() in {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
         else _DISPATCH_MODE_PROMPT
     )
+    job_args = _normalize_job_args(_row_value(row, "job_args"))
     return Schedule(
         id=row["id"],
         name=row["name"],
@@ -125,7 +127,8 @@ def _row_to_schedule(row) -> Schedule:
         dispatch_mode=dispatch_mode,
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
-        job_args=_normalize_job_args(_row_value(row, "job_args")),
+        job_args=job_args,
+        **supersession_fields(job_args),
         complexity=_coerce_complexity(_row_value(row, "complexity")),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),

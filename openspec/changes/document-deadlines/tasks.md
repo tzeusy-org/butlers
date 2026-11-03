@@ -5,6 +5,7 @@
 - [x] 1.4 `paperwork_deadline_set` core temporal tool, D4 inventory declaration, `scheduled_tasks` record writer, dark-build hiding.
 - [x] 1.5 S2: supersession across same-issuer, same-kind documents (later date within 400 days retires, never deletes; owner disable carried) and per-issuer/per-butler caps under one advisory lock.
 - [x] 1.6 Failed notices back off per threshold (5 min doubling to 1 h) from their own `failed` ledger rows under a hashed per-butler, per-threshold `dedup_key`, so an outage does not write one row per tick.
+- [x] 1.7 `deadline_list` and the dashboard schedules API and table surface a superseded deadline's `superseded_by`/`superseded_at`, never the rest of `job_args`.
 
 ## 2. Verification
 - [x] 2.1 Plan test: template pinning, issuer sanitizing, late-threshold collapse and typed refusals.
@@ -15,3 +16,4 @@
 - [x] 2.7 Notice backoff: the job defers within the backoff window and keys attempts per threshold (unit); through `tick()` an outage writes one failed row across ticks and the threshold fires on recovery (real Postgres).
 - [x] 2.4 Inventory contract test: cataloged with D4 metadata, not listed to current sessions.
 - [x] 2.8 Issuer name set: adversarial phone, URL, email, markup, non-ASCII digit and length cases reduce to a short name at write and render (unit).
+- [x] 2.9 Supersession fields: well-formed-only unit test, schedules API test, schedules table test and the real-Postgres `deadline_list` check.

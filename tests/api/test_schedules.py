@@ -114,6 +114,34 @@ async def test_list_returns_paginated_structure(app):
     assert body["data"][0]["name"] == "task-a"
 
 
+async def test_list_surfaces_deadline_supersession(app):
+    """A superseded deadline carries typed superseded_by/superseded_at; others carry null."""
+    newer = uuid4()
+    at = "2026-11-02T10:15:00+00:00"
+    _wire_db(
+        app,
+        fetch_rows=[
+            _make_row(
+                name="paperwork:due:old",
+                dispatch_mode="job",
+                enabled=False,
+                job_args={"superseded_by": str(newer), "superseded_at": at},
+            ),
+            _make_row(name="owner-off", enabled=False),
+        ],
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/butlers/atlas/schedules")
+    old, off = resp.json()["data"]
+    assert (old["superseded_by"], datetime.fromisoformat(old["superseded_at"])) == (
+        str(newer),
+        datetime.fromisoformat(at),
+    )
+    assert (off["superseded_by"], off["superseded_at"]) == (None, None)
+
+
 @pytest.mark.parametrize(
     "stored,expected",
     [

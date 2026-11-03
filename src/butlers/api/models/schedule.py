@@ -62,6 +62,10 @@ class Schedule(BaseModel):
     calendar_event_id: str | None = None
     source: str = "db"
     enabled: bool = True
+    # Set only on a deadline another document's deadline retired (it is then disabled):
+    # the replacing task's id and when. Null otherwise, including an owner's disable.
+    superseded_by: UUID | None = None
+    superseded_at: datetime | None = None
     next_run_at: datetime | None = None
     last_run_at: datetime | None = None
     created_at: datetime
