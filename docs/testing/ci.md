@@ -85,9 +85,7 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `smoke`, `check-totals`, both Vitest children, `frontend-assurance`, Playwright
    `frontend-e2e` and `go-bridge`. There is no path routing and no scoped mode
    (bu-29wkwj.3). The single required check, `alls-green`, needs every one of
-   those jobs and fails unless each reports success. Until the owner switches the
-   ruleset to `alls-green` alone, its legacy `check` and `frontend` contexts are
-   thin jobs that only mirror `alls-green`.
+   those jobs and fails unless each reports success; the ruleset requires it alone.
    `smoke` takes one fresh `--collect-only` count per lane while the groups run;
    `check-totals` then requires the sum of that lane's pytest-split group counts to match
    it. There is no collected-test cap (owner decision 2026-11-03); test growth is governed by

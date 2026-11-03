@@ -77,7 +77,7 @@ Long-running tests excluded from default CI. Run with `-m nightly`. These cover 
 
 ## Scheduled CI (`.github/workflows/nightly.yml`)
 
-These jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request`. They surface hazards early without gating PR merges or the required `check`/`guards`/`frontend` checks (Playwright `frontend-e2e` is required through `check`):
+These jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request`. They surface hazards early without gating PR merges or the required `alls-green` check (Playwright `frontend-e2e` is required through `alls-green`):
 
 - **`nightly`** — the `@pytest.mark.nightly` long-running/stress suite plus migration tests.
 - **`coverage-shards` → `coverage-preflight` → `coverage-report`** — the only covered run of the suite: all five unit and six integration pytest-split groups with `CI_COVERAGE=1`, combined into the `ci-combined-coverage-report` artifact and the main coverage badge. Required CI runs the same tests untraced.
