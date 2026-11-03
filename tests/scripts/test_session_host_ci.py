@@ -44,6 +44,7 @@ def host(monkeypatch, tmp_path):
         before=b"bwrap: setting up uid map: Permission denied",
         after=31,
         load_exit=0,
+        load_names={"bwrap", "unpriv_bwrap"},
         remove_exit=0,
         calls=[],
     )
@@ -62,7 +63,7 @@ def host(monkeypatch, tmp_path):
         elif args[:4] == ["sudo", "-n", "apparmor_parser", "-a"]:
             code = state["load_exit"]
             if not code:
-                state["names"] = {"bwrap", "unpriv_bwrap"}
+                state["names"] = set(state["load_names"])
         elif args[:4] == ["sudo", "-n", "apparmor_parser", "-R"]:
             code = state["remove_exit"]
             if not code:
@@ -198,3 +199,27 @@ def test_cleanup_tampered_profile_never_removes_policy(host):
         ci.cleanup(root)
     assert state["names"] == {"bwrap", "unpriv_bwrap"}
     assert not any("-R" in args for args in state["calls"])
+
+
+@pytest.mark.parametrize("names", [set(), {"bwrap"}, {"unpriv_bwrap"}])
+def test_parser_success_without_complete_observation_never_authorizes_cleanup(host, names):
+    state, root, _, _ = host
+    state["load_names"] = names
+    with pytest.raises(ci.Refusal, match="profile_load_unobserved"):
+        ci.prepare(root)
+    assert not (root / "loaded.json").exists()
+    with pytest.raises(ci.Refusal, match="cleanup_load_ownership_unproven"):
+        ci.cleanup(root)
+    assert not any("-R" in args for args in state["calls"])
+    assert state["names"] == names
+
+
+@pytest.mark.parametrize("names", [set(), {"bwrap"}, {"unpriv_bwrap"}])
+def test_lost_owned_profile_observation_refuses_cleanup(host, names):
+    state, root, _, _ = host
+    ci.prepare(root)
+    state["names"] = names
+    with pytest.raises(ci.Refusal, match="cleanup_owned_profiles_unobserved"):
+        ci.cleanup(root)
+    assert not any("-R" in args for args in state["calls"])
+    assert state["names"] == names

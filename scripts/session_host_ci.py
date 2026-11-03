@@ -206,9 +206,9 @@ def prepare(root: Path) -> None:
     result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
     if result.returncode:
         raise Refusal("profile_load_unproven")
-    _write(root / "loaded.json", b'{"version":1}')
     if not _PROFILE_NAMES.issubset(loaded()):
         raise Refusal("profile_load_unobserved")
+    _write(root / "loaded.json", b'{"version":1}')
     restricted()
     generic_denied()
     after = repeat_preflight(root / "after")
@@ -262,6 +262,8 @@ def cleanup(root: Path) -> None:
     # refuse tests/green, and never remove uncertain foreign policy.
     if not (root / "loaded.json").exists():
         raise Refusal("cleanup_load_ownership_unproven")
+    if not _PROFILE_NAMES.issubset(loaded()):
+        raise Refusal("cleanup_owned_profiles_unobserved")
     checked(["sudo", "-n", "apparmor_parser", "-R", str(path)])
     if _PROFILE_NAMES & loaded():
         raise Refusal("profile_cleanup_unobserved")
