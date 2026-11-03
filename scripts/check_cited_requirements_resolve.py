@@ -65,6 +65,16 @@ error rather than a defect. The trade is real -- a citation that misspells the
 capability into something unrecognisable is invisible -- but the alternative is
 noise nobody can act on.
 
+Duplicate definitions
+---------------------
+An id must name exactly one requirement. The same ``ID:`` line under two
+different ``### Requirement:`` headings, across ``openspec/specs`` and the
+unarchived changes, fails the gate outright (no ratchet: the corpus is clean and
+stays clean). A ``MODIFIED``/``REMOVED`` delta that reuses the baseline id under
+the *same* heading is the intended pattern and passes. Archived changes are
+history and are not read. Run in ``make check-guards``, so the merge-group tree
+catches a stale PR head that reuses an id main has since given away.
+
 Baseline ratchet
 ----------------
 ``cited-requirements-baseline.json`` freezes today's dangling citations per
@@ -172,6 +182,36 @@ def pending_definitions(root: Path) -> dict[str, set[str]]:
         if declared:
             pending.setdefault(change, set()).update(declared)
     return pending
+
+
+HEADING = re.compile(r"^###\s+Requirement:\s*(.+?)\s*$")
+
+
+def duplicate_definitions(root: Path) -> dict[str, dict[str, list[str]]]:
+    """``{id: {heading: [files]}}`` for ids declared under more than one heading.
+
+    Reads canonical specs and unarchived change deltas; the archive is skipped.
+    The heading is the nearest preceding ``### Requirement:`` line.
+    """
+    changes_dir = root / "openspec" / "changes"
+    archive_dir = changes_dir / "archive"
+    spec_files = sorted((root / "openspec" / "specs").glob("*/spec.md"))
+    spec_files += sorted(
+        f for f in changes_dir.rglob("specs/*/spec.md") if archive_dir not in f.parents
+    )
+    seen: dict[str, dict[str, list[str]]] = {}
+    for spec_file in spec_files:
+        relative = spec_file.relative_to(root).as_posix()
+        heading: str | None = None
+        for line in spec_file.read_text("utf-8", errors="ignore").splitlines():
+            heading_match = HEADING.match(line)
+            if heading_match:
+                heading = heading_match.group(1)
+                continue
+            id_match = DEFINITION.match(line)
+            if id_match and heading is not None:
+                seen.setdefault(id_match.group(1), {}).setdefault(heading, []).append(relative)
+    return {req_id: by_heading for req_id, by_heading in seen.items() if len(by_heading) > 1}
 
 
 def test_files(root: Path) -> list[Path]:
@@ -296,6 +336,19 @@ def main() -> int:
         help="Ignore the ratchet; any unresolved citation fails.",
     )
     args = parser.parse_args()
+
+    duplicates = duplicate_definitions(args.root)
+    if duplicates:
+        for req_id, by_heading in sorted(duplicates.items()):
+            print(f"{req_id} names {len(by_heading)} different requirements:")
+            for heading, files in sorted(by_heading.items()):
+                print(f"  '{heading}' in {', '.join(sorted(set(files)))}")
+        print(
+            f"\n{len(duplicates)} requirement id(s) are defined under more than one heading. "
+            "Renumber the side in the unarchived change to the next free id; a MODIFIED or "
+            "REMOVED delta keeps the baseline id only under the same heading."
+        )
+        return 1
 
     citations = collect(args.root)
     canonical = baseline_definitions(args.root)

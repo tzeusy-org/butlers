@@ -9,13 +9,14 @@ is covered canonically by tests/config/test_migration_contract.py.
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -24,14 +25,6 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 _FINANCE_MIGRATIONS = Path(__file__).resolve().parents[2] / "roster" / "finance" / "migrations"
-
-
-def _load_migration(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 async def _apply(pool: asyncpg.Pool, mod, direction: str) -> None:
@@ -45,108 +38,21 @@ async def _apply(pool: asyncpg.Pool, mod, direction: str) -> None:
         await pool.execute(sql)
 
 
+async def _finance_at(db, revision: str) -> asyncpg.Pool:
+    """A pool on the real finance chain as *revision* left it."""
+    return await db(
+        "core",
+        "finance",
+        schemas={"finance": "finance"},
+        schema="finance",
+        revisions={"finance": revision},
+    )
+
+
 @pytest.fixture
-async def finance_pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance tables and return a pool.
-
-    WARNING: This fixture duplicates the schema from the finance migrations
-    (finance_001 through finance_005) to keep tests lightweight and avoid a
-    runtime Alembic dependency.  If any migration changes, this fixture
-    MUST be updated manually to stay in sync.
-
-    Relevant migration files:
-      - roster/finance/migrations/001_finance_tables.py  (finance_001)
-      - roster/finance/migrations/002_merchant_mappings_trigram_index.py  (finance_002)
-      - roster/finance/migrations/003_merchant_mappings_schema_correction.py  (finance_003)
-      - roster/finance/migrations/004_transactions_dedup_constraint.py  (finance_004)
-      - roster/finance/migrations/005_add_csv_dedup_index.py  (finance_005)
-    """
-    async with provisioned_postgres_pool() as pool:
-        # We need to run the migrations through Alembic's op interface,
-        # but for testing we can directly execute the SQL
-        try:
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS accounts (
-                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    institution TEXT NOT NULL,
-                    type        TEXT NOT NULL
-                                    CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                    name        TEXT,
-                    last_four   CHAR(4),
-                    currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                    source_message_id TEXT,
-                    posted_at         TIMESTAMPTZ NOT NULL,
-                    merchant          TEXT NOT NULL,
-                    description       TEXT,
-                    amount            NUMERIC(14, 2) NOT NULL,
-                    currency          CHAR(3) NOT NULL,
-                    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-                    category          TEXT NOT NULL,
-                    payment_method    TEXT,
-                    receipt_url       TEXT,
-                    external_ref      TEXT,
-                    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-
-            # Create existing indexes from finance_001
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_accounts_institution
-                    ON accounts (institution)
-            """)
-            await pool.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_accounts_institution_type_last_four
-                    ON accounts (institution, type, last_four)
-                    WHERE last_four IS NOT NULL
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_posted_at
-                    ON transactions (posted_at DESC)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_merchant
-                    ON transactions (merchant)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_category
-                    ON transactions (category)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_account_id
-                    ON transactions (account_id)
-            """)
-            await pool.execute("""
-                CREATE INDEX IF NOT EXISTS idx_transactions_source_message_id
-                    ON transactions (source_message_id)
-            """)
-            await pool.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe
-                    ON transactions (source_message_id, merchant, amount, posted_at)
-                    WHERE source_message_id IS NOT NULL
-            """)
-
-            # Create the CSV dedup index from finance_005
-            await pool.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_csv_dedup
-                    ON transactions (posted_at, amount, merchant, account_id)
-                    WHERE source_message_id IS NULL
-            """)
-
-        except asyncpg.PostgresError as e:
-            pytest.fail(f"Failed to set up test database: {e}")
-
-        yield pool
+async def finance_pool(db):
+    """finance tables as finance_005 left them (CSV dedup index in place)."""
+    return await _finance_at(db, "finance_005")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -316,54 +222,9 @@ _MIGRATION_011 = _FINANCE_MIGRATIONS / "011_drop_superseded_transaction_dedup_in
 
 
 @pytest.fixture
-async def bills_pool(provisioned_postgres_pool):
-    """Pool with a minimal finance schema (accounts + bills) for migration 009 tests.
-
-    Sets up the schema at the finance_001 state for the two tables that matter:
-    accounts (required by the FK in bills) and bills itself.  No other tables
-    are needed to test the additive column migration.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                institution TEXT NOT NULL,
-                type        TEXT NOT NULL
-                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                name        TEXT,
-                last_four   CHAR(4),
-                currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS bills (
-                id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                payee                  TEXT NOT NULL,
-                amount                 NUMERIC(14, 2) NOT NULL,
-                currency               CHAR(3) NOT NULL,
-                due_date               DATE NOT NULL,
-                frequency              TEXT NOT NULL
-                                           CHECK (frequency IN (
-                                               'one_time', 'weekly', 'monthly',
-                                               'quarterly', 'yearly', 'custom'
-                                           )),
-                status                 TEXT NOT NULL
-                                           CHECK (status IN ('pending', 'paid', 'overdue')),
-                payment_method         TEXT,
-                account_id             UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id      TEXT,
-                statement_period_start DATE,
-                statement_period_end   DATE,
-                paid_at                TIMESTAMPTZ,
-                metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield pool
+async def bills_pool(db):
+    """finance tables as finance_008 left them, for the finance_009 bills column."""
+    return await _finance_at(db, "finance_008")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -378,7 +239,7 @@ class TestBillsReconciledTransactionIdMigration:
         reads as NULL when omitted from an INSERT.
         """
         pool = bills_pool
-        mod = _load_migration("finance_009", _MIGRATION_009)
+        mod = load_migration(_MIGRATION_009, "finance_009")
         await _apply(pool, mod, "upgrade")
 
         # Column metadata.
@@ -421,7 +282,7 @@ class TestBillsReconciledTransactionIdMigration:
     async def test_downgrade_drops_column(self, bills_pool: asyncpg.Pool) -> None:
         """After upgrade then downgrade the column and its index are absent from the schema."""
         pool = bills_pool
-        mod = _load_migration("finance_009", _MIGRATION_009)
+        mod = load_migration(_MIGRATION_009, "finance_009")
         await _apply(pool, mod, "upgrade")
         await _apply(pool, mod, "downgrade")
 
@@ -458,7 +319,7 @@ class TestTransactionDedupIndexCleanupMigration:
         assert await pool.fetchval("SELECT to_regclass('uq_transactions_composite_dedup')")
         assert await pool.fetchval("SELECT to_regclass('uq_transactions_csv_dedup')")
 
-        mod = _load_migration("finance_011", _MIGRATION_011)
+        mod = load_migration(_MIGRATION_011, "finance_011")
         await _apply(pool, mod, "upgrade")
 
         assert await pool.fetchval("SELECT to_regclass('uq_transactions_composite_dedup')") is None
@@ -494,48 +355,9 @@ _MIGRATION_013 = _FINANCE_MIGRATIONS / "013_subscription_cancellation_door.py"
 
 
 @pytest.fixture
-async def subscriptions_pool(provisioned_postgres_pool):
-    """Pool with a minimal finance schema (accounts + subscriptions) at the
-    finance_001 state, for testing the additive finance_013 column migration.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                institution TEXT NOT NULL,
-                type        TEXT NOT NULL
-                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                name        TEXT,
-                last_four   CHAR(4),
-                currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                service           TEXT NOT NULL,
-                amount            NUMERIC(14, 2) NOT NULL,
-                currency          CHAR(3) NOT NULL,
-                frequency         TEXT NOT NULL
-                                      CHECK (frequency IN (
-                                          'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                                      )),
-                next_renewal      DATE NOT NULL,
-                status            TEXT NOT NULL
-                                      CHECK (status IN ('active', 'cancelled', 'paused')),
-                auto_renew        BOOLEAN NOT NULL DEFAULT true,
-                payment_method    TEXT,
-                account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id TEXT,
-                metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield pool
+async def subscriptions_pool(db):
+    """finance tables as finance_012 left them, for the subscription migrations."""
+    return await _finance_at(db, "finance_012")
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -550,7 +372,7 @@ class TestSubscriptionCancellationDoorMigration:
         explicit default, and a bare INSERT leaves them NULL.
         """
         pool = subscriptions_pool
-        mod = _load_migration("finance_013", _MIGRATION_013)
+        mod = load_migration(_MIGRATION_013, "finance_013")
         await _apply(pool, mod, "upgrade")
 
         cols = {
@@ -588,7 +410,7 @@ class TestSubscriptionCancellationDoorMigration:
     ) -> None:
         """notice_period_days must be non-negative when present."""
         pool = subscriptions_pool
-        mod = _load_migration("finance_013", _MIGRATION_013)
+        mod = load_migration(_MIGRATION_013, "finance_013")
         await _apply(pool, mod, "upgrade")
 
         with pytest.raises(asyncpg.CheckViolationError):
@@ -606,7 +428,7 @@ class TestSubscriptionCancellationDoorMigration:
     async def test_downgrade_drops_columns(self, subscriptions_pool: asyncpg.Pool) -> None:
         """After upgrade then downgrade, all three door columns are absent."""
         pool = subscriptions_pool
-        mod = _load_migration("finance_013", _MIGRATION_013)
+        mod = load_migration(_MIGRATION_013, "finance_013")
         await _apply(pool, mod, "upgrade")
         await _apply(pool, mod, "downgrade")
 
@@ -629,14 +451,14 @@ _MIGRATION_014 = _FINANCE_MIGRATIONS / "014_obligation_ledger.py"
 class TestObligationLedgerMigration:
     """Integration tests for finance_014: obligation ledger table.
 
-    Reuses the ``subscriptions_pool`` fixture (finance_001 state) and layers
+    Reuses the ``subscriptions_pool`` fixture (finance_012 state) and layers
     finance_013 on top, since obligation_ledger.subscription_id references
     subscriptions and slice 2's derivation reads the finance_013 door columns.
     """
 
     async def _upgrade_to_014(self, pool: asyncpg.Pool) -> None:
-        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
-        await _apply(pool, _load_migration("finance_014", _MIGRATION_014), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_013, "finance_013"), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_014, "finance_014"), "upgrade")
 
     @pytest.mark.integration
     async def test_upgrade_creates_table_with_expected_columns(
@@ -719,7 +541,7 @@ class TestObligationLedgerMigration:
         """After upgrade then downgrade, obligation_ledger no longer exists."""
         pool = subscriptions_pool
         await self._upgrade_to_014(pool)
-        await _apply(pool, _load_migration("finance_014", _MIGRATION_014), "downgrade")
+        await _apply(pool, load_migration(_MIGRATION_014, "finance_014"), "downgrade")
 
         exists = await pool.fetchval(
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
@@ -821,9 +643,7 @@ async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, leg
             )
     after = await _budget_schema_state(pool)
     # Reapplying the repair changes neither rows nor its current CHECK.
-    repair = _load_migration(
-        "finance_budget_periods", _FINANCE_MIGRATIONS / "016_budget_periods.py"
-    )
+    repair = load_migration(_FINANCE_MIGRATIONS / "016_budget_periods.py", "finance_budget_periods")
     async with pool.acquire() as conn, conn.transaction():
         await _apply(conn, repair, "upgrade")
     assert await _budget_schema_state(pool) == after
@@ -908,7 +728,7 @@ class TestSubscriptionCancellationProvenanceMigration:
         self, subscriptions_pool: asyncpg.Pool
     ) -> None:
         pool = subscriptions_pool
-        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_013, "finance_013"), "upgrade")
         await pool.execute(
             """
             INSERT INTO subscriptions (
@@ -922,7 +742,7 @@ class TestSubscriptionCancellationProvenanceMigration:
             """
         )
 
-        await _apply(pool, _load_migration("finance_017", _MIGRATION_017), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_017, "finance_017"), "upgrade")
 
         row = await pool.fetchrow(
             "SELECT cancellation_url_source, status_source FROM subscriptions"
@@ -934,8 +754,8 @@ class TestSubscriptionCancellationProvenanceMigration:
         self, subscriptions_pool: asyncpg.Pool
     ) -> None:
         pool = subscriptions_pool
-        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
-        mod = _load_migration("finance_017", _MIGRATION_017)
+        await _apply(pool, load_migration(_MIGRATION_013, "finance_013"), "upgrade")
+        mod = load_migration(_MIGRATION_017, "finance_017")
         await _apply(pool, mod, "upgrade")
 
         with pytest.raises(asyncpg.CheckViolationError):
@@ -1045,8 +865,8 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
         assert after["renewal_source"] == after["price_source"] == "extracted"
         assert after["field_claims"] == [] and after["date_epoch"] == after["price_epoch"] == 0
     if case == "legacy-reapply":
-        module = _load_migration(
-            "finance_claim_reapply", _FINANCE_MIGRATIONS / "019_subscription_field_claims.py"
+        module = load_migration(
+            _FINANCE_MIGRATIONS / "019_subscription_field_claims.py", "finance_claim_reapply"
         )
         async with pool.acquire() as conn:
             async with conn.transaction():

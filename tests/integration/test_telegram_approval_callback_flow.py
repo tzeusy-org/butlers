@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -27,11 +26,9 @@ from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     mint_approval_callback_token,
 )
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import gate as approvals_gate_module
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -166,25 +163,10 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     return app
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Use the production core + approvals migrations, not hand-rolled DDL."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
 @pytest.fixture
-async def approval_pool(migrated_db_url: str):
-    """Return an isolated JSONB-aware pool over the migrated approval schema."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def approval_pool(db):
+    """Return an isolated JSONB-aware pool over the production core + approvals migrations."""
+    pool = await db("core", "approvals")
     await clear_audit_log_for_test(pool)
     await pool.execute(
         "TRUNCATE TABLE autonomy_suggestions, autonomy_approval_history, "
@@ -202,10 +184,7 @@ async def approval_pool(migrated_db_url: str):
         {"chat_id": "42"},
         _REQUESTED_AT,
     )
-    try:
-        yield pool
-    finally:
-        await pool.close()
+    return pool
 
 
 async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(

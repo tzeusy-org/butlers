@@ -3,7 +3,9 @@
 ## Purpose
 
 Defines the type-aware behaviors of the unified butler daemon engine: config parsing, the core MCP tool surface, runtime-config seeding from the DB, and startup sequencing.
+
 ## Requirements
+
 ### Requirement: Agent Type Awareness
 The daemon SHALL read the `type` field from `butler.toml` config and apply type-specific behaviors at well-defined decision points. The daemon engine remains unified — there is no separate `StafferDaemon` class.
 
@@ -36,6 +38,7 @@ Every butler daemon registers core MCP tools based on the `core_groups` allowlis
 
 This requirement **supersedes** the tier-based system (UNIVERSAL/DOMAIN/MESSENGER/SWITCHBOARD constants and the `_tools_to_remove` post-registration pruning) documented in RFC 0002 §Tool Budget Discipline. The tier constants (`UNIVERSAL_CORE_TOOL_NAMES`, `DOMAIN_CORE_TOOL_NAMES`, `MESSENGER_CORE_TOOL_NAMES`) are removed. RFC 0002 §Tool Budget Discipline requires amendment to reflect the `core_groups` mechanism.
 
+ID: REQ-core-daemon-002
 Source: RFC 0002 §Core Tools, §Tool Budget Discipline (superseded by this change), Doctrine Rule #5 (operational tuning is DB-persisted)
 Scope: v1-mandatory
 
@@ -88,16 +91,23 @@ Name-gated tools (messenger-only, switchboard-only) are gated by butler name as 
 - **WHEN** a staffer starts and its core_groups does not include `temporal`
 - **THEN** deadline, event_chain, and seasonal_period tools SHALL NOT be registered
 
+#### Scenario: Infrastructure presentation declarations do not change registration
+
+- **WHEN** the presentation inventory classifies `route.execute` or `cancel_session` as infrastructure-only
+- **THEN** that declaration SHALL leave their canonical FastMCP registrations and existing infrastructure callers unchanged
+- **AND** the declaration SHALL NOT claim that a runtime adapter already hides their definitions from model context
+
 ### Requirement: Config loading parses runtime_seed section
 The daemon config loader SHALL parse `[butler.runtime_seed]` from the toml and return a `RuntimeSeedConfig` dataclass. The old `[butler.runtime]` and `[butler.seed_configs]` sections SHALL NOT be rejected with a clear error; they SHALL be accepted and ignored. The dataclass is operational-only: retired `model`, `runtime_type`, `args`, and `session_timeout_s` keys inside `[butler.runtime_seed]` SHALL be rejected, while the obsolete top-level `[runtime]` section SHALL be rejected with deletion guidance.
 
+ID: REQ-core-daemon-003
 Source: RFC 0001 §Startup Phases (phase 1 — config load), Doctrine Rule #5
 Scope: v1-mandatory
 
 #### Scenario: Parse runtime_seed section
 - **WHEN** `load_config()` reads a toml with `[butler.runtime_seed]`
 - **THEN** a `RuntimeSeedConfig` SHALL NOT be returned with fields: core_groups (tuple[str,...] | None), model (str | None), runtime_type (str, default "codex"), args (tuple[str,...], default ()), max_concurrent_sessions (int, default 3), max_queued_sessions (int, default 10), session_timeout_s (int, default 900), liveness_ttl_seconds (int, default 300), route_contract_min (int, default 1), route_contract_max (int, default 1)
-- **AND** it SHALL instead contain exactly these fields: `core_groups` (`tuple[str, ...] | None`, default `None`), `catalog_read_sensitivity` (`normal | internal | confidential`, default `normal`), `max_concurrent_sessions` (`int`, default `3`), `max_queued_sessions` (`int`, default `10`), `liveness_ttl_seconds` (`int`, default `300`), `route_contract_min` (`int`, default `1`), and `route_contract_max` (`int`, default `1`)
+- **AND** it SHALL instead contain exactly these fields: `core_groups` (`tuple[str, ...] | None`, default `None`), `catalog_read_sensitivity` (`normal | internal | confidential`, default `normal`), `tool_exposure_policy` (`eager_filtered | auto`, default `eager_filtered`), `max_concurrent_sessions` (`int`, default `3`), `max_queued_sessions` (`int`, default `10`), `liveness_ttl_seconds` (`int`, default `300`), `route_contract_min` (`int`, default `1`), and `route_contract_max` (`int`, default `1`)
 - **AND** `model`, `runtime_type`, `args`, and `session_timeout_s` SHALL NOT be dataclass fields and SHALL raise `ConfigError` when supplied inside `[butler.runtime_seed]`
 
 #### Scenario: Reject old [butler.runtime] section

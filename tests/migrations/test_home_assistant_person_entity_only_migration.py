@@ -9,7 +9,6 @@ person-to-entity identity data.
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -19,7 +18,7 @@ import pytest
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, load_migration, migration_db_name
 
 _DOCKER_AVAILABLE = shutil.which("docker") is not None
 _MIGRATION_PATH = (
@@ -31,16 +30,8 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_179", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_migration_chain_and_guards() -> None:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_179")
     assert migration.revision == "core_179"
     assert migration.down_revision == "core_178"
     assert migration.branch_labels is None

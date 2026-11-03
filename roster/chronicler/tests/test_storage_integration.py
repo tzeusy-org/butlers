@@ -1,18 +1,13 @@
 """Integration tests for Chronicler storage primitives and adapters.
 
-Uses the shared ``provisioned_postgres_pool`` fixture to run against a
-real PostgreSQL instance. The Chronicler migration is applied directly
-via the SQL strings baked into
-``roster/chronicler/migrations/001_chronicler_tables.py``; integration
-happens here rather than through an Alembic CLI run to stay aligned
-with other butler migration tests (see ``tests/migrations/``).
+Runs against a private clone migrated by the real ``core`` and ``chronicler``
+Alembic chains (the root ``db`` fixture), so the tables and corrected views
+under test are exactly the production ones.
 """
 
 from __future__ import annotations
 
-import importlib.util as _importlib_util
 from datetime import UTC, datetime, timedelta
-from pathlib import Path as _Path
 from unittest.mock import MagicMock
 from uuid import uuid4
 
@@ -41,8 +36,10 @@ from butlers.chronicler.models import (
     SourceAdapterState,
 )
 from butlers.chronicler.storage import (
+    get_carryover,
     get_checkpoint,
     get_checkpoint_subsource,
+    get_cursor,
     get_episode,
     get_source_state,
     insert_override,
@@ -56,21 +53,14 @@ from butlers.chronicler.storage import (
     record_idempotency,
     refresh_episode_evidence_refs,
     register_source,
+    save_carryover,
+    set_cursor,
     upsert_checkpoint,
     upsert_checkpoint_subsource,
     upsert_episode,
     upsert_point_event,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
-
-_inline_ddl_spec = _importlib_util.spec_from_file_location(
-    "_inline_ddl",
-    _Path(__file__).parent / "_inline_ddl.py",
-)
-assert _inline_ddl_spec is not None and _inline_ddl_spec.loader is not None
-_inline_ddl_mod = _importlib_util.module_from_spec(_inline_ddl_spec)
-_inline_ddl_spec.loader.exec_module(_inline_ddl_mod)  # type: ignore[union-attr]
-make_sessions_table_ddl = _inline_ddl_mod.make_sessions_table_ddl
 
 pytestmark = [
     pytest.mark.integration,
@@ -81,250 +71,23 @@ pytestmark = [
 # ── Schema bring-up fixture ────────────────────────────────────────────────
 
 
-async def _apply_chronicler_schema(pool) -> None:
-    """Run the Chronicler DDL against the provisioned pool.
-
-    Keeps the integration lightweight: no Alembic bootstrap required.
-    Must stay in sync with the full chronicler migration chain
-    (``roster/chronicler/migrations/``). The CI test
-    ``tests/chronicler/test_schema_drift.py`` automatically detects drift
-    between this inline DDL and the Alembic migration chain.
-
-    Current migrations reflected here:
-    - 001_chronicler_tables: base schema
-    - 002_per_schema_watermarks: subsource column and composite PK on projection_checkpoints
-    - 005_tuple_watermark: watermark_id column on projection_checkpoints
-    - 006_checkpoint_carryover: carryover JSONB column on projection_checkpoints
-    - 015_point_events_entity_id: entity_id column on point_events + v_point_events_corrected update
-    - 016_drop_episodes_entity_id: drops episodes.entity_id (added in 013) +
-      recreates v_episodes_corrected without it
-    - 017_iea_layer_confidence_evidence: layer/confidence/evidence_refs on
-      episodes, layer on point_events, both exposed on the corrected views
-
-    Tables intentionally omitted (not needed by storage integration tests):
-    - ``tier2_cache`` (migration 004)
-    - ``episode_entities`` (migration 014)
-    """
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS source_adapter_state (
-            source_name TEXT PRIMARY KEY,
-            chronicler_compatibility TEXT NOT NULL
-                CHECK (chronicler_compatibility IN (
-                    'supported', 'deferred', 'not_time_bearing', 'planned'
-                )),
-            read_surface TEXT,
-            boundary_semantics TEXT,
-            optional_schema BOOLEAN NOT NULL DEFAULT false,
-            active BOOLEAN NOT NULL DEFAULT false,
-            inactive_reason TEXT,
-            schema_version INTEGER NOT NULL DEFAULT 1,
-            registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    # projection_checkpoints: composite PK (source_name, subsource) so that
-    # each sub-source (e.g. butler schema) can track its watermark independently.
-    # subsource = '' is the global (adapter-level) sentinel row.
-    # watermark_id added in migration 005_tuple_watermark: stores the source-table
-    # id of the last-projected row to form a tuple watermark (watermark, watermark_id)
-    # that eliminates batch-boundary missed-row edge cases.
-    # carryover added in migration 006_checkpoint_carryover: nullable JSONB for
-    # open-episode state that adapters persist across batch boundaries.
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS projection_checkpoints (
-            source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name)
-                ON DELETE CASCADE,
-            subsource TEXT NOT NULL DEFAULT '',
-            watermark TIMESTAMPTZ,
-            watermark_id BIGINT,
-            carryover JSONB,
-            last_run_at TIMESTAMPTZ,
-            last_success_at TIMESTAMPTZ,
-            last_error TEXT,
-            rows_projected BIGINT NOT NULL DEFAULT 0,
-            run_count BIGINT NOT NULL DEFAULT 0,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (source_name, subsource)
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS point_events (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name),
-            source_ref TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            occurred_at TIMESTAMPTZ NOT NULL,
-            precision TEXT NOT NULL DEFAULT 'exact'
-                CHECK (precision IN ('exact', 'minute', 'hour', 'day', 'unknown')),
-            title TEXT,
-            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-            privacy TEXT NOT NULL DEFAULT 'normal'
-                CHECK (privacy IN ('normal', 'sensitive', 'restricted')),
-            retention_days INTEGER,
-            tombstone_at TIMESTAMPTZ,
-            tombstone_reason TEXT,
-            entity_id UUID,
-            layer TEXT NOT NULL DEFAULT 'evidence'
-                CHECK (layer IN ('intent', 'evidence', 'activity')),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (source_name, source_ref)
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name),
-            source_ref TEXT NOT NULL,
-            episode_type TEXT NOT NULL,
-            start_at TIMESTAMPTZ NOT NULL,
-            end_at TIMESTAMPTZ,
-            precision TEXT NOT NULL DEFAULT 'exact'
-                CHECK (precision IN ('exact', 'minute', 'hour', 'day', 'unknown')),
-            title TEXT,
-            payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-            privacy TEXT NOT NULL DEFAULT 'normal'
-                CHECK (privacy IN ('normal', 'sensitive', 'restricted')),
-            retention_days INTEGER,
-            tombstone_at TIMESTAMPTZ,
-            tombstone_reason TEXT,
-            layer TEXT NOT NULL DEFAULT 'evidence'
-                CHECK (layer IN ('intent', 'evidence', 'activity')),
-            confidence TEXT NOT NULL DEFAULT 'low'
-                CHECK (confidence IN ('high', 'medium', 'low')),
-            evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (source_name, source_ref),
-            CHECK (end_at IS NULL OR end_at >= start_at)
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS episode_event_links (
-            episode_id UUID NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
-            event_id UUID NOT NULL REFERENCES point_events(id) ON DELETE CASCADE,
-            relation TEXT NOT NULL DEFAULT 'supports'
-                CHECK (relation IN ('supports', 'boundary_start', 'boundary_end', 'evidence')),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            PRIMARY KEY (episode_id, event_id, relation)
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS overrides (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            target_kind TEXT NOT NULL CHECK (target_kind IN ('episode', 'point_event')),
-            target_id UUID NOT NULL,
-            corrected_start_at TIMESTAMPTZ,
-            corrected_end_at TIMESTAMPTZ,
-            corrected_title TEXT,
-            corrected_privacy TEXT
-                CHECK (corrected_privacy IS NULL OR
-                       corrected_privacy IN ('normal', 'sensitive', 'restricted')),
-            corrected_tombstone_at TIMESTAMPTZ,
-            note TEXT,
-            submitted_by TEXT NOT NULL DEFAULT 'user',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CHECK (
-                corrected_start_at IS NOT NULL OR
-                corrected_end_at IS NOT NULL OR
-                corrected_title IS NOT NULL OR
-                corrected_privacy IS NOT NULL OR
-                corrected_tombstone_at IS NOT NULL OR
-                note IS NOT NULL
-            )
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS idempotency_keys (
-            source_name TEXT NOT NULL REFERENCES source_adapter_state(source_name)
-                ON DELETE CASCADE,
-            key TEXT NOT NULL,
-            first_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            hit_count INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (source_name, key)
-        )
-    """)
-    await pool.execute("""
-        CREATE OR REPLACE VIEW v_latest_overrides AS
-        SELECT DISTINCT ON (target_kind, target_id)
-            target_kind,
-            target_id,
-            corrected_start_at,
-            corrected_end_at,
-            corrected_title,
-            corrected_privacy,
-            corrected_tombstone_at,
-            note,
-            created_at AS corrected_at
-        FROM overrides
-        ORDER BY target_kind, target_id, created_at DESC
-    """)
-    await pool.execute("""
-        CREATE OR REPLACE VIEW v_episodes_corrected AS
-        SELECT
-            e.id,
-            e.source_name,
-            e.source_ref,
-            e.episode_type,
-            COALESCE(o.corrected_start_at, e.start_at) AS start_at,
-            COALESCE(o.corrected_end_at, e.end_at) AS end_at,
-            e.precision,
-            COALESCE(o.corrected_title, e.title) AS title,
-            e.payload,
-            COALESCE(o.corrected_privacy, e.privacy) AS privacy,
-            e.retention_days,
-            COALESCE(o.corrected_tombstone_at, e.tombstone_at) AS tombstone_at,
-            e.start_at AS canonical_start_at,
-            e.end_at AS canonical_end_at,
-            e.title AS canonical_title,
-            e.privacy AS canonical_privacy,
-            o.corrected_at,
-            o.note AS correction_note,
-            e.created_at,
-            e.updated_at,
-            e.layer,
-            e.confidence,
-            e.evidence_refs
-        FROM episodes e
-        LEFT JOIN v_latest_overrides o
-            ON o.target_kind = 'episode' AND o.target_id = e.id
-    """)
-    await pool.execute("""
-        CREATE OR REPLACE VIEW v_point_events_corrected AS
-        SELECT
-            p.id,
-            p.source_name,
-            p.source_ref,
-            p.event_type,
-            COALESCE(o.corrected_start_at, p.occurred_at) AS occurred_at,
-            p.precision,
-            COALESCE(o.corrected_title, p.title) AS title,
-            p.payload,
-            COALESCE(o.corrected_privacy, p.privacy) AS privacy,
-            p.retention_days,
-            COALESCE(o.corrected_tombstone_at, p.tombstone_at) AS tombstone_at,
-            p.occurred_at AS canonical_occurred_at,
-            p.title AS canonical_title,
-            p.privacy AS canonical_privacy,
-            o.corrected_at,
-            o.note AS correction_note,
-            p.created_at,
-            p.updated_at,
-            p.entity_id,
-            p.layer
-        FROM point_events p
-        LEFT JOIN v_latest_overrides o
-            ON o.target_kind = 'point_event' AND o.target_id = p.id
-    """)
-
-
 @pytest.fixture
-async def chronicler_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await _apply_chronicler_schema(pool)
-        await seed_source_registry(pool, sources=INITIAL_SOURCES)
-        yield pool
+async def chronicler_pool(db):
+    pool = await db("core", "chronicler")
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
+async def _add_butler_sessions(conn, fake_schema: str) -> None:
+    """Give *fake_schema* a sessions table shaped exactly like the core-migrated one.
+
+    The factory migrates the core chain once (into ``public``); this copies that
+    real table's shape for each extra fake butler schema the adapter reads.
+    """
+    await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{fake_schema}"')
+    await conn.execute(
+        f'CREATE TABLE "{fake_schema}".sessions (LIKE public.sessions INCLUDING ALL)'
+    )
 
 
 # ── Source registry ────────────────────────────────────────────────────────
@@ -727,6 +490,28 @@ async def test_checkpoint_success_advances_watermark(chronicler_pool) -> None:
     assert cp.last_error is None
 
 
+async def test_cursor_tiebreaker_survives_carryover_rewrites_and_stays_hidden(
+    chronicler_pool,
+) -> None:
+    """bu-f9ob67: the ``(ts, key)`` tiebreaker rides in carryover without leaking."""
+    ts = datetime.now(UTC)
+    assert await get_cursor(chronicler_pool, "core.sessions") is None
+
+    await set_cursor(chronicler_pool, "core.sessions", ts, ["a", "b"])
+    assert await get_cursor(chronicler_pool, "core.sessions") == (ts, ["a", "b"])
+
+    # An adapter rewriting its own carryover neither sees nor drops the cursor.
+    assert await get_carryover(chronicler_pool, "core.sessions") == {}
+    await save_carryover(chronicler_pool, "core.sessions", {"endpoint": {"n": 1}})
+    assert await get_carryover(chronicler_pool, "core.sessions") == {"endpoint": {"n": 1}}
+    assert await get_cursor(chronicler_pool, "core.sessions") == (ts, ["a", "b"])
+
+    # Saving the cursor keeps the adapter's carryover.
+    await set_cursor(chronicler_pool, "core.sessions", ts, ["c"])
+    assert await get_carryover(chronicler_pool, "core.sessions") == {"endpoint": {"n": 1}}
+    assert await get_cursor(chronicler_pool, "core.sessions") == (ts, ["c"])
+
+
 async def test_checkpoint_failure_does_not_advance_watermark(chronicler_pool) -> None:
     await upsert_checkpoint(
         chronicler_pool,
@@ -766,8 +551,7 @@ async def test_sessions_adapter_projects_and_replays(chronicler_pool) -> None:
     """Exercise the sessions adapter end-to-end using a fake butler schema."""
     fake_schema = "testbutler"
     async with chronicler_pool.acquire() as conn:
-        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{fake_schema}"')
-        await conn.execute(make_sessions_table_ddl(fake_schema))
+        await _add_butler_sessions(conn, fake_schema)
         # One open + one closed session.
         open_id = uuid4()
         closed_id = uuid4()
@@ -833,8 +617,7 @@ async def test_freshly_projected_activity_source_is_activity(chronicler_pool) ->
     """
     fake_schema = "iealayer"
     async with chronicler_pool.acquire() as conn:
-        await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{fake_schema}"')
-        await conn.execute(make_sessions_table_ddl(fake_schema))
+        await _add_butler_sessions(conn, fake_schema)
         now = datetime.now(UTC)
         await conn.execute(
             f"""
@@ -1088,8 +871,7 @@ async def test_sessions_adapter_per_schema_watermarks_advance_independently(
 
     async with chronicler_pool.acquire() as conn:
         for schema in (schema_a, schema_b):
-            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-            await conn.execute(make_sessions_table_ddl(schema))
+            await _add_butler_sessions(conn, schema)
 
         # Schema A: one old closed session (30 days ago).
         old_time = now - timedelta(days=30)
@@ -1178,8 +960,7 @@ async def test_sessions_adapter_global_watermark_is_conservative(
 
     async with chronicler_pool.acquire() as conn:
         for schema in (schema_a, schema_b):
-            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-            await conn.execute(make_sessions_table_ddl(schema))
+            await _add_butler_sessions(conn, schema)
 
         # Schema A: old session (30 days ago).
         old_time = now - timedelta(days=30)
@@ -1349,7 +1130,7 @@ async def test_upsert_point_event_entity_id_updates_on_replay(chronicler_pool) -
 #
 # HTTP-driven integration tests for the read/correction surfaces that resolve
 # real joins/views (episode_event_links, v_episodes_corrected, the corrections
-# overlay).  Driven against the provisioned Postgres pool rather than a mocked
+# overlay).  Driven against the migrated Postgres clone rather than a mocked
 # pool so the SQL — and the corrections-overlay write path — is exercised end to
 # end (see "Mocked-pool vs integration test gap").
 

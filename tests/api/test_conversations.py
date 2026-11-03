@@ -30,6 +30,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api import conversation_envelope
 from butlers.api.chat_stream import chat_stream_channel
 from butlers.api.conversation_envelope import build_dashboard_envelope
 from butlers.api.conversations import (
@@ -338,6 +339,71 @@ def test_build_dashboard_envelope_omits_pinned_target_and_page_context_by_defaul
     )
     assert "pinned_target" not in envelope["control"]
     assert "page_context" not in envelope["payload"]["raw"]
+
+
+# ---------------------------------------------------------------------------
+# build_dashboard_envelope — bounded context preamble (bu-893x6a)
+# ---------------------------------------------------------------------------
+
+
+def _history(n: int, size: int) -> list[dict[str, str]]:
+    """``n`` alternating user/assistant turns; each body is ``size`` chars with an index tag."""
+    return [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i:02d}-" + "x" * (size - 4)}
+        for i in range(n)
+    ]
+
+
+def _normalized(history: list[dict[str, str]], *, pairs: int = 5) -> str:
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID,
+        message_id=uuid4(),
+        message_text="latest question",
+        conversation_context=history,
+        max_context_pairs=pairs,
+    )
+    return envelope["payload"]["normalized_text"]
+
+
+def test_over_budget_preamble_marks_omitted_context_within_the_same_budget():
+    text = _normalized(_history(10, 500))
+    preamble, _, current = text.rpartition("\nUser: ")
+
+    assert current == "latest question"
+    assert len(preamble) <= conversation_envelope._MAX_CONTEXT_CHARS
+    lines = preamble.splitlines()
+    assert lines[0] == "## Conversation history"
+    assert lines[1].startswith("[Earlier conversation history omitted")
+    kept = lines[2:]
+    # Newest context survives as whole, role-labelled lines in original order.
+    assert kept[-1].startswith("Assistant: m09-")
+    indexes = [int(line.split(": m", 1)[1][:2]) for line in kept]
+    assert indexes == sorted(indexes) and indexes[-1] == 9 and indexes[0] > 0
+    assert all(line.startswith(("User: m", "Assistant: m")) for line in kept)
+    assert f"{10 - len(indexes)} older" in lines[1]
+
+
+def test_preamble_at_or_below_budget_is_unchanged_and_unmarked(monkeypatch):
+    history = _history(4, 120)
+    full = _normalized(history)
+    preamble_len = len(full.rpartition("\nUser: ")[0])
+
+    monkeypatch.setattr(conversation_envelope, "_MAX_CONTEXT_CHARS", preamble_len)
+    assert _normalized(history) == full
+    assert "omitted" not in full
+    assert full.splitlines()[1:5] == [
+        f"{'User' if i % 2 == 0 else 'Assistant'}: m{i:02d}-" + "x" * 116 for i in range(4)
+    ]
+
+    monkeypatch.setattr(conversation_envelope, "_MAX_CONTEXT_CHARS", preamble_len - 1)
+    trimmed = _normalized(history)
+    assert "[Earlier conversation history omitted" in trimmed
+    assert len(trimmed.rpartition("\nUser: ")[0]) <= preamble_len - 1
+
+
+def test_empty_history_adds_no_preamble():
+    assert _normalized([]) == "latest question"
+    assert _normalized([{"role": "system", "content": "ignored"}]) == "latest question"
 
 
 # ---------------------------------------------------------------------------

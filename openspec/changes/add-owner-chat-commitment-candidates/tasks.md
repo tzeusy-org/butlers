@@ -82,7 +82,7 @@ dispatch packet for bu-jv1moa.11.
   commitment with the routed opening evidence.
 - [ ] 5.2 Document the registered source in `docs/runtime/signed-confirms.md`, the reducer in
   `roster/relationship/AGENTS.md`, and the connector facts in the connector docs.
-- [ ] 5.3 File the follow-up for transport retention of the card prompt copy in
+- [x] 5.3 File the follow-up for transport retention of the card prompt copy in
   `public.pending_confirms` (design.md, Lapse and retention).
 - [ ] 5.4 Rollback: disabling the job and the source stops new candidates and cards; existing
   tombstones and receipts are retained so a restart does no duplicate work.

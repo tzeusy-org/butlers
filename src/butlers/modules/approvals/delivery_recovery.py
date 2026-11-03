@@ -10,7 +10,11 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 
-from butlers.core.approval_delivery_worker import DeliveryClaim, HandoffResult
+from butlers.core.approval_delivery_worker import (
+    SAFE_REASON_CODES,
+    DeliveryClaim,
+    HandoffResult,
+)
 from butlers.metrics_registry import get_or_create_gauge
 from butlers.modules.approvals.notifications import (
     build_approval_digest_envelope,
@@ -22,22 +26,6 @@ _LEASE_SECONDS = 30
 _BACKOFF_BASE_SECONDS = 15
 _BACKOFF_CAP_SECONDS = 15 * 60
 _STUCK_SLO_SECONDS = 15 * 60
-_SAFE_REASONS = frozenset(
-    {
-        "quiet_hours",
-        "owner_recipient_unavailable",
-        "callback_secret_unavailable",
-        "transport_unavailable",
-        "provider_preflight_failed",
-        "provider_outcome_unknown",
-        "action_approved",
-        "action_rejected",
-        "action_expired",
-        "action_abandoned",
-        "defer_rescheduled",
-        "cohort_empty",
-    }
-)
 
 approval_delivery_backlog = get_or_create_gauge(
     "approval_delivery_backlog",
@@ -813,7 +801,7 @@ class ApprovalDeliveryRepository:
 
     @staticmethod
     def _validate_reason(reason_code: str | None) -> None:
-        if reason_code is not None and reason_code not in _SAFE_REASONS:
+        if reason_code is not None and reason_code not in SAFE_REASON_CODES:
             raise ValueError("unknown approval delivery reason code")
 
     @classmethod

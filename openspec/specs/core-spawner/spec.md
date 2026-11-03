@@ -119,7 +119,11 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag, `-o stream-json`, `--skip-trust` (headless runs in an untrusted folder exit 55), and `-m <model>` when a model is resolved
 - **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
 - **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally` under a root-owned directory whose ancestors are not group/other-writable (the CLI silently skips a system settings file anywhere else), failing before spawn when that directory chain does not qualify
+- **AND** passes `--allowed-mcp-server-names` naming the butler's MCP servers, or a name no server uses when there are none (the CLI rejects an empty name), so user- or project-level MCP servers never start even though `--skip-trust` trusts the working directory
+- **AND** stages `skills.enabled: false` and `experimental.enableAgents: false` in those settings and prefixes a prompt that starts with `/` with a zero-width space, so the trusted working directory's `.gemini/skills`, `.agents/skills`, `.gemini/agents` and `.gemini/commands` never load into the session; the CLI has no setting that stops it loading `GEMINI.md` from the working directory and its ancestors, so no roster directory ships one
+- **AND** prefixes every `@` in the prompt not already preceded by a backslash with one, so the CLI's at-command processing (which it has no setting to disable) never inlines a workspace file, a `**/*<path>*` glob match, or an MCP resource named by `@path` or `@server:uri` in prompt text, and never aborts the run on a failed read; when that escaping changed the prompt it appends a fixed line to the `GEMINI_SYSTEM_MD` file (staging one even with no butler system prompt) telling the model that `\@` is an escaped `@` to write as a plain `@` in quotes and tool arguments, since the CLI passes the escaped text to the model verbatim
 - **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
+- **AND** marks each `tool_use` call whose name does not start with `mcp_` (the CLI names MCP tools `mcp_<server>_<tool>`) as `builtin: true`, a CLI built-in such as `run_shell_command`, `read_file` or `list_directory`
 - **AND** passes declared butler env vars to the subprocess
 - **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.66.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
@@ -522,8 +526,8 @@ failover is safe.
   SHALL treat the attempt as an empty-response failure even if token usage was reported
 - **AND** when the merged records contain a confirmed non-command MCP tool call, the
   tool-only attempt SHALL remain successful and SHALL NOT trigger model failover
-- **AND** runtime-native tool records (`command_execution` shell work, or Claude CLI
-  built-ins marked `builtin: true`) SHALL NOT count as confirmed MCP tool calls; they
+- **AND** runtime-native tool records (`command_execution` shell work, or Claude or
+  Gemini CLI built-ins marked `builtin: true`) SHALL NOT count as confirmed MCP tool calls; they
   remain side-effect evidence, so the empty-response failure is not failover-eligible
 
 #### Scenario: Captured tool calls make failure ineligible
@@ -594,11 +598,12 @@ When spawning a healing agent session (`trigger_source = "healing"`), the spawne
 - **WHEN** the spawner builds the MCP config for a `trigger_source = "healing"` session
 - **THEN** the `mcp_servers` dict is empty
 
-#### Scenario: Healing session receives GitHub token
-- **WHEN** the spawner builds the environment for a healing session
-- **THEN** the env includes `GH_TOKEN` resolved from the credential store
-- **AND** includes `PATH` for tool discovery
+#### Scenario: Healing session receives no GitHub credential
+- **WHEN** the spawner builds the environment for a session carrying historical `trigger_source = "healing"` provenance
+- **THEN** the env includes only `PATH` for tool discovery and trace-context propagation
+- **AND** it includes no `GH_TOKEN` or other GitHub credential, even when one is resolvable from the credential store or host environment
 - **AND** no other butler-specific credentials or env vars are passed
+- **AND** QA publication remains only through the restricted QA publisher (REQ-qa-investigation-dispatch-001)
 
 ### Requirement: Core QA Relay Availability
 The daemon SHALL register `report_error` and `get_healing_status` as logged core tools on every roster, independently of module declarations and `core_groups`. The retired `self_healing` module, its configuration and its skill SHALL NOT be required or registered. The Spawner SHALL have no local healing fallback.
@@ -731,6 +736,7 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **THEN** the consecutive-identical streak SHALL count only calls of the same thread
 - **AND** a subagent repeating one call to the threshold SHALL trip the loop detector even when its parent's calls interleave
 - **AND** parallel subagents that each stay under the threshold SHALL NOT trip it, however their calls interleave
+- **AND** merging daemon-captured MCP records into the adapter-reported list SHALL keep the adapter's stream order, so a thread alternating a runtime built-in with one MCP call SHALL NOT read as consecutive identical calls
 
 #### Scenario: Tool-call budget exceeded
 - **WHEN** the cumulative tool-call count for a session exceeds a configured non-zero `max_tool_calls`
@@ -755,6 +761,14 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **THEN** the failover classifier SHALL recognise the guardrail marker substring in the exception message (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
 - **AND** SHALL classify the failure as not failover-eligible so no automatic retry is attempted
 - **AND** the suppressed-failover metric SHALL be recorded for observability
+
+#### Scenario: Persisted tool-call input is limited to the capture allowlist
+- **WHEN** the spawner merges adapter-reported tool calls with daemon-captured tool calls
+- **THEN** every persisted adapter-reported record other than a runtime shell command or a Claude built-in carries only the capture-allowlisted view of its input, whether or not it pairs with a daemon-captured record
+- **AND** a call that omits an optional parameter pairs with its daemon-captured record and writes one record
+- **AND** the persisted input fingerprint is keyed whenever the allowlisted view drops any input, so a low-entropy argument the record does not hold cannot be recovered from it
+- **AND** a fingerprint is a plain sha256 only when the allowlisted view plus the handler's defaults reproduce the full input, so a later process can recompute it
+- **AND** the `notify` allowlist is `message`, `channel`, `intent`, `recipient`, `entity_id` and `request_context`
 
 ### Requirement: Interactive Reply Delivery Accounting
 On the normal-completion (non-raising) path, the spawner SHALL evaluate whether a route-triggered interactive session attempted a reply via `notify()` but delivered nothing, and SHALL persist that session record with `success=False` and a human-readable reason in the session `error` column.

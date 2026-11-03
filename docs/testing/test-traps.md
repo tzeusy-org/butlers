@@ -70,3 +70,9 @@ Moved verbatim from `AGENTS.md` (Test traps). `AGENTS.md` keeps the three cross-
   thread started but before the pool registered it; the `with` exit then never joins that worker.
   While pool workers are live, have the handler only set a cancellation event and raise after the
   join (found in the since-retired condensation proof producer, bu-w4c1iw).
+- Vitest 3 records a `vi.fn()`'s returned promise in `mock.settledResults`, which attaches a handler
+  to it, so a rejection escaping the code under test is already marked handled. A frontend test
+  that claims "the rejection is contained / never unhandled" with a `vi.fn` loader cannot fail. Use
+  a plain function that returns `Promise.reject(...)` plus a `process.on("unhandledRejection")`
+  collector under real timers, and mutation-check it by deleting the `.catch` (bu-qqx08n;
+  `frontend/src/hooks/use-nav-intent.cycles.test.tsx`).

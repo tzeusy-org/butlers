@@ -18,7 +18,6 @@ import asyncpg
 import pytest
 
 from butlers.core.attention_ledger import record_owner_ingress_rollup
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -28,22 +27,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    yield p
-    await p.close()
-
-
 async def test_attention_daily_rollup_table_exists_with_expected_columns(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
 ) -> None:
-    rows = await pool.fetch(
+    rows = await db_pool.fetch(
         """
         SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'attention_daily_rollup'
@@ -59,24 +46,24 @@ async def test_attention_daily_rollup_table_exists_with_expected_columns(
     }
 
 
-async def test_day_is_primary_key(pool: asyncpg.Pool) -> None:
+async def test_day_is_primary_key(db_pool: asyncpg.Pool) -> None:
     day = datetime(2026, 3, 1, tzinfo=UTC).date()
-    await pool.execute(
+    await db_pool.execute(
         "INSERT INTO public.attention_daily_rollup (day) VALUES ($1)",
         day,
     )
     with pytest.raises(asyncpg.UniqueViolationError):
-        await pool.execute(
+        await db_pool.execute(
             "INSERT INTO public.attention_daily_rollup (day) VALUES ($1)",
             day,
         )
 
 
-async def test_record_owner_ingress_rollup_inserts_then_increments(pool: asyncpg.Pool) -> None:
+async def test_record_owner_ingress_rollup_inserts_then_increments(db_pool: asyncpg.Pool) -> None:
     occurred_at = datetime(2026, 4, 5, 10, 0, tzinfo=UTC)
 
-    await record_owner_ingress_rollup(pool, occurred_at=occurred_at)
-    row = await pool.fetchrow(
+    await record_owner_ingress_rollup(db_pool, occurred_at=occurred_at)
+    row = await db_pool.fetchrow(
         "SELECT owner_ingress_count FROM public.attention_daily_rollup WHERE day = $1",
         occurred_at.date(),
     )
@@ -84,8 +71,8 @@ async def test_record_owner_ingress_rollup_inserts_then_increments(pool: asyncpg
 
     # A second owner-ingress event the same day increments in place rather
     # than erroring on the day primary key.
-    await record_owner_ingress_rollup(pool, occurred_at=occurred_at)
-    row = await pool.fetchrow(
+    await record_owner_ingress_rollup(db_pool, occurred_at=occurred_at)
+    row = await db_pool.fetchrow(
         "SELECT owner_ingress_count FROM public.attention_daily_rollup WHERE day = $1",
         occurred_at.date(),
     )

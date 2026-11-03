@@ -12,14 +12,16 @@ created by core_164 and only backfill-deletes forged rows.
 
 from __future__ import annotations
 
-import importlib.util
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.integration
+from butlers.testing.migration import load_migration
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -30,17 +32,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_166", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
     """Capture the migration's op.execute() SQL and run it on the real pool."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_166")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -50,15 +44,17 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
         await pool.execute(sql)
 
 
-async def _prereq_table(pool: asyncpg.Pool) -> None:
-    """Minimal healing_attempts slice the backfill needs."""
-    await pool.execute("""
-        CREATE TABLE public.healing_attempts (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            fingerprint TEXT NOT NULL,
-            status      TEXT NOT NULL
-        )
-    """)
+_INSERT = (
+    "INSERT INTO public.healing_attempts "
+    "(fingerprint, status, butler_name, severity, exception_type, call_site) "
+    "VALUES ($1, $2, 'qa', 1, 'SyntheticError', 'test:core_166')"
+)
+
+
+@asynccontextmanager
+async def _pre_core_166(db):
+    """The real public.healing_attempts as core_165 left it."""
+    yield await db("core", revisions={"core": "core_165"})
 
 
 async def test_upgrade_is_noop_when_healing_attempts_table_absent(
@@ -70,29 +66,31 @@ async def test_upgrade_is_noop_when_healing_attempts_table_absent(
 
 
 async def test_backfill_deletes_only_sentinel_rows_and_preserves_genuine(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _prereq_table(pool)
-
+    async with _pre_core_166(db) as pool:
         # --- Forged: reset-sentinel pr_merged rows from the retired handler ---
         await pool.execute(
-            "INSERT INTO public.healing_attempts (fingerprint, status) VALUES ($1, 'pr_merged')",
+            _INSERT,
             "reset-sentinel-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pr_merged",
         )
         await pool.execute(
-            "INSERT INTO public.healing_attempts (fingerprint, status) VALUES ($1, 'pr_merged')",
+            _INSERT,
             "reset-sentinel-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "pr_merged",
         )
 
         # --- Genuine adjacent rows: a real failure + a real pr_merged success ---
         await pool.execute(
-            "INSERT INTO public.healing_attempts (fingerprint, status) VALUES ($1, 'failed')",
+            _INSERT,
             "c" * 64,
+            "failed",
         )
         await pool.execute(
-            "INSERT INTO public.healing_attempts (fingerprint, status) VALUES ($1, 'pr_merged')",
+            _INSERT,
             "d" * 64,
+            "pr_merged",
         )
 
         await _apply(pool, "upgrade")
@@ -113,19 +111,18 @@ async def test_backfill_deletes_only_sentinel_rows_and_preserves_genuine(
         assert surviving == {"c" * 64, "d" * 64}
 
 
-async def test_upgrade_is_noop_on_clean_db(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _prereq_table(pool)
+async def test_upgrade_is_noop_on_clean_db(db) -> None:
+    async with _pre_core_166(db) as pool:
         await _apply(pool, "upgrade")
         assert await pool.fetchval("SELECT count(*) FROM public.healing_attempts") == 0
 
 
-async def test_downgrade_is_noop(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _prereq_table(pool)
+async def test_downgrade_is_noop(db) -> None:
+    async with _pre_core_166(db) as pool:
         await pool.execute(
-            "INSERT INTO public.healing_attempts (fingerprint, status) VALUES ($1, 'failed')",
+            _INSERT,
             "e" * 64,
+            "failed",
         )
         await _apply(pool, "downgrade")
         # Nothing to undo — downgrade is a pass.

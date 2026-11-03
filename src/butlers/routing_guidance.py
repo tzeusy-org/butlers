@@ -108,6 +108,46 @@ def _build_non_interactive_route_safety_guidance(
     )
 
 
+def _attachment_line(att: dict[str, Any]) -> str:
+    filename = att.get("filename", "unnamed")
+    media_type = att.get("media_type", "unknown")
+    storage_ref = att.get("storage_ref")
+    if storage_ref:
+        size_kb = (att.get("size_bytes") or 0) / 1024
+        return (
+            f"  - filename={filename}, media_type={media_type}, "
+            f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
+        )
+    if att.get("source_message_id") and att.get("source_attachment_id"):
+        # A lazy Gmail ref: deliberately not downloaded at ingest. Switchboard's
+        # attachment_materialize fetches it, but that tool is dark until the
+        # RFC 0038 cutover, so this session cannot.
+        return (
+            f"  - filename={filename}, media_type={media_type}, "
+            "status=not_fetched (held by the mail provider; not downloaded)"
+        )
+    return (
+        f"  - filename={filename}, media_type={media_type}, "
+        "status=unavailable (could not be fetched; no storage_ref)"
+    )
+
+
+def build_attachments_block(attachments: list[dict[str, Any]]) -> str:
+    """The ATTACHMENTS section of a routed prompt: what is readable, and how."""
+    return (
+        f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
+        + "\n".join(_attachment_line(att) for att in attachments)
+        + "\n\nTo view an IMAGE attachment, call "
+        "`attachment_view(storage_ref=<storage_ref>)` using the EXACT storage_ref "
+        "value shown above (starts with 's3://') — it returns the image itself. "
+        "For a non-image attachment with a storage_ref, call "
+        "`get_attachment(storage_ref=<storage_ref>)` instead. Do NOT pass the "
+        "filename as storage_ref. An attachment shown as status=not_fetched or "
+        "status=unavailable cannot be retrieved in this session — do not guess at "
+        "its contents; say so plainly."
+    )
+
+
 def _build_route_runtime_context(
     *,
     route_context: dict[str, Any],
@@ -142,40 +182,8 @@ def _build_route_runtime_context(
     elif isinstance(input_context, str):
         context_parts.append(f"\nINPUT CONTEXT:\n{input_context}")
 
-    # Surface attachment metadata so the target butler knows what files are
-    # available. A storage_ref-less attachment could not be fetched at ingest
-    # time (bu-2jtfw.7); no on-demand retrieval tool exists for that case yet
-    # (attachment_materialize, S4, is unimplemented), so the prompt says so
-    # honestly rather than naming a verb that does not exist.
     if attachments:
-        att_lines: list[str] = []
-        for att in attachments:
-            filename = att.get("filename", "unnamed")
-            media_type = att.get("media_type", "unknown")
-            size_kb = (att.get("size_bytes") or 0) / 1024
-            storage_ref = att.get("storage_ref")
-            if storage_ref:
-                att_lines.append(
-                    f"  - filename={filename}, media_type={media_type}, "
-                    f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
-                )
-            else:
-                att_lines.append(
-                    f"  - filename={filename}, media_type={media_type}, "
-                    "status=unavailable (could not be fetched; no storage_ref)"
-                )
-
-        context_parts.append(
-            f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
-            + "\n".join(att_lines)
-            + "\n\nTo view an IMAGE attachment, call "
-            "`attachment_view(storage_ref=<storage_ref>)` using the EXACT storage_ref "
-            "value shown above (starts with 's3://') — it returns the image itself. "
-            "For a non-image attachment with a storage_ref, call "
-            "`get_attachment(storage_ref=<storage_ref>)` instead. Do NOT pass the "
-            "filename as storage_ref. An attachment shown as status=unavailable has "
-            "no retrieval tool yet — do not guess at its contents; say so plainly."
-        )
+        context_parts.append(build_attachments_block(attachments))
 
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(
         source_channel, addressed=addressed

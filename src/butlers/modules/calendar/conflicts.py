@@ -9,6 +9,7 @@ from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
 )
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 
 from .constants import (
     _SUGGESTION_SEARCH_HORIZON,
@@ -217,6 +218,10 @@ class ConflictsMixin:
         not wired (approvals module disabled), returns explicit fallback
         guidance instead.
         """
+        # The approvals executor replaying this exact approved call opens the
+        # gate; anything else (another tool, other arguments) still parks.
+        if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None:
+            return None
         config = self._require_config()
         if not config.conflicts.require_approval_for_overlap:
             return None
