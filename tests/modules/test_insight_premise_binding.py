@@ -564,6 +564,8 @@ class TestPremiseBoundDelivery:
                 premise=owner_condition_premise(source, prints[key]),
                 now=_PINNED_NOW,
             )
+        # Both candidates must share one digest: lift the per-cycle budget.
+        await premise_pool.execute("UPDATE insight_settings SET custom_budget = 3 WHERE id = 1")
         notify = AsyncMock(return_value=_TELEGRAM_SENT)
         await broker.delivery_cycle(premise_pool, notify_fn=notify, now=_PINNED_NOW)
         sent = notify.await_args.args[0]
