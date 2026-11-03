@@ -15,6 +15,10 @@ from butlers.tools.health._helpers import (
     _normalize_end_date,
     _row_to_dict,
 )
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+    dose_of_medication_sql,
+    medication_first_seen,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -421,16 +425,19 @@ async def medication_history(
         raise ValueError(f"Medication {medication_id} not found")
 
     medication = _fact_to_medication(dict(med_row))
+    # Edits refresh created_at; adherence caps expected doses by first-seen time.
+    medication["first_seen_at"] = await medication_first_seen(pool, str(med_uuid))
 
-    # Build dose query — filter on medication_id in metadata
+    # Doses logged under any fact of this medication's subject, so an edit (which
+    # supersedes the fact with a new id) never drops earlier history.
     conditions = [
         "predicate = 'took_dose'",
         "validity = 'active'",
         "scope = 'health'",
-        f"metadata->>'medication_id' = '{med_uuid}'",
+        dose_of_medication_sql("$1"),
     ]
-    params: list[Any] = []
-    idx = 1
+    params: list[Any] = [str(med_uuid)]
+    idx = 2
 
     if start_date is not None:
         conditions.append(f"valid_at >= ${idx}")

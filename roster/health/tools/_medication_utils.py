@@ -8,6 +8,10 @@ This module is the single source of truth for:
    (``expected_dose_count``), capped at the medication's own age so a
    medication created partway through the window is never scored against
    doses expected before it existed.
+3. A medication's course across edits (``dose_of_medication_sql``,
+   ``medication_first_seen``): every edit supersedes the medication fact with a
+   new id, so doses and the age cap follow every fact of the medication's subject
+   since its last delete rather than the current id alone.
 
 It is imported by:
 
@@ -26,6 +30,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
+from typing import Any
 
 # Textual frequency → doses per day conversion table.
 # All keys are normalised to lowercase with leading/trailing whitespace stripped.
@@ -251,3 +256,91 @@ def dose_status_today(
     missed = max(due_now - taken, 0)
     later = max(later - max(taken - due_now, 0), 0)
     return DoseStatus(missed=missed, due_later=later)
+
+
+def _medication_course_sql(param: str) -> str:
+    """SELECT of the medication facts in the same course as the fact bound to ``param``.
+
+    A course is the run of ``medication`` facts of one subject between deletes:
+    ``medication_update`` supersedes the fact (new id, fresh ``created_at``) on every
+    edit, so the course spans all of them, across all validities. ``medication_delete``
+    retracts the fact current at the time, which therefore closes its course; a later
+    re-add under the same name (same subject) starts a new course, because a delete
+    means the owner stopped. The course of a fact runs after the latest retracted fact
+    created before it, up to and including the first retracted fact at or after it.
+
+    ``param`` is bound to the fact id as text, so a non-UUID path parameter matches
+    nothing instead of raising. A fact without a subject has no course here.
+    """
+    return f"""
+        SELECT course.id, course.created_at
+        FROM facts course
+        JOIN facts this_med
+          ON this_med.id::text = {param}
+         AND this_med.predicate = 'medication'
+         AND this_med.scope = 'health'
+        WHERE course.predicate = 'medication'
+          AND course.scope = 'health'
+          AND course.subject = this_med.subject
+          AND course.created_at > COALESCE(
+              (
+                  SELECT MAX(ended.created_at)
+                  FROM facts ended
+                  WHERE ended.predicate = 'medication'
+                    AND ended.scope = 'health'
+                    AND ended.subject = this_med.subject
+                    AND ended.validity = 'retracted'
+                    AND ended.created_at < this_med.created_at
+              ),
+              '-infinity'::timestamptz
+          )
+          AND course.created_at <= COALESCE(
+              (
+                  SELECT MIN(ended.created_at)
+                  FROM facts ended
+                  WHERE ended.predicate = 'medication'
+                    AND ended.scope = 'health'
+                    AND ended.subject = this_med.subject
+                    AND ended.validity = 'retracted'
+                    AND ended.created_at >= this_med.created_at
+              ),
+              'infinity'::timestamptz
+          )
+    """
+
+
+def dose_of_medication_sql(param: str) -> str:
+    """SQL predicate matching ``took_dose`` facts that belong to a medication's course.
+
+    ``param`` is the placeholder (e.g. ``"$1"``) bound to the medication fact id as
+    text. A dose carries the medication fact id that was current when it was logged,
+    and every edit supersedes that fact (new id), so matching the given id alone
+    forgets every dose logged before the last edit. This matches any fact of the
+    medication's course (see ``_medication_course_sql``): every edit is included, and
+    doses from before a delete are not (bu-2eaep2; the refill scan's subject rule is
+    bu-uc6wh2). Dose records are never rewritten. Columns of the outer ``facts`` row
+    are unqualified.
+    """
+    return f"""(
+        metadata->>'medication_id' = {param}
+        OR metadata->>'medication_id' IN (
+            SELECT medication_course.id::text
+            FROM ({_medication_course_sql(param)}) medication_course
+        )
+    )"""
+
+
+async def medication_first_seen(pool: Any, medication_id: str) -> datetime | None:
+    """When the medication's current course started: its earliest fact's ``created_at``.
+
+    Each edit supersedes the medication fact with a fresh ``created_at``, so the
+    current fact's age understates how long the owner has taken the medication. The
+    expected-dose age cap uses this course start instead (bu-wfxau8). A delete ends
+    the course, so a re-add starts again at the re-add. Same course rule as
+    ``dose_of_medication_sql``. ``None`` when the id is unknown.
+    """
+    return await pool.fetchval(
+        f"SELECT MIN(medication_course.created_at)"
+        f" FROM ({_medication_course_sql('$1')}) medication_course",
+        medication_id,
+    )

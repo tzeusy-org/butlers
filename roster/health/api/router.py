@@ -585,16 +585,21 @@ async def list_medication_doses(
 
     Reads from the ``facts`` table (predicate = ``took_dose``,
     scope = ``health``), the same surface written by the ``medication_log_dose``
-    MCP tool.  Doses are scoped to the medication via
-    ``metadata->>'medication_id'``.
+    MCP tool.  Doses are scoped to the medication by ``metadata->>'medication_id'``
+    matched against every fact of the medication's subject, so doses logged before
+    an edit (which supersedes the fact with a new id) stay listed.
     """
+    from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+        dose_of_medication_sql,
+    )
+
     pool = _pool(db)
 
     conditions: list[str] = [
         "predicate = 'took_dose'",
         "validity = 'active'",
         "scope = 'health'",
-        "metadata->>'medication_id' = $1",
+        dose_of_medication_sql("$1"),
     ]
     args: list[object] = [medication_id]
     idx = 2
@@ -823,7 +828,7 @@ async def get_medication_adherence(
         doses_per_day=doses_per_day,
         window_start=effective_start,
         window_end=effective_end,
-        medication_created_at=medication.get("created_at"),
+        medication_created_at=medication.get("first_seen_at") or medication.get("created_at"),
     )
 
     adherence_rate: float | None = None
