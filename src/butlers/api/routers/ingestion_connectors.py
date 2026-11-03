@@ -1477,40 +1477,42 @@ async def list_connector_summaries_with_aggregates(
         )
 
     return ApiResponse[ConnectorSummaryResponse](
-        data={
-            "connectors": connectors,
-            # The registry is the primary roster source. This explicit true
-            # distinguishes an actually empty registry from the HTTP-200
-            # fallback above when its query failed.
-            "connector_registry_available": True,
-            # Checkpoint rows whose parent runtime instance could not be
-            # resolved — no parent recorded, or the parent's registry row is
-            # gone. Surfaced explicitly rather than dropped: an orphaned cursor
-            # is a real condition worth seeing, and it has no status authority
-            # here either (bu-6jv4m.11).
-            "unparented_checkpoints": unparented_checkpoints,
-            # How many roster rows carry no established operational role. These
-            # are listed with `liveness: "unclassified"` and are excluded from
-            # the fleet online/stale/offline rollups, so this count is the only
-            # place their existence is summarised.
-            "unclassified_count": unclassified_count,
-            "device_liveness_available": device_liveness_available,
-            # False only if the combined ingested+filtered hourly query itself
-            # raised — mirrors device_liveness_available
-            # (genuine-failure-only degraded flag; never fabricated zeros).
-            "hourly_events_available": hourly_events_available,
-            # The UTC hour starts (oldest first) that every per-connector hourly
-            # series is keyed to (bu-s11n0s.5.1). Clients place each slot by
-            # this instant, never by array position.
-            "hourly_bucket_starts": [start.isoformat() for start in hour_starts],
-            # False only if the heartbeat-history read raised; every
-            # hourly_listening slot is then "unknown", never "deaf".
-            "listening_available": listening_available,
-            # False only if the OwnTracks durable-point cadence query itself
-            # raised. The connector warnings stay empty in that case and the
-            # frontend names the degraded source explicitly.
-            "owntracks_cadence_available": owntracks_cadence_available,
-        },
+        data=ConnectorSummaryResponse.model_validate(
+            {
+                "connectors": connectors,
+                # The registry is the primary roster source. This explicit true
+                # distinguishes an actually empty registry from the HTTP-200
+                # fallback above when its query failed.
+                "connector_registry_available": True,
+                # Checkpoint rows whose parent runtime instance could not be
+                # resolved — no parent recorded, or the parent's registry row is
+                # gone. Surfaced explicitly rather than dropped: an orphaned cursor
+                # is a real condition worth seeing, and it has no status authority
+                # here either (bu-6jv4m.11).
+                "unparented_checkpoints": unparented_checkpoints,
+                # How many roster rows carry no established operational role. These
+                # are listed with `liveness: "unclassified"` and are excluded from
+                # the fleet online/stale/offline rollups, so this count is the only
+                # place their existence is summarised.
+                "unclassified_count": unclassified_count,
+                "device_liveness_available": device_liveness_available,
+                # False only if the combined ingested+filtered hourly query itself
+                # raised — mirrors device_liveness_available
+                # (genuine-failure-only degraded flag; never fabricated zeros).
+                "hourly_events_available": hourly_events_available,
+                # The UTC hour starts (oldest first) that every per-connector hourly
+                # series is keyed to (bu-s11n0s.5.1). Clients place each slot by
+                # this instant, never by array position.
+                "hourly_bucket_starts": [start.isoformat() for start in hour_starts],
+                # False only if the heartbeat-history read raised; every
+                # hourly_listening slot is then "unknown", never "deaf".
+                "listening_available": listening_available,
+                # False only if the OwnTracks durable-point cadence query itself
+                # raised. The connector warnings stay empty in that case and the
+                # frontend names the degraded source explicitly.
+                "owntracks_cadence_available": owntracks_cadence_available,
+            }
+        ),
         # Keep the existing empty meta object when excluding unset data fields.
         meta=ApiMeta(),
     )
