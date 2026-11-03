@@ -728,6 +728,8 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     + ("today!" if days_until == 0 else f"in {days_until} day(s).")
                 )
 
+                event_date_iso = upcoming_date.isoformat()
+
                 should_continue = await _submit(
                     priority=_GIFT_PRIORITY,
                     category="pending-gift",
@@ -736,7 +738,13 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     expires_at=expires_at,
                     metadata={
                         "entity_id": entity_id,
-                        "event_date": upcoming_date.isoformat(),
+                        "event_date": event_date_iso,
+                        # Two pending gifts for one person and date are exclusive
+                        # options; the broker turns that tension into one question.
+                        "choice": {
+                            "key": f"gift:{entity_id}:{event_date_iso}",
+                            "option": description[:80],
+                        },
                     },
                 )
                 if not should_continue:

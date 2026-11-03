@@ -676,6 +676,7 @@ async def test_insight_scan_contact_candidates_include_entity_and_event_metadata
         assert metadata_by_category["pending-gift"] == {
             "entity_id": entity_id,
             "event_date": upcoming_date.isoformat(),
+            "choice": {"key": f"gift:{entity_id}:{upcoming_date.isoformat()}", "option": "tea"},
         }
         assert metadata_by_category["milestone"] == {"entity_id": entity_id}
 

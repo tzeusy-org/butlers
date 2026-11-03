@@ -9458,6 +9458,8 @@ export interface EntityActivityResponse {
   offset: number;
   degraded: boolean;
   degraded_reason: "chronicler_activity_unavailable" | null;
+  /** True when the Chronicler read hit its 500-episode cap; total and bins are lower bounds. */
+  chronicler_truncated: boolean;
 }
 
 /** Contribution selector for GET /api/relationship/entities/{id}/activity. */
@@ -9498,6 +9500,8 @@ export interface ActivityBinsResponse {
   degraded: boolean;
   /** Fixed content-blind failure discriminator; never an upstream error message. */
   degraded_reason: "chronicler_activity_unavailable" | null;
+  /** True when the Chronicler read hit its 500-episode cap; counts are lower bounds. */
+  chronicler_truncated: boolean;
 }
 
 /** Response for POST /api/butlers/relationship/entities/{id}/view-mark. */
