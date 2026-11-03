@@ -70,7 +70,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # To update: bump versions here, verify with `npm view <pkg>@<ver>`, rebuild.
 RUN --mount=type=cache,target=/root/.npm \
     NODE_OPTIONS=--dns-result-order=ipv4first npm install -g \
-    @anthropic-ai/claude-code@2.1.179 \
+    @anthropic-ai/claude-code@2.1.309 \
     @google/gemini-cli@0.66.0 \
     @openai/codex@0.159.2 \
     opencode-ai@1.17.7

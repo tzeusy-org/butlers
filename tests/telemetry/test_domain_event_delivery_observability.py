@@ -54,6 +54,10 @@ def test_failed_permanent_delivery_panel_and_paused_warning_rule_are_reset_safe(
     assert _PROMETHEUS_METRIC in query
     assert "increase(" in query
     assert "[15m]" in query
+    # Route series are created by their first failure; increase() alone misses it. The
+    # "already existed" probe spans 1h so an ingest gap cannot replay old failures.
+    assert f"unless max_over_time({_PROMETHEUS_METRIC}" in query
+    assert "[1h] offset 15m" in query
     assert threshold["type"] == "threshold"
     assert threshold["expression"] == "B"
     assert threshold["conditions"][0]["evaluator"] == {"params": [0], "type": "gt"}

@@ -16,11 +16,7 @@ import shutil
 import uuid
 from datetime import date
 
-import asyncpg
 import pytest
-
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -118,126 +114,10 @@ pytestmark_int = [
 ]
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
-
-
-_SEASONAL_TABLE_DDL = """
-    CREATE TABLE IF NOT EXISTS seasonal_periods (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT NOT NULL,
-        period_type TEXT NOT NULL DEFAULT 'annual' CHECK (period_type IN (
-            'annual', 'academic', 'fiscal', 'custom'
-        )),
-        start_month INTEGER NOT NULL CHECK (start_month BETWEEN 1 AND 12),
-        start_day   INTEGER NOT NULL CHECK (start_day   BETWEEN 1 AND 31),
-        end_month   INTEGER NOT NULL CHECK (end_month   BETWEEN 1 AND 12),
-        end_day     INTEGER NOT NULL CHECK (end_day     BETWEEN 1 AND 31),
-        timezone    TEXT NOT NULL DEFAULT 'UTC',
-        metadata    JSONB,
-        butler_name TEXT NOT NULL,
-        enabled     BOOLEAN NOT NULL DEFAULT true,
-        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-        CONSTRAINT seasonal_periods_name_butler_unique UNIQUE (name, butler_name)
-    )
-"""
-
-_SCHEDULED_TASKS_DDL = """
-    CREATE TABLE IF NOT EXISTS scheduled_tasks (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name TEXT UNIQUE NOT NULL,
-        cron TEXT NOT NULL,
-        prompt TEXT,
-        dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
-        job_name TEXT,
-        job_args JSONB,
-        complexity TEXT DEFAULT 'medium',
-        timezone TEXT NOT NULL DEFAULT 'UTC',
-        start_at TIMESTAMPTZ,
-        end_at TIMESTAMPTZ,
-        until_at TIMESTAMPTZ,
-        display_title TEXT,
-        calendar_event_id TEXT,
-        source TEXT NOT NULL DEFAULT 'db',
-        enabled BOOLEAN NOT NULL DEFAULT true,
-        next_run_at TIMESTAMPTZ,
-        last_run_at TIMESTAMPTZ,
-        last_result JSONB,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        CONSTRAINT scheduled_tasks_dispatch_mode_check
-            CHECK (dispatch_mode IN ('prompt', 'job')),
-        CONSTRAINT scheduled_tasks_dispatch_payload_check
-            CHECK (
-                (dispatch_mode = 'prompt' AND prompt IS NOT NULL AND job_name IS NULL)
-                OR (dispatch_mode = 'job' AND job_name IS NOT NULL)
-            )
-    )
-"""
-
-
-async def _make_pool(postgres_container, *ddl_statements: str) -> asyncpg.Pool:
-    db_name = _unique_db_name()
-    admin_conn = await asyncpg.connect(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database="postgres",
-    )
-    try:
-        safe_name = db_name.replace('"', '""')
-        await admin_conn.execute(f'CREATE DATABASE "{safe_name}"')
-    finally:
-        await admin_conn.close()
-
-    p = await asyncpg.create_pool(
-        host=postgres_container.get_container_host_ip(),
-        port=int(postgres_container.get_exposed_port(5432)),
-        user=postgres_container.username,
-        password=postgres_container.password,
-        database=db_name,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    for ddl in ddl_statements:
-        await p.execute(ddl)
-    return p
-
-
 @pytest.fixture
-async def pool(postgres_container):
-    p = await _make_pool(postgres_container, _SEASONAL_TABLE_DDL)
-    yield p
-    await p.close()
-
-
-@pytest.fixture(scope="module")
-def scheduler_db_url(postgres_container) -> str:
-    """Finish the actual core migrations synchronously before opening the async pool."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-        schemas={"core": "general"},
-    )
-
-
-@pytest.fixture
-async def scheduler_pool(scheduler_db_url: str):
-    p = await asyncpg.create_pool(
-        scheduler_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "general,public"},
-    )
-    try:
-        yield p
-    finally:
-        await p.close()
+async def general_pool(db):
+    """A pool on the core chain migrated into ``general`` (seasonal_periods, scheduled_tasks)."""
+    return await db("core", schemas={"core": "general"}, schema="general")
 
 
 # ---------------------------------------------------------------------------
@@ -248,13 +128,13 @@ async def scheduler_pool(scheduler_db_url: str):
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_get_active_seasons_filtering(pool):
+async def test_get_active_seasons_filtering(general_pool):
     """get_active_seasons returns in-range enabled periods; excludes disabled and out-of-range."""
     from butlers.core.seasonal import get_active_seasons, seasonal_period_create
 
     butler = f"butler-{uuid.uuid4().hex[:8]}"
     await seasonal_period_create(
-        pool,
+        general_pool,
         butler,
         "tax-season",
         "fiscal",
@@ -264,7 +144,7 @@ async def test_get_active_seasons_filtering(pool):
         end_day=15,
     )
     await seasonal_period_create(
-        pool,
+        general_pool,
         butler,
         "winter",
         "annual",
@@ -274,7 +154,7 @@ async def test_get_active_seasons_filtering(pool):
         end_day=10,
     )
     await seasonal_period_create(
-        pool,
+        general_pool,
         butler,
         "disabled",
         "annual",
@@ -286,23 +166,23 @@ async def test_get_active_seasons_filtering(pool):
     )
 
     # Jan 5: tax-season + winter active (cross-year), disabled excluded
-    active = await get_active_seasons(pool, butler, today=date(2025, 1, 5))
+    active = await get_active_seasons(general_pool, butler, today=date(2025, 1, 5))
     names = {p["name"] for p in active}
     assert "tax-season" in names and "winter" in names and "disabled" not in names
 
     # Jan 20: tax-season active, winter ended
-    active_jan20 = await get_active_seasons(pool, butler, today=date(2025, 1, 20))
+    active_jan20 = await get_active_seasons(general_pool, butler, today=date(2025, 1, 20))
     names2 = {p["name"] for p in active_jan20}
     assert "tax-season" in names2 and "winter" not in names2
 
     # June: none active
-    assert len(await get_active_seasons(pool, butler, today=date(2025, 6, 1))) == 0
+    assert len(await get_active_seasons(general_pool, butler, today=date(2025, 6, 1))) == 0
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_seasonal_period_crud(pool):
+async def test_seasonal_period_crud(general_pool):
     """create/update/list/delete operations; validation; preset creation."""
     from butlers.core.seasonal import (
         get_active_seasons,
@@ -317,7 +197,7 @@ async def test_seasonal_period_crud(pool):
 
     # Create
     period_id = await seasonal_period_create(
-        pool,
+        general_pool,
         butler,
         "my-season",
         "annual",
@@ -331,7 +211,7 @@ async def test_seasonal_period_crud(pool):
     # Duplicate same butler raises
     with pytest.raises(ValueError, match="already exists"):
         await seasonal_period_create(
-            pool,
+            general_pool,
             butler,
             "my-season",
             "annual",
@@ -343,7 +223,7 @@ async def test_seasonal_period_crud(pool):
 
     # Different butler same name OK
     id2 = await seasonal_period_create(
-        pool,
+        general_pool,
         "other-butler",
         "my-season",
         "annual",
@@ -357,7 +237,7 @@ async def test_seasonal_period_crud(pool):
     # Invalid date raises
     with pytest.raises(ValueError, match="February"):
         await seasonal_period_create(
-            pool,
+            general_pool,
             "b-b",
             "bad",
             "annual",
@@ -370,7 +250,7 @@ async def test_seasonal_period_crud(pool):
     # Update (enable/disable)
     butler2 = f"butler-{uuid.uuid4().hex[:8]}"
     year_round_id = await seasonal_period_create(
-        pool,
+        general_pool,
         butler2,
         "year-round",
         "annual",
@@ -379,16 +259,16 @@ async def test_seasonal_period_crud(pool):
         end_month=12,
         end_day=31,
     )
-    assert len(await get_active_seasons(pool, butler2, today=date(2025, 6, 15))) == 1
-    await seasonal_period_update(pool, butler2, year_round_id, enabled=False)
-    assert len(await get_active_seasons(pool, butler2, today=date(2025, 6, 15))) == 0
-    result = await seasonal_period_update(pool, butler2, uuid.uuid4(), enabled=True)
+    assert len(await get_active_seasons(general_pool, butler2, today=date(2025, 6, 15))) == 1
+    await seasonal_period_update(general_pool, butler2, year_round_id, enabled=False)
+    assert len(await get_active_seasons(general_pool, butler2, today=date(2025, 6, 15))) == 0
+    result = await seasonal_period_update(general_pool, butler2, uuid.uuid4(), enabled=True)
     assert result is False
 
     # List includes is_active field
     butler3 = f"butler-{uuid.uuid4().hex[:8]}"
     del_id = await seasonal_period_create(
-        pool,
+        general_pool,
         butler3,
         "delete-me",
         "annual",
@@ -397,28 +277,28 @@ async def test_seasonal_period_crud(pool):
         end_month=5,
         end_day=31,
     )
-    periods = await seasonal_period_list(pool, butler3)
+    periods = await seasonal_period_list(general_pool, butler3)
     assert len(periods) == 1 and "is_active" in periods[0]
 
     # Delete
-    assert await seasonal_period_delete(pool, butler3, del_id) is True
-    assert len(await seasonal_period_list(pool, butler3)) == 0
-    assert await seasonal_period_delete(pool, butler3, uuid.uuid4()) is False
+    assert await seasonal_period_delete(general_pool, butler3, del_id) is True
+    assert len(await seasonal_period_list(general_pool, butler3)) == 0
+    assert await seasonal_period_delete(general_pool, butler3, uuid.uuid4()) is False
 
     # Preset creation
     butler4 = f"butler-{uuid.uuid4().hex[:8]}"
-    await seasonal_period_create_preset(pool, butler4, "us-tax-season")
-    p4 = await seasonal_period_list(pool, butler4)
+    await seasonal_period_create_preset(general_pool, butler4, "us-tax-season")
+    p4 = await seasonal_period_list(general_pool, butler4)
     assert len(p4) == 1 and p4[0]["name"] == "us-tax-season"
 
     with pytest.raises(ValueError, match="[Uu]nknown preset"):
-        await seasonal_period_create_preset(pool, butler4, "space-christmas")
+        await seasonal_period_create_preset(general_pool, butler4, "space-christmas")
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_tick_seasonal_context_injection(scheduler_pool):
+async def test_tick_seasonal_context_injection(general_pool):
     """tick() prepends seasonal context when active; leaves prompt unchanged when no seasons."""
     from butlers.core.scheduler import tick
     from butlers.core.seasonal import seasonal_period_create
@@ -431,7 +311,7 @@ async def test_tick_seasonal_context_injection(scheduler_pool):
 
     # With active season
     butler = f"butler-{uuid.uuid4().hex[:8]}"
-    await scheduler_pool.execute(
+    await general_pool.execute(
         """
         INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, next_run_at)
         VALUES ($1, '* * * * *', 'prompt', 'Do something', now() - interval '1 minute')
@@ -439,7 +319,7 @@ async def test_tick_seasonal_context_injection(scheduler_pool):
         f"task-{uuid.uuid4().hex[:8]}",
     )
     await seasonal_period_create(
-        scheduler_pool,
+        general_pool,
         butler,
         "year-round",
         "annual",
@@ -450,14 +330,14 @@ async def test_tick_seasonal_context_injection(scheduler_pool):
     )
     d = _Dispatch()
     d.calls = []
-    await tick(scheduler_pool, d, butler_name=butler)
+    await tick(general_pool, d, butler_name=butler)
     assert len(d.calls) == 1
     prompt = d.calls[0]["prompt"]
     assert "year-round" in prompt and "Seasonal context" in prompt and "Do something" in prompt
 
     # Without active seasons — prompt unchanged
     butler2 = f"butler-{uuid.uuid4().hex[:8]}"
-    await scheduler_pool.execute(
+    await general_pool.execute(
         """
         INSERT INTO scheduled_tasks (name, cron, dispatch_mode, prompt, next_run_at)
         VALUES ($1, '* * * * *', 'prompt', 'Do something', now() - interval '1 minute')
@@ -466,5 +346,5 @@ async def test_tick_seasonal_context_injection(scheduler_pool):
     )
     d2 = _Dispatch()
     d2.calls = []
-    await tick(scheduler_pool, d2, butler_name=butler2)
+    await tick(general_pool, d2, butler_name=butler2)
     assert d2.calls[0]["prompt"] == "Do something"
