@@ -317,6 +317,10 @@ async def _row_to_pr_summary_live(
     meta = await client.fetch(owner, repo, number, token=token)
     return summary.model_copy(
         update={
+            # A successful live lifecycle observation supersedes the local
+            # positive mapping; an unavailable observation cannot erase it.
+            "state": meta.state if meta.state is not None else summary.state,
+            "merged_at": meta.merged_at if meta.state is not None else summary.merged_at,
             "ci_status": meta.ci_status,
             "additions": meta.additions,
             "deletions": meta.deletions,
@@ -494,12 +498,11 @@ class QaPrSummary(BaseModel):
     """Pull request summary embedded in a QA case dossier."""
 
     number: int
-    state: Literal["drafted", "open", "merged", "closed"]
+    state: Literal["drafted", "open", "merged", "closed"] | None = None
     title: str
     branch: str
-    # CI status and diff stats are not tracked locally (no GitHub fetch path
-    # exists yet — see bu-cnvg7.3). ``None`` means "unavailable", which the UI
-    # renders honestly instead of asserting a "unknown" / "+0/-0" placeholder.
+    # Lifecycle may be unknown even when PR identity is known. CI status and
+    # diff stats are optional live observations, not persisted attempt facts.
     ci_status: Literal["passing", "failing", "pending", "unknown"] | None = None
     additions: int | None = None
     deletions: int | None = None
@@ -1098,7 +1101,7 @@ def _finding_from_case_row(row: Any) -> QaFinding | None:
 
 
 def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed"] | None:
-    """Map healing status into the compact case-list PR state."""
+    """Preserve positive local PR states; a terminal attempt says nothing about its PR."""
     status = row["status"]
     if status == "pr_merged":
         return "merged"
@@ -1106,8 +1109,6 @@ def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed
         return "open"
     if status == "drafted":
         return "drafted"
-    if row.get("pr_url") and status in {"failed", "timeout", "unfixable", "anonymization_failed"}:
-        return "closed"
     return None
 
 
@@ -1191,7 +1192,7 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
     branch = row.get("branch_name")
     pr_state = _pr_state_for_case(row)
 
-    if not pr_url or pr_number is None or not branch or pr_state is None:
+    if not pr_url or pr_number is None or not branch:
         return None
 
     return QaPrSummary(
@@ -1207,7 +1208,9 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
         additions=None,
         deletions=None,
         opened_at=row["created_at"],
-        merged_at=row.get("closed_at") if pr_state == "merged" else None,
+        # Attempt closure is not a GitHub merge timestamp. Only the live
+        # provider observation may populate that field.
+        merged_at=None,
         url=pr_url,
     )
 

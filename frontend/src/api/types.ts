@@ -6434,7 +6434,8 @@ export interface QaInvestigationNotes {
 /** Pull request summary embedded in a QA case dossier. */
 export interface QaPrSummary {
   number: number;
-  state: "drafted" | "open" | "merged" | "closed";
+  /** Null means known PR identity with unavailable lifecycle, not absence. */
+  state: "drafted" | "open" | "merged" | "closed" | null;
   title: string;
   branch: string;
   ci_status: "passing" | "failing" | "pending" | "unknown" | null;

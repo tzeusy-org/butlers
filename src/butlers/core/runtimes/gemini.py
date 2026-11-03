@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+# The CLI's prefix for every MCP tool name (``mcp_<server>_<tool>``); no built-in uses it.
+_MCP_TOOL_PREFIX = "mcp_"
+
 # ``--allowed-mcp-server-names`` value for a session with no butler MCP server. Without an
 # allowlist the CLI starts every user- and project-level MCP server it finds, and the CLI
 # rejects an empty name ("mcpName is required"), so a name no server uses admits none.
@@ -66,7 +69,27 @@ _CWD_CONFINEMENT_SETTINGS: dict[str, Any] = {
 # A headless prompt starting with ``/`` runs as a slash command, including a custom command
 # from ``<cwd>/.gemini/commands``. The CLI trims whitespace before that check, but not a
 # zero-width space, so one in front keeps the prompt text going to the model as text.
-_SLASH_COMMAND_GUARD = "​"
+_SLASH_COMMAND_GUARD = "\u200b"
+
+# gemini-cli 0.66.0 also runs headless prompts through ``handleAtCommand``: every ``@path`` or
+# ``@server:uri`` token inlines a workspace file (falling back to the first ``**/*path*`` glob
+# match) or an MCP resource into the prompt, and a failed read aborts the run. Prompts carry
+# routed external text, so no ``@`` may reach that parser. It skips an ``@`` preceded by a
+# backslash and has no setting to switch it off; this mirrors the CLI's own ``escapeAtSymbols``.
+_AT_COMMAND = re.compile(r"(?<!\\)@")
+
+
+def _escape_at_commands(prompt: str) -> str:
+    """Keep every ``@`` in prompt text from being expanded as a gemini-cli at-command."""
+    return _AT_COMMAND.sub(r"\\@", prompt)
+
+
+# The CLI hands an unresolved ``\@`` to the model verbatim. Without this system-prompt line
+# the model copies the backslash into email recipients, handles, and other tool arguments.
+_AT_ESCAPE_NOTE = (
+    "`\\@` in the input is an escaped `@`; write a plain `@` in quotes and tool arguments."
+)
+
 
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
@@ -279,44 +302,38 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dic
 
 
 def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
-    """Extract a normalized tool call dict from a Gemini JSON object.
+    """Normalize a Gemini tool call, tagging CLI built-ins.
 
-    Handles both standard ``tool_use`` format and Gemini's
-    ``functionCall`` format.
+    Handles the stream-json ``tool_use`` event (``tool_name``/``tool_id``/``parameters``),
+    Gemini's ``functionCall`` container, and the standard ``tool_use`` block.
 
-    Parameters
-    ----------
-    obj:
-        A JSON object representing a tool call.
-
-    Returns
-    -------
-    dict[str, Any]
-        Normalized tool call with 'id', 'name', and 'input' keys.
+    The CLI names every MCP tool ``mcp_<server>_<tool>`` (0.66.0 enforces the prefix);
+    any other name is a CLI built-in (``run_shell_command``, ``read_file``,
+    ``list_directory``, ...) and is marked ``builtin`` so the spawner never mistakes it
+    for confirmed MCP work, matching the Claude adapter.
     """
-    # Gemini functionCall format: {"functionCall": {"name": ..., "args": ...}}
     fn_call = obj.get("functionCall", {})
     if fn_call and isinstance(fn_call, dict):
-        return {
+        record = {
             "id": obj.get("id", ""),
             "name": fn_call.get("name", ""),
             "input": fn_call.get("args", fn_call.get("arguments", {})),
         }
-
-    # Stream-json ``tool_use`` event: {"tool_name": ..., "tool_id": ..., "parameters": ...}
-    if "tool_name" in obj:
-        return {
+    elif "tool_name" in obj:
+        record = {
             "id": obj.get("tool_id", ""),
             "name": obj.get("tool_name", ""),
             "input": obj.get("parameters", {}),
         }
-
-    # Standard tool_use format
-    return {
-        "id": obj.get("id", ""),
-        "name": obj.get("name", ""),
-        "input": obj.get("input", obj.get("args", obj.get("arguments", {}))),
-    }
+    else:
+        record = {
+            "id": obj.get("id", ""),
+            "name": obj.get("name", ""),
+            "input": obj.get("input", obj.get("args", obj.get("arguments", {}))),
+        }
+    if not str(record["name"] or "").startswith(_MCP_TOOL_PREFIX):
+        record["builtin"] = True
+    return record
 
 
 def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
@@ -512,7 +529,10 @@ class GeminiAdapter(RuntimeAdapter):
             cmd.extend(["-m", model])
         if prompt.lstrip().startswith("/"):
             prompt = _SLASH_COMMAND_GUARD + prompt
-        cmd.extend(["--prompt", prompt])
+        sent_prompt = _escape_at_commands(prompt)
+        if sent_prompt != prompt:
+            system_prompt = "\n\n".join(filter(None, [system_prompt, _AT_ESCAPE_NOTE]))
+        cmd.extend(["--prompt", sent_prompt])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
         proc = None
