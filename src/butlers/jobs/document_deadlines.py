@@ -7,15 +7,24 @@ message is built from a fixed template whose only variable parts are the deadlin
 goes only to the owner through :func:`butlers.jobs.owner_notify.send_owner_telegram`, so
 the owner-only recipient and the attention ledger apply. A notice that is not delivered
 raises, so the deadline pass leaves its threshold unfired and retries on a later tick.
+
+Failed sends back off: each attempt's ledger row carries a per-(butler, deadline,
+threshold) ``dedup_key``, and the next attempt waits :func:`retry_backoff` of the failure count,
+measured from the newest failed row. A Switchboard outage therefore writes one failed row
+per backoff step rather than one per tick, and the threshold still fires once delivery
+recovers. The ledger is the only state; nothing is stored on the deadline row.
 """
 
 from __future__ import annotations
 
-from datetime import date
+import hashlib
+import json
+from datetime import date, timedelta
 from typing import Any
 
 import asyncpg
 
+from butlers.core.attention_ledger import failed_attempts
 from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
 from butlers.core.temporal.document_deadlines import NOTICE_JOB_NAME, sanitize_issuer
 from butlers.jobs import owner_notify
@@ -27,6 +36,40 @@ _KIND_LABELS = {
     "expiry": "expires",
     "return_by": "return by",
 }
+
+
+RETRY_BACKOFF_BASE = timedelta(minutes=5)
+RETRY_BACKOFF_CAP = timedelta(hours=1)
+
+
+def retry_backoff(failures: int) -> timedelta:
+    """Wait before the next attempt after ``failures`` failed sends: 5 min doubling to 1 h."""
+    if failures <= 0:
+        return timedelta(0)
+    return min(RETRY_BACKOFF_BASE * 2 ** min(failures - 1, 16), RETRY_BACKOFF_CAP)
+
+
+def attempt_key(job_args: dict[str, Any], *, origin_butler: str) -> str | None:
+    """Ledger ``dedup_key`` shared by every send attempt for one deadline threshold.
+
+    It hashes the origin butler, document, kind, target date and threshold, so a re-set
+    date, the next threshold or another butler's deadline (the ledger is cross-butler)
+    starts with no failures, and the document id stays out of the ledger. Rows missing any
+    part get no key and no backoff.
+    """
+    context = job_args.get("deadline")
+    threshold = context.get("fired_threshold") if isinstance(context, dict) else None
+    parts = [
+        origin_butler,
+        job_args.get("document_id"),
+        job_args.get("kind"),
+        context.get("target_date") if isinstance(context, dict) else None,
+        threshold.get("days_before") if isinstance(threshold, dict) else None,
+    ]
+    if any(part is None for part in parts):
+        return None
+    digest = hashlib.sha256(json.dumps(parts).encode("utf-8")).hexdigest()[:32]
+    return f"{NOTICE_JOB_NAME}:{digest}"
 
 
 def _when(days_remaining: int) -> str:
@@ -64,16 +107,27 @@ async def run_paperwork_deadline_notice(
     consume it. Quiet hours or a dnd/sleeping signal raise
     :class:`DeadlineDispatchDeferred` before any send, so the pass retries on a later
     tick without writing an attention-ledger row per attempt. A failed send is recorded
-    once by the notify boundary and raised, so the pass retries it as a failure.
+    once by the notify boundary and raised, so the pass retries it as a failure; until
+    its backoff has elapsed, the next attempt defers with ``retry_backoff`` and no row.
     """
-    message = render_document_deadline_notice(job_args or {})
+    job_args = job_args or {}
+    message = render_document_deadline_notice(job_args)
     if message is None:
         return {"outcome": "skipped", "reason": "invalid_kind"}
     reason = await owner_notify.check_owner_notify_suppression(pool, log_context=NOTICE_JOB_NAME)
     if reason is not None:
         raise DeadlineDispatchDeferred(reason)
+    key = attempt_key(job_args, origin_butler=origin_butler)
+    if key is not None:
+        failures, since_last = await failed_attempts(pool, dedup_key=key)
+        if since_last is not None and since_last < retry_backoff(failures):
+            raise DeadlineDispatchDeferred("retry_backoff")
     outcome = await owner_notify.send_owner_telegram(
-        pool, origin_butler=origin_butler, message=message, log_context=NOTICE_JOB_NAME
+        pool,
+        origin_butler=origin_butler,
+        message=message,
+        log_context=NOTICE_JOB_NAME,
+        dedup_key=key,
     )
     if outcome == owner_notify.SUPPRESSED:
         # Suppression began between the check and the send: still retry later.

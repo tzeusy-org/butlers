@@ -72,7 +72,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
@@ -469,6 +469,36 @@ async def attention_event_recorded_since(
         logger.warning("attention_event_recorded_since: query failed; failing open", exc_info=True)
         return False
     return row is not None
+
+
+async def failed_attempts(
+    pool: asyncpg.Pool | asyncpg.Connection | None,
+    *,
+    dedup_key: str,
+) -> tuple[int, timedelta | None]:
+    """Return ``(count, age of the newest)`` for ``failed`` ledger rows under *dedup_key*.
+
+    A job that retries an undelivered send every tick derives its backoff from this
+    instead of keeping retry state; the age is measured on the database clock that
+    stamped the rows. Fails open to ``(0, None)``, so ledger trouble never blocks a send.
+    """
+    if pool is None:
+        return 0, None
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT count(*) AS failures, now() - max(occurred_at) AS since_last
+            FROM public.attention_ledger
+            WHERE dedup_key = $1 AND outcome = 'failed'
+            """,
+            dedup_key,
+        )
+    except Exception:
+        logger.warning("failed_attempts: query failed; failing open", exc_info=True)
+        return 0, None
+    if row is None:
+        return 0, None
+    return int(row["failures"]), row["since_last"]
 
 
 async def count_attention_events_since(
