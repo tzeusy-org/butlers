@@ -126,10 +126,11 @@ which the Track-only boundary and REQ-008 provenance rule do not allow.
 | `event_time` older than 14 days and terminal | Tombstone deleted. Safe, because the projection never returns events older than 14 days, so a purged tombstone can never be re-hit. |
 
 The 14-day bound covers the Relationship candidate store only. The card's question and quoted
-action are also written to `public.pending_confirms` by the signed confirm transport, which
-today neither purges nor redacts answered or expired rows and includes them in backups
-(`docs/runtime/signed-confirms.md`, `docs/operations/backup-restore.md`). Bounding that copy is a
-transport retention change, filed as a follow-up rather than claimed here.
+action are also written to `public.pending_confirms` by the signed confirm transport. That
+transport redacts a row's prompt to a digest tombstone 14 days after the row settles; backups
+taken before then keep the copy until they are pruned (`docs/runtime/signed-confirms.md`
+§ Prompt retention, `docs/operations/backup-restore.md`). That is the transport's policy, not a
+guarantee of this store.
 
 ### Restatement after Done or Ignore
 

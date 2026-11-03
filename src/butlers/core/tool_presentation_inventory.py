@@ -988,6 +988,22 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
         "media",
+        "attachment_page_view",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("storage_ref",),
+        selection_bound={"storage_ref": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+    ),
+    *_declare(
+        "core",
+        "media",
         "attachment_read",
         effect_class="read",
         output_trust="untrusted",
@@ -10024,10 +10040,7 @@ STORE_WRITERS = MappingProxyType(
         ),
         "approval_push_emissions": StoreWriters(
             record_capabilities=(),
-            native_writers=(
-                "butlers.modules.approvals.notifications._record_push_outcome",
-                "butlers.modules.approvals.notifications.reserve_approval_push",
-            ),
+            native_writers=(),
             unknown_writers=True,
         ),
         "approval_rules": StoreWriters(

@@ -40,8 +40,9 @@ Scope: v1-mandatory
 
 #### Scenario: Documented restore drill exists and is verifiable
 - **WHEN** an operator follows the documented backup-and-restore procedure
-- **THEN** a backup of the PostgreSQL data plane can be restored to a scratch
-  database and verified as intact
+- **THEN** a backup of the PostgreSQL data plane can be produced and restored to a
+  working scratch database instance, and the procedure includes a verification
+  step proving the restored data is intact
 - **AND** the procedure identifies the scratch target as distinct from the live
   application database
 - **AND** the procedure includes a verification step proving the restored data
