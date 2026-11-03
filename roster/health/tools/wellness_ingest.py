@@ -701,7 +701,7 @@ async def _translate_google_health_envelope(
                 )
             if unchanged_id is not None:
                 # Re-poll of an unchanged session (incl. a legacy bare-key fact): no new version.
-                result = {"id": unchanged_id, "supersedes_id": None}
+                result = {"id": str(unchanged_id), "supersedes_id": None}
             else:
                 result = await memory_store_fact(
                     pool,

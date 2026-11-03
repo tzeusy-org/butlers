@@ -1782,6 +1782,6 @@ class TestWorkoutEditSupersession:
         pool = _make_pool(None, [], unchanged_id=existing)
         result, mock_store, _ = await _call_translate(_versioned_envelope(), pool=pool)
         assert result["status"] == "ok"
-        assert result["fact_id"] == existing
+        assert result["fact_id"] == str(existing)
         mock_store.assert_not_awaited()
         assert [q for q, _ in pool.executed if not q.startswith("SELECT")] == []
