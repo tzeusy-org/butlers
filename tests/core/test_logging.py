@@ -267,3 +267,34 @@ def test_per_butler_file_handlers_filter_by_context(tmp_path: Path):
     assert "switchboard-only event" not in lifestyle_log
     assert "lifestyle-only event" in lifestyle_log
     assert "lifestyle-only event" not in switchboard_log
+
+
+def _raise_status_error() -> None:
+    url = f"https://api.telegram.org/bot{_SYNTHETIC_BOT_TOKEN}/sendMessage"
+    request = httpx.Request("POST", url)
+    response = httpx.Response(401, request=request)
+    response.raise_for_status()
+
+
+@pytest.mark.parametrize("fmt", ["text", "json"])
+def test_logged_exception_tracebacks_never_leak_credentials(
+    fmt: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """exc_info tracebacks are scrubbed like messages: httpx errors embed the URL."""
+    configure_logging(fmt=fmt, log_root=tmp_path, butler_name="telegram-bot")
+    try:
+        _raise_status_error()
+    except httpx.HTTPStatusError:
+        logging.getLogger("butlers.telegram").warning("send failed", exc_info=True)
+        structlog.get_logger("butlers.x").exception("structlog send failed")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    sinks = {
+        "console": capsys.readouterr().err,
+        "butler file": (tmp_path / "butlers" / "telegram-bot.log").read_text(),
+    }
+    for name, text in sinks.items():
+        assert "send failed" in text and "structlog send failed" in text, name
+        assert "HTTPStatusError" in text, name
+        assert _SYNTHETIC_BOT_TOKEN.split(":")[1] not in text, name

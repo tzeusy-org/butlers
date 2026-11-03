@@ -1829,11 +1829,13 @@ async def _tick_deferred_notification_pass(
 
     # Reconcile the exact old logical send even if its due/expiry window changed.
     # No fresh-row grouping or provider call happens before this terminal write.
+    # A row a wake-recovery run has since reserved (any ``release_*`` status) belongs to
+    # that run; it is skipped here and its latch entry released below.
     quarantined = _PARTIAL_DEFERRED.keys(pool)
     if quarantined:
         rows = await pool.fetch(
             "SELECT id, butler_name, channel, priority FROM deferred_notifications "
-            "WHERE id = ANY($1::uuid[])",
+            "WHERE id = ANY($1::uuid[]) AND status NOT LIKE 'release\\_%'",
             quarantined,
         )
         for row in rows:
@@ -1842,6 +1844,11 @@ async def _tick_deferred_notification_pass(
         for key in quarantined:
             _PARTIAL_DEFERRED.clear(pool, key)
 
+    # The ordinary flush owns plain ``pending`` rows only. A row a wake-recovery run has
+    # reserved, committed or retained (any ``release_*`` status) is never selected, expired
+    # or transitioned here, and every status write below repeats the ``pending`` guard so a
+    # row reserved after the due-fetch is left as the protocol set it
+    # (strict-owner-telegram-wake-recovery: Fenced Wake-Recovery Cohorts).
     # Expire stale pending notifications (> 24h past deliver_at)
     await pool.execute(
         """
@@ -1900,7 +1907,7 @@ async def _tick_deferred_notification_pass(
                     """
                     UPDATE deferred_notifications
                     SET status = 'delivered', delivered_at = $2
-                    WHERE id = $1
+                    WHERE id = $1 AND status = 'pending'
                     """,
                     notif_id,
                     now,
@@ -1937,7 +1944,7 @@ async def _tick_deferred_notification_pass(
                 """
                 UPDATE deferred_notifications
                 SET status = 'delivered', delivered_at = $2
-                WHERE id = ANY($1::uuid[])
+                WHERE id = ANY($1::uuid[]) AND status = 'pending'
                 """,
                 group_ids,
                 now,
