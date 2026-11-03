@@ -181,17 +181,6 @@ Scope: v1-mandatory
 - **THEN** the unchanged message is admitted as an owner goal
 - **AND** nothing the fast answer produced enters that goal's admission, origin, ceiling or exposure
 
-## Source References
-
-- Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
-- Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
-- Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
-- `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
-- RFC 0038 (goal runtime and capability authorization)
-- RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)
-
-## ADDED Requirements
-
 ### Requirement: Waiting goals wake through one fenced epoch intent
 The ledger and runner SHALL implement S2's thread/plan/wait-envelope/inbox/epoch/wake-intent schemas and S4 evaluator interface. Conditional fire, wake consumption, labelled inbox and durable intent SHALL commit atomically; every wake SHALL narrow authority and retain finite horizon/budget. Waiting SHALL release capacity without erasing obligations or effects.
 The lifecycle/admission owner SHALL implement S2.1's discriminated inbox/decision schema, kind-specific nullability and same-goal/source FKs, and atomic one-time consumed_at/consumed_epoch tuple with immutable legacy_consumed provenance. S2.2's generation rearm SHALL retain the same approved envelope, cumulative wake count/deadline, exclusive prior-fire cursor, same-or-narrower grants and accumulated labels. A genuinely changed envelope SHALL use its original approval rules; no reset, fake reply effect or duplicate re-fire is permitted.
@@ -325,3 +314,11 @@ Scope: v1-mandatory
 #### Scenario: A held typed or cited rule is encountered
 - **WHEN** a worker can represent typed values or citations
 - **THEN** representation confers no steering/authority relaxation and the held decision remains for its named M7 gate
+## Source References
+
+- Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
+- Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
+- Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
+- `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
+- RFC 0038 (goal runtime and capability authorization)
+- RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)
