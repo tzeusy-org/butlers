@@ -617,6 +617,7 @@ BEGIN
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, 'butler_chronicler_rw');
     FOREACH _table IN ARRAY ARRAY[
         'steam_play_history',
+        'steam_status_history',
         'owntracks_points',
         'home_assistant_history'
     ] LOOP

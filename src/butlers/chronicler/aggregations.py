@@ -49,6 +49,8 @@ CATEGORIES: frozenset[str] = frozenset(
 _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("spotify.session_summary", "listening_episode"): "music",
     ("steam.play_history", "play_episode"): "gaming",
+    ("steam.status_history", "play_session"): "gaming",
+    ("chronicler.situation_inferred", "play_block"): "gaming",
     ("owntracks.points", "movement_episode"): "travel",
     # GPS place-cluster stays (bu-ac2pg) are evidence-layer since bu-r3fmja:
     # they say where the owner was and never count on their own. The category
@@ -178,7 +180,6 @@ _CATEGORY_TO_LANE: dict[str, str] = {
     # occupation + focus/reading/screen) counts as Work.
     "conversations": "butler_ops",
     "tasks": "butler_ops",
-    "music": "play",
     "gaming": "play",
     "meal": "eat",
     "home": "rest",

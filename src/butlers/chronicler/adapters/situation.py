@@ -67,6 +67,7 @@ _TITLES = {
     "outing_block": "Out",
     "airport_block": "At the airport",
     "home_block": "At home",
+    "play_block": "Playing",
 }
 
 
@@ -144,7 +145,7 @@ class SituationInferredAdapter(ProjectionAdapter):
         since: datetime | None,
         since_id: int | None = None,
     ) -> AdapterResult:
-        del since, since_id
+        del since_id
         from butlers.core.general_settings import resolve_general_timezone
 
         result = AdapterResult(source_name=self.source_name)
@@ -156,6 +157,38 @@ class SituationInferredAdapter(ProjectionAdapter):
 
         today = now.astimezone(tz).date()
         first_day = today - timedelta(days=self.lookback_days - 1)
+        # Re-derive changed Steam dates as well as the usual trailing window.
+        # chronicler_030 resets this checkpoint once so historical daily totals
+        # keep counted fallback Play after their source rows become evidence.
+        # Tombstones and owner corrections invalidate the old day too. Provenance
+        # recovers intermediate dates after repeated moves of the same evidence.
+        changed_start = await chronicler_pool.fetchval(
+            """
+            WITH changed AS (
+                SELECT id, start_at, canonical_start_at
+                FROM v_episodes_corrected
+                WHERE source_name IN ('steam.status_history', 'steam.play_history')
+                  AND ($1::timestamptz IS NULL
+                       OR greatest(updated_at, corrected_at, tombstone_at) > $1)
+            ), affected AS (
+                SELECT start_at FROM changed
+                UNION ALL
+                SELECT canonical_start_at FROM changed
+                UNION ALL
+                SELECT derived.start_at FROM episodes AS derived
+                WHERE derived.source_name = 'chronicler.situation_inferred'
+                  AND derived.episode_type = 'play_block'
+                  AND EXISTS (
+                      SELECT 1 FROM changed
+                      WHERE derived.evidence_refs ? changed.id::text
+                  )
+            )
+            SELECT min(start_at) FROM affected
+            """,
+            since,
+        )
+        if changed_start is not None:
+            first_day = min(first_day, changed_start.astimezone(tz).date())
         window_start = datetime.combine(first_day, datetime.min.time(), tz).astimezone(UTC)
         hold = await self._tail_hold(chronicler_pool, since=window_start, now=now, tz=tz)
 
@@ -247,7 +280,7 @@ class SituationInferredAdapter(ProjectionAdapter):
             privacy=Privacy.NORMAL,
             layer=Layer.ACTIVITY,
             confidence=block.confidence,
-            evidence_refs=list(block.place_episode_ids),
+            evidence_refs=[*block.place_episode_ids, *block.evidence_refs],
         )
 
     @staticmethod
@@ -290,10 +323,11 @@ class SituationInferredAdapter(ProjectionAdapter):
     ) -> list[ActivitySpan]:
         rows = await conn.fetch(
             """
-            SELECT source_name, episode_type, start_at, end_at, layer, payload
+            SELECT id, source_name, episode_type, start_at, end_at, layer, payload
             FROM v_episodes_corrected
             WHERE tombstone_at IS NULL
-              AND layer = 'activity'
+              AND (layer = 'activity'
+                   OR source_name IN ('steam.status_history', 'steam.play_history'))
               AND source_name <> $3
               AND end_at IS NOT NULL
               AND start_at < $2 AND end_at > $1
@@ -302,9 +336,26 @@ class SituationInferredAdapter(ProjectionAdapter):
             day_end,
             self.source_name,
         )
+        # Status sessions suppress the daily-total guess for the local date.
+        has_sessions = any(r["source_name"] == "steam.status_history" for r in rows)
         spans = []
         for row in rows:
+            if has_sessions and row["source_name"] == "steam.play_history":
+                continue
             payload = _payload_dict(row["payload"])
+            if row["source_name"] in {"steam.status_history", "steam.play_history"}:
+                spans.append(
+                    ActivitySpan(
+                        row["start_at"],
+                        row["end_at"],
+                        row["source_name"],
+                        row["episode_type"],
+                        "play",
+                        provisional=payload.get("provisional") is True,
+                        evidence_refs=(str(row["id"]),) if row.get("id") else (),
+                    )
+                )
+                continue
             span = activity_span(
                 layer=row["layer"],
                 source_name=row["source_name"],

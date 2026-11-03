@@ -66,6 +66,7 @@ def test_chronicler_schedule_uses_jobs_for_projection(butler_toml: dict) -> None
     assert "chronicler_project_calendar" in projection_jobs
     assert "chronicler_project_owntracks" in projection_jobs
     assert "chronicler_project_steam" in projection_jobs
+    assert "chronicler_project_steam_status" in projection_jobs
 
 
 def test_chronicler_project_job_returns_serializable_dict(monkeypatch) -> None:

@@ -33,6 +33,7 @@ from butlers.chronicler.adapters import (
     ReadingInferredAdapter,
     SpotifySessionAdapter,
     SteamPlayAdapter,
+    SteamStatusAdapter,
 )
 from butlers.chronicler.adapters.owntracks_place_cluster import parse_place_references
 from butlers.chronicler.adapters.owntracks_ssid import SSID_PLACE_STATE_KEY, parse_ssid_places
@@ -355,6 +356,17 @@ async def run_project_steam(
     )
     adapter = SteamPlayAdapter(**options)
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def run_project_steam_status(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Re-project timed Steam sessions, including still-open sessions."""
+    options = _parse_job_args(
+        "chronicler_project_steam_status", job_args, supported_fields=("batch_limit",)
+    )
+    return await _run_adapter(db_pool=db_pool, adapter=SteamStatusAdapter(**options))
 
 
 async def run_project_meals(
@@ -749,6 +761,7 @@ __all__ = [
     "run_project_situation_inferred",
     "run_project_spotify",
     "run_project_steam",
+    "run_project_steam_status",
     "run_rollup_daily",
     "run_routines_mine",
 ]

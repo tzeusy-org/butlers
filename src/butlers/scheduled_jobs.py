@@ -1790,6 +1790,16 @@ async def _run_chronicler_project_steam_job(
     return await run_project_steam(pool, job_args)
 
 
+async def _run_chronicler_project_steam_status_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's timed Steam session evidence projection."""
+    from butlers.chronicler.jobs import run_project_steam_status
+
+    return await run_project_steam_status(pool, job_args)
+
+
 async def _run_chronicler_project_meals_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2204,6 +2214,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,
+            "chronicler_project_steam_status": _run_chronicler_project_steam_status_job,
             "chronicler_project_meals": _run_chronicler_project_meals_job,
             "chronicler_project_home_assistant": _run_chronicler_project_home_assistant_job,
             "chronicler_project_home_assistant_sensor_activity": (

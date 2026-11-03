@@ -81,9 +81,12 @@ def _pool(conn: _Conn) -> MagicMock:
     return pool
 
 
-async def _run(places: list[dict[str, Any]]) -> tuple[list[Any], _Conn]:
+async def _run(
+    places: list[dict[str, Any]], steam_start: datetime | None = None
+) -> tuple[list[Any], _Conn]:
     conn = _Conn(places)
     pool = _pool(conn)
+    pool.fetchval = AsyncMock(return_value=steam_start)
     upserted: list[Any] = []
 
     async def fake_upsert(_conn: Any, episode: Any) -> Any:
@@ -151,3 +154,42 @@ async def test_every_day_in_the_window_is_rederived_and_stale_rows_tombstoned() 
         assert args[2] == TOMBSTONE_REASON
     nov2_refs = next(args[3] for _q, args in conn.executed if args[1] == "2026-11-02")
     assert nov2_refs == [e.source_ref for e in upserted if e.payload["local_date"] == "2026-11-02"]
+
+
+async def test_status_sessions_suppress_daily_guess_but_missing_sessions_use_fallback():
+    start = _NOW - timedelta(hours=2)
+    daily = dict(
+        source_name="steam.play_history",
+        episode_type="play_episode",
+        start_at=start,
+        end_at=_NOW,
+        layer="evidence",
+        payload={},
+    )
+    session = dict(
+        source_name="steam.status_history",
+        episode_type="play_session",
+        start_at=start,
+        end_at=_NOW - timedelta(hours=1),
+        layer="evidence",
+        payload={},
+    )
+    conn = AsyncMock()
+    conn.fetch.return_value = [daily, session]
+    adapter = SituationInferredAdapter()
+    spans = await adapter._activities(conn, start, _NOW)
+    assert [(a.source_name, a.start_at, a.end_at) for a in spans] == [
+        ("steam.status_history", start, session["end_at"])
+    ]
+    # Positive fallback companion: the same daily window is kept when no session exists.
+    conn.fetch.return_value = [daily]
+    spans = await adapter._activities(conn, start, _NOW)
+    assert [(a.source_name, a.start_at, a.end_at) for a in spans] == [
+        ("steam.play_history", start, _NOW)
+    ]
+
+
+async def test_changed_historical_steam_date_extends_trailing_rederivation():
+    start = _NOW - timedelta(days=8)
+    episodes, _ = await _run([_place(start, 2, _HOME)], steam_start=start)
+    assert any(e.start_at == start and e.end_at == start + timedelta(hours=2) for e in episodes)

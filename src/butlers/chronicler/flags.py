@@ -109,6 +109,7 @@ SOURCE_CRON_MINUTES: dict[str, int] = {
     "core.sessions": 15,
     "spotify.session_summary": 30,
     "steam.play_history": 30,
+    "steam.status_history": 5,
     "owntracks.points": 30,
     "owntracks.place_cluster": 30,
     "owntracks.ssid_presence": 30,
