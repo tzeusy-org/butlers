@@ -2,7 +2,8 @@
 
 - The scan marks a category finding ``high`` at exactly ``2 * k_mad`` MAD units and ``medium``
   just below it.
-- The briefing scores week-to-date spend in the owner's briefing zone.
+- The briefing scores week-to-date spend in the producer's zone (owner timezone, else UTC),
+  never the SGT briefing fallback.
 """
 
 from __future__ import annotations
@@ -61,17 +62,13 @@ async def _scan_severity(mad_units: float) -> str:
     return velocity["severity"]
 
 
-async def test_severity_is_high_at_exactly_twice_k_mad() -> None:
+async def test_severity_is_high_at_exactly_twice_k_mad_and_medium_just_below() -> None:
     k_mad = fsb.spend_metric("dining", "SGD").k_mad
     assert await _scan_severity(2 * k_mad) == "high"
-
-
-async def test_severity_is_medium_just_below_twice_k_mad() -> None:
-    k_mad = fsb.spend_metric("dining", "SGD").k_mad
     assert await _scan_severity(2 * k_mad - 0.01) == "medium"
 
 
-async def test_briefing_scores_week_to_date_in_the_owner_briefing_zone() -> None:
+async def test_briefing_scores_week_to_date_in_the_producer_zone() -> None:
     zone = ZoneInfo("America/New_York")
     pool = MagicMock()
     pool.fetch = AsyncMock(return_value=[])
@@ -80,12 +77,16 @@ async def test_briefing_scores_week_to_date_in_the_owner_briefing_zone() -> None
     pool.execute = AsyncMock(return_value="OK")
     score = AsyncMock(return_value=[])
     with (
-        patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=zone)),
+        patch(
+            "butlers.jobs.briefing.resolve_general_timezone",
+            AsyncMock(return_value="America/New_York"),
+        ),
+        patch("butlers.jobs.briefing.owner_briefing_zone", AsyncMock(return_value=UTC)),
         patch("butlers.jobs.briefing.score_week_to_date", score),
         patch("butlers.jobs.briefing._write_contribution", AsyncMock()),
     ):
         await run_finance_briefing_contribution(pool, None)
 
     score.assert_awaited_once()
-    assert score.await_args.kwargs["zone"] is zone
+    assert score.await_args.kwargs["zone"] == zone
     assert score.await_args.args == (pool,)

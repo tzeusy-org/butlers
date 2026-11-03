@@ -89,11 +89,6 @@ ANOMALIES: list[dict[str, Any]] = [
 ]
 
 
-async def test_bands_are_produced_and_facts_retired_before_the_scan(calls) -> None:
-    await _fj().run_anomaly_insight_scan(_Pool())
-    assert calls[:3] == ["refresh", "retire", "scan"]
-
-
 async def test_a_failed_band_refresh_does_not_blind_the_merchant_checks(calls, monkeypatch) -> None:
     async def _boom(conn, *, now, zone):
         raise asyncpg.UndefinedTableError("metric_baselines")
@@ -104,8 +99,9 @@ async def test_a_failed_band_refresh_does_not_blind_the_merchant_checks(calls, m
     assert result["accepted"] == 3
 
 
-async def test_category_candidates_are_keyed_by_currency_and_carry_evidence(calls) -> None:
+async def test_bands_come_first_and_category_candidates_carry_currency_and_evidence(calls) -> None:
     await _fj().run_anomaly_insight_scan(_Pool())
+    assert calls[:3] == ["refresh", "retire", "scan"]
     proposals = [c for c in calls if isinstance(c, dict)]
     keys = sorted(p["dedup_key"] for p in proposals)
     assert any(":category-dining-SGD:" in k for k in keys)

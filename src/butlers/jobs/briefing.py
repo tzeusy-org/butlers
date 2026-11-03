@@ -28,7 +28,10 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from butlers.config import ButlerType, list_butlers
-from butlers.core.general_settings import load_configured_general_timezone
+from butlers.core.general_settings import (
+    load_configured_general_timezone,
+    resolve_general_timezone,
+)
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.core_tools._delegation import dispatch_delegated_ask
@@ -507,7 +510,9 @@ async def run_finance_briefing_contribution(
         for finding in await score_week_to_date(
             pool,
             now=now_utc,
-            zone=await owner_briefing_zone(pool),
+            # Same zone rule as the band producer and anomaly_scan (resolve_budget_zone: the
+            # owner's timezone, else UTC), not the SGT briefing fallback.
+            zone=ZoneInfo(await resolve_general_timezone(pool)),
             active_since=now_utc - timedelta(days=7),
         )
         if finding.is_anomaly

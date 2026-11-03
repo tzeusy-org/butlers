@@ -38,7 +38,7 @@ def _pool() -> MagicMock:
     return pool
 
 
-async def test_50_row_import_refreshes_the_stored_bands_in_the_budget_zone(tmp_path):
+async def test_a_50_row_import_refreshes_the_bands_in_the_budget_zone_and_others_do_not(tmp_path):
     from butlers.tools.finance.data_import import import_transactions_from_file
 
     pool = _pool()
@@ -56,28 +56,19 @@ async def test_50_row_import_refreshes_the_stored_bands_in_the_budget_zone(tmp_p
     assert isinstance(producer.await_args.kwargs["now"], datetime)
     assert producer.await_args.kwargs["now"].tzinfo is UTC
 
-
-async def test_small_import_does_not_refresh_the_bands(tmp_path):
-    from butlers.tools.finance.data_import import import_transactions_from_file
-
+    # A small import does not refresh; a failed refresh is reported as not triggered.
     with (
-        patch(_PRODUCER, new=AsyncMock(return_value=[])) as producer,
+        patch(_PRODUCER, new=AsyncMock(return_value=[])) as small_producer,
         patch(_ZONE_RESOLVER, new=AsyncMock(return_value=_ZONE)),
     ):
-        result = await import_transactions_from_file(_pool(), file_path=_csv(tmp_path, 4))
-
-    assert result["baselines_triggered"] is False
-    producer.assert_not_awaited()
-
-
-async def test_a_failed_refresh_is_reported_as_not_triggered(tmp_path):
-    from butlers.tools.finance.data_import import import_transactions_from_file
+        small = await import_transactions_from_file(_pool(), file_path=_csv(tmp_path, 4))
+    assert small["baselines_triggered"] is False
+    small_producer.assert_not_awaited()
 
     with (
         patch(_PRODUCER, new=AsyncMock(side_effect=asyncpg.PostgresError("boom"))),
         patch(_ZONE_RESOLVER, new=AsyncMock(return_value=_ZONE)),
     ):
-        result = await import_transactions_from_file(_pool(), file_path=_csv(tmp_path, 50))
-
-    assert result["imported"] == 50
-    assert result["baselines_triggered"] is False
+        failed = await import_transactions_from_file(_pool(), file_path=_csv(tmp_path, 50))
+    assert failed["imported"] == 50
+    assert failed["baselines_triggered"] is False

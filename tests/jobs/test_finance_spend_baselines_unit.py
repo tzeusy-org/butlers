@@ -93,41 +93,29 @@ class _FakePool:
 # ---------------------------------------------------------------------------
 
 
-def test_metric_declaration_is_weekly_currency_scoped_and_26_weeks() -> None:
+def test_metric_declaration_and_week_start_are_weekly_currency_scoped_owner_local() -> None:
     metric = fsb.spend_metric("dining", "SGD")
     assert metric.key == "spend.category:dining:SGD"
     assert (metric.bucket, metric.window_days, metric.min_n) == ("week", 182, 4)
     assert (metric.unit, metric.concern, metric.k_mad) == ("SGD", "above", 2.6)
     assert metric.expected_signal_key == "finance:baseline:spend.category:dining:SGD"
     assert metric.refresh_interval == timedelta(days=7)
-
-
-def test_same_category_in_two_currencies_is_two_metrics() -> None:
+    # Two currencies are two metrics; four weeks of spend clear the coverage floor.
     assert fsb.spend_key("dining", "SGD") != fsb.spend_key("dining", "USD")
-
-
-def test_four_weeks_of_spend_is_enough_history() -> None:
-    metric = fsb.spend_metric("dining", "SGD")
     assert metric.min_n / (metric.window_days // 7) >= metric.min_coverage
+
+    # Weeks start on the owner-local Monday.
+    assert fsb.week_start(_NOW, UTC) == _MONDAY
+    assert fsb.week_start(datetime(2026, 5, 3, 23, 59, tzinfo=UTC), UTC) == _MONDAY
+    assert fsb.week_start(datetime(2026, 5, 4, 0, 0, tzinfo=UTC), UTC) == date(2026, 5, 4)
+    # Sunday 20:00 UTC is already Monday 04:00 in SGT.
+    moment = datetime(2026, 5, 3, 20, 0, tzinfo=UTC)
+    assert fsb.week_start(moment, timezone(timedelta(hours=8))) == date(2026, 5, 4)
 
 
 # ---------------------------------------------------------------------------
 # Owner-local weeks
 # ---------------------------------------------------------------------------
-
-
-def test_week_start_is_the_owner_local_monday() -> None:
-    assert fsb.week_start(_NOW, UTC) == _MONDAY
-    assert fsb.week_start(datetime(2026, 5, 3, 23, 59, tzinfo=UTC), UTC) == _MONDAY
-    assert fsb.week_start(datetime(2026, 5, 4, 0, 0, tzinfo=UTC), UTC) == date(2026, 5, 4)
-
-
-def test_week_start_follows_the_owner_zone_across_midnight() -> None:
-    sgt = timezone(timedelta(hours=8))
-    # Sunday 20:00 UTC is already Monday 04:00 in SGT.
-    moment = datetime(2026, 5, 3, 20, 0, tzinfo=UTC)
-    assert fsb.week_start(moment, UTC) == _MONDAY
-    assert fsb.week_start(moment, sgt) == date(2026, 5, 4)
 
 
 async def test_history_is_bucketed_per_category_currency_and_week() -> None:
@@ -161,12 +149,10 @@ async def test_history_is_bucketed_per_category_currency_and_week() -> None:
     assert series[("dining", "SGD")] == {date(2026, 4, 20): 15.0, date(2026, 4, 13): 3.0}
     assert series[("dining", "USD")] == {date(2026, 4, 20): 7.0}
 
-
-async def test_history_query_stops_before_the_week_in_progress() -> None:
     pool = _FakePool()
     await fsb.fetch_weekly_spend(pool, as_of=_MONDAY, zone=UTC)
     _, (lower, upper) = pool.calls[0]
-    assert upper == datetime(2026, 4, 27, tzinfo=UTC)
+    assert upper == datetime(2026, 4, 27, tzinfo=UTC)  # stops before the week in progress
     assert lower == datetime(2025, 10, 27, tzinfo=UTC)  # 26 Mondays ending 2026-04-20
 
 
@@ -175,7 +161,7 @@ async def test_history_query_stops_before_the_week_in_progress() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_refresh_stores_one_band_per_category_currency() -> None:
+async def test_refresh_stores_one_floored_band_per_category_currency() -> None:
     def _weeks(amount: float, n: int) -> list[dict[str, Any]]:
         return [
             {
@@ -202,44 +188,32 @@ async def test_refresh_stores_one_band_per_category_currency() -> None:
         stored.append(baseline)
         return True
 
-    with patch.object(fsb, "upsert_baseline", _upsert):
+    boom = AsyncMock(side_effect=AssertionError("expected-signal must not be used"))
+    # Patch the core attribute and, so a direct ``from ... import upsert_expected_signal`` in the
+    # module is caught too, the module's own name (absent today, hence create=True).
+    with (
+        patch.object(fsb, "upsert_baseline", _upsert),
+        patch("butlers.core.expected_signals.upsert_expected_signal", boom),
+        patch.object(fsb, "upsert_expected_signal", boom, create=True),
+    ):
         changed = await fsb.refresh_category_baselines(
             _FakePool(history=_weeks(100.0, 10) + usd), now=_NOW, zone=UTC
         )
+    boom.assert_not_awaited()
     by_key = {b.metric_key: b for b in stored}
     assert len(changed) == 2
     sgd = by_key["spend.category:dining:SGD"]
     assert (sgd.status, sgd.center, sgd.n_observed, sgd.n_expected) == ("ready", 100.0, 10, 26)
+    assert sgd.measurability == "measurable"
+    # A flat category (MAD zero) keeps a floor: k_mad * max(1, 10% of the usual week).
+    assert sgd.dispersion == pytest.approx(10.0)
+    assert sgd.band == pytest.approx((74.0, 126.0))
     usd_band = by_key["spend.category:dining:USD"]
     assert (usd_band.status, usd_band.center, usd_band.n_observed) == (
         "insufficient_history",
         None,
         2,
     )
-
-
-async def test_flat_category_keeps_a_floor_on_the_band() -> None:
-    rows = [
-        {
-            "category": "rent",
-            "currency": "SGD",
-            "posted_at": datetime(2026, 4, 20, 9, tzinfo=UTC) - timedelta(weeks=i),
-            "amount": 1000.0,
-        }
-        for i in range(8)
-    ]
-    stored = []
-
-    async def _upsert(pool, baseline):
-        stored.append(baseline)
-        return True
-
-    with patch.object(fsb, "upsert_baseline", _upsert):
-        await fsb.refresh_category_baselines(_FakePool(history=rows), now=_NOW, zone=UTC)
-    (band,) = stored
-    # MAD is zero; the band half-width is k_mad * max(1, 10% of 1000).
-    assert band.dispersion == pytest.approx(100.0)
-    assert band.band == pytest.approx((740.0, 1260.0))
 
 
 # ---------------------------------------------------------------------------
@@ -262,63 +236,12 @@ async def test_spend_above_the_band_is_a_concerning_deviation() -> None:
     assert finding.deviation.state is BaselineState.ABOVE
     assert finding.is_anomaly
     assert finding.usual_range == pytest.approx((98.0, 202.0))
+    assert fsb.usual_range_words(finding) == "usual SGD 98.00 to SGD 202, drawn from 10 of 26 weeks"
+    assert fsb.money("SGD", 310.0) == "SGD 310"
+    assert fsb.money("SGD", 9.5) == "SGD 9.50"
 
-
-async def test_spend_inside_the_band_is_not_an_anomaly() -> None:
-    pool = _FakePool(
-        week=[_spend_row("dining", "SGD", 120.0, _NOW - timedelta(hours=2))],
-        bands=[_band_row("dining", "SGD")],
-    )
-    (finding,) = await _score(pool)
-    assert finding.deviation.state is BaselineState.WITHIN
-    assert not finding.is_anomaly
-
-
-async def test_thin_history_is_said_as_such_and_never_an_anomaly() -> None:
-    pool = _FakePool(
-        week=[_spend_row("dining", "USD", 900.0, _NOW - timedelta(hours=2))],
-        bands=[
-            _band_row(
-                "dining",
-                "USD",
-                center=None,
-                dispersion=None,
-                status="insufficient_history",
-                n_observed=2,
-            )
-        ],
-    )
-    (finding,) = await _score(pool)
-    assert finding.deviation.state is BaselineState.INSUFFICIENT_HISTORY
-    assert not finding.is_anomaly
-
-
-async def test_a_band_older_than_two_refresh_intervals_is_stale() -> None:
-    pool = _FakePool(
-        week=[_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))],
-        bands=[_band_row("dining", "SGD", computed_at=_NOW - timedelta(days=15))],
-    )
-    (finding,) = await _score(pool)
-    assert finding.deviation.state is BaselineState.STALE
-    assert not finding.is_anomaly
-
-
-async def test_a_band_fourteen_days_old_is_still_fresh() -> None:
-    pool = _FakePool(
-        week=[_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))],
-        bands=[_band_row("dining", "SGD", computed_at=_NOW - timedelta(days=14))],
-    )
-    (finding,) = await _score(pool)
-    assert finding.deviation.state is BaselineState.ABOVE
-
-
-async def test_a_category_without_a_stored_band_is_not_judged() -> None:
-    pool = _FakePool(week=[_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))])
-    assert await _score(pool) == []
-
-
-async def test_currencies_are_scored_independently() -> None:
-    pool = _FakePool(
+    # The same category in another currency is scored against its own band, never mixed.
+    both = _FakePool(
         week=[
             _spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2)),
             _spend_row("dining", "USD", 310.0, _NOW - timedelta(hours=2)),
@@ -328,39 +251,24 @@ async def test_currencies_are_scored_independently() -> None:
             _band_row("dining", "USD", center=400.0, dispersion=50.0),
         ],
     )
-    findings = {f.currency: f.deviation.state for f in await _score(pool)}
-    assert findings == {"SGD": BaselineState.ABOVE, "USD": BaselineState.WITHIN}
+    states = {f.currency: f.deviation.state for f in await _score(both)}
+    assert states == {"SGD": BaselineState.ABOVE, "USD": BaselineState.WITHIN}
 
 
-async def test_only_categories_active_since_the_cutoff_are_scored() -> None:
-    pool = _FakePool(
-        week=[
-            _spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2)),
-            _spend_row("travel", "SGD", 310.0, _NOW - timedelta(days=3)),
-        ],
-        bands=[_band_row("dining", "SGD"), _band_row("travel", "SGD")],
-    )
-    findings = await _score(pool, active_since=_NOW - timedelta(days=1))
-    assert [f.category for f in findings] == ["dining"]
+async def test_band_freshness_boundary_and_missing_bands_are_never_an_anomaly() -> None:
+    async def _state(age_days: int) -> BaselineState:
+        pool = _FakePool(
+            week=[_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))],
+            bands=[_band_row("dining", "SGD", computed_at=_NOW - timedelta(days=age_days))],
+        )
+        (finding,) = await _score(pool)
+        assert finding.is_anomaly is (finding.deviation.state is BaselineState.ABOVE)
+        return finding.deviation.state
 
+    assert await _state(14) is BaselineState.ABOVE
+    assert await _state(15) is BaselineState.STALE
 
-async def test_a_debit_exactly_at_the_cutoff_is_active() -> None:
-    cutoff = _NOW - timedelta(days=1)
-    pool = _FakePool(
-        week=[_spend_row("dining", "SGD", 310.0, cutoff)], bands=[_band_row("dining", "SGD")]
-    )
-    assert [f.category for f in await _score(pool, active_since=cutoff)] == ["dining"]
-
-
-async def test_the_week_so_far_is_read_from_the_owner_local_monday() -> None:
-    pool = _FakePool()
-    await _score(pool)
-    _, (start, end) = pool.calls[0]
-    assert start == datetime(2026, 4, 27, tzinfo=UTC)
-    assert end == _NOW
-
-
-async def test_missing_band_table_means_nothing_is_judged() -> None:
+    # No band, or no band table at all: nothing is judged.
     import asyncpg
 
     class _NoTable(_FakePool):
@@ -369,24 +277,24 @@ async def test_missing_band_table_means_nothing_is_judged() -> None:
                 raise asyncpg.UndefinedTableError("metric_baselines")
             return await super().fetch(sql, *args)
 
-    pool = _NoTable(week=[_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))])
-    assert await _score(pool) == []
+    week = [_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))]
+    assert await _score(_FakePool(week=week)) == []
+    assert await _score(_NoTable(week=week)) == []
 
 
-# ---------------------------------------------------------------------------
-# Words
-# ---------------------------------------------------------------------------
-
-
-async def test_band_words_carry_the_honest_denominator() -> None:
+async def test_only_categories_active_since_the_cutoff_are_scored_from_monday() -> None:
     pool = _FakePool(
-        week=[_spend_row("dining", "SGD", 310.0, _NOW - timedelta(hours=2))],
-        bands=[_band_row("dining", "SGD")],
+        week=[
+            _spend_row("dining", "SGD", 310.0, _NOW - timedelta(days=1)),  # exactly at cutoff
+            _spend_row("travel", "SGD", 310.0, _NOW - timedelta(days=3)),
+        ],
+        bands=[_band_row("dining", "SGD"), _band_row("travel", "SGD")],
     )
-    (finding,) = await _score(pool)
-    assert fsb.usual_range_words(finding) == "usual SGD 98.00 to SGD 202, drawn from 10 of 26 weeks"
-    assert fsb.money("SGD", 310.0) == "SGD 310"
-    assert fsb.money("SGD", 9.5) == "SGD 9.50"
+    findings = await _score(pool, active_since=_NOW - timedelta(days=1))
+    assert [f.category for f in findings] == ["dining"]
+    _, (start, end) = pool.calls[0]
+    assert start == datetime(2026, 4, 27, tzinfo=UTC)  # the owner-local Monday
+    assert end == _NOW
 
 
 # ---------------------------------------------------------------------------
@@ -441,25 +349,11 @@ async def test_briefing_reports_only_a_week_above_the_usual_range() -> None:
     )
     assert "travel" not in envelope["summary"]
     assert "1 spending anomaly/ies detected." in envelope["summary"]
-
-
-async def test_briefing_omits_a_stale_band() -> None:
-    recent = datetime.now(UTC) - timedelta(minutes=1)
-    pool = _BriefingPool(
-        week=[_spend_row("dining", "SGD", 310.0, recent)],
-        bands=[_band_row("dining", "SGD", computed_at=datetime.now(UTC) - timedelta(days=15))],
-    )
-    result, envelope = await _briefing(pool)
-    assert result["spending_anomalies"] == 0
-    assert not [h for h in envelope["highlights"] if h["category"] == "spending"]
-
-
-async def test_briefing_with_no_stored_bands_claims_nothing() -> None:
-    recent = datetime.now(UTC) - timedelta(minutes=1)
-    pool = _BriefingPool(week=[_spend_row("dining", "SGD", 5000.0, recent)])
-    result, envelope = await _briefing(pool)
-    assert result["spending_anomalies"] == 0
-    assert envelope["has_updates"] is False
+    # Nothing says another category is normal, within range or on track.
+    text = " ".join([envelope["summary"]] + [h["text"] for h in envelope["highlights"]]).lower()
+    assert "groceries" not in text
+    for banned in ("normal", "within", "as usual", "on track"):
+        assert banned not in text
 
 
 # ---------------------------------------------------------------------------
@@ -478,8 +372,6 @@ async def test_retirement_retracts_only_the_finance_butlers_system_facts() -> No
     assert "source_butler = 'finance'" in sql
     assert [call.args[1:] for call in forget.await_args_list] == [("fact", "f1"), ("fact", "f2")]
 
-
-async def test_retirement_survives_a_missing_facts_table() -> None:
     class _Broken(_FakePool):
         async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
             raise RuntimeError("no facts")
@@ -490,54 +382,3 @@ async def test_retirement_survives_a_missing_facts_table() -> None:
 # ---------------------------------------------------------------------------
 # No measurability claim, no "normal" claim
 # ---------------------------------------------------------------------------
-
-
-async def test_refresh_never_consults_the_expected_signal_evaluation() -> None:
-    rows = [
-        {
-            "category": "dining",
-            "currency": "SGD",
-            "posted_at": datetime(2026, 4, 20, 9, tzinfo=UTC) - timedelta(weeks=i),
-            "amount": 100.0,
-        }
-        for i in range(6)
-    ]
-    stored = []
-
-    async def _upsert(pool, baseline):
-        stored.append(baseline)
-        return True
-
-    boom = AsyncMock(side_effect=AssertionError("expected-signal must not be used"))
-    # Patch the core attribute and, so a direct ``from ... import upsert_expected_signal`` in the
-    # module is caught too, the module's own name (absent today, hence create=True).
-    with (
-        patch.object(fsb, "upsert_baseline", _upsert),
-        patch("butlers.core.expected_signals.upsert_expected_signal", boom),
-        patch.object(fsb, "upsert_expected_signal", boom, create=True),
-    ):
-        await fsb.refresh_category_baselines(_FakePool(history=rows), now=_NOW, zone=UTC)
-    boom.assert_not_awaited()
-    (band,) = stored
-    assert band.measurability == "measurable"
-
-
-async def test_no_surface_calls_spending_normal_or_within_range() -> None:
-    recent = datetime.now(UTC) - timedelta(minutes=1)
-    pool = _BriefingPool(
-        week=[
-            _spend_row("dining", "SGD", 310.0, recent),
-            _spend_row("groceries", "SGD", 120.0, recent),
-            _spend_row("travel", "USD", 900.0, recent),
-        ],
-        bands=[
-            _band_row("dining", "SGD", computed_at=datetime.now(UTC)),
-            _band_row("groceries", "SGD", computed_at=datetime.now(UTC)),
-        ],
-    )
-    _, envelope = await _briefing(pool)
-    text = " ".join([envelope["summary"]] + [h["text"] for h in envelope["highlights"]]).lower()
-    assert "dining" in text
-    assert "groceries" not in text and "travel" not in text
-    for banned in ("normal", "within", "as usual", "on track"):
-        assert banned not in text

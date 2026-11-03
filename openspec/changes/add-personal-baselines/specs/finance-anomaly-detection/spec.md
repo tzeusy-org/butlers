@@ -21,8 +21,8 @@ The system SHALL compute rolling statistical baselines from `finance.transaction
 - **THEN** it SHALL retract (`validity = 'retracted'`, rows kept) the `spending_baseline` facts of `source_butler = 'finance'` and `content_authority = 'system'`, and SHALL leave owner-authored facts of that predicate alone
 
 #### Scenario: Baseline refresh on historical import
-- **WHEN** `bulk_record_transactions` completes a batch import of 50+ transactions
-- **THEN** the system SHALL trigger a baseline refresh to incorporate the newly imported data
+- **WHEN** `import_transactions_from_file` imports 50 or more rows in one call
+- **THEN** the system SHALL refresh the stored category spend bands once for that import, in the owner's budget timezone, so the imported history counts before the next daily scan
 
 ### Requirement: Transaction Anomaly Scanning
 The system SHALL provide an `anomaly_scan` tool that analyzes recent transactions against baselines and returns flagged anomalies with explanations.

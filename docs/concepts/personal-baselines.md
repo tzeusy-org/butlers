@@ -37,7 +37,7 @@ currency (`spend.category:<category>:<CCY>`; `src/butlers/jobs/finance_spend_bas
 a category needs 4 weeks of spend before it has a band. The `anomaly_scan` tool and the daily
 briefing score the spend of the week so far against the stored band and report only an `above` state
 with the usual range and the weeks it is drawn from; thin, stale or missing history is never called
-an anomaly, and nothing ever reports spending as normal or within range. A bulk import of 50 or more
+an anomaly, and nothing ever reports spending as normal or within range. A file import (`import_transactions_from_file`) of 50 or more
 transactions refreshes the same bands right away, so imported history does not wait for the next
 daily scan. Finance does not use the expected-signal measurability check: a category's weeks mix
 producers, and no consumer reads a silent producer as normal, since only above-band claims are
