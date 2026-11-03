@@ -76,7 +76,7 @@ Health is a standing subscriber to Travel's `travel.trip_active` domain event (b
 ## Guidelines
 - Measurements support compound JSONB values (e.g., blood pressure as {"systolic": 120, "diastolic": 80})
 - Symptom severity is rated 1-10 (1 = mild, 10 = severe)
-- Medication adherence is calculated based on frequency (daily, twice daily, etc.)
+- Medication adherence is calculated based on frequency (daily, twice daily, etc.); as-needed (PRN) medications have no expected doses, so their adherence rate is null
 - Conditions have status: active, resolved, or managed
 - Use nutrition_summary to aggregate calorie and nutrient intake over date ranges
 - Use trend_report to identify patterns in measurement data

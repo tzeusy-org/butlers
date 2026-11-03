@@ -72,6 +72,19 @@ def frequency_to_doses_per_day(frequency: str) -> float:
     return _FREQUENCY_DOSES_PER_DAY.get(normalized, 1.0)
 
 
+def scheduled_doses_per_day(frequency: str) -> float:
+    """Doses per day that count toward an adherence denominator.
+
+    As-needed (PRN) frequencies have no scheduled doses, so they contribute ``0.0``
+    and an adherence rate is ``None`` rather than a penalty for rare use (bu-2yeqd1,
+    consistent with bu-ikq7vr: PRN is never missed).  Refill estimation keeps using
+    ``frequency_to_doses_per_day``, whose 1.0/day PRN fallback is a consumption guess.
+    """
+    if is_as_needed(frequency):
+        return 0.0
+    return frequency_to_doses_per_day(frequency)
+
+
 def expected_dose_count(
     *,
     doses_per_day: float,
@@ -89,7 +102,7 @@ def expected_dose_count(
     Parameters
     ----------
     doses_per_day:
-        From ``frequency_to_doses_per_day``.
+        From ``scheduled_doses_per_day`` (``0.0`` for as-needed medications).
     window_start, window_end:
         The requested lookback window.
     medication_created_at:
