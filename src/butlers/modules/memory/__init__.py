@@ -838,6 +838,7 @@ class MemoryModule(Module):
         # Deferred to avoid import-time side effects (sentence_transformers).
         from butlers.modules.memory import consolidation as _consolidation
         from butlers.modules.memory import reembedding as _reembedding
+        from butlers.modules.memory import search as _search
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools import entities as _entities
         from butlers.modules.memory.tools import feedback as _feedback
@@ -1232,6 +1233,7 @@ class MemoryModule(Module):
               "limit": 10
             }
             """
+            _search._validate_filter_keys(filters)
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
@@ -1274,6 +1276,7 @@ class MemoryModule(Module):
             ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
+            _search._validate_filter_keys(filters)
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
