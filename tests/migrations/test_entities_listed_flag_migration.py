@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -188,20 +189,10 @@ async def _run_sqls(pool, sqls: list[str]) -> None:
             pass  # idempotent
 
 
-async def _provision_entities_table(pool) -> None:
-    """Create public.entities with the pre-103 schema (no listed column)."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name  TEXT        NOT NULL,
-            entity_type     TEXT        NOT NULL DEFAULT 'person',
-            aliases         TEXT[]      NOT NULL DEFAULT '{}',
-            metadata        JSONB       DEFAULT '{}'::jsonb,
-            roles           TEXT[]      NOT NULL DEFAULT '{}',
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
+@asynccontextmanager
+async def _pre_core_103(db):
+    """public.entities as core_102 left it (no listed column)."""
+    yield await db("core", revisions={"core": "core_102"})
 
 
 async def _run_upgrade(pool) -> None:
@@ -218,10 +209,9 @@ async def _run_downgrade(pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_column_exists_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_column_exists_after_upgrade(db) -> None:
     """public.entities.listed exists with correct type/default after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
 
         row = await pool.fetchrow(
@@ -245,10 +235,9 @@ async def test_column_exists_after_upgrade(provisioned_postgres_pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_new_entity_gets_default_true(provisioned_postgres_pool) -> None:
+async def test_new_entity_gets_default_true(db) -> None:
     """Inserting an entity without specifying 'listed' yields listed=true."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
 
         entity_id = await pool.fetchval(
@@ -261,11 +250,9 @@ async def test_new_entity_gets_default_true(provisioned_postgres_pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_existing_rows_backfilled_to_true(provisioned_postgres_pool) -> None:
+async def test_existing_rows_backfilled_to_true(db) -> None:
     """Pre-existing entities (inserted before column added) get listed=true via server default."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
-
+    async with _pre_core_103(db) as pool:
         # Insert a row BEFORE the migration
         entity_id = await pool.fetchval(
             "INSERT INTO public.entities (canonical_name) VALUES ('Bob') RETURNING id"
@@ -282,10 +269,9 @@ async def test_existing_rows_backfilled_to_true(provisioned_postgres_pool) -> No
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_can_set_listed_false(provisioned_postgres_pool) -> None:
+async def test_can_set_listed_false(db) -> None:
     """listed can be set to false (archive semantics)."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
 
         entity_id = await pool.fetchval(
@@ -298,10 +284,9 @@ async def test_can_set_listed_false(provisioned_postgres_pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_partial_index_exists_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_partial_index_exists_after_upgrade(db) -> None:
     """ix_entities_listed_active partial index exists after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
 
         row = await pool.fetchrow(
@@ -319,10 +304,9 @@ async def test_partial_index_exists_after_upgrade(provisioned_postgres_pool) -> 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_column_absent_after_downgrade(provisioned_postgres_pool) -> None:
+async def test_column_absent_after_downgrade(db) -> None:
     """public.entities.listed is absent after downgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
         await _run_downgrade(pool)
 
@@ -341,10 +325,9 @@ async def test_column_absent_after_downgrade(provisioned_postgres_pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_index_absent_after_downgrade(provisioned_postgres_pool) -> None:
+async def test_index_absent_after_downgrade(db) -> None:
     """ix_entities_listed_active is absent after downgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
         await _run_downgrade(pool)
 
@@ -363,11 +346,9 @@ async def test_index_absent_after_downgrade(provisioned_postgres_pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_is_reversible(provisioned_postgres_pool) -> None:
+async def test_upgrade_is_reversible(db) -> None:
     """Upgrade → downgrade → upgrade again succeeds without error."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_entities_table(pool)
-
+    async with _pre_core_103(db) as pool:
         await _run_upgrade(pool)
         await _run_downgrade(pool)
         await _run_upgrade(pool)  # must not raise

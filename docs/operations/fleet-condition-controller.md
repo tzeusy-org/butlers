@@ -146,3 +146,35 @@ The Dashboard log line `Shadow fleet observation: complete=... expected=...`
 shows whether the last cycle could resolve anything. A logged
 `Fleet condition controller: ... failed` error means that check wrote nothing
 on that cycle. The other check still ran.
+
+## Readiness regression evidence and limits
+
+`tests/integration/test_infra_state_views_migration.py` exercises the production
+`FleetReadiness` queries against dedicated, fully migrated core + Switchboard
+clones. Its two scenarios cover qualifying patrol provenance and transaction
+visibility, receiver/policy faults, observer/cache expiry, and read-only cached
+requests. The receiver rows are seeded test evidence; only the external route
+preflight and named job-health companion are synthetic inputs. This does not
+certify live receiver probes, supervision, deployment, or external monitoring.
+Each scenario closes its pool in `finally`; projection fault injection restores
+the table name in its own clone and never changes the module-shared database.
+No applied migration or runtime data changes when these test additions roll back.
+
+The mounted exact-route test in `tests/api/test_fleet_readiness.py` holds the
+public exception to `GET /ready`: anonymous HEAD and POST use owner auth,
+`/ready/` is 404 without redirect, unavailable/expired snapshots return only
+fixed Boolean categories, and cached reads cannot open the database or preflight.
+Native outcomes and deliberate query-filter inverses require actual PostgreSQL
+execution; collection and synthetic unit passes cannot supply that evidence.
+
+Deployment completion is a separate prerequisite, `bu-fvw4ap.5`, consuming Q4's
+single endpoint. The supported Helm wrapper `scripts/k8s/record-deploy.sh` and
+retained `butlers deploy` consumer use `deployments await-ready`'s sustained gate:
+two distinct post-window observer cycles, two increasing current-digest qualifying
+patrol completions, and true readiness beyond the longest TTL. A false sample
+resets the window; the derived deadline and fixed rollback categories fail closed.
+The dev Compose script and container/chart process-health probes remain `/health`
+and do not prove semantic deployment completion. See the deployment runbooks and
+`tests/core/test_deploy_readiness.py`, `tests/cli/test_cli_deploy.py`, and
+`tests/scripts/test_k8s_record_deploy_script.py` for the allocated consumer seams.
+Neither Q5's merge alone nor these database tests prove an actual deployment.

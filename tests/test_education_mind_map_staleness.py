@@ -44,7 +44,7 @@ async def _as_education_rw(connection: asyncpg.Connection) -> None:
 @pytest.fixture
 async def edu_pool(db):
     """Core + education chains under the ordinary runtime role, per-test clone."""
-    kw = {"schemas": {"education": "education"}, "schema": "education"}
+    kw = {"schemas": {"core": "education", "education": "education"}, "schema": "education"}
     return await db("core", "education", init=_as_education_rw, **kw)
 
 

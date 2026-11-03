@@ -34,19 +34,15 @@ Scope: v1-mandatory
 #### Scenario: DiscoverySource protocol definition
 
 - **WHEN** a new discovery source is implemented
-- **THEN** it implements the `DiscoverySource` protocol with a `name` string
-  property and `async discover(lookback_minutes: int) -> list[QaFinding]`
-  method
-- **AND** the protocol requires no LLM invocation; all sources use tool-based
-  filtering such as regex, SQL queries, and file parsing
+- **THEN** it implements the `DiscoverySource` protocol with: `name` (str property), `async discover(lookback_minutes: int) -> list[QaFinding]` method
+- **AND** the protocol requires no LLM invocation — all sources use tool-based filtering (regex, SQL queries, file parsing) to avoid context wastage
 
 #### Scenario: Source registration at startup
 
 - **WHEN** the QA Staffer daemon starts
 - **THEN** it registers all enabled discovery sources from
   `[modules.qa].enabled_sources` configuration
-- **AND** default enabled sources remain `log_scanner`, `session_records`,
-  `butler_reports`, `tool_call_failures`, and `infra_state`
+- **AND** default enabled sources are: `["log_scanner", "session_records", "butler_reports", "tool_call_failures", "infra_state"]`
 - **AND** disabled sources are logged at INFO and skipped during patrol
 - **AND** adapter diagnostics useful only through structured session records are
   suppressed by `log_scanner` only when `session_records` registered successfully
@@ -78,23 +74,13 @@ trusted service interface and complete validated identity.
 - **AND** `report_finding` and `get_dashboard_report_receipt` are service-only,
   never LLM-presentable or reachable from the session listener; `force_patrol`
   and `get_qa_status` retain their existing non-presentable control descriptors
-- **AND** `report_finding` accepts `fingerprint` (a hint; QA recomputes the
-  canonical fingerprint via `compute_fingerprint_from_report` and logs a debug
-  mismatch warning), `exception_type`, `call_site`, `severity` (0-4, clamped
-  with WARNING when out of range; authoritative canonical scoring overrides
-  caller intent for critical/high errors), `event_summary`, optional `context`,
-  `source_butler`, and optional `trigger_source` propagated as
-  `source_session_trigger_source` for QA self-recursion suppression
-- **AND** a non-dashboard `report_finding` call queues the finding with canonical
-  fingerprint/severity in the `butler_reports` source buffer and returns
-  `{"accepted": true}` synchronously
+- **AND** `report_finding` accepts: `fingerprint` (str, treated as a hint; the QA module recomputes the canonical fingerprint via `compute_fingerprint_from_report` and logs a debug warning on mismatch), `exception_type` (str), `call_site` (str), `severity` (int 0-4, clamped to range with a WARNING if out-of-range; authoritative canonical scoring overrides caller intent for critical/high errors), `event_summary` (str), `context` (str, optional), `source_butler` (str), and `trigger_source` (str, optional, carrying the calling session's trigger_source such as "healing" or "qa", propagated as `source_session_trigger_source` for QA self-recursion suppression)
+- **AND** a non-dashboard `report_finding` call queues the finding (with canonical fingerprint and severity) in the `butler_reports` source buffer and returns `{"accepted": true}` synchronously
 - **AND** an authenticated internal Switchboard caller MAY additionally supply
   all of `terminal_action_id` (UUID), `terminal_effect_id` (UUID), and
   `terminal_effect_idempotency_key` (opaque stable string) to select the durable
   dashboard mode
-- **AND** `tool_metadata()` declares `context` and `event_summary` sensitive on
-  `report_finding` because they may contain agent reasoning about user-related
-  errors
+- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agent reasoning about user-related errors)
 
 #### Scenario: Reactive finding buffer is volatile for ordinary reports
 
@@ -202,7 +188,7 @@ below apply to their respective report modes in each phase.
   - **connector-offline**: queries `public.v_qa_connector_state` (sanctioned cross-schema view per RFC 0010, over `switchboard.connector_registry`) and flags a connector whose derived liveness (`butlers.core.liveness.derive_liveness`) is `"offline"` — excluding a `state = 'paused'` connector (a deliberate operator action), excluding a connector within a 15-minute grace window of its first registration, and excluding a storage-only row that has a checkpoint cursor but has never acquired either a process instance or a heartbeat
   - **heartbeat-stale before fleet-condition handoff**: with `BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER=1`, queries the QA-only `public.v_qa_butler_receiver_state` view from `sw_037` and flags an unavailable, stale, or non-current-boot receiver observation; an explicit failed first probe is not hidden by the never-seen grace window, and administrative policy alone is not a liveness failure. With the flag off, queries `public.v_qa_butler_heartbeat` from `sw_024` and applies the legacy `last_seen_at` TTL and `quarantined_at` checks. A receiver observation or legacy timestamp beyond the five-minute future clock-skew tolerance cannot assert health.
   - **fleet-control after fleet-condition handoff** (`BUTLERS_FLEET_CONDITION_HANDOFF=1`): reads the independently produced active `control_plane_fleet` condition in `public.infra_conditions` and its receiver-observed per-butler impact, recording one condition-linked finding for the affected fleet rather than treating `last_seen_at`, `quarantined_at`, or a lazily updated `eligibility_state` as independent liveness authority; observer failure and owner policy remain distinct evidence
-  - **backup-stale**: reads `BUTLERS_BACKUP_DIR`; an unset env var is a legitimate absence (no finding); a configured-but-unreachable directory, one with no backup on record, or a most-recent backup older than 36 hours produces a finding
+  - **backup-stale**: reads the content-free backup facts snapshot dashboard-api publishes to `public.state` (key `infra.backup_facts`) from its read-only `BUTLERS_BACKUP_DIR` mount; the butler daemon never mounts the backups volume, because its runtime sessions could otherwise read every schema's dump. A missing, malformed, or stale snapshot (older than 3x its publish interval) produces a `BackupFactsUnavailable` finding; a fresh snapshot recording an unset `BUTLERS_BACKUP_DIR` is a legitimate absence (no finding); a configured-but-unreachable directory, one with no backup on record, or a most-recent backup older than 36 hours produces a finding
   - **external-deadman-stale**: reads the last successful external-deadman ping recorded by `butlers.jobs.external_deadman` in `public.audit_log`; an unconfigured `EXTERNAL_DEADMAN_URL` is a legitimate absence (no finding); a last-success timestamp older than 3x the configured ping interval (or no successful ping ever) produces a finding
 - **AND** heartbeat-stale and fleet-control are mutually exclusive stages of the butler-liveness signal
 - **AND** each check's finding fingerprint is derived from a stable identity (connector type/identity, butler name before fleet-condition handoff, the fleet-condition identity after handoff, or a fixed backup/deadman call-site) via the same sanitize-then-hash pattern the other sources use, so the fingerprint stays stable across patrol ticks even though the human-readable `event_summary` carries live timestamp/age

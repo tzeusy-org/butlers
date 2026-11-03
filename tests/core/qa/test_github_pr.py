@@ -137,6 +137,72 @@ async def test_fetch_caches_within_ttl() -> None:
     # No additional API calls on the cached second fetch.
     assert after == before
 
+    # Expiry refreshes the same observation instead of freezing its lifecycle.
+    now = [0.0]
+    expiring = GithubPrClient(
+        transport=_passing_transport(calls), ttl_seconds=60, monotonic=lambda: now[0]
+    )
+    await expiring.fetch("Tzeusy", "butlers", 1653, token="t0ken")
+    before_expiry = sum(calls)
+    now[0] = 60.0
+    await expiring.fetch("Tzeusy", "butlers", 1653, token="t0ken")
+    assert sum(calls) == before_expiry + 2
+
+
+async def test_fetch_lifecycle_and_checks_failures_are_independent() -> None:
+    observations = [
+        ({"state": "open", "draft": False, "merged": False}, "open", None),
+        ({"state": "open", "draft": True, "merged": False}, "drafted", None),
+        ({"state": "closed", "merged": False}, "closed", None),
+        (
+            {"state": "closed", "merged": True, "merged_at": "2026-05-16T08:00:00Z"},
+            "merged",
+            "2026-05-16T08:00:00+00:00",
+        ),
+        ({"state": "closed", "merged": True}, None, None),
+        ({"state": "closed", "merged": True, "merged_at": "bad"}, None, None),
+        ({"state": "closed", "merged": True, "merged_at": "2026-05-16"}, None, None),
+        ({"state": "closed", "merged": "true"}, None, None),
+        ({"state": "open", "draft": "false", "merged": False}, None, None),
+        ({"state": "future", "draft": False, "merged": False}, None, None),
+        ({}, None, None),
+    ]
+    for observation, expected, merged_at in observations:
+        for checks in ("passing", "http", "transport", "json", "shape"):
+            calls = []
+
+            def handler(request, calls=calls, observation=observation, checks=checks):
+                calls.append(request)
+                if "/pulls/" in request.url.path:
+                    return httpx.Response(
+                        200,
+                        json={
+                            **observation,
+                            "additions": 12,
+                            "deletions": 3,
+                            "head": {"sha": "deadbeef"},
+                        },
+                    )
+                if checks == "transport":
+                    raise httpx.ReadTimeout("test checks unavailable")
+                if checks == "json":
+                    return httpx.Response(200, text="not json")
+                if checks == "shape":
+                    return httpx.Response(200, json={"check_runs": [None]})
+                if checks == "http":
+                    return httpx.Response(403)
+                return httpx.Response(
+                    200, json={"check_runs": [{"status": "completed", "conclusion": "success"}]}
+                )
+
+            client = GithubPrClient(transport=httpx.MockTransport(handler))
+            meta = await client.fetch("Tzeusy", "butlers", 1653, token="test-token")
+            assert meta.state == expected, (observation, checks)
+            assert (meta.merged_at.isoformat() if meta.merged_at else None) == merged_at
+            assert meta.additions == 12 and meta.deletions == 3
+            assert meta.ci_status == ("passing" if checks == "passing" else None)
+            assert len(calls) == 2 and all(r.method == "GET" for r in calls)
+
 
 async def test_fetch_no_token_is_unavailable_and_no_api_call() -> None:
     calls: list[int] = []
@@ -166,3 +232,16 @@ async def test_fetch_404_pr_degrades_gracefully() -> None:
     meta = await client.fetch("Tzeusy", "butlers", 9999, token="t0ken")
 
     assert meta == PrMetadata(ci_status=None, additions=None, deletions=None)
+
+    for status in (401, 403, 404, 429):
+        transport = httpx.MockTransport(lambda request, status=status: httpx.Response(status))
+        meta = await GithubPrClient(transport=transport).fetch(
+            "Tzeusy", "butlers", 9999, token="test-token"
+        )
+        assert meta == PrMetadata(ci_status=None, additions=None, deletions=None)
+    for body in ([], None, {"head": []}):
+        transport = httpx.MockTransport(lambda request, body=body: httpx.Response(200, json=body))
+        meta = await GithubPrClient(transport=transport).fetch(
+            "Tzeusy", "butlers", 9999, token="test-token"
+        )
+        assert meta == PrMetadata(ci_status=None, additions=None, deletions=None)

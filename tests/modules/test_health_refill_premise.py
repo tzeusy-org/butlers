@@ -52,7 +52,7 @@ class TestRefillProducerBinding:
         pool = MagicMock()
 
         async def fetch(query, *args):
-            if "predicate = 'medication'" in query:
+            if "predicate = 'medication'" in query and "took_dose" not in query:
                 return [med]
             return []
 
