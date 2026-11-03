@@ -263,236 +263,6 @@
       "excerpt": "The system SHALL compute a deterministic `pattern_fingerprint` for every tool invocation by hashing the canonical rep...",
       "kind": "prose",
       "scenario": null
-    },
-    {
-      "digest": "c2ec021c5487",
-      "excerpt": "- **WHEN** `compute_fingerprint(\"notify\", {\"channel\": \"email\", \"to\": \"a@b.com\"})` is computed",
-      "kind": "clause",
-      "scenario": "Arg key order does not affect fingerprint"
-    },
-    {
-      "digest": "fe6466752b79",
-      "excerpt": "- **AND** `compute_fingerprint(\"notify\", {\"to\": \"a@b.com\", \"channel\": \"email\"})` is computed",
-      "kind": "clause",
-      "scenario": "Arg key order does not affect fingerprint"
-    },
-    {
-      "digest": "496fc945642c",
-      "excerpt": "- **THEN** both MUST produce the same fingerprint",
-      "kind": "clause",
-      "scenario": "Arg key order does not affect fingerprint"
-    },
-    {
-      "digest": "0109264f1b5e",
-      "excerpt": "- **AND** `compute_fingerprint(\"send_email\", {\"to\": \"mom\"})` is computed",
-      "kind": "clause",
-      "scenario": "Tool name is part of the fingerprint"
-    }
-  ],
-  "decision-loop-one-tap-approvals/connector-telegram-bot/Update Type Handling": [
-    {
-      "digest": "6791aa148bfe",
-      "excerpt": "The connector SHALL process a defined subset of Telegram update types. It SHALL also recognize one strictly additive ...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "7ef8d3456cf8",
-      "excerpt": "- **WHEN** a non-message update arrives (`callback_query`, `inline_query`, `chosen_inline_result`, etc.)",
-      "kind": "clause",
-      "scenario": "Skipped update types"
-    },
-    {
-      "digest": "f869a64a828c",
-      "excerpt": "- **THEN** it is silently skipped — no ingest submission — UNLESS it is a `callback_query` whose `callback_data` carr...",
-      "kind": "clause",
-      "scenario": "Skipped update types"
-    }
-  ],
-  "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/Conversation React Query Hooks": [
-    {
-      "digest": "b75b6e52a37c",
-      "excerpt": "- **THEN** it returns a paginated list of conversations using `useQuery` with key `[\"conversations\", butlerName, \"lis...",
-      "kind": "clause",
-      "scenario": "useConversations hook"
-    },
-    {
-      "digest": "3dee0565bb57",
-      "excerpt": "- **AND** `staleTime` is 10 seconds (conversations update frequently during active chat)",
-      "kind": "clause",
-      "scenario": "useConversations hook"
-    },
-    {
-      "digest": "06efa1041feb",
-      "excerpt": "- **AND** `staleTime` is 0 (always refetch when switching conversations)",
-      "kind": "clause",
-      "scenario": "useConversationMessages hook"
-    }
-  ],
-  "durable-dashboard-terminal-action-recovery/dashboard-chat-ui/SSE Client Integration": [
-    {
-      "digest": "da46c7c45089",
-      "excerpt": "- **THEN** the frontend reads the SSE stream using the Fetch API with `ReadableStream`",
-      "kind": "clause",
-      "scenario": "SSE connection for new conversation"
-    },
-    {
-      "digest": "ef7b1cc6ddeb",
-      "excerpt": "- **AND** `conversation_created` events create the conversation in local state",
-      "kind": "clause",
-      "scenario": "SSE connection for new conversation"
-    },
-    {
-      "digest": "d90f0af5e73b",
-      "excerpt": "- **AND** `token` events append content to the active assistant message",
-      "kind": "clause",
-      "scenario": "SSE connection for new conversation"
-    },
-    {
-      "digest": "30ec2cbaa57c",
-      "excerpt": "- **AND** `message_complete` events finalize the message with metadata (model, tokens, duration, tool calls)",
-      "kind": "clause",
-      "scenario": "SSE connection for new conversation"
-    },
-    {
-      "digest": "4ba63213b44e",
-      "excerpt": "- **AND** `error` events display the error in the message thread",
-      "kind": "clause",
-      "scenario": "SSE connection for new conversation"
-    },
-    {
-      "digest": "ec732ea93320",
-      "excerpt": "- **AND** `done` events close the stream and re-enable the input",
-      "kind": "clause",
-      "scenario": "SSE connection for new conversation"
-    },
-    {
-      "digest": "5c32a6aead66",
-      "excerpt": "- **THEN** the same SSE event handling applies as for new conversations (without `conversation_created`)",
-      "kind": "clause",
-      "scenario": "SSE connection for follow-up"
-    },
-    {
-      "digest": "4cb7470f211a",
-      "excerpt": "- **WHEN** the user clicks the \"Stop\" button during streaming",
-      "kind": "clause",
-      "scenario": "Stream cancellation is a real server-side stop"
-    },
-    {
-      "digest": "0536dec5c529",
-      "excerpt": "- **AND** the backend records cancellation intent against that durable turn, preventing any later Switchboard ingress...",
-      "kind": "clause",
-      "scenario": "Stream cancellation is a real server-side stop"
-    },
-    {
-      "digest": "6dda99764073",
-      "excerpt": "- **AND** if a runtime already crossed the invocation boundary, the backend resolves every exact registered runtime s...",
-      "kind": "clause",
-      "scenario": "Stream cancellation is a real server-side stop"
-    },
-    {
-      "digest": "446cbdd42d87",
-      "excerpt": "- **AND** only once the server confirms `cancelled: true` **or** emits the terminal `SESSION_CANCELLED` SSE outcome f...",
-      "kind": "clause",
-      "scenario": "Stream cancellation is a real server-side stop"
-    },
-    {
-      "digest": "0a333761cae2",
-      "excerpt": "- **AND** the input is re-enabled",
-      "kind": "clause",
-      "scenario": "Stream cancellation is a real server-side stop"
-    }
-  ],
-  "durable-dashboard-terminal-action-recovery/dashboard-conversations/Conversation Pydantic Response Models": [
-    {
-      "digest": "84e0420f6f52",
-      "excerpt": "Conversation endpoint API response models SHALL provide typed response shapes",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "f3b43fd26691",
-      "excerpt": "- **THEN** each entry includes the `ConversationSummary` fields plus `snippet` (the matching message content excerpt)",
-      "kind": "clause",
-      "scenario": "ConversationSearchResult model"
-    }
-  ],
-  "durable-dashboard-terminal-action-recovery/staffer-qa/Pluggable Discovery Source Architecture": [
-    {
-      "digest": "a985bd8f9197",
-      "excerpt": "- **THEN** it implements the `DiscoverySource` protocol with: `name` (str property), `async discover(lookback_minutes...",
-      "kind": "clause",
-      "scenario": "DiscoverySource protocol definition"
-    },
-    {
-      "digest": "1686a3f84377",
-      "excerpt": "- **AND** the protocol requires no LLM invocation — all sources use tool-based filtering (regex, SQL queries, file pa...",
-      "kind": "clause",
-      "scenario": "DiscoverySource protocol definition"
-    },
-    {
-      "digest": "79ce530bff9c",
-      "excerpt": "- **AND** default enabled sources are: `[\"log_scanner\", \"session_records\", \"butler_reports\", \"tool_call_failures\", \"i...",
-      "kind": "clause",
-      "scenario": "Source registration at startup"
-    },
-    {
-      "digest": "af0045f930f4",
-      "excerpt": "- **AND** `report_finding` accepts: `fingerprint` (str, treated as a hint; the QA module recomputes the canonical fin...",
-      "kind": "clause",
-      "scenario": "QA module MCP tool registration"
-    },
-    {
-      "digest": "87ac1d19258f",
-      "excerpt": "- **AND** `report_finding` queues the finding (with canonical fingerprint and severity) in the `butler_reports` sourc...",
-      "kind": "clause",
-      "scenario": "QA module MCP tool registration"
-    },
-    {
-      "digest": "bf06cec9d345",
-      "excerpt": "- **AND** `tool_metadata()` declares `context` and `event_summary` as sensitive on `report_finding` (may contain agen...",
-      "kind": "clause",
-      "scenario": "QA module MCP tool registration"
-    }
-  ],
-  "education-mind-map-lifecycle-integrity/butler-education/Scheduled Tasks": [
-    {
-      "digest": "3fc9b13605b6",
-      "excerpt": "- **THEN** it includes a scheduled task (job or prompt dispatch) that checks for teaching flows with `last_session_at...",
-      "kind": "clause",
-      "scenario": "Weekly stale-flow check configuration"
-    }
-  ],
-  "education-mind-map-lifecycle-integrity/dashboard-education-ui/Education page layout with tab panels": [
-    {
-      "digest": "d53d5f8b0459",
-      "excerpt": "The page SHALL maintain a \"selected mind map\" state. When the page loads, it SHALL fetch the list of active mind maps...",
-      "kind": "prose",
-      "scenario": null
-    }
-  ],
-  "education-mind-map-lifecycle-integrity/module-education-curriculum/Syllabus lifecycle governs mind map state transitions": [
-    {
-      "digest": "e49e7b8edf9a",
-      "excerpt": "A mind map SHALL progress through a defined lifecycle: `creation` (graph is being generated) → `active` (learning is ...",
-      "kind": "prose",
-      "scenario": null
-    }
-  ],
-  "education-mind-map-lifecycle-integrity/module-education-mind-map/Mind map lifecycle — staleness abandonment": [
-    {
-      "digest": "bb27c411b0dc",
-      "excerpt": "The system SHALL transition a mind map from `active` to `abandoned` when more than 30 days have elapsed since any act...",
-      "kind": "prose",
-      "scenario": null
-    }
-  ],
-  "education-mind-map-lifecycle-integrity/module-education-mind-map/Mind map listing": [
-    {
-      "digest": "f1bc4acca6ec",
-      "excerpt": "- **WHEN** `mind_map_list(pool)` is called and there are three mind maps with statuses `active`, `completed`, and `ab...",
-      "kind": "clause",
-      "scenario": "List all mind maps with no filter"
     }
   ],
   "entity-chronicles-and-commitment-doors/dashboard-relationship/Entity activity aggregator (cross-butler read surface)": [
@@ -3667,136 +3437,6 @@
       "excerpt": "- **AND** it SHALL not itself prevent the existing runtime invocation path",
       "kind": "clause",
       "scenario": "Reconciliation remains credential-safe under degradation"
-    },
-    {
-      "digest": "f6e8b399faa9",
-      "excerpt": "- **WHEN** a dashboard Codex test begins with a shared credential B while the canonical local auth file still contains A",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "875368dd54c9",
-      "excerpt": "- **THEN** the test endpoint SHALL reconcile the canonical file to B before running the provider status command",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "27a66825e72b",
-      "excerpt": "- **AND** it SHALL persist health, probe history, and audit evidence only when that file still matches B and the shar...",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "cfe903f287d0",
-      "excerpt": "- **AND** those durable records SHALL share the value-fenced credential-row transaction so a later replacement cannot...",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "17263bc8bf50",
-      "excerpt": "- **AND** a concurrent replacement or local-file change SHALL leave the HTTP probe response intact while withholding ...",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "6f9e005e9dcc",
-      "excerpt": "- **AND** when the status command itself rotates B to B-prime, the endpoint SHALL finalize B-prime through the same B...",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "b12d4e9089ed",
-      "excerpt": "- **AND** a concurrent shared replacement C SHALL win that conditional write and be reconciled locally rather than ov...",
-      "kind": "clause",
-      "scenario": "Dashboard Codex probe binds to the canonical authority it tests"
-    },
-    {
-      "digest": "e3e6309cb36e",
-      "excerpt": "- **THEN** a runtime preflight or post-operation finalizer SHALL NOT create or recreate the shared credential from th...",
-      "kind": "clause",
-      "scenario": "Absent or unavailable authority is never implicitly bootstrapped"
-    },
-    {
-      "digest": "70431b02312b",
-      "excerpt": "- **AND** it SHALL NOT attach a runtime health result to the absent authority",
-      "kind": "clause",
-      "scenario": "Absent or unavailable authority is never implicitly bootstrapped"
-    },
-    {
-      "digest": "2a5cb8199b61",
-      "excerpt": "- **AND** explicit dashboard device authentication remains the supported bootstrap path for a new shared credential",
-      "kind": "clause",
-      "scenario": "Absent or unavailable authority is never implicitly bootstrapped"
-    },
-    {
-      "digest": "a361d468a3c3",
-      "excerpt": "- **AND** callers with a known shared/public credential pool SHALL pass it explicitly to the runtime adapter",
-      "kind": "clause",
-      "scenario": "Direct dispatcher authority is explicit"
-    },
-    {
-      "digest": "6dcf58da83cb",
-      "excerpt": "- **WHEN** a fresh process has no launch-bound local rotation baseline and the canonical local auth file differs from...",
-      "kind": "clause",
-      "scenario": "Unknown post-crash local state is recovered conservatively"
-    },
-    {
-      "digest": "55bfc778c327",
-      "excerpt": "- **THEN** reconciliation SHALL apply the shared authority rather than infer that the local file is a valid successor",
-      "kind": "clause",
-      "scenario": "Unknown post-crash local state is recovered conservatively"
-    },
-    {
-      "digest": "715a1ea9d879",
-      "excerpt": "- **AND** durable cross-process rotation provenance remains follow-up `bu-gg4fo`",
-      "kind": "clause",
-      "scenario": "Unknown post-crash local state is recovered conservatively"
-    },
-    {
-      "digest": "cf8048bf2381",
-      "excerpt": "- **WHEN** the authority contains an empty or malformed non-object Codex auth document while the local canonical file...",
-      "kind": "clause",
-      "scenario": "Invalid stored auth preserves a valid local file"
-    },
-    {
-      "digest": "c1f0f4319d47",
-      "excerpt": "- **THEN** reconciliation and startup restoration SHALL not replace that local file",
-      "kind": "clause",
-      "scenario": "Invalid stored auth preserves a valid local file"
-    },
-    {
-      "digest": "389716fb937a",
-      "excerpt": "- **AND** safe logs SHALL not disclose either credential value",
-      "kind": "clause",
-      "scenario": "Invalid stored auth preserves a valid local file"
-    }
-  ],
-  "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Catalog Verify-All API": [
-    {
-      "digest": "d87b2b9b4b23",
-      "excerpt": "- **THEN** the system issues a 1-token completion against each enabled model concurrently with a bounded concurrency ...",
-      "kind": "clause",
-      "scenario": "Verify-all parallel execution"
-    },
-    {
-      "digest": "d46b0b842917",
-      "excerpt": "- **AND** for each model, `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_erro...",
-      "kind": "clause",
-      "scenario": "Verify-all parallel execution"
-    },
-    {
-      "digest": "f33ee18555cc",
-      "excerpt": "- **AND** `last_verified_error` is set to the truncated exception text on failure (or `\"verification returned an empt...",
-      "kind": "clause",
-      "scenario": "Verify-all parallel execution"
-    }
-  ],
-  "harden-runtime-auth-and-breaker-attention/dashboard-model-settings/Hourly Automated Verification Sweep": [
-    {
-      "digest": "273145c68301",
-      "excerpt": "The dashboard-api process SHALL run an hourly background sweep (`butlers.jobs.model_verify.run_model_verify_loop`, st...",
-      "kind": "prose",
-      "scenario": null
     }
   ],
   "harden-runtime-auth-and-breaker-attention/dashboard-spend-dashboard/Fleet-Halt Visibility": [
@@ -3805,24 +3445,6 @@
       "excerpt": "The dashboard SHALL surface the monthly spend ceiling's enforcement action — dispatches being denied fleet-wide — as ...",
       "kind": "prose",
       "scenario": null
-    },
-    {
-      "digest": "cb7e07397822",
-      "excerpt": "- **THEN** the Spend page renders a red state reading \"Monthly ceiling reached — N dispatches denied since `<timestam...",
-      "kind": "clause",
-      "scenario": "A red fleet-halt banner renders while the ceiling is breached"
-    },
-    {
-      "digest": "ebd8dd421edc",
-      "excerpt": "- **AND** each row whose `session_id` is non-null links to that session's detail page (`/sessions/:id`), mirroring th...",
-      "kind": "clause",
-      "scenario": "An attempts drawer lists recent denials with session doors"
-    },
-    {
-      "digest": "e2b8fbd25065",
-      "excerpt": "- **AND** rows with no `session_id` (pre-session ceiling denials) render without a session door instead of a dead or ...",
-      "kind": "clause",
-      "scenario": "An attempts drawer lists recent denials with session doors"
     },
     {
       "digest": "1786095837c3",
@@ -3853,33 +3475,9 @@
       "excerpt": "- **AND** the entire push is best-effort and failure-isolated: any failure (ledger write, debounce lookup, delivery) ...",
       "kind": "clause",
       "scenario": "The owner is notified exactly once per breach window"
-    },
-    {
-      "digest": "55d3ffa9c5a0",
-      "excerpt": "- **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt state (per the fleet degraded-source...",
-      "kind": "clause",
-      "scenario": "Degraded attempts source never renders as \"no denials\""
     }
   ],
   "harden-runtime-auth-and-breaker-attention/model-catalog/Dispatch-Outcome Circuit Breaker": [
-    {
-      "digest": "76e8898057bf",
-      "excerpt": "The system SHALL exclude a catalog entry from resolution (initial resolve, effective-tier resolve, and same-tier fail...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "0ab68a3d3243",
-      "excerpt": "- **AND** outcomes other than `runtime_failure`/`success` (`quota_skip`, `suppressed`, `exhausted`) SHALL NOT count t...",
-      "kind": "clause",
-      "scenario": "Breaker opens after consecutive systemic failures"
-    },
-    {
-      "digest": "cc1493945079",
-      "excerpt": "- **AND** if that probe attempt succeeds, the trailing window's `bool_and(outcome = 'runtime_failure')` becomes false...",
-      "kind": "clause",
-      "scenario": "Half-open probe restores eligibility"
-    },
     {
       "digest": "85685efaac36",
       "excerpt": "- **WHEN** a `runtime_failure` provenance write causes a catalog entry's breaker to become open",
@@ -3903,20 +3501,6 @@
       "excerpt": "- **AND** a failure anywhere in the push (debounce lookup, delivery, ledger write) SHALL be caught and logged, never ...",
       "kind": "clause",
       "scenario": "Breaker-open attention push"
-    },
-    {
-      "digest": "ce9654c86490",
-      "excerpt": "- **THEN** the rule SHALL be HONORED — the rule-selected model is returned, NOT excluded — because an operator spend ...",
-      "kind": "clause",
-      "scenario": "Operator spend rule to a breaker-open model is honored, not excluded"
-    }
-  ],
-  "harden-runtime-auth-and-breaker-attention/runtime-opencode/Model Selection": [
-    {
-      "digest": "94fb42b45eab",
-      "excerpt": "The adapter SHALL pass the model via the `--model` CLI flag using OpenCode's `provider/model` format (e.g., `anthropi...",
-      "kind": "prose",
-      "scenario": null
     }
   ],
   "ingest-google-health-workouts/chronicler-source-compatibility/Google Health Fact Projection Compatibility Declaration": [
@@ -3969,12 +3553,6 @@
     {
       "digest": "b812577166e4",
       "excerpt": "The consolidation pipeline SHALL transform unconsolidated episodes into durable facts and rules via a multi-step proc...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "42533df531b6",
-      "excerpt": "ID: REQ-module-memory-005 Source: [Observed] PR #3669; `openspec/changes/archive/2026-08-14-consolidation-exact-artif...",
       "kind": "prose",
       "scenario": null
     },
@@ -4051,12 +3629,6 @@
       "scenario": "Episode content wrapped in XML tags for prompt injection prevention"
     },
     {
-      "digest": "4fe5f5e49a98",
-      "excerpt": "- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source group S...",
-      "kind": "clause",
-      "scenario": "Throughput decision retains existing batching"
-    },
-    {
       "digest": "06a061acb0c0",
       "excerpt": "- **AND** existing model-catalog and Spawner quota, failover and timeout authority SHALL remain unchanged",
       "kind": "clause",
@@ -4069,12 +3641,18 @@
       "scenario": "Throughput decision preserves catalog-authoritative transport"
     }
   ],
-  "reconcile-dashboard-conversation-contracts/dashboard-conversations/Dashboard Ingestion Envelope Construction": [
+  "public-identity-channel-projection/switchboard-identity/Inbound message identity resolution": [
     {
-      "digest": "648f7052fd7c",
-      "excerpt": "- `event.external_event_id`: `\"{message_id}\"`, where dashboard UI provides one immutable client-generated ID for a ne...",
+      "digest": "0cf103fbba20",
+      "excerpt": "The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The res...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "2ab0687e3abf",
+      "excerpt": "- **WHEN** the Switchboard daemon wires its production `MessagePipeline`",
       "kind": "clause",
-      "scenario": "Envelope structure for dashboard messages"
+      "scenario": "Fleet activation supplies the standard owner-delivery callback"
     }
   ],
   "reconcile-dashboard-conversation-contracts/ingestion-event-registry/Ingestion Event Table": [
@@ -4083,30 +3661,6 @@
       "excerpt": "The `public.ingestion_events` table is the canonical first-class record of every event that enters the butler ecosyst...",
       "kind": "prose",
       "scenario": null
-    },
-    {
-      "digest": "e8bada1f0a7a",
-      "excerpt": "- **AND** `source_sender_display_name` is the raw sender display name from the envelope's `sender.display_name` (e.g....",
-      "kind": "clause",
-      "scenario": "Row created on new ingest accept"
-    },
-    {
-      "digest": "ee324d4003a2",
-      "excerpt": "- **THEN** no new row is inserted",
-      "kind": "clause",
-      "scenario": "Duplicate submission returns existing row ID"
-    },
-    {
-      "digest": "f8c923496ba9",
-      "excerpt": "- **AND** the existing row's `id` is returned as `request_id` with `duplicate=true`",
-      "kind": "clause",
-      "scenario": "Duplicate submission returns existing row ID"
-    },
-    {
-      "digest": "78bd54d4f170",
-      "excerpt": "- **AND** UUID7 ordering can substitute for a separate `received_at` index for recency queries",
-      "kind": "clause",
-      "scenario": "UUID7 is time-ordered"
     }
   ],
   "recover-ingestion-target-deliveries/dashboard-ingestion-dispatch-console/Timeline Ledger": [
@@ -4285,72 +3839,6 @@
       "excerpt": "- `heartbeat_age_seconds: number | null` -- seconds since `last_heartbeat_at`, or `null`; the frontend uses this to c...",
       "kind": "clause",
       "scenario": "Heartbeat endpoint returns per-butler status"
-    }
-  ],
-  "restore-drill-recovery-truthfulness/core-notify/Attention Ledger Reader": [
-    {
-      "digest": "c5021029536d",
-      "excerpt": "`GET /api/attention/ledger` SHALL return a paginated, newest-first list of ledger rows, filterable by `intent`, `sour...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "a99c5580b57b",
-      "excerpt": "The Trust Console panel that renders this summary (`AttentionLedgerPanel`) MUST render a non-zero `failed` count in a...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "9de1bee77041",
-      "excerpt": "Naming note: the summary's \"per source\" grouping is `origin_butler` (which butler/job attempted the egress — e.g. `se...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "c30266002051",
-      "excerpt": "- **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state...",
-      "kind": "clause",
-      "scenario": "Unmigrated table is a true empty result, not a degraded one"
-    }
-  ],
-  "restore-drill-recovery-truthfulness/deployment-hardening/Backup And Restore Verification Path": [
-    {
-      "digest": "ea715917edff",
-      "excerpt": "- **THEN** a backup of the PostgreSQL data plane can be produced and restored to a working instance, and the procedur...",
-      "kind": "clause",
-      "scenario": "Documented restore drill exists and is verifiable"
-    }
-  ],
-  "restore-drill-recovery-truthfulness/system-overview-page/Backup State Facts": [
-    {
-      "digest": "bdbbfd6e0b14",
-      "excerpt": "The `/api/system/backups` endpoint SHALL return the recency and size of the most recent database backup, plus a short...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "9f9ed10b541d",
-      "excerpt": "- **AND** `backup_source_reachable` is `false`",
-      "kind": "clause",
-      "scenario": "Unavailable backup source degrades gracefully"
-    },
-    {
-      "digest": "508398cf75e4",
-      "excerpt": "- **AND** `backup_history` is an empty array",
-      "kind": "clause",
-      "scenario": "Unavailable backup source degrades gracefully"
-    },
-    {
-      "digest": "a401f3b7d576",
-      "excerpt": "- **AND** `last_backup_status` is `\"missing\"` and `backup_stale` is `false`",
-      "kind": "clause",
-      "scenario": "Unavailable backup source degrades gracefully"
-    },
-    {
-      "digest": "4aed365b97ac",
-      "excerpt": "- **AND** the frontend renders a \"backup status unavailable\" indicator rather than an error state",
-      "kind": "clause",
-      "scenario": "Unavailable backup source degrades gracefully"
     }
   ],
   "restore-drill-recovery-truthfulness/system-overview-page/Weekly Restore Drill": [
@@ -5441,34 +4929,6 @@
       "scenario": "Fresh collection-dependent predicate preserves actual population"
     }
   ],
-  "slim-module-abc-and-tool-registrar/core-modules/Module Abstract Base Class": [
-    {
-      "digest": "6e6e3e700063",
-      "excerpt": "Every pluggable module MUST subclass `Module` (from `butlers.modules.base`) and implement all abstract members: `name...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "a8d9e984e63d",
-      "excerpt": "- **WHEN** a module subclass omits one or more abstract members",
-      "kind": "clause",
-      "scenario": "Incomplete module implementation fails"
-    }
-  ],
-  "slim-module-abc-and-tool-registrar/core-modules/Tool Group Filtering": [
-    {
-      "digest": "f1b5036f2e2c",
-      "excerpt": "Inside `register_tools()`, modules define a local `_tool(group)` helper that returns `mcp.tool()` when the group is e...",
-      "kind": "clause",
-      "scenario": "Contract: _tool(group) decorator pattern"
-    },
-    {
-      "digest": "dec0e5a0eea7",
-      "excerpt": "```python def _tool(group: str): if group_enabled(config, group): return mcp.tool() return lambda fn: fn",
-      "kind": "clause",
-      "scenario": "Contract: _tool(group) decorator pattern"
-    }
-  ],
   "specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point": [
     {
       "digest": "1ba03738c9e6",
@@ -5511,18 +4971,6 @@
       "excerpt": "- **AND** the separate `<!-- @include path -->` directive handled by `read_system_prompt()` remains available for HTM...",
       "kind": "clause",
       "scenario": "CLAUDE.md delegates to AGENTS.md via file reference"
-    },
-    {
-      "digest": "a4ccd410bf8b",
-      "excerpt": "- **THEN** its first line is `@../shared/AGENTS.md` — pulling shared butler instructions (tool execution contract, ca...",
-      "kind": "clause",
-      "scenario": "AGENTS.md composes shared instructions"
-    },
-    {
-      "digest": "eb022489d632",
-      "excerpt": "- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles",
-      "kind": "clause",
-      "scenario": "AGENTS.md composes shared instructions"
     },
     {
       "digest": "e69f93fa9eaa",
@@ -5635,20 +5083,6 @@
       "excerpt": "- **THEN** the response is `PaginatedResponse[PromptVersion]` ordered `version DESC`, defaulting to the most recent 2...",
       "kind": "clause",
       "scenario": "Prompt history list"
-    }
-  ],
-  "specify-state-first-secrets-passport-index/butler-secrets/Passport-Book Information Architecture": [
-    {
-      "digest": "1fea3eb1af91",
-      "excerpt": "- **AND** the `needs-hand` group contains ONLY genuinely broken or imminently-expiring credentials (`expired`, `revok...",
-      "kind": "clause",
-      "scenario": "Spine grouping order"
-    },
-    {
-      "digest": "6126f96aa1fb",
-      "excerpt": "- **AND** the `stale` group contains credentials in the `warn` state (set, but either never successfully probed or no...",
-      "kind": "clause",
-      "scenario": "Spine grouping order"
     }
   ],
   "true-bidirectional-email-correspondence/module-email/SMTP Email Sending": [

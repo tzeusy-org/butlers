@@ -2,7 +2,8 @@
 
 ### Requirement: Conversation Pydantic Response Models
 
-API response models for conversation endpoints SHALL preserve the existing
+Conversation endpoint API response models SHALL provide typed response shapes.
+They SHALL preserve the existing
 conversation and message fields and SHALL expose an optional durable terminal
 action on the immutable dashboard user message that initiated a bug-report or
 dead-letter lane. It SHALL also expose an optional durable `dashboard_turn` on
@@ -148,8 +149,7 @@ Scope: v1-mandatory
 #### Scenario: ConversationSearchResult model
 
 - **WHEN** a search result is serialized
-- **THEN** each entry SHALL include the ConversationSummary fields plus
-  `snippet`, the matching message-content excerpt
+- **THEN** each entry includes the `ConversationSummary` fields plus `snippet` (the matching message content excerpt)
 
 ### Requirement: Conversation Reply Channel
 

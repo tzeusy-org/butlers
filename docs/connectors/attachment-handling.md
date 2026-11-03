@@ -46,6 +46,10 @@ The ingest payload `attachments[]` array carries `media_type`, `filename`, `size
 
 Page text is untrusted (`content_trust: "untrusted"`): it travels only as JSON string data, and the D4 catalog declaration marks the output untrusted so a goal that reads it becomes exposed under RFC 0038 D6. The tool is a dark build: the daemon catalogs it in `_finalize_tool_catalog`, then disables it on FastMCP (`GOAL_RUNTIME_DARK_TOOLS` in `src/butlers/core_tools/_media.py`), so today's classify-and-route sessions cannot list or call it until the goal-runtime cutover presents it.
 
+### Viewing scanned pages
+
+`attachment_page_view(storage_ref, page=1)` renders one PDF page to a PNG for a page `attachment_read` marked `no_text_layer`. It runs in the same child (`render` mode of `src/butlers/tools/_pdf_extract.py`) under the same 512 MB and 15-second limits and two shared slots, so text reads and renders together never exceed two children. The scale is fixed from the page size before drawing: at most 200 dpi, 1568 px on the long edge and 1,150,000 px in area. The parent does not trust the child's header on its own: it reads the width and height from the PNG's IHDR chunk and rejects, as `extraction_limit_exceeded`, any output over 4 MB, without a PNG signature, whose IHDR dimensions differ from the header, are below 1 px or fall outside those bounds, or that names a page other than the one requested. The result is a metadata dict (`content_trust: "untrusted"`, page, page count, width, height) followed by an MCP image content block. Scope, size and media refusals match `attachment_read`. The tool is dark (`GOAL_RUNTIME_DARK_TOOLS`) and, because its output is vision input, presenting it also waits on a model with a passing RFC 0036 exact-path vision proof (bu-s1u4br).
+
 ## Metrics
 
 Four attachment-specific Prometheus counters are defined in `src/butlers/connectors/metrics.py`: `connector_attachment_fetched_eager_total`, `connector_attachment_fetched_lazy_total`, `connector_attachment_skipped_oversized_total`, and `connector_attachment_type_distribution_total`. All include `connector_type`, `endpoint_identity`, and `media_type` labels. High-cardinality IDs are excluded.
@@ -114,8 +118,9 @@ psql -h localhost -U butlers -d butlers -c \
 - `tests/core/test_attachment_view.py::test_no_other_tool_source_embeds_a_data_base64_field`
   guards the inline base64 cap repo-wide.
 - `tests/tools/test_attachments.py::test_attachment_read_pages_and_refusals` pins the paged read
-  bounds and refusals; `tests/contracts/test_tool_presentation_inventory.py` pins that
-  `attachment_read` is cataloged but not listed.
+  bounds and refusals; `test_attachment_page_view_renders_bounded_png_or_refuses` pins the render
+  bounds; `tests/contracts/test_tool_presentation_inventory.py` pins that `attachment_read` and
+  `attachment_page_view` are cataloged but not listed.
 
 ## Related Pages
 
