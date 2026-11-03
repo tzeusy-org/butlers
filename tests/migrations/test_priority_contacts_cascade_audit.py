@@ -40,7 +40,6 @@ PostgreSQL instance, then exercise the real router against the resulting schema.
 
 from __future__ import annotations
 
-import importlib.util
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -53,6 +52,7 @@ from fastapi import FastAPI
 
 from butlers.api.deps import get_db
 from butlers.api.routers.priority_contacts import router as priority_contacts_router
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -64,13 +64,8 @@ _TRIGGER_FN = "priority_contacts_cascade_audit"
 _RETIRE_MIGRATION = "core_205_priority_contacts_drop_cascade_audit"
 
 
-def _load_migration(name: str):
-    path = _VERSIONS_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _core_migration(name: str):
+    return load_migration(_VERSIONS_DIR / f"{name}.py", name)
 
 
 async def _run_upgrade_sqls(pool: asyncpg.Pool, mod) -> None:
@@ -144,7 +139,7 @@ async def test_no_cascade_audit_trigger_remains(cascade_pool: asyncpg.Pool) -> N
 
     # Plant historical evidence using the actual retired trigger, then replay
     # the retirement. Empty audit history cannot prove immutable row survival.
-    retirement = _load_migration(_RETIRE_MIGRATION)
+    retirement = _core_migration(_RETIRE_MIGRATION)
     legacy_sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: legacy_sqls.append(sql)
