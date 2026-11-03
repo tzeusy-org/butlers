@@ -33,8 +33,8 @@ class FinanceModuleConfig(ToolGroupMixin, BaseModel):
     facts : list_transaction_facts, track_account_fact,
             track_subscription_fact, spending_summary_facts
     bulk : bulk_record_transactions, bulk_update_transactions,
-           bulk_recategorize, import_transactions, import_transactions_from_file,
-           merge_duplicates, split_transaction
+           bulk_recategorize, import_transactions, merge_duplicates,
+           split_transaction
     subscriptions : track_subscription, subscription_audit, detect_recurring,
                     detect_price_changes
     bills : track_bill, upcoming_bills, predict_bills

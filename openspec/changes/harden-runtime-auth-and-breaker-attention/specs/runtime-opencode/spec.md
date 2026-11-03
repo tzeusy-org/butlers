@@ -7,6 +7,8 @@ placement is specified below; historical receipts are not target proof.
 
 ### Requirement: Model Selection
 
+The adapter SHALL pass the model via the `--model` CLI flag using OpenCode's `provider/model` format (e.g., `anthropic/claude-sonnet-4-5`). Butler authors MUST use the `provider/model` format in `butler.toml` when using the OpenCode runtime.
+
 The adapter SHALL retain the resolved catalog model identifier as the canonical
 caller-visible identity for routing, pricing, spend enforcement, token-ledger
 history, and provenance. At an OpenCode selected-model execution boundary it

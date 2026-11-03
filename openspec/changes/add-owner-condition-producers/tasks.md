@@ -66,7 +66,7 @@ The group number is left vacant so groups 4 and 5 stay stable.
 
 ## 4. Finance budget threshold producer (`finance:budget-threshold`)
 
-- [ ] 4.1 In `run_insight_scan` (`roster/finance/jobs/finance_jobs.py`), after the existing
+- [x] 4.1 In `run_insight_scan` (`roster/finance/jobs/finance_jobs.py`), after the existing
   budget section, build observations from `budget_status()` items with status `warning` or
   `exceeded` and reconcile `finance:budget-threshold` through `_reconcile_owner_conditions`.
   Wrap the currently unwrapped `budget_status()` call so a raise skips only this source.
@@ -74,12 +74,13 @@ The group number is left vacant so groups 4 and 5 stay stable.
   `{"items": [], "count": 0}` with no active budgets, and the empty result is a complete
   snapshot that resolves. The early exits in sections 1 to 3 skip the reconcile on those runs;
   that latency is accepted and no change is made.
-- [ ] 4.2 Tests: open on warn, warning to exceeded keeps one episode, resolve on new period or
+- [x] 4.2 Tests: open on warn, warning to exceeded keeps one episode, resolve on new period or
   lower total, failing `budget_status()` never resolves, reconciliation failure does not break
   the scan.
   Nearest existing test: `roster/finance/tests/test_jobs.py`
   (`test_insight_scan_overdue_bill_opens_owner_condition` pattern).
-  Tests delta: +5 ~0 -0 expected.
+  Tests delta: +5 ~0 -0 expected; measured +6 ~0 -0 collected (4 functions, one parametrized x3).
+  Shipped by bu-5rjeup.
 
 ## 5. Cross-cutting spec hygiene
 

@@ -2,11 +2,14 @@
 
 ## Purpose
 Defines the dashboard API surface for reading and updating each butler's runtime config row in the per-butler `runtime_config` DB table. These endpoints are core (cross-butler) routes — not auto-discovered butler-specific routes — because they read from any butler's schema.
+
 ## Requirements
+
 ### Requirement: GET runtime config endpoint
 
 The dashboard API SHALL expose `GET /api/butlers/{name}/runtime-config` returning the current runtime config from the DB. This is a core API route in `src/butlers/api/routers/` (not an auto-discovered butler-specific route per RFC 0007 §Auto-Discovered Butler Routes), because it is cross-butler infrastructure that reads from any butler's schema.
 
+ID: REQ-runtime-config-api-001
 Source: RFC 0007 §Dashboard API Surface, §Response Envelope
 Scope: v1-mandatory
 
@@ -30,16 +33,24 @@ Scope: v1-mandatory
 - **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `core_groups_narrowing_reason`, `max_concurrent`, and `max_queued` are cold
 - **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
 
+#### Scenario: Stored exposure policy is returned
+
+- **WHEN** a GET response is returned
+- **THEN** it SHALL include the stored `tool_exposure_policy` and mark that field `hot` in `field_tiers`
+- **AND** a legacy row missing the field SHALL use `eager_filtered`
+- **AND** the API field tier SHALL NOT establish that a runtime planner consumes the policy
+
 ### Requirement: PATCH runtime config endpoint
 
 The dashboard API SHALL expose `PATCH /api/butlers/{name}/runtime-config` accepting a partial update of runtime config fields.
 
+ID: REQ-runtime-config-api-002
 Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
 #### Scenario: Accepted fields
 - **WHEN** a PATCH request is processed
-- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, `max_queued`, and `tool_exposure_policy` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
 
 #### Scenario: Catalog read sensitivity updates hot
 
@@ -86,3 +97,14 @@ Scope: v1-mandatory
 #### Scenario: Butler not found
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
+
+#### Scenario: Exposure policy update is persisted without restart
+
+- **WHEN** a PATCH supplies `tool_exposure_policy` as `eager_filtered` or `auto`
+- **THEN** the DB row SHALL be updated and that field SHALL NOT appear in `restart_required`
+- **AND** persistence SHALL NOT claim native discovery activation or an implemented per-attempt planner
+
+#### Scenario: Invalid exposure policy is rejected
+
+- **WHEN** a PATCH supplies another non-null exposure policy value
+- **THEN** the API SHALL return HTTP 422 without changing the stored policy

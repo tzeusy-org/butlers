@@ -219,8 +219,11 @@ async def publish_investigation(
             else PublicationStatus.REFUSED
         )
         return await publisher.record_refusal(attempt_id, PublicationResult(status, exc.code))
-    except (InvalidBinding, OSError, TimeoutError):
-        logger.warning("QA publication could not bind attempt=%s", attempt_id, exc_info=True)
+    except (InvalidBinding, OSError, TimeoutError) as exc:
+        # Type name only: binding/anonymizer errors can carry pre-egress PR text.
+        logger.warning(
+            "QA publication could not bind attempt=%s (%s)", attempt_id, type(exc).__name__
+        )
         return await publisher.record_refusal(
             attempt_id, PublicationResult(PublicationStatus.REFUSED, "unbound_export")
         )
@@ -238,6 +241,9 @@ async def publish_investigation(
             labels=labels,
             whitelist=whitelist,
         )
-    except Exception:  # noqa: BLE001 — post-egress errors are recorded inside the publisher
-        logger.warning("QA publisher raised before egress (attempt=%s)", attempt_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — post-egress errors are recorded inside the publisher
+        # Type name only: a pre-egress failure can carry the unpublished PR text.
+        logger.warning(
+            "QA publisher raised before egress (attempt=%s, %s)", attempt_id, type(exc).__name__
+        )
         return PublicationResult(PublicationStatus.REFUSED, "publisher_error")

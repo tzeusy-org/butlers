@@ -1,4 +1,4 @@
-"""Real-Postgres proof for OwnTracks timestamp-plus-UUID cursor paging."""
+"""Real-Postgres proof for OwnTracks device-time and arrival-time cursor paging."""
 
 from __future__ import annotations
 
@@ -78,3 +78,29 @@ async def test_tuple_cursor_query_uses_composite_index_without_sort(
     plan = "\n".join(row[0] for row in rows)
     assert _INDEX in plan, f"tuple cursor query did not use {_INDEX}:\n{plan}"
     assert "Sort" not in plan, f"tuple cursor index should provide total order:\n{plan}"
+
+
+async def test_arrival_cursor_query_uses_recorded_at_index_without_sort(
+    seeded_pool: asyncpg.Pool,
+) -> None:
+    """``owntracks.points`` pages by arrival order (bu-e6lrho)."""
+    async with seeded_pool.acquire() as conn:
+        await conn.execute("SET enable_seqscan = off")
+        rows = await conn.fetch(
+            """
+            EXPLAIN (COSTS OFF)
+            SELECT id, recorded_at
+            FROM connectors.owntracks_points
+            WHERE recorded_at <= now() - make_interval(secs => 60)
+              AND (recorded_at, id) > ($1, $2)
+            ORDER BY recorded_at ASC, id ASC
+            LIMIT 1000
+            """,
+            _BOUNDARY_TS,
+            _BOUNDARY_ID,
+        )
+
+    plan = "\n".join(row[0] for row in rows)
+    index = "idx_owntracks_points_recorded_at_id"
+    assert index in plan, f"arrival cursor query did not use {index}:\n{plan}"
+    assert "Sort" not in plan, f"arrival cursor index should provide total order:\n{plan}"
