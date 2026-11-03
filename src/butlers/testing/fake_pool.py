@@ -91,3 +91,11 @@ def fake_pool(**configured: Any) -> FakePool:
     This is not evidence of schema, JSONB, transaction, role or RLS correctness.
     """
     return FakePool(**configured)
+
+
+def free_release_lock() -> AsyncCtx:
+    """One acquisition whose deferred-release lock is free: try-lock wins, unlock succeeds.
+
+    For fakes that drive the deferred flush (``deferred_release_lock``) but do not test it.
+    """
+    return AsyncCtx(FakeConnection(fetchval=True, execute="SELECT 1"))

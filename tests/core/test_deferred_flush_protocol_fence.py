@@ -2,18 +2,22 @@
 
 Slice A of strict-owner-telegram-wake-recovery (time-aware-delivery "Fenced Wake-Recovery
 Cohorts Are Scheduler-Ineligible", task 3.3a). A row in a ``release_*`` protocol state must
-never be selected, expired or transitioned by the ordinary loop, and a row reserved after the
-due-fetch must not have its status overwritten by the flush's own status writes.
+never be selected, expired or transitioned by the ordinary loop. Slice B1 (bu-kqnum.3.6.2): the
+whole pass runs under the schema's deferred-release lock, which wake-recovery prepare also takes,
+so prepare can never reserve a row the flush has fetched and is mid-send.
 
 The pool here interprets the four statements the flush issues by their WHERE clauses: a
 statement that drops the ``status = 'pending'`` guard therefore changes what it does to a
-protocol row, which is what these tests observe. Real-Postgres coverage of the same fence is
+protocol row, which is what these tests observe. Its ``acquire()`` connection models the
+session advisory lock. Real-Postgres coverage of the same fence is
 in ``tests/integration/test_deferred_flush_protocol_fence_roundtrip.py`` (Docker; CI-only).
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -61,18 +65,46 @@ def _row(status: str, *, age: timedelta, recipient: str = "owner", wake: bool = 
     }
 
 
+class _LockConn:
+    """One pooled connection; its advisory-lock calls toggle the pool's lock state."""
+
+    def __init__(self, pool: _FlushPool) -> None:
+        self.pool = pool
+
+    async def fetchval(self, sql: str, *args: Any) -> bool:
+        assert "pg_try_advisory_lock(hashtext('deferred-release:'" in sql
+        if self.pool.held_elsewhere:
+            return False
+        self.pool.locked = True
+        return True
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        assert "pg_advisory_unlock(hashtext('deferred-release:'" in sql
+        self.pool.locked = False
+        return "SELECT 1"
+
+
 class _FlushPool:
     """In-memory deferred_notifications that honours the WHERE clause of each statement."""
 
-    def __init__(self, rows: list[dict]) -> None:
+    def __init__(self, rows: list[dict], *, held_elsewhere: bool = False) -> None:
         self.rows = rows
         self.statements: list[str] = []
+        self.held_elsewhere = held_elsewhere
+        self.locked = False
+        self.unlocked_statements: list[str] = []
 
-    async def fetchval(self, sql: str, *args: Any) -> bool:
-        return True
+    @asynccontextmanager
+    async def acquire(self) -> AsyncIterator[_LockConn]:
+        yield _LockConn(self)
+
+    def _record(self, sql: str) -> None:
+        self.statements.append(sql)
+        if not self.locked:
+            self.unlocked_statements.append(sql)
 
     async def fetch(self, sql: str, *args: Any) -> list[dict]:
-        self.statements.append(sql)
+        self._record(sql)
         if "id = ANY" in sql:  # partial-delivery quarantine reconcile
             fenced = "NOT LIKE 'release\\_%'" in sql
             return [
@@ -88,7 +120,7 @@ class _FlushPool:
         ]
 
     async def execute(self, sql: str, *args: Any) -> str:
-        self.statements.append(sql)
+        self._record(sql)
         guarded = "AND status = 'pending'" in sql or "WHERE status = 'pending'" in sql
         if "SET status = 'expired'" in sql:
             targets = [r for r in self.rows if r["deliver_at"] < args[0]]
@@ -158,30 +190,51 @@ async def test_plain_pending_rows_deliver_and_expire_beside_protocol_rows() -> N
     }
 
 
-async def test_a_row_reserved_after_the_due_fetch_keeps_its_protocol_status() -> None:
+async def test_the_flush_is_skipped_while_another_session_holds_the_release_lock() -> None:
     row = _row("pending", age=timedelta(minutes=5), wake=True)
-    pool = _FlushPool([row])
+    pool = _FlushPool([row], held_elsewhere=True)
+    notify_fn = AsyncMock()
 
-    async def reserve_while_sending(_envelope: dict) -> None:
-        row["status"] = "release_prepared"
+    assert await _flush(pool, notify_fn) == 0
 
-    await _flush(pool, AsyncMock(side_effect=reserve_while_sending))
+    notify_fn.assert_not_awaited()
+    assert pool.statements == []
+    assert row["status"] == "pending"
 
-    assert row["status"] == "release_prepared" and row["delivered_at"] is None
+
+async def test_every_read_send_and_status_write_runs_inside_the_release_lock() -> None:
+    first = _row("pending", age=timedelta(minutes=5), recipient="a", wake=True)
+    second = _row("pending", age=timedelta(minutes=6), recipient="a", wake=True)
+    solo = _row("pending", age=timedelta(minutes=5), recipient="b")
+    pool = _FlushPool([first, second, solo])
+    _PARTIAL_DEFERRED.mark(pool, str(uuid.uuid4()), {"partial_delivery": True})
+    held_during_send: list[bool] = []
+
+    async def send(_envelope: dict) -> None:
+        held_during_send.append(pool.locked)
+
+    assert await _flush(pool, AsyncMock(side_effect=send)) == 3
+
+    assert held_during_send == [True, True]
+    assert pool.statements and pool.unlocked_statements == []
+    assert not pool.locked
 
 
-async def test_a_composed_group_keeps_a_member_reserved_after_the_due_fetch() -> None:
-    first = _row("pending", age=timedelta(minutes=5), wake=True)
-    second = _row("pending", age=timedelta(minutes=6), wake=True)
-    pool = _FlushPool([first, second])
+@pytest.mark.parametrize("composed", [False, True], ids=["solo", "composed"])
+async def test_a_row_cancelled_while_its_send_is_in_flight_stays_cancelled(composed: bool) -> None:
+    rows = [_row("pending", age=timedelta(minutes=5), wake=True)]
+    if composed:
+        rows.append(_row("pending", age=timedelta(minutes=6), wake=True))
+    pool = _FlushPool(rows)
 
-    async def reserve_while_sending(_envelope: dict) -> None:
-        second["status"] = "release_prepared"
+    async def cancel_while_sending(_envelope: dict) -> None:
+        rows[-1]["status"] = "cancelled"
 
-    await _flush(pool, AsyncMock(side_effect=reserve_while_sending))
+    await _flush(pool, AsyncMock(side_effect=cancel_while_sending))
 
-    assert first["status"] == "delivered"
-    assert second["status"] == "release_prepared" and second["delivered_at"] is None
+    assert rows[-1]["status"] == "cancelled" and rows[-1]["delivered_at"] is None
+    if composed:
+        assert rows[0]["status"] == "delivered"
 
 
 async def test_a_quarantined_send_later_reserved_by_the_protocol_is_left_to_it() -> None:

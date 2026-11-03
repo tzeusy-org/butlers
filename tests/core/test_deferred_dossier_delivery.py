@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.scheduler import _group_due_deferred_notifications
+from butlers.testing.fake_pool import free_release_lock
 
 pytestmark = pytest.mark.unit
 
@@ -102,6 +103,7 @@ async def test_due_owner_attention_hold_is_not_re_gated_after_policy_changes() -
         },
     }
     pool = AsyncMock()
+    pool.acquire = free_release_lock
     pool.fetchval.return_value = True
     pool.fetch.return_value = [
         {

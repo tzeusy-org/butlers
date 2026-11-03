@@ -1,7 +1,8 @@
 """Real-Postgres: wake provenance is written with the hold and the flush fences protocol rows.
 
 Bead bu-kqnum.3.6.1 (core_310). Drives the real ``insert_deferred_notification`` and the real
-ordinary flush against a migrated schema.
+ordinary flush against a migrated schema. Bead bu-kqnum.3.6.2 (slice B1): a session holding the
+deferred-release advisory lock excludes the flush.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pytest
 from butlers.core.scheduler import _tick_deferred_notification_pass
 from butlers.core.temporal.delivery_db import (
     WakeHoldProvenance,
+    deferred_release_lock,
     envelope_digest,
     insert_deferred_notification,
 )
@@ -130,3 +132,20 @@ async def test_the_flush_leaves_protocol_rows_and_handles_plain_and_legacy_rows(
     assert status[legacy_stale] == "expired"
     assert status[prepared] == "release_prepared"
     assert status[committed] == "release_committed"
+
+
+async def test_a_session_holding_the_release_lock_excludes_the_flush(sb_pool) -> None:
+    due = await _park(sb_pool, "due", wake=True)
+    notify_fn = AsyncMock()
+
+    with patch("butlers.core.attention_ledger.record_attention_event", AsyncMock()):
+        async with deferred_release_lock(sb_pool, wait=True) as held:
+            assert held
+            assert await _tick_deferred_notification_pass(sb_pool, _NOW, notify_fn=notify_fn) == 0
+            notify_fn.assert_not_awaited()
+        assert await _tick_deferred_notification_pass(sb_pool, _NOW, notify_fn=notify_fn) == 1
+
+    status = await sb_pool.fetchval(
+        "SELECT status FROM deferred_notifications WHERE id = $1::uuid", due
+    )
+    assert status == "delivered"

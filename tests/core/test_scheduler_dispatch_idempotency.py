@@ -25,6 +25,8 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.fake_pool import free_release_lock
+
 pytestmark = pytest.mark.unit
 
 
@@ -57,6 +59,7 @@ class _ClaimTrackingPool:
         self.dispatch_calls: list[str] = []
         self.execute_calls: list[str] = []
         self.fetchrow_calls: list[str] = []
+        self.acquire = free_release_lock
 
     async def fetchval(self, query: str, *args: Any) -> object:
         """Unexpected schema discovery is never required on migrated stores."""

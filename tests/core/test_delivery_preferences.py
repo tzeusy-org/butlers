@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
+from butlers.testing.fake_pool import free_release_lock
+
 pytestmark = [pytest.mark.unit]
 
 docker_available = shutil.which("docker") is not None
@@ -620,6 +622,7 @@ async def test_real_deferred_wrapper_terminal_partial_keeps_failed_tail_across_b
             assert "SET status = 'delivered'" not in sql
 
         pool = SimpleNamespace(
+            acquire=free_release_lock,
             fetchval=AsyncMock(return_value=True),
             execute=execute,
             fetch=AsyncMock(
@@ -703,7 +706,12 @@ async def test_terminal_reconciliation_does_not_cancel_a_new_same_recipient_send
         elif "status = 'delivered'" in sql:
             states[args[0]] = "delivered"
 
-    pool = SimpleNamespace(fetch=fetch, execute=execute, fetchval=AsyncMock(return_value=True))
+    pool = SimpleNamespace(
+        acquire=free_release_lock,
+        fetch=fetch,
+        execute=execute,
+        fetchval=AsyncMock(return_value=True),
+    )
     notify = AsyncMock(side_effect=[{terminal_field: True, "retryable": False}, None])
     ledger = AsyncMock()
     monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", ledger)

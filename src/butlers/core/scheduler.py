@@ -1716,7 +1716,30 @@ async def _tick_deferred_notification_pass(
     Returns the number of underlying notifications delivered (a composed
     digest of N rows counts as N, not 1 — it reflects candidates consumed,
     not ``notify_fn`` calls made).
+
+    Release-lock exclusion (strict-owner-telegram-wake-recovery D3): the whole
+    pass, from the due-fetch through every status write, runs while holding
+    the schema's deferred-release lock, which wake-recovery prepare also takes.
+    Prepare therefore cannot reserve a row this pass has fetched and is
+    sending. When another session holds the lock the pass is skipped and
+    returns 0; its rows stay ``pending`` for the next tick.
     """
+    from butlers.core.temporal.delivery_db import deferred_release_lock
+
+    async with deferred_release_lock(pool, wait=False) as held:
+        if not held:
+            logger.info("Deferred flush skipped: the deferred-release lock is held elsewhere")
+            return 0
+        return await _deferred_pass_holding_release_lock(pool, now, notify_fn=notify_fn)
+
+
+async def _deferred_pass_holding_release_lock(
+    pool: asyncpg.Pool,
+    now: datetime,
+    *,
+    notify_fn=None,
+) -> int:
+    """Body of ``_tick_deferred_notification_pass``; the caller holds the release lock."""
     import json as _json
 
     from butlers.core.attention_ledger import record_attention_event
@@ -1768,8 +1791,9 @@ async def _tick_deferred_notification_pass(
 
     # The ordinary flush owns plain ``pending`` rows only. A row a wake-recovery run has
     # reserved, committed or retained (any ``release_*`` status) is never selected, expired
-    # or transitioned here, and every status write below repeats the ``pending`` guard so a
-    # row reserved after the due-fetch is left as the protocol set it
+    # or transitioned here. The release lock keeps prepare out for the whole pass; every
+    # status write below still repeats the ``pending`` guard, so a row another writer
+    # (cancel, supersede) moved after the due-fetch keeps that status
     # (strict-owner-telegram-wake-recovery: Fenced Wake-Recovery Cohorts).
     # Expire stale pending notifications (> 24h past deliver_at)
     await pool.execute(

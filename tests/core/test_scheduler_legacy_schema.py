@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.fake_pool import free_release_lock
+
 
 class _LegacySchedulerPool:
     def __init__(self) -> None:
@@ -14,6 +16,7 @@ class _LegacySchedulerPool:
         self.execute_queries: list[str] = []
         self.fetchrow_queries: list[str] = []
         self.column_probe_args: list[tuple[Any, ...]] = []
+        self.acquire = free_release_lock
 
     async def fetchval(self, query: str, *args: Any) -> bool:
         if "information_schema.columns" in query:
@@ -106,6 +109,7 @@ async def test_migrated_deferred_schema_fault_is_visible_without_probing():
     from butlers.core.scheduler import _tick_deferred_notification_pass
 
     pool = AsyncMock()
+    pool.acquire = free_release_lock
     pool.fetchval.return_value = False
     pool.execute.side_effect = asyncpg.UndefinedTableError("synthetic missing table")
     notify = AsyncMock()

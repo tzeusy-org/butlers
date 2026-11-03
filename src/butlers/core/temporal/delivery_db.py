@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Any
@@ -194,6 +196,35 @@ async def upsert_delivery_preferences(
 
 
 WAKE_HOLD_KIND_OWNER_QUIET_HOURS = "owner_attention_quiet_hours"
+
+# One per-schema session advisory lock, keyed like the approvals park lock. The ordinary
+# deferred flush holds it from its due-fetch through its status writes, and wake-recovery
+# prepare (strict-owner-telegram-wake-recovery D3) takes the same lock, so prepare can never
+# reserve a row the flush has already fetched and is mid-send.
+_RELEASE_LOCK_KEY = "hashtext('deferred-release:' || current_schema())"
+
+
+@asynccontextmanager
+async def deferred_release_lock(pool: asyncpg.Pool, *, wait: bool) -> AsyncIterator[bool]:
+    """Hold the schema's deferred-release lock on one pooled connection.
+
+    Yields whether the lock is held. ``wait=False`` tries once and yields ``False`` when
+    another session holds it; ``wait=True`` blocks until it is free. The lock is session
+    level, so statements on other pool connections can run while it is held. It is released
+    on exit; if that unlock fails, asyncpg's pool reset (``pg_advisory_unlock_all``) releases
+    it before the connection is reused.
+    """
+    async with pool.acquire() as conn:
+        if wait:
+            await conn.execute(f"SELECT pg_advisory_lock({_RELEASE_LOCK_KEY})")
+            held = True
+        else:
+            held = bool(await conn.fetchval(f"SELECT pg_try_advisory_lock({_RELEASE_LOCK_KEY})"))
+        try:
+            yield held
+        finally:
+            if held:
+                await conn.execute(f"SELECT pg_advisory_unlock({_RELEASE_LOCK_KEY})")
 
 
 @dataclass(frozen=True)
