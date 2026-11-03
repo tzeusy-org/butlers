@@ -403,6 +403,14 @@
       "p95_s": null
     },
     {
+      "workflow": ".github/workflows/merge-queue-sweep.yml",
+      "job": "sweep",
+      "installed_timeout_minutes": 3,
+      "state": "provisional source-derived bound for a sparse checkout plus a few Actions API pages and cancels (bu-29wkwj.16); current calibration unknown",
+      "sample_source": "none; local dry run against the live repo took seconds",
+      "p95_s": null
+    },
+    {
       "workflow": ".github/workflows/ci.yml",
       "job": "check",
       "installed_timeout_minutes": 3,

@@ -3621,24 +3621,6 @@
       "scenario": null
     },
     {
-      "digest": "cb7e07397822",
-      "excerpt": "- **THEN** the Spend page renders a red state reading \"Monthly ceiling reached — N dispatches denied since `<timestam...",
-      "kind": "clause",
-      "scenario": "A red fleet-halt banner renders while the ceiling is breached"
-    },
-    {
-      "digest": "ebd8dd421edc",
-      "excerpt": "- **AND** each row whose `session_id` is non-null links to that session's detail page (`/sessions/:id`), mirroring th...",
-      "kind": "clause",
-      "scenario": "An attempts drawer lists recent denials with session doors"
-    },
-    {
-      "digest": "e2b8fbd25065",
-      "excerpt": "- **AND** rows with no `session_id` (pre-session ceiling denials) render without a session door instead of a dead or ...",
-      "kind": "clause",
-      "scenario": "An attempts drawer lists recent denials with session doors"
-    },
-    {
       "digest": "1786095837c3",
       "excerpt": "- **WHEN** the monthly ceiling transitions from not-breached to breached — the first `quota_skip` dispatch denial wit...",
       "kind": "clause",
@@ -3667,33 +3649,9 @@
       "excerpt": "- **AND** the entire push is best-effort and failure-isolated: any failure (ledger write, debounce lookup, delivery) ...",
       "kind": "clause",
       "scenario": "The owner is notified exactly once per breach window"
-    },
-    {
-      "digest": "55d3ffa9c5a0",
-      "excerpt": "- **THEN** the Spend page SHALL render a degraded-source note for the fleet-halt state (per the fleet degraded-source...",
-      "kind": "clause",
-      "scenario": "Degraded attempts source never renders as \"no denials\""
     }
   ],
   "harden-runtime-auth-and-breaker-attention/model-catalog/Dispatch-Outcome Circuit Breaker": [
-    {
-      "digest": "76e8898057bf",
-      "excerpt": "The system SHALL exclude a catalog entry from resolution (initial resolve, effective-tier resolve, and same-tier fail...",
-      "kind": "prose",
-      "scenario": null
-    },
-    {
-      "digest": "0ab68a3d3243",
-      "excerpt": "- **AND** outcomes other than `runtime_failure`/`success` (`quota_skip`, `suppressed`, `exhausted`) SHALL NOT count t...",
-      "kind": "clause",
-      "scenario": "Breaker opens after consecutive systemic failures"
-    },
-    {
-      "digest": "cc1493945079",
-      "excerpt": "- **AND** if that probe attempt succeeds, the trailing window's `bool_and(outcome = 'runtime_failure')` becomes false...",
-      "kind": "clause",
-      "scenario": "Half-open probe restores eligibility"
-    },
     {
       "digest": "85685efaac36",
       "excerpt": "- **WHEN** a `runtime_failure` provenance write causes a catalog entry's breaker to become open",
@@ -3717,20 +3675,6 @@
       "excerpt": "- **AND** a failure anywhere in the push (debounce lookup, delivery, ledger write) SHALL be caught and logged, never ...",
       "kind": "clause",
       "scenario": "Breaker-open attention push"
-    },
-    {
-      "digest": "ce9654c86490",
-      "excerpt": "- **THEN** the rule SHALL be HONORED — the rule-selected model is returned, NOT excluded — because an operator spend ...",
-      "kind": "clause",
-      "scenario": "Operator spend rule to a breaker-open model is honored, not excluded"
-    }
-  ],
-  "harden-runtime-auth-and-breaker-attention/runtime-opencode/Model Selection": [
-    {
-      "digest": "94fb42b45eab",
-      "excerpt": "The adapter SHALL pass the model via the `--model` CLI flag using OpenCode's `provider/model` format (e.g., `anthropi...",
-      "kind": "prose",
-      "scenario": null
     }
   ],
   "ingest-google-health-workouts/chronicler-source-compatibility/Google Health Fact Projection Compatibility Declaration": [
@@ -3869,6 +3813,20 @@
       "excerpt": "- **AND** scheduled consolidation SHALL continue through the live catalog-backed Spawner without model, runtime or se...",
       "kind": "clause",
       "scenario": "Throughput decision preserves catalog-authoritative transport"
+    }
+  ],
+  "public-identity-channel-projection/switchboard-identity/Inbound message identity resolution": [
+    {
+      "digest": "0cf103fbba20",
+      "excerpt": "The Switchboard SHALL call `resolve_contact_by_channel(type, value)` on every inbound message before routing. The res...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "2ab0687e3abf",
+      "excerpt": "- **WHEN** the Switchboard daemon wires its production `MessagePipeline`",
+      "kind": "clause",
+      "scenario": "Fleet activation supplies the standard owner-delivery callback"
     }
   ],
   "reconcile-dashboard-conversation-contracts/ingestion-event-registry/Ingestion Event Table": [
@@ -5187,18 +5145,6 @@
       "excerpt": "- **AND** the separate `<!-- @include path -->` directive handled by `read_system_prompt()` remains available for HTM...",
       "kind": "clause",
       "scenario": "CLAUDE.md delegates to AGENTS.md via file reference"
-    },
-    {
-      "digest": "a4ccd410bf8b",
-      "excerpt": "- **THEN** its first line is `@../shared/AGENTS.md` — pulling shared butler instructions (tool execution contract, ca...",
-      "kind": "clause",
-      "scenario": "AGENTS.md composes shared instructions"
-    },
-    {
-      "digest": "eb022489d632",
-      "excerpt": "- **AND** the remainder of the file contains butler-specific content following the AGENTS.md Content Principles",
-      "kind": "clause",
-      "scenario": "AGENTS.md composes shared instructions"
     },
     {
       "digest": "e69f93fa9eaa",
