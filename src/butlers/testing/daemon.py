@@ -154,7 +154,7 @@ async def _rearm_sse() -> None:
     watchers = [
         task
         for task in asyncio.all_tasks()
-        if not task.done() and task.get_coro().__qualname__ == "_shutdown_watcher"
+        if not task.done() and getattr(task.get_coro(), "__qualname__", None) == "_shutdown_watcher"
     ]
     for task in watchers:
         task.cancel()
