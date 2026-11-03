@@ -91,10 +91,10 @@ tests; the goal-runtime scenarios are future seams with no test claimed here.
 | Usage limit fails over to a different account in one attempt | `REQ-core-spawner-019` | `spawner.py` | `tests/core/test_spawner_same_tier_failover.py::TestUsageLimitAllowanceExhaustion::test_usage_limit_exhausts_account_and_fails_over_in_one_attempt` |
 | Ordinary failures leave allowance untouched | `REQ-core-spawner-019` | `spawner.py` | `::TestUsageLimitAllowanceExhaustion::test_ordinary_failure_does_not_touch_allowance` |
 | A goal invocation's usage limit marks the account without touching the goal budget | `REQ-core-spawner-019` | goal runner (`bu-u5s4w8`) | future seam |
-| Only exhausted accounts defer a due task | `REQ-core-scheduler-003` | `scheduler.py`, `model_routing.py` | `tests/core/test_core_scheduler.py::test_tick_defers_prompt_task_to_allowance_reset_without_dispatching`; `tests/core/test_provider_allowance.py::TestAllowanceDeferral::test_defers_to_earliest_reset_only_when_every_entry_is_blocked` |
-| A free account prevents deferral | `REQ-core-scheduler-003` | `model_routing.py` | `::TestAllowanceDeferral::test_an_available_lower_tier_entry_prevents_deferral` |
-| Lapsed exhaustion does not defer | `REQ-core-scheduler-003` | `scheduler.py` | `tests/core/test_core_scheduler.py::test_tick_dispatches_normally_once_allowance_reset_passed` |
-| A deferred obligation occurrence admits nothing until the reset | `REQ-core-scheduler-003` | daemon obligation submission (`bu-jv1moa.1`) | future seam |
+| Only exhausted accounts defer a due task | `REQ-core-scheduler-004` | `scheduler.py`, `model_routing.py` | `tests/core/test_core_scheduler.py::test_tick_defers_prompt_task_to_allowance_reset_without_dispatching`; `tests/core/test_provider_allowance.py::TestAllowanceDeferral::test_defers_to_earliest_reset_only_when_every_entry_is_blocked` |
+| A free account prevents deferral | `REQ-core-scheduler-004` | `model_routing.py` | `::TestAllowanceDeferral::test_an_available_lower_tier_entry_prevents_deferral` |
+| Lapsed exhaustion does not defer | `REQ-core-scheduler-004` | `scheduler.py` | `tests/core/test_core_scheduler.py::test_tick_dispatches_normally_once_allowance_reset_passed` |
+| A deferred obligation occurrence admits nothing until the reset | `REQ-core-scheduler-004` | daemon obligation submission (`bu-jv1moa.1`) | future seam |
 | Quota denial does not mark an account exhausted | `REQ-catalog-token-limits-003` | `model_routing.py` quota check | none named; gap reported |
 | Goal budget exhaustion does not mark an account exhausted | `REQ-catalog-token-limits-003` | goal runner (`bu-u5s4w8`) | future seam |
 | Runtime roles record exhaustion | Provider Allowance State Write Grants | migration `core_257` | `tests/migrations/test_core_257_provider_allowance_states_migration.py` (schema only; grants not asserted, gap reported) |

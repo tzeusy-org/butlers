@@ -37,4 +37,4 @@ owner-turn reserve (former task 2.2, `bu-q7vx1q.52`) moved to the spend-lane own
   `REQ-core-spawner-019` and `REQ-catalog-token-limits-003` (`bu-u5s4w8`).
 - [ ] 5.2 Run the allowance deferral before the daemon submits a prompt-mode obligation
   admission, so a deferred occurrence has no admission decision, goal row or budget
-  reservation. Covers `REQ-core-scheduler-003` (`bu-jv1moa.1`).
+  reservation. Covers `REQ-core-scheduler-004` (`bu-jv1moa.1`).

@@ -20,7 +20,7 @@ SHALL NOT defer, re-admit or resubmit it: exhaustion inside an admitted goal is 
 invocation selection. Fail-open stays correct because allowance is provider availability,
 not a D10 budget or an authority check.
 
-ID: REQ-core-scheduler-003
+ID: REQ-core-scheduler-004
 Source: openspec change provider-allowance-windows (bu-q7vx1q.13); RFC 0038 D5, D10, D16; generalist collision disposition re-scope (bu-q7vx1q.90.2)
 Scope: v1-mandatory
 
