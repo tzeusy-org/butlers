@@ -1837,16 +1837,21 @@ async def test_audit_native_failed_transaction_and_missing_storage(db, audit_cou
             )
         # A deferred constraint fails at the genuine COMMIT, after SELECT 1
         # succeeds. The scope must not infer that a healthy probe is commit proof.
+        missing_entity_id = uuid.uuid4()
+        assert not await connection.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id=$1)", missing_entity_id
+        )
         await connection.execute(
-            "CREATE TEMP TABLE audit_commit_failure_test ("
-            "id integer PRIMARY KEY, parent integer REFERENCES audit_commit_failure_test(id) "
-            "DEFERRABLE INITIALLY DEFERRED)"
+            "ALTER TABLE public.audit_log ADD CONSTRAINT audit_commit_failure_test "
+            "FOREIGN KEY (request_id) REFERENCES public.entities(id) "
+            "DEFERRABLE INITIALLY DEFERRED"
         )
         try:
             with pytest.raises(asyncpg.ForeignKeyViolationError):
                 async with audit_transaction(connection):
-                    commit_row_id = await audit.append(connection, "owner", "commit-failed")
-                    await connection.execute("INSERT INTO audit_commit_failure_test VALUES(1, 2)")
+                    commit_row_id = await audit.append(
+                        connection, "owner", "commit-failed", request_id=missing_entity_id
+                    )
             async with pool.acquire() as observer:
                 assert (
                     await observer.fetchval(
@@ -1856,7 +1861,9 @@ async def test_audit_native_failed_transaction_and_missing_storage(db, audit_cou
                 )
             assert audit_counter() == {}
         finally:
-            await connection.execute("DROP TABLE audit_commit_failure_test")
+            await connection.execute(
+                "ALTER TABLE public.audit_log DROP CONSTRAINT audit_commit_failure_test"
+            )
         with pytest.raises(audit.AuditTableNotAvailableError):
             async with audit_transaction(connection):
                 await connection.execute(
