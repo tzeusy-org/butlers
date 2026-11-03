@@ -19,7 +19,7 @@ that carry no ``metadata.status``, to the nearest one whose content suffix is a 
 different from the live row's, and restores that status.
 
 Candidates (scope ``health``, predicate ``condition``, validity active or fading, content
-ending in ``: active|managed|resolved``):
+ending in ``: active``; a row whose content says managed or resolved is authoritative):
 
 * no ``metadata.status`` at all; or
 * ``status = 'active'`` tagged ``health_004`` whose immediate predecessor is not tagged,
@@ -58,13 +58,13 @@ def upgrade() -> None:
             WITH RECURSIVE cand AS (
                 SELECT f.id,
                        f.supersedes_id,
-                       substring(f.content from ': (active|managed|resolved)$') AS cur
+                       'active' AS cur
                 FROM facts f
                 WHERE f.scope = 'health'
                   AND f.predicate = 'condition'
                   AND f.validity IN ('active', 'fading')
                   AND f.supersedes_id IS NOT NULL
-                  AND f.content ~ '^.+: (active|managed|resolved)$'
+                  AND f.content ~ '^.+: active$'
                   AND (
                       NOT (COALESCE(f.metadata, '{}'::jsonb) ? 'status')
                       OR (

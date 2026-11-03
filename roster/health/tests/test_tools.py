@@ -663,7 +663,7 @@ async def test_condition_update(memory_pool):
 
 
 async def test_condition_update_persists_status_on_a_status_less_row(memory_pool):
-    """A notes-only update of a status-stripped row still writes metadata.status (bu-08zldr)."""
+    """A notes-only update of a status-stripped row keeps its content status (bu-08zldr)."""
     from butlers.tools.health import condition_add, condition_update
 
     cond = await condition_add(memory_pool, "StrippedCond", status="managed")
@@ -674,7 +674,7 @@ async def test_condition_update_persists_status_on_a_status_less_row(memory_pool
     row = await memory_pool.fetchrow(
         "SELECT metadata->>'status' AS status FROM facts WHERE id = $1", updated["id"]
     )
-    assert row["status"] == "active"
+    assert row["status"] == "managed"
 
 
 async def test_condition_update_invalid_status(memory_pool):

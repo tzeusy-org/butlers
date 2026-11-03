@@ -144,7 +144,10 @@ async def test_rows_without_a_recoverable_status_are_untouched(memory_pool) -> N
         {**name, "status": "active", "status_restored_by": "health_004"},
         supersedes=tagged_old,
     )
-    ids = [chosen, lone, same, st, inherited]
+    # A status-less row whose content already says managed is authoritative, not a candidate.
+    auth_old = await _fact(memory_pool, "auth", "Eczema: resolved", name, validity="superseded")
+    auth = await _fact(memory_pool, "auth", "Eczema: managed", name, supersedes=auth_old)
+    ids = [chosen, lone, same, st, inherited, auth]
     before = {i: await _metadata(memory_pool, i) for i in ids}
 
     await _run(memory_pool, "upgrade")
