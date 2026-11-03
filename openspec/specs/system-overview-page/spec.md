@@ -254,6 +254,14 @@ is derived from an actual check (bu-9r3hd.5).
     `result: "pass" | "fail" | "pending" | "degraded"`, and `detail: string | null`.
     `"pending"` means the drill has never run yet -- a real "unknown" state, never
     presented as a passing drill.
+  - `offsite_copy: OffsiteCopyFacts` -- outcome of the most recent off-node restic copy
+    of the dump directory, having `result: "success" | "failed" | "unknown" |
+    "disabled"`, `finished_at: string | null`, `reason: string | null` (a fixed
+    vocabulary), `snapshot_id: string | null` (hex), and `stale: boolean`.
+    `"disabled"` means the deployment runs no copy job; `"unknown"` means it does but
+    no readable receipt exists, which is never presented as a copy. `stale` is `true`
+    when an enabled copy has reported no run within 36 hours. A failed or stale
+    enabled copy is named in the system verdict banner.
 - **AND** the response wraps in the standard `ApiResponse<BackupFacts>` envelope
 
 #### Scenario: Unavailable backup source degrades gracefully

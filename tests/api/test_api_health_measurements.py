@@ -25,6 +25,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -45,31 +46,17 @@ _health_get_db_manager = get_db
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """dict subclass mimicking asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
-
-
 def _make_fact_row(
     *,
     mtype: str = "weight",
     value: Any = None,
     notes: str | None = None,
     valid_at: datetime | None = None,
-) -> _Row:
+) -> Record:
     """Build an asyncpg-like fact row for a measurement (default value: 75.5 kg)."""
     if value is None:
         value = {"kg": 75.5}
-    return _row(
+    return Record(
         {
             "id": uuid.uuid4(),
             "predicate": f"measurement_{mtype}",

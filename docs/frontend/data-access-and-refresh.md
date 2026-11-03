@@ -112,6 +112,14 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
   participate. Pending totals show loading; failed queries or invalid totals show degradation
   and withhold counts, including after a failed refetch with cached data. A successful zero
   omits the suppression chip. The existing 30-second foreground polling cadence is retained.
+- General owner projects (`?tab=projects` on `/butlers/general`, selection in `?project=`)
+  resolve each typed link in the browser through that record's existing owner-authorized reader:
+  `getTravelTripSummary`, `getCalendarWorkspaceEntry`, and one `getSystemConditions({ledger:
+  "owner"})` page for owner conditions (`frontend/src/hooks/use-general-projects.ts`). Each
+  link group degrades alone with `SourceDegradedNote`; 404 reads as not found, and a match beyond
+  the owner-condition page reads as unavailable, not missing. Writes return the fresh detail,
+  which seeds the detail cache before the list refetches; a create form keeps one idempotency key
+  across retries.
 - The router is created with the sanitised `import.meta.env.BASE_URL` as its basename
   (`frontend/src/router-config.tsx`), so subpath deployments work for direct loads and in-app links.
 - `SessionDetailDrawer` normalises tool-call records before rendering (name under

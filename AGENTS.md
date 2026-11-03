@@ -182,8 +182,8 @@ check you write or read:
   commit range stays the triggering source head. Enforced by `make check-session-links`.
 - All changes go through a PR; never push to `main`. The `main-merge-queue` ruleset
   (`scripts/setup_main_ruleset.sh`, id 22281319) is the sole merge route: `gh pr merge <n> --squash
-  --auto` queues a `merge_group` that runs `check`, `guards` and `frontend` on the exact tree about
-  to land. Do not reintroduce a manual merge route or a between-merges health poll. Source bead
+  --auto` queues a `merge_group` that runs the complete pipeline, gated by the one required
+  `alls-green` check, on the exact tree about to land. Do not reintroduce a manual merge route or a between-merges health poll. Source bead
   closure keys off the completed squash merge.
 - Required checks are non-strict: rebase only for a real conflict or on reviewer request. Probe
   mergeability without moving HEAD with `git merge-tree --write-tree --name-only origin/main
@@ -211,9 +211,8 @@ check you write or read:
     report done early.
   - A CONFLICTING PR runs no CI, so its rollup stays frozen green. Never treat a non-`MERGEABLE`
     PR as settled.
-  - The job set varies by design (`route` explicitly skips shards or frontend jobs as neutral).
-    Judge completeness by the required contexts (`check`, `guards`, `frontend`), not a job count.
-- CI topology (fan-out, the fail-closed `check` fan-in, `always()` rules) and the narrower-than-named
+  - Every event runs the same job set; judge completeness by the required `alls-green` check.
+- CI topology (fan-out, the fail-closed `alls-green` fan-in, `always()` rules) and the narrower-than-named
   guard predicates (`check-no-em-dashes.py`, `spec-overwrite-guard`, `requirement-trace`,
   `cited-requirements-guard`, `duplicate-name-guard`) are in
   [CI and test scope](docs/testing/ci.md#ci-fan-out-and-guard-predicates). About eight concurrent CI

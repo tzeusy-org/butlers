@@ -9,6 +9,7 @@ leaving already-correct and unrelated rows untouched.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,7 @@ import pytest
 
 from butlers.testing.migration import load_migration
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -42,16 +43,10 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
         await pool.execute(sql)
 
 
-async def _prereq_table(pool: asyncpg.Pool) -> None:
-    """Minimal facts slice the backfill needs (validity + metadata)."""
-    await pool.execute("""
-        CREATE TABLE facts (
-            id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            content  TEXT NOT NULL DEFAULT 'x',
-            validity TEXT NOT NULL DEFAULT 'active',
-            metadata JSONB NOT NULL DEFAULT '{}'::jsonb
-        )
-    """)
+@asynccontextmanager
+async def _pre_mem_008(db):
+    """The real memory facts table as mem_007 left it, migrated into public."""
+    yield await db("core", "memory", revisions={"memory": "mem_007"})
 
 
 async def test_upgrade_is_noop_when_facts_table_absent(provisioned_postgres_pool) -> None:
@@ -61,36 +56,34 @@ async def test_upgrade_is_noop_when_facts_table_absent(provisioned_postgres_pool
 
 
 async def test_backfill_converts_legacy_fading_and_preserves_others(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _prereq_table(pool)
-
+    async with _pre_mem_008(db) as pool:
         # --- Legacy fading: validity='active' but metadata.status='fading' ---
         legacy_id = await pool.fetchval(
-            "INSERT INTO facts (content, validity, metadata) "
-            "VALUES ('legacy-fading', 'active', '{\"status\": \"fading\"}'::jsonb) "
+            "INSERT INTO facts (subject, predicate, content, validity, metadata) "
+            "VALUES ('legacy-fading', 'mem-008', 'legacy-fading', 'active', '{\"status\": \"fading\"}'::jsonb) "
             "RETURNING id"
         )
 
         # --- Already-correct fading row: must be left exactly as-is ---
         already_id = await pool.fetchval(
-            "INSERT INTO facts (content, validity, metadata) "
-            "VALUES ('already-fading', 'fading', '{}'::jsonb) RETURNING id"
+            "INSERT INTO facts (subject, predicate, content, validity, metadata) "
+            "VALUES ('already-fading', 'mem-008', 'already-fading', 'fading', '{}'::jsonb) RETURNING id"
         )
 
         # --- Healthy active row: untouched ---
         healthy_id = await pool.fetchval(
-            "INSERT INTO facts (content, validity, metadata) "
-            "VALUES ('healthy', 'active', '{}'::jsonb) RETURNING id"
+            "INSERT INTO facts (subject, predicate, content, validity, metadata) "
+            "VALUES ('healthy', 'mem-008', 'healthy', 'active', '{}'::jsonb) RETURNING id"
         )
 
         # --- Retracted row that happens to carry a stale status key: the
         # backfill predicate requires validity='active', so a retracted row
         # must never be resurrected to 'fading'. ---
         retracted_id = await pool.fetchval(
-            "INSERT INTO facts (content, validity, metadata) "
-            "VALUES ('retracted-with-stale-key', 'retracted', "
+            "INSERT INTO facts (subject, predicate, content, validity, metadata) "
+            "VALUES ('retracted-with-stale-key', 'mem-008', 'retracted-with-stale-key', 'retracted', "
             '\'{"status": "fading"}\'::jsonb) RETURNING id'
         )
 
@@ -121,12 +114,11 @@ async def test_backfill_converts_legacy_fading_and_preserves_others(
         assert retracted_row["metadata"].get("status") == "fading"
 
 
-async def test_backfill_is_idempotent(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _prereq_table(pool)
+async def test_backfill_is_idempotent(db) -> None:
+    async with _pre_mem_008(db) as pool:
         await pool.execute(
-            "INSERT INTO facts (content, validity, metadata) "
-            "VALUES ('legacy-fading', 'active', '{\"status\": \"fading\"}'::jsonb)"
+            "INSERT INTO facts (subject, predicate, content, validity, metadata) "
+            "VALUES ('legacy-fading', 'mem-008', 'legacy-fading', 'active', '{\"status\": \"fading\"}'::jsonb)"
         )
 
         await _apply(pool, "upgrade")
@@ -139,12 +131,11 @@ async def test_backfill_is_idempotent(provisioned_postgres_pool) -> None:
         assert "status" not in row["metadata"]
 
 
-async def test_downgrade_is_noop(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _prereq_table(pool)
+async def test_downgrade_is_noop(db) -> None:
+    async with _pre_mem_008(db) as pool:
         await pool.execute(
-            "INSERT INTO facts (content, validity, metadata) "
-            "VALUES ('legacy-fading', 'active', '{\"status\": \"fading\"}'::jsonb)"
+            "INSERT INTO facts (subject, predicate, content, validity, metadata) "
+            "VALUES ('legacy-fading', 'mem-008', 'legacy-fading', 'active', '{\"status\": \"fading\"}'::jsonb)"
         )
         await _apply(pool, "downgrade")
         # Nothing to undo — downgrade is a pass.

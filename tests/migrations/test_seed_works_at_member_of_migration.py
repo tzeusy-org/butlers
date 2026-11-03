@@ -83,49 +83,14 @@ def test_downgrade_does_not_drop_table() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _provision_registry(pool) -> None:
-    """Create minimal prerequisites: schema, entity_predicate_registry, public.entities."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL,
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    # schema-standin-exempt: a deliberately minimal registry prerequisite for
-    # rel_024's seed assertions, not a copy claiming current-head parity.
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-            predicate   TEXT        NOT NULL PRIMARY KEY,
-            kind        TEXT        NOT NULL CHECK (kind IN ('contact', 'relational', 'override')),
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            description TEXT,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            subject     UUID        NOT NULL REFERENCES public.entities(id),
-            predicate   TEXT        NOT NULL,
-            object      TEXT        NOT NULL,
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT        NOT NULL DEFAULT 'test',
-            conf        FLOAT       NOT NULL DEFAULT 1.0,
-            validity    TEXT        NOT NULL DEFAULT 'active'
-                            CHECK (validity IN ('active', 'superseded', 'retracted')),
-            verified    BOOLEAN     NOT NULL DEFAULT FALSE,
-            "primary"   BOOLEAN,
-            weight      FLOAT,
-            last_seen   TIMESTAMPTZ,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
+async def _registry_pool(db):
+    """The real registry, entity_facts and public.entities as rel_024's predecessor left them."""
+    return await db(
+        "core",
+        "relationship",
+        schemas={"relationship": "relationship"},
+        revisions={"relationship": "rel_023"},
+    )
 
 
 async def _run_upgrade(pool) -> None:
@@ -143,44 +108,42 @@ async def _run_downgrade(pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_works_at_row_present_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_works_at_row_present_after_upgrade(db) -> None:
     """works-at row is in entity_predicate_registry after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
 
-        row = await pool.fetchrow(
-            "SELECT kind, object_kind FROM relationship.entity_predicate_registry "
-            "WHERE predicate = 'works-at'"
-        )
-        assert row is not None, "works-at must be present after upgrade"
-        assert row["kind"] == "relational"
-        assert row["object_kind"] == "entity"
+    row = await pool.fetchrow(
+        "SELECT kind, object_kind FROM relationship.entity_predicate_registry "
+        "WHERE predicate = 'works-at'"
+    )
+    assert row is not None, "works-at must be present after upgrade"
+    assert row["kind"] == "relational"
+    assert row["object_kind"] == "entity"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_member_of_row_present_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_member_of_row_present_after_upgrade(db) -> None:
     """member-of row is in entity_predicate_registry after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
 
-        row = await pool.fetchrow(
-            "SELECT kind, object_kind FROM relationship.entity_predicate_registry "
-            "WHERE predicate = 'member-of'"
-        )
-        assert row is not None, "member-of must be present after upgrade"
-        assert row["kind"] == "relational"
-        assert row["object_kind"] == "entity"
+    row = await pool.fetchrow(
+        "SELECT kind, object_kind FROM relationship.entity_predicate_registry "
+        "WHERE predicate = 'member-of'"
+    )
+    assert row is not None, "member-of must be present after upgrade"
+    assert row["kind"] == "relational"
+    assert row["object_kind"] == "entity"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_assert_fact_works_at_entity_inserts_active_row(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """assert_fact for works-at with object_kind=entity inserts an active row.
 
@@ -188,76 +151,73 @@ async def test_assert_fact_works_at_entity_inserts_active_row(
     After the registry seed, relationship_assert_fact() accepts works-at and
     writes an active row to relationship.entity_facts.
     """
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
 
-        # Mint two entities: a person and an org.
-        person_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type) "
-            "VALUES ('Alice', 'person') RETURNING id"
-        )
-        org_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type) "
-            "VALUES ('Acme Corp', 'organization') RETURNING id"
-        )
+    # Mint two entities: a person and an org.
+    person_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) "
+        "VALUES ('Alice', 'person') RETURNING id"
+    )
+    org_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) "
+        "VALUES ('Acme Corp', 'organization') RETURNING id"
+    )
 
-        # Simulate the central-writer insert (predicate is registry-valid).
-        await pool.execute(
-            """
-            INSERT INTO relationship.entity_facts
-                (subject, predicate, object, object_kind, src)
-            VALUES ($1, 'works-at', $2, 'entity', 'test-seed-migration')
-            """,
-            person_id,
-            str(org_id),
-        )
+    # Simulate the central-writer insert (predicate is registry-valid).
+    await pool.execute(
+        """
+        INSERT INTO relationship.entity_facts
+            (subject, predicate, object, object_kind, src)
+        VALUES ($1, 'works-at', $2, 'entity', 'test-seed-migration')
+        """,
+        person_id,
+        str(org_id),
+    )
 
-        row = await pool.fetchrow(
-            "SELECT validity, predicate, object_kind "
-            "FROM relationship.entity_facts "
-            "WHERE subject = $1 AND predicate = 'works-at'",
-            person_id,
-        )
-        assert row is not None, "works-at fact must exist after insert"
-        assert row["validity"] == "active"
-        assert row["predicate"] == "works-at"
-        assert row["object_kind"] == "entity"
+    row = await pool.fetchrow(
+        "SELECT validity, predicate, object_kind "
+        "FROM relationship.entity_facts "
+        "WHERE subject = $1 AND predicate = 'works-at'",
+        person_id,
+    )
+    assert row is not None, "works-at fact must exist after insert"
+    assert row["validity"] == "active"
+    assert row["predicate"] == "works-at"
+    assert row["object_kind"] == "entity"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_is_idempotent(provisioned_postgres_pool) -> None:
+async def test_upgrade_is_idempotent(db) -> None:
     """Running upgrade() twice does not raise and produces exactly one row per predicate."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
-        await _run_upgrade(pool)  # must not raise
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
+    await _run_upgrade(pool)  # must not raise
 
-        for predicate in ("works-at", "member-of"):
-            count = await pool.fetchval(
-                "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
-                predicate,
-            )
-            assert count == 1, (
-                f"Expected exactly 1 '{predicate}' row after idempotent re-upgrade, got {count}"
-            )
+    for predicate in ("works-at", "member-of"):
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
+            predicate,
+        )
+        assert count == 1, (
+            f"Expected exactly 1 '{predicate}' row after idempotent re-upgrade, got {count}"
+        )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_removes_seeded_rows(provisioned_postgres_pool) -> None:
+async def test_downgrade_removes_seeded_rows(db) -> None:
     """Downgrade removes exactly works-at and member-of rows."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = await _registry_pool(db)
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        for predicate in ("works-at", "member-of"):
-            count = await pool.fetchval(
-                "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
-                predicate,
-            )
-            assert count == 0, f"'{predicate}' must be absent after downgrade, got {count} rows"
+    for predicate in ("works-at", "member-of"):
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE predicate = $1",
+            predicate,
+        )
+        assert count == 0, f"'{predicate}' must be absent after downgrade, got {count} rows"

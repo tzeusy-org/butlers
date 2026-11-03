@@ -13,7 +13,9 @@ from fastmcp import FastMCP
 from butlers.config import ButlerType, load_config
 from butlers.core.tool_catalog import validate_presentation_inventory
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
 from butlers.daemon import ButlerDaemon
+from butlers.db import Database
 from butlers.module_state import ModuleStartupStatus
 from butlers.modules.registry import default_registry
 from tests.contracts.test_tool_surface_isolation import _record_core_registrations
@@ -124,6 +126,8 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
             "schedule_create",
             "memory_access",
             "get_attachment",
+            "attachment_read",
+            "attachment_page_view",
             "deadline_create",
             "delegate_ask",
             "publish_event",
@@ -135,6 +139,10 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
 
 
 async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
+    return (await _core_catalog_and_listing(butler_name, groups))[0]
+
+
+async def _core_catalog_and_listing(butler_name: str, groups: tuple[str, ...]):
     daemon = ButlerDaemon(
         _REPO_ROOT / "roster" / butler_name,
         db=SimpleNamespace(pool=AsyncMock()),
@@ -153,7 +161,9 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
     if registration_tasks:
         await asyncio.gather(*registration_tasks, return_exceptions=True)
     daemon._collect_tool_metadata()
-    return await daemon._finalize_tool_catalog()
+    catalog = await daemon._finalize_tool_catalog()
+    listed = {tool.name for tool in await daemon.mcp.list_tools()}
+    return catalog, listed
 
 
 @pytest.mark.parametrize(
@@ -198,6 +208,21 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {"notify", "delegate_ask", "backfill.poll"},
         ),
         (
+            "general",
+            ("media",),
+            {
+                "route.execute",
+                "cancel_session",
+                "report_error",
+                "get_healing_status",
+                "get_attachment",
+                "attachment_view",
+                "attachment_read",
+                "attachment_page_view",
+            },
+            {"notify", "state_get"},
+        ),
+        (
             "switchboard",
             ("delegation",),
             {"route.execute", "cancel_session", "report_error", "get_healing_status"},
@@ -211,11 +236,14 @@ async def test_actual_core_catalog_respects_group_name_and_type_gates(
     expected: set[str],
     excluded: set[str],
 ) -> None:
-    catalog = await _core_catalog(butler_name, groups)
+    catalog, listed = await _core_catalog_and_listing(butler_name, groups)
 
     assert set(catalog) == expected
     assert excluded.isdisjoint(catalog)
     assert catalog.classification_complete is True
+    # Dark-build capabilities are cataloged but never listed to today's
+    # frozen classify-and-route sessions before the RFC 0038 cutover.
+    assert listed == set(catalog) - GOAL_RUNTIME_DARK_TOOLS
 
 
 @pytest.mark.parametrize(
@@ -373,3 +401,64 @@ async def test_actual_module_catalog_respects_groups_and_registration_failures()
     assert set(partial_catalog) == {"partial_registered"}
     assert partial._module_statuses["partial"].status == "failed"
     assert partial_catalog.classification_complete is False
+
+
+def _roster_butlers_with_modules() -> list[str]:
+    return sorted(
+        path.parent.name
+        for path in (_REPO_ROOT / "roster").glob("*/butler.toml")
+        if load_config(path.parent).modules
+    )
+
+
+@pytest.mark.parametrize("butler_name", _roster_butlers_with_modules())
+async def test_roster_module_config_catalog_executes_config_gated_tools(
+    butler_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Register each roster butler's modules with its real ``[modules.*]`` config.
+
+    ``_CONFIG_OVERRIDES`` leave optional features off, so a gated tool with broken
+    metadata (the #4464 partial-ToolMeta shape) would otherwise first fail at startup.
+    """
+    # Memory binds sibling schemas through the unbound classmethod-style call.
+    monkeypatch.setattr(
+        Database,
+        "for_owned_schema",
+        lambda self, schema: SimpleNamespace(pool=self.pool, schema=schema, connect=AsyncMock()),
+    )
+    registry = default_registry()
+    config = load_config(_REPO_ROOT / "roster" / butler_name)
+    modules = []
+    module_configs = {}
+    for module_name, raw in config.modules.items():
+        if module_name not in registry.available_modules:
+            continue
+        module = registry._modules[module_name]()
+        modules.append(module)
+        schema = module.config_schema
+        module_configs[module_name] = schema(**raw) if schema is not None else {}
+
+    db = SimpleNamespace(pool=AsyncMock(), schema=butler_name, db_name="butlers")
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / butler_name, db=db)
+    daemon.config = config
+    daemon.mcp = FastMCP(f"roster-catalog-{butler_name}")
+    daemon._modules = modules
+    daemon._module_configs = module_configs
+
+    before_tasks = asyncio.all_tasks()
+    await daemon._register_module_tools()
+    registration_tasks = asyncio.all_tasks() - before_tasks
+    for task in registration_tasks:
+        task.cancel()
+    if registration_tasks:
+        await asyncio.gather(*registration_tasks, return_exceptions=True)
+    daemon._collect_tool_metadata()
+    catalog = await daemon._finalize_tool_catalog()
+
+    failed = {
+        name: status.error
+        for name, status in daemon._module_statuses.items()
+        if status.status == "failed"
+    }
+    assert failed == {}, f"{butler_name}: module tool registration failed: {failed}"
+    assert catalog.classification_complete is True

@@ -35,7 +35,9 @@ async def _apply(pool, fn_name: str) -> None:
         await pool.execute(sql)
 
 
-async def _provision_qa_repository_tables(pool) -> None:
+async def _provision_multi_row_repo_config(pool) -> None:
+    # Deliberately not the real core_060 shape: the real table is a singleton,
+    # and this test normalizes several legacy URL spellings in one upgrade.
     await pool.execute(
         f"""
         CREATE TABLE public.qa_repo_config (
@@ -49,19 +51,12 @@ async def _provision_qa_repository_tables(pool) -> None:
         )
         """
     )
-    await pool.execute(
-        """
-        CREATE TABLE public.qa_allowed_repositories (
-            id UUID PRIMARY KEY,
-            owner TEXT NOT NULL,
-            repo TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT uq_qa_allowed_repositories_owner_repo UNIQUE (owner, repo)
-        )
-        """
-    )
+
+
+@pytest.fixture
+async def core_234_pool(db):
+    """Core at core_235's predecessor: the real, unseeded qa_allowed_repositories."""
+    return await db("core", revisions={"core": "core_234"})
 
 
 async def _repo_url_default(pool) -> str | None:
@@ -105,7 +100,7 @@ async def test_upgrade_normalizes_recognised_legacy_urls_and_preserves_custom_de
     provisioned_postgres_pool,
 ) -> None:
     async with provisioned_postgres_pool(schema="public") as pool:
-        await _provision_qa_repository_tables(pool)
+        await _provision_multi_row_repo_config(pool)
         old_https_id = uuid.uuid4()
         old_ssh_id = uuid.uuid4()
         custom_id = uuid.uuid4()
@@ -142,79 +137,77 @@ async def test_upgrade_normalizes_recognised_legacy_urls_and_preserves_custom_de
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_upgrade_preserves_existing_org_whitelist_choice_and_removes_only_stale_duplicates(
-    provisioned_postgres_pool,
+    core_234_pool,
 ) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _provision_qa_repository_tables(pool)
-        existing_org_id = uuid.uuid4()
-        old_id = uuid.uuid4()
-        old_case_variant_id = uuid.uuid4()
-        unrelated_id = uuid.uuid4()
-        earlier = datetime(2026, 9, 1, tzinfo=UTC)
-        later = datetime(2026, 9, 2, tzinfo=UTC)
-        await pool.executemany(
-            """
-            INSERT INTO public.qa_allowed_repositories (id, owner, repo, enabled, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $5)
-            """,
-            [
-                (old_id, "Tzeusy", "butlers", False, earlier),
-                (old_case_variant_id, "tzeusy", "BUTLERS", True, later),
-                (existing_org_id, "tzeusy-org", "butlers", True, later),
-                (unrelated_id, "example", "butlers", True, earlier),
-            ],
-        )
+    pool = core_234_pool
+    existing_org_id = uuid.uuid4()
+    old_id = uuid.uuid4()
+    old_case_variant_id = uuid.uuid4()
+    unrelated_id = uuid.uuid4()
+    earlier = datetime(2026, 9, 1, tzinfo=UTC)
+    later = datetime(2026, 9, 2, tzinfo=UTC)
+    await pool.executemany(
+        """
+        INSERT INTO public.qa_allowed_repositories (id, owner, repo, enabled, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $5)
+        """,
+        [
+            (old_id, "Tzeusy", "butlers", False, earlier),
+            (old_case_variant_id, "tzeusy", "BUTLERS", True, later),
+            (existing_org_id, "tzeusy-org", "butlers", True, later),
+            (unrelated_id, "example", "butlers", True, earlier),
+        ],
+    )
 
-        await _apply(pool, "upgrade")
-        await _apply(pool, "upgrade")
+    await _apply(pool, "upgrade")
+    await _apply(pool, "upgrade")
 
-        target_rows = await pool.fetch(
-            """
-            SELECT id, owner, repo, enabled
-            FROM public.qa_allowed_repositories
-            WHERE lower(owner) IN ('tzeusy', 'tzeusy-org')
-              AND lower(repo) = 'butlers'
-            """
+    target_rows = await pool.fetch(
+        """
+        SELECT id, owner, repo, enabled
+        FROM public.qa_allowed_repositories
+        WHERE lower(owner) IN ('tzeusy', 'tzeusy-org')
+          AND lower(repo) = 'butlers'
+        """
+    )
+    assert [tuple(row.values()) for row in target_rows] == [
+        (existing_org_id, "tzeusy-org", "butlers", True)
+    ]
+    assert (
+        await pool.fetchval(
+            "SELECT owner FROM public.qa_allowed_repositories WHERE id = $1", unrelated_id
         )
-        assert [tuple(row.values()) for row in target_rows] == [
-            (existing_org_id, "tzeusy-org", "butlers", True)
-        ]
-        assert (
-            await pool.fetchval(
-                "SELECT owner FROM public.qa_allowed_repositories WHERE id = $1", unrelated_id
-            )
-            == "example"
-        )
+        == "example"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_upgrade_promotes_legacy_whitelist_entry_and_downgrade_does_not_rewrite_it(
-    provisioned_postgres_pool,
+    core_234_pool,
 ) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _provision_qa_repository_tables(pool)
-        legacy_id = uuid.uuid4()
-        await pool.execute(
-            """
-            INSERT INTO public.qa_allowed_repositories (id, owner, repo, enabled)
-            VALUES ($1, 'Tzeusy', 'butlers', FALSE)
-            """,
-            legacy_id,
-        )
+    pool = core_234_pool
+    legacy_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.qa_allowed_repositories (id, owner, repo, enabled)
+        VALUES ($1, 'Tzeusy', 'butlers', FALSE)
+        """,
+        legacy_id,
+    )
 
-        await _apply(pool, "upgrade")
-        upgraded = await pool.fetchrow(
-            "SELECT id, owner, repo, enabled FROM public.qa_allowed_repositories"
-        )
-        assert tuple(upgraded.values()) == (legacy_id, "tzeusy-org", "butlers", False)
+    await _apply(pool, "upgrade")
+    upgraded = await pool.fetchrow(
+        "SELECT id, owner, repo, enabled FROM public.qa_allowed_repositories"
+    )
+    assert tuple(upgraded.values()) == (legacy_id, "tzeusy-org", "butlers", False)
 
-        await pool.execute(
-            "UPDATE public.qa_allowed_repositories SET enabled = TRUE WHERE id = $1", legacy_id
-        )
-        await _apply(pool, "downgrade")
-        after_downgrade = await pool.fetchrow(
-            "SELECT id, owner, repo, enabled FROM public.qa_allowed_repositories"
-        )
-        assert tuple(after_downgrade.values()) == (legacy_id, "tzeusy-org", "butlers", True)
+    await pool.execute(
+        "UPDATE public.qa_allowed_repositories SET enabled = TRUE WHERE id = $1", legacy_id
+    )
+    await _apply(pool, "downgrade")
+    after_downgrade = await pool.fetchrow(
+        "SELECT id, owner, repo, enabled FROM public.qa_allowed_repositories"
+    )
+    assert tuple(after_downgrade.values()) == (legacy_id, "tzeusy-org", "butlers", True)

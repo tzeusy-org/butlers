@@ -28,9 +28,10 @@ from session_link_guard import scan_sources  # noqa: E402
 
 _ACCEPTED_RE = re.compile(r"^Accepted in [0-9a-f]{7,40}\.\s*$", re.MULTILINE)
 _WONTFIX_RE = re.compile(r"^Wontfix\.\s*$", re.MULTILINE)
-_BUTLERS_REQUIRED_CHECKS = frozenset({"check", "guards", "frontend"})
+_BUTLERS_REQUIRED_CHECKS = frozenset({"alls-green"})
 _BUTLERS_REPOSITORIES = frozenset({"tzeusy-org/butlers", "tzeusy/butlers"})
-_SKIPPABLE_REQUIRED_CHECKS = frozenset({"frontend"})
+# Every CI job runs on every event (bu-29wkwj.3), so no reported check may skip.
+_SKIPPABLE_REQUIRED_CHECKS: frozenset[str] = frozenset()
 
 
 def _is_terminal_reply(body: str) -> bool:
@@ -43,10 +44,9 @@ def _classify_required_checks(
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Return missing policy contexts and checks not accepted by GitHub.
 
-    GitHub reports a path-filtered required context as ``skipping`` and treats
-    it as satisfied. For the canonical Butlers repository, an absent or partial
-    required-check result must still fail closed against the live ruleset's
-    three named contexts.
+    GitHub treats a skipped required context as satisfied. For the canonical
+    Butlers repository, an absent ``alls-green`` result, or any reported check
+    that did not pass, must still fail closed.
     """
     required_names = (
         _BUTLERS_REQUIRED_CHECKS

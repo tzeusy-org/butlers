@@ -614,3 +614,44 @@ def test_publication_head_lookup_refuses_agent_shaped_refs(tmp_path: Path, plant
 
     with pytest.raises(ExportRefused, match="branch_unreadable"):
         proposal.resolve_branch_head(repo_root, branch)
+
+
+@pytest.mark.parametrize("stage", ["bind", "publish"])
+async def test_pre_egress_publication_failures_log_type_name_only(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture, stage: str
+):
+    """bu-btoenp: a pre-egress failure can carry unpublished PR text; log its type only."""
+    leaky = "UNPUBLISHED-PR-TEXT-xyz"
+    publisher = MagicMock()
+    publisher.repository = "owner/repo"
+    publisher.record_refusal = AsyncMock(return_value="refused")
+    publisher.publish = AsyncMock(side_effect=RuntimeError(leaky))
+    if stage == "bind":
+        monkeypatch.setattr(proposal, "resolve_branch_head", MagicMock(side_effect=OSError(leaky)))
+    else:
+        monkeypatch.setattr(
+            proposal, "resolve_branch_head", MagicMock(return_value=(tmp_path, "c" * 40))
+        )
+        monkeypatch.setattr(proposal, "build_sealed_export", AsyncMock())
+        monkeypatch.setattr(proposal, "compose_pr_text", MagicMock(return_value=("t", "b")))
+        monkeypatch.setattr(proposal, "load_pr_notes", MagicMock(return_value={}))
+
+    caplog.set_level("WARNING", logger=proposal.__name__)
+    await proposal.publish_investigation(
+        publisher,
+        repo_root=tmp_path,
+        worktree_path=tmp_path,
+        attempt_id=uuid.uuid4(),
+        finding=MagicMock(),
+        branch_name=_BRANCH,
+        base_sha="b" * 40,
+        identity=MagicMock(),
+        labels=[],
+        whitelist=None,
+        dashboard_base_url=None,
+    )
+
+    (record,) = caplog.records
+    assert record.exc_info is None
+    assert leaky not in caplog.text
+    assert ("OSError" if stage == "bind" else "RuntimeError") in record.getMessage()

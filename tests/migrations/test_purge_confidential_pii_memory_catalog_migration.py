@@ -137,45 +137,12 @@ class TestPurgeMigrationIntegration:
             yield pool
 
     @pytest.fixture
-    async def catalog_pool(self, provisioned_postgres_pool):
-        """A fresh DB with a minimal public.memory_catalog table (mirrors core_009)
-        plus a "health" butler schema with minimal facts/rules tables, so the
-        join-back pass has a real source to resolve against."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tenant_id     TEXT NOT NULL DEFAULT 'shared',
-                    source_schema TEXT NOT NULL,
-                    source_table  TEXT NOT NULL,
-                    source_id     UUID NOT NULL,
-                    source_butler TEXT NOT NULL DEFAULT 'memory',
-                    memory_type   TEXT NOT NULL,
-                    summary       TEXT,
-                    sensitivity   TEXT,
-                    invalid_at    TIMESTAMPTZ
-                )
-                """
-            )
-            await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS health.facts (
-                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    sensitivity TEXT
-                )
-                """
-            )
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS health.rules (
-                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    sensitivity TEXT
-                )
-                """
-            )
-            yield pool
+    async def catalog_pool(self, db):
+        """Core at core_183's predecessor (public.memory_catalog) plus a "health"
+        butler schema with the real memory facts/rules tables, so the join-back
+        pass has a real source to resolve against."""
+        health = {"core": "health", "memory": "health"}
+        return await db("core", "memory", schemas=health, revisions={"core": "core_182"})
 
     async def _run_upgrade(self, pool) -> None:
         mod = load_migration(_MIGRATION_PATH, "core_183")
@@ -207,13 +174,18 @@ class TestPurgeMigrationIntegration:
 
     async def _insert_source_fact(self, pool, *, sensitivity: str | None) -> uuid.UUID:
         row = await pool.fetchrow(
-            "INSERT INTO health.facts (sensitivity) VALUES ($1) RETURNING id", sensitivity
+            "INSERT INTO health.facts (subject, predicate, content, sensitivity) "
+            "VALUES ($1, 'note', 'source fact', $2) RETURNING id",
+            f"subject-{uuid.uuid4()}",
+            sensitivity,
         )
         return row["id"]
 
     async def _insert_source_rule(self, pool, *, sensitivity: str | None) -> uuid.UUID:
         row = await pool.fetchrow(
-            "INSERT INTO health.rules (sensitivity) VALUES ($1) RETURNING id", sensitivity
+            "INSERT INTO health.rules (content, sensitivity) VALUES ('source rule', $1) "
+            "RETURNING id",
+            sensitivity,
         )
         return row["id"]
 

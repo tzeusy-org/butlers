@@ -30,22 +30,11 @@ async def _apply_upgrade(pool: asyncpg.Pool) -> None:
 
 
 @pytest.fixture
-async def runtime_config_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE runtime_config (
-                butler_name text PRIMARY KEY,
-                core_groups text[],
-                max_concurrent integer NOT NULL DEFAULT 3,
-                max_queued integer NOT NULL DEFAULT 10,
-                seeded_at timestamptz NOT NULL DEFAULT now(),
-                updated_at timestamptz NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await _apply_upgrade(pool)
-        yield pool
+async def runtime_config_pool(db):
+    # core_209's predecessor: the real runtime_config without the read ceiling.
+    pool = await db("core", revisions={"core": "core_208"})
+    await _apply_upgrade(pool)
+    return pool
 
 
 @pytest.mark.asyncio(loop_scope="session")

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -452,6 +453,77 @@ class ApprovalRuleFromActionRequest(BaseModel):
 
     action_id: str
     constraint_overrides: dict[str, Any] | None = None
+
+
+class StandingReplyTemplateDraftCreateRequest(BaseModel):
+    """Owner request to save an inactive standing-reply template draft.
+
+    ``extra="forbid"`` refuses any activation field (such as ``active``): a draft
+    has no active state and this API can never create one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    butler: str
+    tool_name: str
+    templates: dict[str, str]
+    recipient_entity_ids: list[UUID] = Field(min_length=1)
+    description: str = Field(default="", max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class StandingReplyTemplateDraftEditRequest(BaseModel):
+    """Owner edit of a draft's content; ``expected_revision`` guards against races."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    templates: dict[str, str]
+    recipient_entity_ids: list[UUID] = Field(min_length=1)
+    description: str = Field(default="", max_length=500)
+
+
+class StandingReplyTemplateDraftRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class StandingReplyTemplatePreviewRequest(BaseModel):
+    """A hypothetical send call to test against a draft.  Nothing is sent or approved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_name: str
+    tool_args: dict[str, Any]
+
+
+class StandingReplyTemplateDraft(BaseModel):
+    """An inactive draft.  ``state`` is ``draft`` or ``revoked``; never active."""
+
+    id: str
+    butler: str
+    tool_name: str
+    templates: dict[str, str]
+    recipient_entity_ids: list[str]
+    description: str
+    state: Literal["draft", "revoked"]
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+    revoked_at: datetime | None = None
+
+
+class StandingReplyTemplatePreview(BaseModel):
+    """Preview-only match result.  ``authority`` is always ``none``."""
+
+    draft_id: str
+    revision: int
+    matched: bool
+    eligible: bool
+    reasons: list[str]
+    slots: dict[str, dict[str, str]]
+    authority: Literal["none"]
 
 
 class ExpireStaleActionsResponse(BaseModel):

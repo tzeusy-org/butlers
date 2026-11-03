@@ -134,6 +134,7 @@ class ConfirmDelivery:
                         "WHERE id=$1",
                         row["id"],
                     )
+        await self.service.redact_settled()
 
 
 def terminal_text(row):

@@ -4,8 +4,9 @@
 > committed `.test_durations` (`scripts/ci_lanes.py`). The `inventory` and `coverage-inventory`
 > jobs, the weight observer (`ci_weight_candidates.py`, `ci-shard-weights.yml`) and the preflight
 > receipt reconciler are retired; check-totals compares each lane's group counts with one fresh
-> `--collect-only` count that check-preflight takes beside the groups. This page records the retired computed-partition design and
-> its measurements; `ci_partition.py` and the manual watchdog diagnostic were retired with it (bu-29wkwj.8).
+> `--collect-only` count that the `smoke` job takes beside the groups. This page records the retired computed-partition design and
+> its measurements; `ci_partition.py` and the manual watchdog diagnostic were retired with it (bu-29wkwj.8),
+> and the `route` job, scoped lane, observer and comparison scripts followed in bu-29wkwj.3.
 
 The backend has five unit and six integration computed file shards, independent
 preflight and affected paths, and the always-running fail-closed fan-in. All
@@ -287,7 +288,7 @@ refuses rather than reporting ctrace as sysmon. The default remains 3/ctrace
 until genuine complete comparable hosted/no-OOM results select another setting.
 The miniature real subprocess controls prove mechanism conformance only.
 
-`ci_shard_comparison.py before.json after.json` compares complete identity and
+The retired `ci_shard_comparison.py before.json after.json` (deleted in bu-29wkwj.3) compared complete identity and
 phase outcomes without count-only or incomplete gain claims. Its coverage
 comparison normalizes complete filenames/lines/branches/contexts. At the original experiment stage, the coverage validator required ten unique
 current source/attempt/lane shards and merge-group coverage remained enabled.
