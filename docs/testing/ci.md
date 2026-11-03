@@ -333,3 +333,19 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
     merge of two branches adding the same helper produces.
+
+## Route and OpenAPI snapshot
+
+`tests/api/test_router_registry.py` compares the live FastAPI app with
+`tests/api/route_snapshot.txt`: one sorted line per route, OpenAPI operation and component
+schema (short content hash), plus the middleware stack. Adding a route adds lines, so
+independent PRs merge cleanly; unintended drift fails with a line diff. Route table order is
+not pinned beyond the frontend mount being last.
+
+Refresh after an intentional route or schema change, then commit the snapshot:
+
+```bash
+BUTLERS_UPDATE_ROUTE_SNAPSHOT=1 uv run pytest tests/api/test_router_registry.py -n 0 -q
+```
+
+On a merge conflict in the snapshot, rerun the refresh instead of hand-editing hashes.
