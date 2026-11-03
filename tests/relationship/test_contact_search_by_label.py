@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.testing.records import Record
 from butlers.tools.relationship.labels import contact_search_by_label
 
@@ -65,26 +66,6 @@ def _entity_row(**extra: Any) -> Record:
     return Record(base)
 
 
-def _make_pool(*, contact_rows: list | None = None, entity_rows: list | None = None) -> Any:
-    """Build a mock pool whose fetch() dispatches by SQL content.
-
-    First fetch call → contact-anchored branch result.
-    Second fetch call → entity-anchored branch result.
-    """
-    results = [contact_rows or [], entity_rows or []]
-    call_count = 0
-
-    async def _fetch(query: str, *args: Any) -> list:
-        nonlocal call_count
-        idx = call_count
-        call_count += 1
-        return results[idx] if idx < len(results) else []
-
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=_fetch)
-    return pool
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -94,7 +75,7 @@ class TestContactAnchoredRows:
     """Contact-anchored rows (contact_id IS NOT NULL) continue to appear — regression guard."""
 
     async def test_returns_contact_anchored_result(self):
-        pool = _make_pool(contact_rows=[_contact_row()])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[_contact_row()], []]))
         results = await contact_search_by_label(pool, _LBL)
         assert len(results) == 1
         assert results[0]["name"] == "Alice Smith"
@@ -106,14 +87,14 @@ class TestContactAnchoredRows:
             last_name="Smithson",
             canonical_name="Alice Smith",  # entity override
         )
-        pool = _make_pool(contact_rows=[row])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[row], []]))
         results = await contact_search_by_label(pool, _LBL)
         # _compose_name sees "canonical_name" not "name", but first_name+last_name resolves
         # to "Alicia Smithson"; the canonical_name in the row dict is exposed to callers.
         assert results[0]["canonical_name"] == "Alice Smith"
 
     async def test_empty_label_returns_empty(self):
-        pool = _make_pool()
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[], []]))
         results = await contact_search_by_label(pool, "nonexistent")
         assert results == []
 
@@ -130,7 +111,7 @@ class TestEntityAnchoredRows:
     async def test_entity_anchored_row_appears_in_results(self):
         """bu-h5yw0: an entity-anchored row surfaces with id=NULL (no contact) and
         its entity_id preserved."""
-        pool = _make_pool(entity_rows=[_entity_row(entity_id=_EID2)])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[], [_entity_row(entity_id=_EID2)]]))
         results = await contact_search_by_label(pool, _LBL)
         assert len(results) == 1
         assert results[0]["name"] == "Bob Entity"
@@ -138,13 +119,13 @@ class TestEntityAnchoredRows:
         assert results[0]["entity_id"] == _EID2
 
     async def test_entity_canonical_name_used_as_display_name(self):
-        pool = _make_pool(entity_rows=[_entity_row(name="Charlie Canonical")])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[], [_entity_row(name="Charlie Canonical")]]))
         results = await contact_search_by_label(pool, _LBL)
         assert results[0]["name"] == "Charlie Canonical"
 
     async def test_unknown_fallback_when_canonical_name_absent(self):
         """If entity has no canonical_name the SQL COALESCE returns 'Unknown'."""
-        pool = _make_pool(entity_rows=[_entity_row(name="Unknown")])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[], [_entity_row(name="Unknown")]]))
         results = await contact_search_by_label(pool, _LBL)
         assert results[0]["name"] == "Unknown"
 
@@ -154,10 +135,7 @@ class TestMutualExclusion:
 
     async def test_both_branches_combined_no_duplicates(self):
         """A label with one contact-anchored and one entity-anchored row → 2 results."""
-        pool = _make_pool(
-            contact_rows=[_contact_row()],
-            entity_rows=[_entity_row()],
-        )
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[_contact_row()], [_entity_row()]]))
         results = await contact_search_by_label(pool, _LBL)
         assert len(results) == 2
         names = {r["name"] for r in results}
