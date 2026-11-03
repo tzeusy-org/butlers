@@ -4,9 +4,7 @@ Covers the tasks.md §8.6 acceptance contract with pure, DB-free assertions:
 
 1. Insights land in the chronicler's OWN schema only — every store carries
    ``source=chronicler`` and the orchestrator has no other write sink.
-2. Enrichment leaves ONLY as an MCP proposal (routed through the injected
-   proposer), never as a stored chronicler fact or a relationship write.
-3. The write-back path adds NO owner-facing message — there is no ``notify``
+2. The write-back path adds NO owner-facing message — there is no ``notify``
    collaborator to call.
 
 Plus focused tests for each pure synthesis function and the production
@@ -26,17 +24,13 @@ from butlers.chronicler.writeback import (
     INSIGHT_CONFIDENCE_CEILING,
     INSIGHT_CONFIDENCE_FLOOR,
     PREDICATE_LANE_SKEW,
-    PREDICATE_RECURRING_COMPANION,
     PREDICATE_SELF_REMINDER,
     PREDICATE_SLEEP_DEBT,
     SOURCE_BUTLER,
-    CompanionCopresence,
-    EnrichmentProposal,
     InsightFact,
     build_chronicler_fact_writer,
     evidence_confidence,
     execute_writeback,
-    synthesize_enrichment_proposals,
     synthesize_lane_skew_insights,
     synthesize_self_reminders,
     synthesize_sleep_debt_insight,
@@ -59,14 +53,6 @@ class _StoreSpy:
     @property
     def predicates(self) -> list[str]:
         return [c["predicate"] for c in self.calls]
-
-
-class _ProposeSpy:
-    def __init__(self) -> None:
-        self.proposals: list[EnrichmentProposal] = []
-
-    async def __call__(self, proposal: EnrichmentProposal) -> None:
-        self.proposals.append(proposal)
 
 
 def _anomalous_work_balance() -> LaneBalance:
@@ -162,25 +148,11 @@ def test_self_reminders_only_for_pending_backfill_flags():
     assert all(r.confidence == INSIGHT_CONFIDENCE_FLOOR for r in reminders)
 
 
-def test_enrichment_proposals_respect_distinct_day_threshold():
-    companions = [
-        CompanionCopresence(entity_id="e-recurring", distinct_days=4, episode_count=9),
-        CompanionCopresence(entity_id="e-once", distinct_days=1, episode_count=1),
-    ]
-    proposals = synthesize_enrichment_proposals(
-        companions, window_start=date(2026, 6, 12), window_end=_DAY
-    )
-    assert [p.entity_id for p in proposals] == ["e-recurring"]
-    assert proposals[0].predicate == PREDICATE_RECURRING_COMPANION
-    assert proposals[0].dedup_key.startswith(f"{PREDICATE_RECURRING_COMPANION}:e-recurring:")
-
-
 # ── orchestrator: the §8.6 acceptance contract ─────────────────────────────
 
 
 async def test_insights_land_in_own_schema_only():
     store = _StoreSpy()
-    propose = _ProposeSpy()
     insights = synthesize_lane_skew_insights(_DAY, [_anomalous_work_balance()])
     reminders = synthesize_self_reminders(
         _DAY, [SimpleNamespace(flag_type="feeder_dark", severity="warning", detail={})]
@@ -189,9 +161,7 @@ async def test_insights_land_in_own_schema_only():
     result = await execute_writeback(
         insights=insights,
         self_reminders=reminders,
-        proposals=[],
         store_fact_fn=store,
-        propose_enrichment_fn=propose,
     )
 
     assert result.insights_written == 1
@@ -201,72 +171,21 @@ async def test_insights_land_in_own_schema_only():
     # other write sink and cannot reach a foreign schema.
     assert store.calls, "expected at least one own-schema write"
     assert all(c["metadata"]["source"] == SOURCE_BUTLER for c in store.calls)
-    assert propose.proposals == []  # no enrichment for facts
-
-
-async def test_enrichment_is_mcp_proposal_not_a_stored_or_direct_write():
-    store = _StoreSpy()
-    propose = _ProposeSpy()
-    proposals = synthesize_enrichment_proposals(
-        [CompanionCopresence(entity_id="e-1", distinct_days=5, episode_count=12)],
-        window_start=date(2026, 6, 12),
-        window_end=_DAY,
-    )
-
-    result = await execute_writeback(
-        insights=[],
-        self_reminders=[],
-        proposals=proposals,
-        store_fact_fn=store,
-        propose_enrichment_fn=propose,
-    )
-
-    # Enrichment left ONLY via the MCP proposer …
-    assert result.proposals_sent == 1
-    assert [p.entity_id for p in propose.proposals] == ["e-1"]
-    # … and was never written as a chronicler fact (nor anywhere else — the
-    # orchestrator has no relationship pool to write).
-    assert PREDICATE_RECURRING_COMPANION not in store.predicates
-    assert store.calls == []
 
 
 async def test_writeback_sends_no_owner_facing_message():
     store = _StoreSpy()
-    propose = _ProposeSpy()
     notify_spy = AsyncMock()  # deliberately wired NOWHERE
 
     insights = synthesize_lane_skew_insights(_DAY, [_anomalous_work_balance()])
     await execute_writeback(
         insights=insights,
         self_reminders=[],
-        proposals=synthesize_enrichment_proposals(
-            [CompanionCopresence(entity_id="e-1", distinct_days=5, episode_count=12)],
-            window_start=date(2026, 6, 12),
-            window_end=_DAY,
-        ),
         store_fact_fn=store,
-        propose_enrichment_fn=propose,
     )
     # The write-back has no notify collaborator: the once-daily day-close
     # summary (sent by the prompt) is the only sanctioned owner-facing message.
     notify_spy.assert_not_awaited()
-
-
-async def test_missing_proposer_skips_enrichment_without_error():
-    store = _StoreSpy()
-    result = await execute_writeback(
-        insights=[],
-        self_reminders=[],
-        proposals=synthesize_enrichment_proposals(
-            [CompanionCopresence(entity_id="e-1", distinct_days=5, episode_count=12)],
-            window_start=date(2026, 6, 12),
-            window_end=_DAY,
-        ),
-        store_fact_fn=store,
-        propose_enrichment_fn=None,
-    )
-    assert result.proposals_sent == 0
-    assert result.errors == 0
 
 
 async def test_store_failure_is_counted_not_raised():
@@ -285,9 +204,7 @@ async def test_store_failure_is_counted_not_raised():
             )
         ],
         self_reminders=[],
-        proposals=[],
         store_fact_fn=_boom,
-        propose_enrichment_fn=None,
     )
     assert result.insights_written == 0
     assert result.errors == 1
