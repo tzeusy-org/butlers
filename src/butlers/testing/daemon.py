@@ -37,11 +37,14 @@ One boot costs a clone plus a full startup and shutdown;
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import socket
 import sys
 import time
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -51,11 +54,13 @@ import pytest
 # The package import registers every production adapter first, so none of them can
 # re-register over the fake later in the boot.
 from butlers.core.runtimes import (
-    DEFAULT_RUNTIME_TYPE,
     RuntimeAdapter,
     get_adapter,
+    list_registered_runtime_types,
     register_adapter,
 )
+
+Reply = str | BaseException | Callable[[dict[str, Any]], str]
 
 
 class FakeRuntime(RuntimeAdapter):
@@ -63,12 +68,39 @@ class FakeRuntime(RuntimeAdapter):
 
     ``binary_name`` is the running interpreter, so the spawner's PATH check passes
     without installing anything, and ``invoke`` never starts a process.
+
+    Each invocation takes the next entry from :meth:`script`, then :attr:`reply`
+    once the script runs out. An entry is the output text, an exception to raise
+    (a runtime failure), or a callable that gets the recorded invocation and
+    returns the text.
     """
 
     reply: str = "ok"
 
     def __init__(self, **_: Any) -> None:
         self.invocations: list[dict[str, Any]] = []
+        self._script: deque[Reply] = deque()
+        self._invoked = asyncio.Condition()
+
+    def script(self, *replies: Reply) -> None:
+        """Queue *replies* for the next invocations, in order."""
+        self._script.extend(replies)
+
+    async def wait_for_invocations(
+        self,
+        count: int,
+        timeout: float = 10.0,  # noqa: ASYNC109 - a bounded wait is the point
+    ) -> list[dict[str, Any]]:
+        """Wait until *count* invocations have happened, e.g. from a background route."""
+        try:
+            async with asyncio.timeout(timeout):
+                async with self._invoked:
+                    await self._invoked.wait_for(lambda: len(self.invocations) >= count)
+        except TimeoutError:
+            raise TimeoutError(
+                f"expected {count} invocation(s) within {timeout}s, got {len(self.invocations)}"
+            ) from None
+        return list(self.invocations)
 
     @property
     def binary_name(self) -> str:
@@ -86,8 +118,20 @@ class FakeRuntime(RuntimeAdapter):
         cwd: Path | None = None,
         timeout: int | None = None,  # noqa: ASYNC109 - RuntimeAdapter signature
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
-        self.invocations.append({"prompt": prompt, "model": model, "mcp_servers": mcp_servers})
-        return self.reply, [], {"input_tokens": 0, "output_tokens": 0}
+        invocation = {
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "model": model,
+            "mcp_servers": mcp_servers,
+        }
+        async with self._invoked:
+            self.invocations.append(invocation)
+            self._invoked.notify_all()
+        reply = self._script.popleft() if self._script else self.reply
+        if isinstance(reply, BaseException):
+            raise reply
+        output = reply(invocation) if callable(reply) else reply
+        return output, [], {"input_tokens": 0, "output_tokens": 0}
 
     def build_config_file(self, mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
         path = tmp_dir / "mcp.json"
@@ -97,6 +141,11 @@ class FakeRuntime(RuntimeAdapter):
     def parse_system_prompt_file(self, config_dir: Path) -> str:
         path = config_dir / "CLAUDE.md"
         return path.read_text() if path.exists() else ""
+
+
+def _link_roster(roster: Path, config_dir: Path) -> None:
+    roster.mkdir()
+    (roster / config_dir.name).symlink_to(config_dir.resolve(), target_is_directory=True)
 
 
 def _free_port() -> int:
@@ -196,8 +245,39 @@ class BootedDaemon:
             await _rearm_sse()
 
 
+def _stand_in(fake: FakeRuntime, production: type[RuntimeAdapter]) -> type[RuntimeAdapter]:
+    """An adapter class that answers capability lookups as *production* and is *fake*.
+
+    The spawner builds its default adapter at boot and a per-model adapter for
+    whichever runtime type the catalog resolves at trigger time, each through the
+    registry; every instantiation returns the one *fake*, so every invocation lands
+    where the test looks. Model resolution reads the class's declared capabilities
+    (and caches them per runtime type), so the stand-in declares exactly what the
+    production adapter does and resolution picks the models production would.
+    ``fake`` is not an instance of the stand-in, so Python does not re-run
+    ``__init__`` on it.
+    """
+
+    def __new__(cls: type, *_args: Any, **_kwargs: Any) -> Any:
+        return fake
+
+    return type(
+        f"FakeRuntimeAs{production.__name__}",
+        (FakeRuntime,),
+        {
+            "__new__": __new__,
+            "declared_capabilities": getattr(production, "declared_capabilities", {}),
+            "supports_resume": getattr(production, "supports_resume", False),
+        },
+    )
+
+
 class DaemonBooter:
-    """Boots daemons on fresh clones for one test and shuts down what is left."""
+    """Boots daemons on fresh clones for one test and shuts down what is left.
+
+    From construction until :meth:`close`, every registered runtime type resolves
+    to one :class:`FakeRuntime` (:attr:`runtime`), shared by the daemons it boots.
+    """
 
     def __init__(
         self,
@@ -209,20 +289,31 @@ class DaemonBooter:
         self._monkeypatch = monkeypatch
         self._tmp_root = tmp_root
         self._booted: list[BootedDaemon] = []
-        self._production_adapter = get_adapter(DEFAULT_RUNTIME_TYPE)
+        self.runtime = FakeRuntime()
+        self._production_adapters = {
+            name: get_adapter(name) for name in list_registered_runtime_types()
+        }
         monkeypatch.setenv("BUTLERS_LOG_ROOT", str(tmp_root / "logs"))
         monkeypatch.setenv("BUTLERS_MCP_WARMUP_DISABLED", "1")
         # Shared credentials then come from the clone's ``public`` under the butler's role.
         monkeypatch.delenv("BUTLER_SHARED_DB_NAME", raising=False)
-        register_adapter(DEFAULT_RUNTIME_TYPE, FakeRuntime)
+        for name, production in self._production_adapters.items():
+            register_adapter(name, _stand_in(self.runtime, production))
 
     async def boot(
         self,
         config_dir: Path,
         *chains: str,
         registry: Any = None,
+        registered: bool = False,
     ) -> BootedDaemon:
-        """Start the butler in *config_dir* on a fresh clone of *chains* (default ``core``)."""
+        """Start the butler in *config_dir* on a fresh clone of *chains* (default ``core``).
+
+        ``registered=True`` also migrates the Switchboard chain into its own schema and
+        seeds this butler's roster row, as the Switchboard does in production, so boot
+        registration commits an epoch and the daemon accepts routes. The butler's name
+        must then match its schema's runtime role (``butler_<name>_rw``).
+        """
         from butlers.config import load_config
         from butlers.daemon import ButlerDaemon
         from butlers.db import Database
@@ -236,10 +327,13 @@ class DaemonBooter:
                 'with a runtime role (for example schema = "general")'
             )
         chains = chains or ("core",)
-        url = await asyncio.to_thread(
-            migrated_url, self._container, *chains, schemas=dict.fromkeys(chains, schema)
-        )
+        schemas = dict.fromkeys(chains, schema)
+        if registered:
+            schemas["switchboard"] = "switchboard"
+        url = await asyncio.to_thread(migrated_url, self._container, *schemas, schemas=schemas)
         db_name = urlparse(url).path.lstrip("/")
+        if registered:
+            await self._seed_roster_row(url, config_dir)
         config.port = _free_port()
         config.db_name = db_name
         config.switchboard_url = None
@@ -278,10 +372,30 @@ class DaemonBooter:
         self._booted.append(booted)
         return booted
 
+    async def _seed_roster_row(self, url: str, config_dir: Path) -> None:
+        """Insert this butler's roster row with the Switchboard's own seeding.
+
+        The seed scans a roster directory, so it gets one holding only a link to
+        *config_dir*; other butlers beside it in the test's tmp tree stay out.
+        """
+        from butlers.testing.db import open_pool
+
+        # butlers.tools.* is the roster alias installed at import time, which static
+        # analysis cannot follow.
+        registry = importlib.import_module("butlers.tools.switchboard.registry.registry")
+        roster = self._tmp_root / f"roster-{config_dir.name}-{_free_port()}"
+        await asyncio.to_thread(_link_roster, roster, config_dir)
+        pool = await open_pool(url)
+        try:
+            await registry.seed_missing_roster_butlers(pool, roster)
+        finally:
+            await pool.close()
+
     async def close(self) -> None:
         """Shut down every daemon still running, newest first, and restore the adapter."""
         try:
             for booted in reversed(self._booted):
                 await booted.shutdown()
         finally:
-            register_adapter(DEFAULT_RUNTIME_TYPE, self._production_adapter)
+            for name, adapter in self._production_adapters.items():
+                register_adapter(name, adapter)
