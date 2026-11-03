@@ -795,3 +795,25 @@ def fresh_db(postgres_container: PostgresContainer) -> Callable[..., str]:
         return migrated_url(postgres_container, *chains, **kwargs)
 
     return _make
+
+
+@pytest.fixture
+async def booted_daemon(
+    postgres_container: PostgresContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for real daemon boots with no LLM (``butlers.testing.daemon``).
+
+    ``booted = await booted_daemon(config_dir)`` starts the butler in ``config_dir`` on a
+    fresh ``core`` clone (pass more chains after it) under a fake runtime adapter;
+    ``await booted.call_tool("status")`` calls it over HTTP. Teardown shuts down every
+    daemon still running.
+    """
+    from butlers.testing.daemon import DaemonBooter
+
+    booter = DaemonBooter(postgres_container, monkeypatch, tmp_path_factory.mktemp("daemon"))
+    try:
+        yield booter.boot
+    finally:
+        await booter.close()

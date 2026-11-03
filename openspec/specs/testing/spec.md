@@ -691,7 +691,9 @@ resources — without invoking a real LLM.
 
 #### Scenario: Startup reaches accepting-connections
 - **WHEN** a `ButlerDaemon` is started via `start()` (which delegates to
-  `lifecycle.run_startup`) against a provisioned database and a mock spawner
+  `lifecycle.run_startup`) against a provisioned database and a fake runtime
+  adapter under the real spawner (no real LLM; the `booted_daemon` kit), or a mock
+  spawner for tests not yet moved to the kit
 - **THEN** startup completes and `daemon._accepting_connections` is `True`
 - **AND** `daemon._started_at` is set
 - **AND** the database pool is connected (`daemon.db.pool` is not `None`)
