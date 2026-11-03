@@ -26,6 +26,11 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  StandingReplyTemplateDraft,
+  StandingReplyTemplateDraftCreateRequest,
+  StandingReplyTemplateDraftEditRequest,
+  StandingReplyTemplatePreview,
+  StandingReplyTemplatePreviewRequest,
   UnroutableAttentionItem,
   UnroutableRetryResult,
   AutonomySuggestion,
@@ -417,6 +422,11 @@ import type {
   ButlerLogsResponse,
   GeneralCollection,
   GeneralEntity,
+  GeneralProjectCharterInput,
+  GeneralProjectCreateRequest,
+  GeneralProjectDetail,
+  GeneralProjectLinkKind,
+  GeneralProjectSummary,
   GeneralStats,
   HourlyActivity,
   HourlyActivityParams,
@@ -2461,6 +2471,76 @@ export function getGeneralEntities(
 }
 
 // ---------------------------------------------------------------------------
+// General butler — owner projects (bu-jv1moa.12)
+// ---------------------------------------------------------------------------
+
+/** GET /api/general/projects — owner projects, drafts first. */
+export function getGeneralProjects(): Promise<PaginatedResponse<GeneralProjectSummary>> {
+  return apiFetch<PaginatedResponse<GeneralProjectSummary>>("/general/projects?limit=200");
+}
+
+/** GET /api/general/projects/{id} — current charter and typed links (unresolved). */
+export function getGeneralProject(projectId: string): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}`,
+  );
+}
+
+/** POST /api/general/projects — create a draft (owner dashboard session only). */
+export function createGeneralProject(
+  body: GeneralProjectCreateRequest,
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>("/general/projects", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** PUT /api/general/projects/{id}/charter — write the next charter version (CAS). */
+export function editGeneralProjectCharter(
+  projectId: string,
+  body: GeneralProjectCharterInput & { expected_version: number },
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/charter`,
+    { method: "PUT", body: JSON.stringify(body) },
+  );
+}
+
+/** POST /api/general/projects/{id}/close — close a draft at its current version. */
+export function closeGeneralProject(
+  projectId: string,
+  expectedVersion: number,
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/close`,
+    { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) },
+  );
+}
+
+/** POST /api/general/projects/{id}/links — link an existing record by kind and id. */
+export function addGeneralProjectLink(
+  projectId: string,
+  link: { ref_kind: GeneralProjectLinkKind; ref_id: string },
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/links`,
+    { method: "POST", body: JSON.stringify(link) },
+  );
+}
+
+/** DELETE /api/general/projects/{id}/links/{linkId} — unlink; the record is untouched. */
+export function removeGeneralProjectLink(
+  projectId: string,
+  linkId: string,
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/links/${encodeURIComponent(linkId)}`,
+    { method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
 
@@ -3667,6 +3747,73 @@ export function updateApprovalsPolicy(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(policy),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Standing-reply template drafts (owner-only, inactive; bu-jv1moa.10/.42)
+// ---------------------------------------------------------------------------
+
+export function listReplyTemplateDrafts(
+  cursor?: string | null,
+): Promise<CursorPage<StandingReplyTemplateDraft>> {
+  const qs = new URLSearchParams();
+  if (cursor) qs.set("cursor", cursor);
+  const query = qs.toString();
+  return apiFetch<CursorPage<StandingReplyTemplateDraft>>(
+    query ? `/approvals/reply-templates?${query}` : "/approvals/reply-templates",
+  );
+}
+
+export function createReplyTemplateDraft(
+  request: StandingReplyTemplateDraftCreateRequest,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>("/approvals/reply-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function editReplyTemplateDraft(
+  draftId: string,
+  request: StandingReplyTemplateDraftEditRequest,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export function revokeReplyTemplateDraft(
+  draftId: string,
+  expectedRevision: number,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}/revoke`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    },
+  );
+}
+
+export function previewReplyTemplateDraft(
+  draftId: string,
+  request: StandingReplyTemplatePreviewRequest,
+): Promise<ApiResponse<StandingReplyTemplatePreview>> {
+  return apiFetch<ApiResponse<StandingReplyTemplatePreview>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}/preview`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
 }
 
 /**

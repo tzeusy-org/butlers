@@ -54,6 +54,20 @@ _DEFAULT_TIMEOUT_SECONDS = 300
 # rejects an empty name ("mcpName is required"), so a name no server uses admits none.
 _NO_MCP_SERVERS_ALLOWLIST = "butlers-no-mcp-servers"
 
+# ``--skip-trust`` trusts the working directory (the butler's roster dir). gemini-cli 0.66.0
+# then registers skills from ``<cwd>/.gemini/skills`` and ``<cwd>/.agents/skills`` and reads
+# subagents from ``<cwd>/.gemini/agents``. Butler skills reach the model as files the
+# prompt points at, not through the CLI's registry, so the registries are switched off.
+_CWD_CONFINEMENT_SETTINGS: dict[str, Any] = {
+    "skills": {"enabled": False},
+    "experimental": {"enableAgents": False},
+}
+
+# A headless prompt starting with ``/`` runs as a slash command, including a custom command
+# from ``<cwd>/.gemini/commands``. The CLI trims whitespace before that check, but not a
+# zero-width space, so one in front keeps the prompt text going to the model as text.
+_SLASH_COMMAND_GUARD = "​"
+
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
 # butler prompt's literal text from being replaced by the CLI's tool or skill listings.
@@ -329,6 +343,21 @@ def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+# Environment warnings gemini-cli 0.66.0 prints to stderr on every headless run in the
+# container; they never explain a failure, so ``error_detail`` drops them.
+_STDERR_NOISE = (
+    "256-color support not detected",
+    "True color (24-bit) support not detected",
+    "Ripgrep is not available. Falling back to GrepTool.",
+)
+
+
+def _strip_stderr_noise(stderr: str) -> str:
+    """Return ``stderr`` without lines carrying a known gemini-cli environment warning."""
+    lines = stderr.splitlines()
+    return "\n".join(line for line in lines if not any(n in line for n in _STDERR_NOISE))
+
+
 def _gemini_terminal_error_text(stdout: str) -> str | None:
     """Return the last failed ``result`` event's ``error.message``, else ``None``.
 
@@ -423,8 +452,11 @@ class GeminiAdapter(RuntimeAdapter):
         project settings). ``--allowed-mcp-server-names`` limits the session to the
         configured servers, or to none when ``mcp_servers`` is empty, so user- or
         project-level MCP servers are not reachable even though ``--skip-trust``
-        trusts the working directory. That confinement
-        covers MCP servers only: Gemini's built-in shell, file and web tools are not confined
+        trusts the working directory. The same settings switch off the CLI's skill and
+        subagent registries, and a prompt starting with ``/`` is sent as text, so the
+        working directory's ``.gemini/`` skills, agents and commands never load. The CLI
+        has no setting to stop it loading ``<cwd>/GEMINI.md``, so the roster ships none.
+        That confinement does not reach Gemini's built-in shell, file and web tools
         (``--sandbox=false``). The user home is left alone so the CLI's
         OAuth credentials keep working.
 
@@ -478,6 +510,8 @@ class GeminiAdapter(RuntimeAdapter):
         cmd = [binary, "--sandbox=false", "--skip-trust", "-o", "stream-json"]
         if model:
             cmd.extend(["-m", model])
+        if prompt.lstrip().startswith("/"):
+            prompt = _SLASH_COMMAND_GUARD + prompt
         cmd.extend(["--prompt", prompt])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
@@ -551,7 +585,8 @@ class GeminiAdapter(RuntimeAdapter):
             if terminal_error and (terminal_text := _gemini_terminal_error_text(stdout)):
                 self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
-                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                cause = _strip_stderr_noise(stderr).strip()
+                error_detail = cause or stdout.strip() or f"exit code {returncode}"
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
                 message = f"Gemini CLI exited with code {returncode}: {error_detail}"
@@ -647,7 +682,7 @@ class GeminiAdapter(RuntimeAdapter):
         Path
             Path to the generated gemini_mcp.json file.
         """
-        config: dict[str, Any] = {"mcpServers": mcp_servers}
+        config: dict[str, Any] = {"mcpServers": mcp_servers, **_CWD_CONFINEMENT_SETTINGS}
         if max_session_turns is not None and max_session_turns > 0:
             config["model"] = {"maxSessionTurns": max_session_turns}
         config_path = tmp_dir / "gemini_mcp.json"

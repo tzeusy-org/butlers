@@ -209,6 +209,80 @@ def test_a_modified_block_may_keep_its_canonical_id_but_not_take_another_require
     assert "belongs to requirement 'Existing'" in result.stdout
 
 
+@pytest.mark.parametrize("shape", ["single", "chain", "synced"])
+@pytest.mark.parametrize("number, expected_exit", [(1, 0), (5, 1)])
+def test_a_renamed_modified_requirement_keeps_its_canonical_identity(
+    tmp_path: Path, number: int, expected_exit: int, shape: str
+) -> None:
+    canonical_id = _rid("widgets", 1)
+    canonical_name = "Renamed" if shape == "synced" else "Existing"
+    _canonical(
+        tmp_path, "widgets", "## Requirements\n\n" + _block(canonical_name, req_id=canonical_id)
+    )
+    rename = (
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Existing`\n"
+        "- TO: `### Requirement: Renamed`\n\n"
+    )
+    modified_name = "Renamed"
+    if shape == "chain":
+        rename += "- FROM: `### Requirement: Renamed`\n- TO: `### Requirement: Final`\n\n"
+        modified_name = "Final"
+    _delta(
+        tmp_path,
+        "rename",
+        "widgets",
+        rename + _doc("MODIFIED", _block(modified_name, req_id=_rid("widgets", number))),
+    )
+
+    result = _run(tmp_path, "--strict")
+
+    assert result.returncode == expected_exit
+    if expected_exit:
+        assert f"already has canonical ID {canonical_id}" in result.stdout
+    else:
+        assert "All 1 ADDED/MODIFIED requirement block(s) carry trace lines" in result.stdout
+
+
+def test_a_rename_only_authorizes_identity_in_its_own_delta_outside_code_fences(
+    tmp_path: Path,
+) -> None:
+    rid = _rid("widgets", 1)
+    _canonical(tmp_path, "widgets", "## Requirements\n\n" + _block("Existing", req_id=rid))
+    rename = (
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Existing`\n"
+        "- TO: `### Requirement: Renamed`\n\n"
+    )
+    _delta(tmp_path, "other", "widgets", rename)
+    modified = _doc("MODIFIED", _block("Renamed", req_id=rid))
+    for prefix in ("", "~~~~markdown\n" + rename + "~~~~\n", rename.replace("RENAMED", "REMOVED")):
+        _delta(tmp_path, "current", "widgets", prefix + modified)
+        result = _run(tmp_path, "--strict")
+        assert result.returncode == 1
+        assert "belongs to requirement 'Existing'" in result.stdout
+
+    _delta(tmp_path, "current", "widgets", rename + modified)
+    assert _run(tmp_path, "--strict").returncode == 0
+
+    cycle = (
+        "## RENAMED Requirements\n\n"
+        "- FROM: `### Requirement: Loop A`\n"
+        "- TO: `### Requirement: Loop B`\n"
+        "- FROM: `### Requirement: Loop B`\n"
+        "- TO: `### Requirement: Loop A`\n\n"
+    )
+    _delta(
+        tmp_path,
+        "current",
+        "widgets",
+        cycle + _doc("MODIFIED", _block("Loop A", req_id=_rid("widgets", 5))),
+    )
+    result = _run(tmp_path, "--strict")
+    assert result.returncode == 1
+    assert "cyclic RENAMED requirement lineage" in result.stdout
+
+
 def test_two_changes_modifying_different_requirements_with_one_new_id_collide(
     tmp_path: Path,
 ) -> None:

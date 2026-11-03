@@ -241,7 +241,8 @@ when tracked. Tombstones SHALL be deleted once their source event time is more t
 The Relationship candidate store SHALL retain no candidate content longer than the 14-day
 horizon. The card's prompt copy (question and quoted action) in the signed confirm transport's
 `public.pending_confirms` row is outside this store and follows that transport's own retention
-and backup policy; this requirement does not claim to purge it.
+and backup policy (redaction 14 days after the confirm settles); this requirement does not
+claim to purge it.
 
 ID: REQ-commitment-lifecycle-015
 Source: bu-jv1moa.11 recorded decisions (unconfirmed candidates lapse silently after 14 days; content retention limited to the action phrase)

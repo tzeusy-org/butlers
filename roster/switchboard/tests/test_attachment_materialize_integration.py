@@ -59,7 +59,10 @@ def _runtime(pool: Any, blobs: _Blobs, identity: str, download: AsyncMock) -> Gm
 
 
 async def _pools(db: Any, fresh_db: Any) -> tuple[Any, Any]:
-    url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
+    # fresh_db is sync and may build the template with asyncio.run(); keep it off the loop.
+    url = await asyncio.to_thread(
+        fresh_db, "core", "switchboard", schemas={"switchboard": "switchboard"}
+    )
     return await db.open(url, schema="switchboard"), await db.open(url)
 
 

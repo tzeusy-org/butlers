@@ -811,7 +811,7 @@ async def get_database_facts(
             FROM information_schema.tables t
             WHERE t.table_schema NOT IN ('public', 'pg_catalog', 'information_schema',
                                           'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
-              AND t.table_schema NOT LIKE 'pg_%'
+              AND left(t.table_schema, 3) <> 'pg_'
               AND t.table_type = 'BASE TABLE'
             GROUP BY t.table_schema
             ORDER BY size_bytes DESC
@@ -842,7 +842,7 @@ async def get_database_facts(
             FROM information_schema.tables t
             WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema',
                                           'pg_toast', 'pg_temp_1', 'pg_toast_temp_1')
-              AND t.table_schema NOT LIKE 'pg_%'
+              AND left(t.table_schema, 3) <> 'pg_'
               AND t.table_type = 'BASE TABLE'
             ORDER BY size_bytes DESC
             LIMIT 10
