@@ -28,8 +28,6 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-
 # The roster job module is loaded by conftest.py via _load_roster_jobs and
 # registered in sys.modules as butlers.jobs._roster.relationship_jobs.
 from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
@@ -39,7 +37,6 @@ from butlers.jobs._roster.relationship_jobs import (  # type: ignore[import]
     run_entity_dedup_curation,
 )
 from butlers.modules.approvals.retention import RetentionPolicy, cleanup_old_actions
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 relationship_jobs = sys.modules["butlers.jobs._roster.relationship_jobs"]
 
@@ -53,66 +50,13 @@ pytestmark = [
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
 
-# ---------------------------------------------------------------------------
-# Schema creation helpers
-# ---------------------------------------------------------------------------
-
-_CREATE_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name TEXT        NOT NULL DEFAULT '',
-    name           TEXT        NOT NULL DEFAULT '',
-    entity_type    TEXT        NOT NULL DEFAULT 'person',
-    aliases        TEXT[]      NOT NULL DEFAULT '{}',
-    metadata       JSONB       DEFAULT '{}'::jsonb,
-    roles          TEXT[]      NOT NULL DEFAULT '{}',
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_CREATE_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS state (
-    key        TEXT        NOT NULL PRIMARY KEY,
-    value      JSONB       NOT NULL DEFAULT '{}',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    version    INTEGER     NOT NULL DEFAULT 1
-)
-"""
-
-
-async def _setup_schema(pool: asyncpg.Pool) -> None:
-    """Create the minimal schema needed by run_entity_dedup_curation tests."""
-    await pool.execute(_CREATE_ENTITIES_SQL)
-    # The current core entity schema intentionally has no legacy ``name``
-    # alias; this test's local helper writes it for older job compatibility.
-    await pool.execute(
-        "ALTER TABLE public.entities ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''"
-    )
-    await pool.execute("DROP INDEX IF EXISTS public.uq_entities_canonical_type_live")
-    await pool.execute(_CREATE_STATE_SQL)
-
-
-# ---------------------------------------------------------------------------
-# DB fixtures
-# ---------------------------------------------------------------------------
-
 
 @pytest.fixture
-async def pool(postgres_container):
-    """Fresh DB with the real atomic approval-admission schema."""
-    db_url = await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-    p = await asyncpg.create_pool(db_url, min_size=1, max_size=4, init=register_jsonb_codec)
-    try:
-        await _setup_schema(p)
-        yield p
-    finally:
-        await p.close()
+async def rel_pool(db):
+    """Real core + approvals chains; live duplicate names are this job's subject."""
+    p = await db("core", "approvals", max_size=4)
+    await p.execute("DROP INDEX public.uq_entities_canonical_type_live")
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +65,7 @@ async def pool(postgres_container):
 
 
 async def _make_entity(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     *,
     name: str = "Test Person",
     roles: list[str] | None = None,
@@ -131,9 +75,9 @@ async def _make_entity(
     metadata = {}
     if tombstone_into:
         metadata["merged_into"] = tombstone_into
-    return await pool.fetchval(
-        "INSERT INTO public.entities (canonical_name, name, entity_type, roles, metadata) "
-        "VALUES ($1::text, $1::text, 'person', $2, $3) RETURNING id",
+    return await rel_pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles, metadata) "
+        "VALUES ($1::text, 'person', $2, $3) RETURNING id",
         name,
         roles or [],
         metadata,
@@ -141,11 +85,11 @@ async def _make_entity(
 
 
 async def _count_pending_for_pair(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     source_id: uuid.UUID,
     target_id: uuid.UUID,
 ) -> int:
-    return await pool.fetchval(
+    return await rel_pool.fetchval(
         """
         SELECT COUNT(*) FROM pending_actions
          WHERE tool_name IN ('memory_entity_merge', 'entity_merge')
@@ -192,7 +136,7 @@ def test_levenshtein_completely_different():
 # ---------------------------------------------------------------------------
 
 
-async def _noop_propose_insight(pool, **kwargs):
+async def _noop_propose_insight(rel_pool, **kwargs):
     return {"status": "accepted"}
 
 
@@ -212,9 +156,9 @@ def mock_propose_insight():
 # ---------------------------------------------------------------------------
 
 
-async def test_entity_dedup_noop_no_entities(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_noop_no_entities(rel_pool: asyncpg.Pool, mock_propose_insight):
     """No entities → no pairs detected, no pending_actions inserted."""
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["entities_scanned"] == 0
     assert result["exact_groups_found"] == 0
@@ -222,17 +166,17 @@ async def test_entity_dedup_noop_no_entities(pool: asyncpg.Pool, mock_propose_in
     assert result["pairs_surfaced"] == 0
     assert result["errors"] == 0
 
-    count = await pool.fetchval("SELECT COUNT(*) FROM pending_actions")
+    count = await rel_pool.fetchval("SELECT COUNT(*) FROM pending_actions")
     assert count == 0
 
 
-async def test_entity_dedup_noop_all_unique(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_noop_all_unique(rel_pool: asyncpg.Pool, mock_propose_insight):
     """Unique canonical names → no pairs detected."""
-    await _make_entity(pool, name="Alice Smith")
-    await _make_entity(pool, name="Bob Jones")
-    await _make_entity(pool, name="Carol White")
+    await _make_entity(rel_pool, name="Alice Smith")
+    await _make_entity(rel_pool, name="Bob Jones")
+    await _make_entity(rel_pool, name="Carol White")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["entities_scanned"] == 3
     assert result["exact_groups_found"] == 0
@@ -240,7 +184,7 @@ async def test_entity_dedup_noop_all_unique(pool: asyncpg.Pool, mock_propose_ins
     assert result["pairs_surfaced"] == 0
     assert result["errors"] == 0
 
-    count = await pool.fetchval("SELECT COUNT(*) FROM pending_actions")
+    count = await rel_pool.fetchval("SELECT COUNT(*) FROM pending_actions")
     assert count == 0
 
 
@@ -249,14 +193,14 @@ async def test_entity_dedup_noop_all_unique(pool: asyncpg.Pool, mock_propose_ins
 # ---------------------------------------------------------------------------
 
 
-async def test_entity_dedup_exact_match_same_case(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_exact_match_same_case(rel_pool: asyncpg.Pool, mock_propose_insight):
     """Two entities with identical canonical_name → one pair surfaced."""
     # Older entity (lower created_at) → target (survives)
-    target = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
     # Newer entity → source (will be merged away)
-    source = await _make_entity(pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["entities_scanned"] == 2
     assert result["exact_groups_found"] == 1
@@ -264,50 +208,52 @@ async def test_entity_dedup_exact_match_same_case(pool: asyncpg.Pool, mock_propo
     assert result["errors"] == 0
 
     # Verify pending_actions row
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1, "expected one pending_action for the duplicate pair"
 
 
-async def test_entity_dedup_exact_match_case_insensitive(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_exact_match_case_insensitive(
+    rel_pool: asyncpg.Pool, mock_propose_insight
+):
     """Case-insensitive exact match → one pair surfaced."""
-    target = await _make_entity(pool, name="Papa John")
-    source = await _make_entity(pool, name="papa john")
+    target = await _make_entity(rel_pool, name="Papa John")
+    source = await _make_entity(rel_pool, name="papa john")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["exact_groups_found"] == 1
     assert result["pairs_surfaced"] == 1
 
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1
 
 
 async def test_entity_dedup_exact_match_leading_trailing_spaces(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Leading/trailing whitespace is trimmed before matching."""
-    target = await _make_entity(pool, name="Alice Smith")
-    source = await _make_entity(pool, name="  Alice Smith  ")
+    target = await _make_entity(rel_pool, name="Alice Smith")
+    source = await _make_entity(rel_pool, name="  Alice Smith  ")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["exact_groups_found"] == 1
     assert result["pairs_surfaced"] == 1
 
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1
 
 
 async def test_entity_dedup_pending_action_has_correct_tool_name_and_args(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """New pending_actions rows use the registered memory_entity_merge callable."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
-    await run_entity_dedup_curation(pool)
+    await run_entity_dedup_curation(rel_pool)
 
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         "SELECT tool_name, tool_args FROM pending_actions "
         "WHERE tool_name = 'memory_entity_merge' AND status = 'pending' LIMIT 1"
     )
@@ -323,13 +269,13 @@ async def test_entity_dedup_pending_action_has_correct_tool_name_and_args(
 # ---------------------------------------------------------------------------
 
 
-async def test_entity_dedup_near_identical_match(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_near_identical_match(rel_pool: asyncpg.Pool, mock_propose_insight):
     """Near-identical names (within Levenshtein threshold) → pair surfaced."""
     # 1 edit: "Martim" vs "Martin"
-    await _make_entity(pool, name="Chloe Martin")
-    await _make_entity(pool, name="Chloe Martim")  # 1 edit (n→m)
+    await _make_entity(rel_pool, name="Chloe Martin")
+    await _make_entity(rel_pool, name="Chloe Martim")  # 1 edit (n→m)
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["near_identical_pairs_found"] >= 1
     assert result["pairs_surfaced"] >= 1
@@ -337,24 +283,26 @@ async def test_entity_dedup_near_identical_match(pool: asyncpg.Pool, mock_propos
 
 
 async def test_entity_dedup_near_identical_within_threshold(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Names exactly at threshold (2 edits) are detected."""
-    await _make_entity(pool, name="Robert Brown")
-    await _make_entity(pool, name="Robirt Broon")  # 2 edits
+    await _make_entity(rel_pool, name="Robert Brown")
+    await _make_entity(rel_pool, name="Robirt Broon")  # 2 edits
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["near_identical_pairs_found"] >= 1
     assert result["pairs_surfaced"] >= 1
 
 
-async def test_entity_dedup_beyond_threshold_not_flagged(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_beyond_threshold_not_flagged(
+    rel_pool: asyncpg.Pool, mock_propose_insight
+):
     """Names more than threshold apart are NOT flagged."""
-    await _make_entity(pool, name="Alice Smith")
-    await _make_entity(pool, name="Alison Jones")  # >> 2 edits
+    await _make_entity(rel_pool, name="Alice Smith")
+    await _make_entity(rel_pool, name="Alison Jones")  # >> 2 edits
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["near_identical_pairs_found"] == 0
     assert result["pairs_surfaced"] == 0
@@ -365,13 +313,15 @@ async def test_entity_dedup_beyond_threshold_not_flagged(pool: asyncpg.Pool, moc
 # ---------------------------------------------------------------------------
 
 
-async def test_entity_dedup_tombstoned_entity_excluded(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_tombstoned_entity_excluded(
+    rel_pool: asyncpg.Pool, mock_propose_insight
+):
     """Tombstoned entities (merged_into set) are excluded from dedup scan."""
-    live_entity = await _make_entity(pool, name="Chloe Dupont")
+    live_entity = await _make_entity(rel_pool, name="Chloe Dupont")
     # This entity is already merged — should be ignored
-    await _make_entity(pool, name="Chloe Dupont", tombstone_into=str(live_entity))
+    await _make_entity(rel_pool, name="Chloe Dupont", tombstone_into=str(live_entity))
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     # Only the live entity is scanned; no pairs because tombstoned one is excluded
     assert result["entities_scanned"] == 1
@@ -380,13 +330,13 @@ async def test_entity_dedup_tombstoned_entity_excluded(pool: asyncpg.Pool, mock_
     assert result["errors"] == 0
 
 
-async def test_entity_dedup_both_tombstoned_excluded(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_both_tombstoned_excluded(rel_pool: asyncpg.Pool, mock_propose_insight):
     """When both entities in a potential pair are tombstoned, no pair is surfaced."""
     dummy = uuid.uuid4()
-    await _make_entity(pool, name="Chloe Dupont", tombstone_into=str(dummy))
-    await _make_entity(pool, name="Chloe Dupont", tombstone_into=str(dummy))
+    await _make_entity(rel_pool, name="Chloe Dupont", tombstone_into=str(dummy))
+    await _make_entity(rel_pool, name="Chloe Dupont", tombstone_into=str(dummy))
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["entities_scanned"] == 0
     assert result["pairs_surfaced"] == 0
@@ -398,34 +348,34 @@ async def test_entity_dedup_both_tombstoned_excluded(pool: asyncpg.Pool, mock_pr
 
 
 async def test_entity_dedup_second_run_skips_existing_pending(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Second run skips pairs that already have a pending pending_actions row."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
     # First run: creates the pending_action
-    result1 = await run_entity_dedup_curation(pool)
+    result1 = await run_entity_dedup_curation(rel_pool)
     assert result1["pairs_surfaced"] == 1
     assert result1["pairs_skipped_already_pending"] == 0
 
     # Second run: skips the already-pending pair
-    result2 = await run_entity_dedup_curation(pool)
+    result2 = await run_entity_dedup_curation(rel_pool)
     assert result2["pairs_surfaced"] == 0
     assert result2["pairs_skipped_already_pending"] == 1
 
     # Still only one pending_actions row
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1
 
 
 async def test_entity_dedup_concurrent_runs_create_one_pending_action_and_one_insight(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     mock_propose_insight,
 ):
     """Concurrent manual runs must not create duplicate review cards or pushes."""
-    target = await _make_entity(pool, name="Concurrent Chloe")
-    source = await _make_entity(pool, name="Concurrent Chloe")
+    target = await _make_entity(rel_pool, name="Concurrent Chloe")
+    source = await _make_entity(rel_pool, name="Concurrent Chloe")
     real_park = relationship_jobs.park_pending_action
     both_runs_reached_park = asyncio.Event()
     arrivals = 0
@@ -442,20 +392,20 @@ async def test_entity_dedup_concurrent_runs_create_one_pending_action_and_one_in
 
     with patch.object(relationship_jobs, "park_pending_action", new=_synchronized_park):
         first, second = await asyncio.gather(
-            run_entity_dedup_curation(pool),
-            run_entity_dedup_curation(pool),
+            run_entity_dedup_curation(rel_pool),
+            run_entity_dedup_curation(rel_pool),
         )
 
     assert first["errors"] == 0
     assert second["errors"] == 0
     assert first["pairs_surfaced"] + second["pairs_surfaced"] == 1
     assert first["pairs_skipped_already_pending"] + second["pairs_skipped_already_pending"] == 1
-    assert await _count_pending_for_pair(pool, source, target) == 1
+    assert await _count_pending_for_pair(rel_pool, source, target) == 1
     assert mock_propose_insight.await_count == 1
 
 
 async def test_entity_dedup_equal_created_at_uses_id_for_stable_merge_direction(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     mock_propose_insight,
 ):
     """Equal timestamps must not flip the ordered source/target pair across runs."""
@@ -466,32 +416,32 @@ async def test_entity_dedup_equal_created_at_uses_id_for_stable_merge_direction(
     # Insert the future source first to prove physical insertion order is not
     # the merge-direction tie-breaker.
     for entity_id in (source, target):
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO public.entities "
-            "(id, canonical_name, name, entity_type, roles, metadata, created_at) "
-            "VALUES ($1, 'Same Timestamp', 'Same Timestamp', 'person', '{}', '{}', $2)",
+            "(id, canonical_name, entity_type, roles, metadata, created_at) "
+            "VALUES ($1, 'Same Timestamp', 'person', '{}', '{}', $2)",
             entity_id,
             shared_created_at,
         )
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["pairs_surfaced"] == 1
-    assert await _count_pending_for_pair(pool, source, target) == 1
+    assert await _count_pending_for_pair(rel_pool, source, target) == 1
 
 
 async def test_entity_dedup_legacy_pending_action_suppresses_canonical_duplicate(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """A rollout-era entity_merge proposal remains the one reviewable action.
 
     The producer must not rewrite the legacy row, but it must recognize that
     the same ordered pair is already awaiting a human decision.
     """
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence) "
         "VALUES ($1, 'entity_merge', $2, 'legacy proposal', 'pending', now(), '[]')",
@@ -499,22 +449,22 @@ async def test_entity_dedup_legacy_pending_action_suppresses_canonical_duplicate
         {"source_entity_id": str(source), "target_entity_id": str(target)},
     )
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_already_pending"] == 1
-    assert await _count_pending_for_pair(pool, source, target) == 1
+    assert await _count_pending_for_pair(rel_pool, source, target) == 1
 
 
 async def test_entity_dedup_rejected_pair_is_not_resurfaced(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """A rejection is a durable owner decision for this exact ordered pair."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
     # Insert a 'rejected' pending_action for this pair
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence) "
         "VALUES ($1, 'entity_merge', $2, 'old', 'rejected', now(), '[]')",
@@ -523,20 +473,20 @@ async def test_entity_dedup_rejected_pair_is_not_resurfaced(
     )
 
     # Curation must preserve the audit row and not recreate an equivalent card.
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
     assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_already_pending"] == 0
     assert result["pairs_skipped_prior_decision"] == 1
 
 
 async def test_entity_dedup_approved_unexecuted_pair_is_not_resurfaced(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """An approved action remains the one retryable record until execution settles it."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence, execution_result) "
         "VALUES ($1, 'memory_entity_merge', $2, 'approved but not executed', 'approved', "
@@ -545,20 +495,20 @@ async def test_entity_dedup_approved_unexecuted_pair_is_not_resurfaced(
         {"source_entity_id": str(source), "target_entity_id": str(target)},
     )
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
     assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_already_pending"] == 0
     assert result["pairs_skipped_prior_decision"] == 1
 
 
 async def test_entity_dedup_abandoned_pair_is_not_resurfaced(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Abandoning an approved retry is a durable owner decision for this pair."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, status, requested_at, evidence) "
         "VALUES ($1, 'memory_entity_merge', $2, 'owner abandoned retry', 'abandoned', "
@@ -567,7 +517,7 @@ async def test_entity_dedup_abandoned_pair_is_not_resurfaced(
         {"source_entity_id": str(source), "target_entity_id": str(target)},
     )
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
     assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_already_pending"] == 0
     assert result["pairs_skipped_prior_decision"] == 1
@@ -578,18 +528,18 @@ async def test_entity_dedup_abandoned_pair_is_not_resurfaced(
     [("memory_entity_merge", "rejected"), ("entity_merge", "abandoned")],
 )
 async def test_entity_dedup_owner_decision_survives_retention(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     mock_propose_insight,
     tool_name: str,
     status: str,
 ):
     """Retention must not erase the pair decision that suppresses future cards."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
     action_id = uuid.uuid4()
     decided_at = datetime.now(UTC) - timedelta(days=365)
 
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, status, requested_at, decided_at, evidence) "
         "VALUES ($1, $2, $3, 'old owner decision', $4, $5, $5, '[]')",
@@ -601,27 +551,28 @@ async def test_entity_dedup_owner_decision_survives_retention(
     )
 
     counts = await cleanup_old_actions(
-        pool,
+        rel_pool,
         RetentionPolicy(pending_actions_retention_days=90),
     )
     assert counts == {}
     assert (
-        await pool.fetchval("SELECT id FROM pending_actions WHERE id = $1", action_id) == action_id
+        await rel_pool.fetchval("SELECT id FROM pending_actions WHERE id = $1", action_id)
+        == action_id
     )
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
     assert result["pairs_surfaced"] == 0
     assert result["pairs_skipped_prior_decision"] == 1
 
 
 async def test_entity_dedup_expired_pair_can_be_resurfaced(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Expiry is not an owner decision, so it does not permanently suppress review."""
-    target = await _make_entity(pool, name="Chloe Dupont")
-    source = await _make_entity(pool, name="Chloe Dupont")
+    target = await _make_entity(rel_pool, name="Chloe Dupont")
+    source = await _make_entity(rel_pool, name="Chloe Dupont")
 
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO pending_actions "
         "(id, tool_name, tool_args, agent_summary, status, requested_at, expires_at, evidence) "
         "VALUES ($1, 'memory_entity_merge', $2, 'expired', 'expired', "
@@ -630,7 +581,7 @@ async def test_entity_dedup_expired_pair_can_be_resurfaced(
         {"source_entity_id": str(source), "target_entity_id": str(target)},
     )
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
     assert result["pairs_surfaced"] == 1
     assert result["pairs_skipped_already_pending"] == 0
     assert result["pairs_skipped_prior_decision"] == 0
@@ -642,19 +593,19 @@ async def test_entity_dedup_expired_pair_can_be_resurfaced(
 
 
 async def test_entity_dedup_owner_entity_goes_through_pending_actions(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Even owner-role entities get surfaced via pending_actions (NEVER autonomous merge)."""
     # Owner entity + a duplicate (both should go to pending_actions for owner review)
-    target = await _make_entity(pool, name="Tze (owner)", roles=["owner"])
-    source = await _make_entity(pool, name="Tze (owner)")
+    target = await _make_entity(rel_pool, name="Tze (owner)", roles=["owner"])
+    source = await _make_entity(rel_pool, name="Tze (owner)")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     # Must be surfaced via pending_actions, not autonomously merged
     assert result["pairs_surfaced"] == 1
     assert result["errors"] == 0
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1
 
 
@@ -663,24 +614,24 @@ async def test_entity_dedup_owner_entity_goes_through_pending_actions(
 # ---------------------------------------------------------------------------
 
 
-async def test_entity_dedup_multiple_groups(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_multiple_groups(rel_pool: asyncpg.Pool, mock_propose_insight):
     """Multiple separate exact-duplicate groups each produce a pending_action."""
     # Group 1: Chloe duplicates
-    chloe_target = await _make_entity(pool, name="Chloe Dupont")
-    chloe_source = await _make_entity(pool, name="Chloe Dupont")
+    chloe_target = await _make_entity(rel_pool, name="Chloe Dupont")
+    chloe_source = await _make_entity(rel_pool, name="Chloe Dupont")
 
     # Group 2: Papa duplicates
-    papa_target = await _make_entity(pool, name="Papa Jean")
-    papa_source = await _make_entity(pool, name="Papa Jean")
+    papa_target = await _make_entity(rel_pool, name="Papa Jean")
+    papa_source = await _make_entity(rel_pool, name="Papa Jean")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["exact_groups_found"] == 2
     assert result["pairs_surfaced"] == 2
     assert result["errors"] == 0
 
-    assert await _count_pending_for_pair(pool, chloe_source, chloe_target) == 1
-    assert await _count_pending_for_pair(pool, papa_source, papa_target) == 1
+    assert await _count_pending_for_pair(rel_pool, chloe_source, chloe_target) == 1
+    assert await _count_pending_for_pair(rel_pool, papa_source, papa_target) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -688,11 +639,11 @@ async def test_entity_dedup_multiple_groups(pool: asyncpg.Pool, mock_propose_ins
 # ---------------------------------------------------------------------------
 
 
-async def test_entity_dedup_checkpoint_written(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_checkpoint_written(rel_pool: asyncpg.Pool, mock_propose_insight):
     """Checkpoint state key is written after a successful run."""
-    await run_entity_dedup_curation(pool)
+    await run_entity_dedup_curation(rel_pool)
 
-    val = await pool.fetchval(
+    val = await rel_pool.fetchval(
         "SELECT value FROM state WHERE key = $1",
         _ENTITY_DEDUP_CURATION_STATE_KEY,
     )
@@ -711,7 +662,7 @@ def test_min_name_len_constant_is_sensible():
 
 
 async def test_entity_dedup_short_names_not_flagged_as_near_identical(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Short distinct names ('Sam'/'Pam', 'Jon'/'Jan', 'Ana'/'Ava') must NOT be flagged.
 
@@ -719,14 +670,14 @@ async def test_entity_dedup_short_names_not_flagged_as_near_identical(
     minimum-length guard must prevent them from surfacing as near-identical merge
     candidates.
     """
-    await _make_entity(pool, name="Sam")
-    await _make_entity(pool, name="Pam")
-    await _make_entity(pool, name="Jon")
-    await _make_entity(pool, name="Jan")
-    await _make_entity(pool, name="Ana")
-    await _make_entity(pool, name="Ava")
+    await _make_entity(rel_pool, name="Sam")
+    await _make_entity(rel_pool, name="Pam")
+    await _make_entity(rel_pool, name="Jon")
+    await _make_entity(rel_pool, name="Jan")
+    await _make_entity(rel_pool, name="Ana")
+    await _make_entity(rel_pool, name="Ava")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     # None of these short-name pairs should be flagged near-identical
     assert result["near_identical_pairs_found"] == 0, (
@@ -736,22 +687,22 @@ async def test_entity_dedup_short_names_not_flagged_as_near_identical(
     assert result["pairs_surfaced"] == 0
     assert result["errors"] == 0
 
-    count = await pool.fetchval("SELECT COUNT(*) FROM pending_actions")
+    count = await rel_pool.fetchval("SELECT COUNT(*) FROM pending_actions")
     assert count == 0
 
 
 async def test_entity_dedup_short_name_exact_dup_still_flagged(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Short-name EXACT duplicates must still be flagged regardless of length.
 
     The minimum-length guard applies only to the Levenshtein near-identical path.
     Exact (case-insensitive) duplicates are caught earlier and must always surface.
     """
-    target = await _make_entity(pool, name="Sam")
-    source = await _make_entity(pool, name="Sam")  # exact duplicate
+    target = await _make_entity(rel_pool, name="Sam")
+    source = await _make_entity(rel_pool, name="Sam")  # exact duplicate
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["exact_groups_found"] == 1, (
         "Exact short-name duplicates must still be flagged even below min-length guard"
@@ -759,28 +710,28 @@ async def test_entity_dedup_short_name_exact_dup_still_flagged(
     assert result["pairs_surfaced"] == 1
     assert result["errors"] == 0
 
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1
 
 
 async def test_entity_dedup_short_name_exact_dup_case_insensitive(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Short-name case-insensitive exact duplicates ('Jon'/'jon') are always flagged."""
-    target = await _make_entity(pool, name="Jon")
-    source = await _make_entity(pool, name="jon")
+    target = await _make_entity(rel_pool, name="Jon")
+    source = await _make_entity(rel_pool, name="jon")
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["exact_groups_found"] == 1
     assert result["pairs_surfaced"] == 1
 
-    count = await _count_pending_for_pair(pool, source, target)
+    count = await _count_pending_for_pair(rel_pool, source, target)
     assert count == 1
 
 
 async def test_entity_dedup_long_near_identical_names_still_flagged(
-    pool: asyncpg.Pool, mock_propose_insight
+    rel_pool: asyncpg.Pool, mock_propose_insight
 ):
     """Genuine longer near-duplicates (>= min-length) still surface appropriately.
 
@@ -788,10 +739,10 @@ async def test_entity_dedup_long_near_identical_names_still_flagged(
     'Robert Brown' / 'Robirt Brown' (1 edit on a long name) should still flag.
     """
     # Near-identical: 1 edit on names well above min-length threshold
-    await _make_entity(pool, name="Robert Brown")
-    await _make_entity(pool, name="Robirt Brown")  # 'e' → 'i' = 1 edit
+    await _make_entity(rel_pool, name="Robert Brown")
+    await _make_entity(rel_pool, name="Robirt Brown")  # 'e' → 'i' = 1 edit
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["near_identical_pairs_found"] >= 1, (
         "Long near-identical names (Robert Brown / Robirt Brown) must still be flagged"
@@ -800,7 +751,9 @@ async def test_entity_dedup_long_near_identical_names_still_flagged(
     assert result["errors"] == 0
 
 
-async def test_entity_dedup_five_char_names_still_matched(pool: asyncpg.Pool, mock_propose_insight):
+async def test_entity_dedup_five_char_names_still_matched(
+    rel_pool: asyncpg.Pool, mock_propose_insight
+):
     """Names exactly at the minimum length (e.g. 'Chloe' / 'Chleo') are still checked.
 
     The guard is a strict less-than (< min_len), so names with len == min_len
@@ -811,10 +764,10 @@ async def test_entity_dedup_five_char_names_still_matched(pool: asyncpg.Pool, mo
     assert len("chloe") == _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH
     assert len("chleo") == _ENTITY_DEDUP_MIN_NAME_LEN_FOR_NEAR_MATCH
 
-    await _make_entity(pool, name="Chloe")
-    await _make_entity(pool, name="Chleo")  # 2 edits (transposition)
+    await _make_entity(rel_pool, name="Chloe")
+    await _make_entity(rel_pool, name="Chleo")  # 2 edits (transposition)
 
-    result = await run_entity_dedup_curation(pool)
+    result = await run_entity_dedup_curation(rel_pool)
 
     assert result["near_identical_pairs_found"] >= 1, (
         "Names at exactly the minimum length boundary must still be near-identical checked"
