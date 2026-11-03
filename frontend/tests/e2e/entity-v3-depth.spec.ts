@@ -720,7 +720,10 @@ test.describe("entity-v3: detail quick-refresh blocks", () => {
     // The full stream uses the same page -> hook -> client transport and keeps
     // Chronicle activity alongside exact Relationship summaries. The same episode
     // also appears as a Shared Chronicles door; that duplication is intentional.
-    await expect(page.locator("p", { hasText: "Lunch with Alice" })).toBeVisible();
+    // A dated Chronicle row links to its episode, so its summary renders as a link.
+    const lunchRow = page.getByTestId("timeline-row-link").filter({ hasText: "Lunch with Alice" });
+    await expect(lunchRow).toBeVisible();
+    await expect(lunchRow).toHaveAttribute("href", /\/chronicles\?date=.*episode=episode-1/);
     await expect(page.getByText("Coffee catch-up").first()).toBeVisible();
 
     // Core dates block + at least one row.
