@@ -1158,6 +1158,20 @@ class GoogleHealthConnector:
             if existing.id in cur_ids:
                 self._accounts[existing.id].refresh_from(existing)
 
+        # Alert rules read these counters through increase(), which needs a prior
+        # sample; a child created lazily by its first inc() would hide the
+        # first-ever event. Prime every current identity (an email change
+        # re-keys it) at zero; labels() is idempotent.
+        for ctx in self._accounts.values():
+            for bundle in RESOURCE_BUNDLES:
+                for counter in (
+                    google_health_window_page_cap_exceeded_total,
+                    google_health_quarantined_envelopes_total,
+                ):
+                    counter.labels(
+                        endpoint_identity=ctx.endpoint_identity, resource=bundle.resource
+                    )
+
         # ----------------------------------------------------------------
         # Update legacy single-account fields + scope/account missing flags.
         # ----------------------------------------------------------------

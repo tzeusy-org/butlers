@@ -4,26 +4,6 @@
   "jobs": [
     {
       "workflow": ".github/workflows/ci.yml",
-      "job": "route",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 10,
-      "p95_s": 9.0,
-      "candidate_timeout_minutes": 2,
-      "retry_extra_s": 0,
-      "state": "measured before-only candidate; remeasure after source/setup change",
-      "sample_source": "before-10-merge-group-timings.json",
-      "retained_original_candidate_minutes": 2,
-      "review_uv_nominal_envelope_s": 0,
-      "review_browser_hard_retry_interval_s": 0,
-      "review_conservative_before_only_candidate_minutes": 2,
-      "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
-      "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
-      "reviewed_job_name": "route",
-      "additional_provisional_cold_dependency_allowance_s": 0,
-      "installed_timeout_minutes": 2
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
       "job": "guards",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
@@ -44,7 +24,7 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
-      "job": "check-preflight",
+      "job": "smoke",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
       "p95_s": 471.0,
@@ -58,7 +38,7 @@
       "review_conservative_before_only_candidate_minutes": 27,
       "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
       "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
-      "reviewed_job_name": "check-preflight",
+      "reviewed_job_name": "smoke",
       "additional_provisional_cold_dependency_allowance_s": 0,
       "installed_timeout_minutes": 27
     },
@@ -79,48 +59,7 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
-      "job": "check-affected",
-      "existing_timeout_minutes": null,
-      "successful_sample_n": 1,
-      "p95_s": null,
-      "candidate_timeout_minutes": 82,
-      "retry_extra_s": 0,
-      "state": "provisional; one named healthy whole-job envelope, no stable or current p95 proof",
-      "sample_source": "https://github.com/tzeusy-org/butlers/actions/runs/37597511584/job/112713967258",
-      "retained_original_candidate_minutes": 26,
-      "review_uv_nominal_envelope_s": 640,
-      "review_browser_hard_retry_interval_s": 0,
-      "review_conservative_before_only_candidate_minutes": null,
-      "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
-      "review_policy": "Provisional compatibility bound: ceil((2*2124s named healthy whole-job envelope + complete640s extra UV recovery reserve)/60)=82min. The2124s observation includes2077s tests and47s other setup/evidence/finalization; retain all47s and add another2124s provisional setup/runtime variation allowance, without subtracting first-attempt setup. No additional cold allowance is needed beyond this conservative doubled complete envelope. One old successful observation is not stable/current p95. Recalibrate using required named current samples; no guarantee of zero>60min jobs or wall-clock gain.",
-      "reviewed_job_name": "check-affected",
-      "additional_provisional_cold_dependency_allowance_s": 0,
-      "installed_timeout_minutes": 82,
-      "healthy_job_observations": [
-        {
-          "run_id": 37597511584,
-          "run_attempt": 1,
-          "head_sha": "1631a1f400ab7fbf5e1c2a12194a2efa98636dfc",
-          "event": "pull_request",
-          "job_id": 112713967258,
-          "conclusion": "success",
-          "started_at": "2026-10-07T09:00:35Z",
-          "completed_at": "2026-10-07T09:35:59Z",
-          "test_step_elapsed_s": 2077,
-          "junit_sha256": "dad2ffc520c8935ba74798eadea7cdebd8432d24220517e964ed54758a9101a3",
-          "testcases": 17853,
-          "failures": 0,
-          "errors": 0,
-          "skips": 108,
-          "maximum_testcase_s": 69.922,
-          "testcases_over_300": 0
-        }
-      ],
-      "provisional_healthy_envelope_s": 2124
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
-      "job": "check",
+      "job": "alls-green",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
       "p95_s": 64.0,
@@ -134,13 +73,13 @@
       "review_conservative_before_only_candidate_minutes": 3,
       "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
       "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
-      "reviewed_job_name": "check",
+      "reviewed_job_name": "alls-green",
       "additional_provisional_cold_dependency_allowance_s": 0,
       "installed_timeout_minutes": 3
     },
     {
       "workflow": ".github/workflows/ci.yml",
-      "job": "frontend",
+      "job": "frontend-assurance",
       "existing_timeout_minutes": null,
       "successful_sample_n": 10,
       "p95_s": 520.0,
@@ -154,7 +93,7 @@
       "review_conservative_before_only_candidate_minutes": 18,
       "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
       "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
-      "reviewed_job_name": "frontend",
+      "reviewed_job_name": "frontend-assurance",
       "additional_provisional_cold_dependency_allowance_s": 0,
       "installed_timeout_minutes": 18
     },
@@ -441,14 +380,6 @@
       "sample_source": "none; stdlib-only merge with no dependency install"
     },
     {
-      "workflow": ".github/workflows/ci-latency.yml",
-      "job": "observe",
-      "installed_timeout_minutes": 6,
-      "state": "provisional timestamp-only observer: before-read deadline 240s plus final read 20s; outer 360s includes checkout, report and upload headroom; current calibration unknown",
-      "sample_source": "bounded run100/job100 metadata pages, at most 30 sampled attempts; no healthy job p95 claim",
-      "p95_s": null
-    },
-    {
       "workflow": ".github/workflows/ci.yml",
       "job": "go-bridge",
       "existing_timeout_minutes": null,
@@ -462,6 +393,38 @@
       "review_browser_hard_retry_interval_s": 0,
       "additional_provisional_cold_dependency_allowance_s": 270,
       "installed_timeout_minutes": 15
+    },
+    {
+      "workflow": ".github/workflows/ci-latency.yml",
+      "job": "observe",
+      "installed_timeout_minutes": 6,
+      "state": "provisional timestamp-only observer: before-read deadline 240s plus final read 20s; outer 360s includes checkout, report and upload headroom; current calibration unknown",
+      "sample_source": "bounded run100/job100 metadata pages, at most 30 sampled attempts; no healthy job p95 claim",
+      "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/merge-queue-sweep.yml",
+      "job": "sweep",
+      "installed_timeout_minutes": 3,
+      "state": "provisional source-derived bound for a sparse checkout plus a few Actions API pages and cancels (bu-29wkwj.16); current calibration unknown",
+      "sample_source": "none; local dry run against the live repo took seconds",
+      "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "check",
+      "installed_timeout_minutes": 3,
+      "state": "provisional source-derived bound for a one-line mirror of alls-green (bu-29wkwj.3 compatibility adapter); no checkout or install",
+      "sample_source": "none; same envelope as alls-green",
+      "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
+      "job": "frontend",
+      "installed_timeout_minutes": 3,
+      "state": "provisional source-derived bound for a one-line mirror of alls-green (bu-29wkwj.3 compatibility adapter); no checkout or install",
+      "sample_source": "none; same envelope as alls-green",
+      "p95_s": null
     }
   ],
   "tests": [

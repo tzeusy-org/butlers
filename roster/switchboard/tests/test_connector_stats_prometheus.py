@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from butlers.api.routers import ingestion_connectors
+from butlers.testing.fake_pool import fake_pool
 from butlers.testing.records import Record
 
 _THIS_FILE = Path(__file__).resolve()
@@ -49,39 +50,8 @@ def _load_router():
 # ---------------------------------------------------------------------------
 
 
-class _FakePool:
-    """Minimal pool stub — returns empty list for fetch, raises for fetchrow/fetchval.
-
-    The connector-stats DB path calls pool.fetch() to query the ingestion_events
-    + filtered_events UNION. Returning [] simulates a connector with no events
-    (empty timeseries).
-    """
-
-    async def fetchrow(self, *args, **kwargs):
-        raise RuntimeError("Should not query DB via fetchrow in these endpoints")
-
-    async def fetch(self, *args, **kwargs):
-        return []
-
-    async def fetchval(self, *args, **kwargs):
-        raise RuntimeError("Should not query DB via fetchval in these endpoints")
-
-
-class _FakePoolWithRows:
-    """Pool stub returning synthetic UNION rows (ingested/failed/filtered) for
-    connector-stats DB-path tests."""
-
-    def __init__(self, rows: list[dict]):
-        self._rows = rows
-
-    async def fetchrow(self, *args, **kwargs):
-        raise RuntimeError("Not used in connector stats DB path")
-
-    async def fetch(self, *args, **kwargs):
-        return self._rows
-
-    async def fetchval(self, *args, **kwargs):
-        raise RuntimeError("Not used in connector stats DB path")
+# The connector-stats DB path only calls pool.fetch() (the ingestion_events +
+# filtered_events UNION); fetchrow/fetchval stay unconfigured so they refuse.
 
 
 class _FakeDBWithRows:
@@ -89,7 +59,7 @@ class _FakeDBWithRows:
         self._rows = rows
 
     def pool(self, name: str):
-        return _FakePoolWithRows(self._rows)
+        return fake_pool(fetch=self._rows)
 
     @property
     def butler_names(self) -> list[str]:
@@ -103,7 +73,7 @@ class _FakeDBWithRows:
 
 class _FakeDB:
     def pool(self, name: str):
-        return _FakePool()
+        return fake_pool(fetch=[])
 
     @property
     def butler_names(self) -> list[str]:

@@ -24,6 +24,7 @@ from asyncpg.exceptions import UndefinedTableError
 from butlers.api.deps import get_db
 from butlers.api.deps import get_db as ingestion_db
 from butlers.modules.memory.consolidation import REAPABLE_EXPIRED_EPISODE_SQL
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -53,27 +54,6 @@ def _make_episode_row(
     }
 
 
-def _make_mock_record(row: dict) -> MagicMock:
-    """Return a MagicMock that behaves like an asyncpg Record for row access."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
-
-
-class _Record(dict):
-    """Dict subclass standing in for an asyncpg Record.
-
-    Supports both ``record[key]`` and ``record.get(key)`` with real None
-    values, unlike MagicMock-based records whose ``.get`` returns a truthy
-    mock.  Used by fact rows where ``_row_to_fact`` calls ``r.get(...)``.
-    """
-
-
-def _make_record(row: dict) -> _Record:
-    """Return an asyncpg-Record-like mapping for the given row dict."""
-    return _Record(row)
-
-
 class _MockDB:
     """Minimal DatabaseManager stand-in for fan-out tests.
 
@@ -87,7 +67,7 @@ class _MockDB:
     """
 
     def __init__(self, *, rows: list[dict], total: int, known_butlers: list[str]) -> None:
-        mock_records = [_make_mock_record(r) for r in rows]
+        mock_records = [Record(r) for r in rows]
 
         self.pool_mock = AsyncMock()
         self.pool_mock.fetchval = AsyncMock(return_value=total)
@@ -316,7 +296,7 @@ class _FactsPool:
     """
 
     def __init__(self, *, rows: list[dict], total: int) -> None:
-        self._rows = [_make_record(r) for r in rows]
+        self._rows = [Record(r) for r in rows]
         self._total = total
         self.fetch_calls: list[tuple] = []
 
@@ -1601,7 +1581,7 @@ class _ConfirmPool:
             and "FROM facts WHERE id" in query
             and args[0] == self._fact["id"]
         ):
-            return _make_record(self._fact)
+            return Record(self._fact)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -1753,7 +1733,7 @@ class _RetractPool:
             and "FROM facts WHERE id" in query
             and args[0] == self._fact["id"]
         ):
-            return _make_record(self._fact)
+            return Record(self._fact)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -1912,7 +1892,7 @@ class _RetireRulePool:
             and "FROM rules WHERE id" in query
             and args[0] == self._rule["id"]
         ):
-            return _make_record(self._rule)
+            return Record(self._rule)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -2085,11 +2065,11 @@ class _MemoryDetailPool:
         if "WHERE supersedes_id" in query:
             return None
         if "FROM episodes" in query:
-            return _make_record(self._episode) if self._episode is not None else None
+            return Record(self._episode) if self._episode is not None else None
         if "FROM facts" in query:
-            return _make_record(self._fact) if self._fact is not None else None
+            return Record(self._fact) if self._fact is not None else None
         if "FROM rules" in query:
-            return _make_record(self._rule) if self._rule is not None else None
+            return Record(self._rule) if self._rule is not None else None
         return None
 
     async def fetch(self, query: str, *args: object) -> list[object]:
@@ -2232,7 +2212,7 @@ class _EntityMemoryPool:
 
     async def fetchrow(self, query: str, *args: object):
         if "FROM public.entities" in query:
-            return _make_record(self._entity) if self._entity is not None else None
+            return Record(self._entity) if self._entity is not None else None
         return None
 
     async def fetchval(self, query: str, *args: object):
@@ -2246,7 +2226,7 @@ class _EntityMemoryPool:
 
     async def fetch(self, query: str, *args: object) -> list[object]:
         if "FROM public.entity_rebind_log" in query:
-            return [_make_record(row) for row in self._rebind_receipts]
+            return [Record(row) for row in self._rebind_receipts]
         if "FROM facts" in query and self._fact_error is not None:
             raise self._fact_error
         return []
@@ -2462,9 +2442,9 @@ class _InspectPool:
         facts: list[dict] | None = None,
         rules: list[dict] | None = None,
     ) -> None:
-        self._episodes = [_make_record(r) for r in (episodes or [])]
-        self._facts = [_make_record(r) for r in (facts or [])]
-        self._rules = [_make_record(r) for r in (rules or [])]
+        self._episodes = [Record(r) for r in (episodes or [])]
+        self._facts = [Record(r) for r in (facts or [])]
+        self._rules = [Record(r) for r in (rules or [])]
         self.fetch_calls: list[tuple] = []
 
     async def fetchval(self, query: str, *args: object):
@@ -2631,7 +2611,7 @@ class _InspectEntityPool(_InspectPool):
         if "FROM public.entities" in query:
             requested = set(args[0])
             return [
-                _make_record({"id": eid, "canonical_name": name})
+                Record({"id": eid, "canonical_name": name})
                 for eid, name in self._entities.items()
                 if eid in requested
             ]
@@ -2705,10 +2685,10 @@ class _GetFactPool:
         got = str(args[0]) if args else None
         if "WHERE supersedes_id" in query:
             if self._superseder_id is not None and got == wanted:
-                return _make_record({"id": self._superseder_id})
+                return Record({"id": self._superseder_id})
             return None
         if "FROM facts WHERE id" in query and got == wanted:
-            return _make_record(self._fact)
+            return Record(self._fact)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -3254,11 +3234,11 @@ class _CountingPool:
     """
 
     def __init__(self, **rows: list[dict]) -> None:
-        self._rows = {rel: [_make_record(r) for r in rs] for rel, rs in rows.items()}
+        self._rows = {rel: [Record(r) for r in rs] for rel, rs in rows.items()}
         self.count_calls: list[tuple[str, tuple]] = []
         self.fetch_calls: list[tuple[str, tuple]] = []
 
-    def _for(self, query: str) -> list[_Record]:
+    def _for(self, query: str) -> list[Record]:
         m = _RELATION_RE.search(query)
         return self._rows.get(m.group(1) if m else "", [])
 
@@ -3266,7 +3246,7 @@ class _CountingPool:
         self.count_calls.append((query, args))
         return len(self._for(query))
 
-    async def fetch(self, query: str, *args: object) -> list[_Record]:
+    async def fetch(self, query: str, *args: object) -> list[Record]:
         self.fetch_calls.append((query, args))
         return self._for(query)[: int(args[-1])]
 

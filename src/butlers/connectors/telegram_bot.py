@@ -142,16 +142,20 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
 }
 
 
-def _gap_interview_toast(data: dict[str, Any], answer: str) -> str:
-    """Map a resolve-endpoint response to a short owner-facing toast."""
+def _gap_interview_outcome(data: dict[str, Any], answer: str) -> tuple[str, bool]:
+    """Map a resolve-endpoint response to ``(toast, settled)``.
+
+    ``settled`` means the question can no longer take an answer (applied,
+    already answered, or expired), so its buttons should be retired.
+    """
     status = data.get("status") if isinstance(data, dict) else None
     if status == "applied":
-        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓")
+        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓"), True
     if status == "already_answered":
-        return "Already recorded — thanks!"
+        return "Already recorded — thanks!", True
     if status == "error" and data.get("error") == "unknown_or_expired_interview":
-        return "This confirmation has expired."
-    return "Recorded ✓"
+        return "This confirmation has expired.", True
+    return "Recorded ✓", False
 
 
 _MEDIA_TYPE_LABELS: dict[str, str] = {
@@ -1436,37 +1440,89 @@ class TelegramBotConnector:
 
         interview_id, answer = parsed
         callback_query_id = str(callback_query.get("id", ""))
-        toast = await self._apply_gap_interview_answer(interview_id, answer)
+        settled = False
+        if await self._is_primary_owner_callback(callback_query):
+            toast, settled = await self._apply_gap_interview_answer(interview_id, answer)
+        else:
+            # The unsigned cgi: payload only carries authority from the owner chat.
+            logger.warning("gap-interview callback from a non-owner sender ignored")
+            toast = ""
         if callback_query_id:
             await self._answer_callback_query(callback_query_id, toast)
+        if settled:
+            await self._settle_gap_interview_message(callback_query, toast)
         return True
 
-    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> str:
-        """POST the answer to the chronicler API; return an owner-facing toast."""
-        if not self._config.internal_api_url:
+    async def _settle_gap_interview_message(
+        self, callback_query: dict[str, Any], outcome: str
+    ) -> None:
+        """Stamp the outcome onto the question and retire its buttons.
+
+        Failures keep the buttons so the owner can retry; only a settled answer
+        reaches here. Best-effort: the answer is already persisted, so if the
+        text edit fails we still try to strip the keyboard alone.
+        """
+        message = callback_query.get("message")
+        if not isinstance(message, dict):
+            return
+        chat = message.get("chat")
+        message_id = message.get("message_id")
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if chat_id is None or not isinstance(message_id, int):
+            return
+        question = message.get("text")
+        text = f"{question}\n\n{outcome}" if isinstance(question, str) and question else outcome
+        try:
+            # editMessageText without reply_markup also drops the inline keyboard.
+            await edit_telegram_message_text(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+                text=text,
+            )
+            return
+        except Exception:  # noqa: BLE001 -- answer already persisted
+            logger.warning("Failed to edit settled gap-interview prompt", exc_info=True)
+        try:
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- answer already persisted
+            logger.warning("Failed to remove gap-interview keyboard", exc_info=True)
+
+    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> tuple[str, bool]:
+        """POST the answer to the chronicler API; return ``(toast, settled)``."""
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
             logger.warning(
-                "gap-interview callback received but CONNECTOR_INTERNAL_API_URL is unset; "
-                "cannot apply (interview_id=%s)",
+                "gap-interview callback received without CONNECTOR_INTERNAL_API_URL or the "
+                "connector callback credential; cannot apply (interview_id=%s)",
                 interview_id,
             )
-            return "Couldn't record that — please use the dashboard."
+            return "Couldn't record that — please use the dashboard.", False
 
         url = f"{self._config.internal_api_url.rstrip('/')}/api/chronicler/gap-interview/resolve"
         try:
             resp = await self._http_client.post(
-                url, json={"interview_id": interview_id, "answer": answer}
+                url,
+                headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token},
+                json={"interview_id": interview_id, "answer": answer},
             )
         except Exception as exc:  # noqa: BLE001 — network hiccup ⇒ graceful toast
             logger.warning("gap-interview resolve POST failed: %s", exc)
-            return "Couldn't record that right now — please try from the dashboard."
+            return "Couldn't record that right now — please try from the dashboard.", False
         if resp.status_code >= 400:
             logger.warning("gap-interview resolve HTTP %d for %s", resp.status_code, interview_id)
-            return "Couldn't record that right now — please try from the dashboard."
+            return "Couldn't record that right now — please try from the dashboard.", False
         try:
             data = resp.json()
         except Exception:  # noqa: BLE001
             data = {}
-        return _gap_interview_toast(data, answer)
+        return _gap_interview_outcome(data, answer)
 
     async def _answer_callback_query(self, callback_query_id: str, text: str) -> None:
         """Acknowledge a callback query (clears the button's loading spinner)."""

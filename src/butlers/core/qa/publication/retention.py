@@ -52,7 +52,8 @@ _HEADER = re.compile(rb"([0-9a-f]{40}) (blob|tree|commit) ([0-9]{1,9})\n")
 #: Framing allowance over the export's own size bound.
 _MAX_ENCODED_BYTES = MAX_EXPORT_BYTES + (1 << 20)
 
-#: How long a terminal attempt's export bytes are kept after ``closed_at``; the prune query's
+#: How long a terminal attempt's export bytes are kept after ``closed_at`` (database time,
+#: stamped by core_305's trigger so no writer can backdate it); the prune query's
 #: only source.  The core_301 guard enforces it as a floor (``interval '30 days'``): a shorter
 #: value here selects rows the guard refuses and the batch fails, so change both together.
 EXPORT_RETENTION = timedelta(days=30)

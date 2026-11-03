@@ -10,6 +10,7 @@
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
+- [Off-Node Backup Copy](offsite-backup-copy.md) — encrypted restic copy of the dumps to the owner's tailnet device (disabled by default; owner-gated steps)
 - [Data Retention](data-retention.md) — per-table retention decisions, opt-in pruners
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff

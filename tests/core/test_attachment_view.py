@@ -64,7 +64,7 @@ async def test_attachment_view_returns_image_content_block_for_image(blob_store)
     data = b"\x89PNG\r\n\x1a\n" + b"x" * 1000
     storage_ref = await blob_store.put(data, content_type="image/png", filename="test.png")
 
-    result = await attachment_view(blob_store, storage_ref)
+    result = await attachment_view(blob_store, storage_ref, origin_butler=TEST_BUTLER)
 
     assert isinstance(result, Image)
     content = result.to_image_content()
@@ -108,7 +108,7 @@ async def test_attachment_view_refuses_over_cap_blob(blob_store):
     large_data = b"x" * (MAX_ATTACHMENT_SIZE_BYTES + 1)
     storage_ref = await blob_store.put(large_data, content_type="image/jpeg")
 
-    result = await attachment_view(blob_store, storage_ref)
+    result = await attachment_view(blob_store, storage_ref, origin_butler=TEST_BUTLER)
 
     assert isinstance(result, dict)
     assert result["status"] == "refused"
@@ -123,7 +123,7 @@ async def test_attachment_view_refuses_non_image_media_type(blob_store):
     """A non-image attachment (e.g. a PDF) is refused, not silently served as an image."""
     storage_ref = await blob_store.put(b"%PDF-1.4 fake", content_type="application/pdf")
 
-    result = await attachment_view(blob_store, storage_ref)
+    result = await attachment_view(blob_store, storage_ref, origin_butler=TEST_BUTLER)
 
     assert isinstance(result, dict)
     assert result["status"] == "refused"
@@ -131,17 +131,70 @@ async def test_attachment_view_refuses_non_image_media_type(blob_store):
 
 
 async def test_attachment_view_refuses_missing_blob_store():
-    result = await attachment_view(None, "s3://test-butlers-blobs/testbutler/2026/01/01/x.jpg")
+    result = await attachment_view(
+        None, "s3://test-butlers-blobs/testbutler/2026/01/01/x.jpg", origin_butler=TEST_BUTLER
+    )
     assert result["status"] == "refused"
     assert result["reason"] == "blob_store_unavailable"
 
 
 async def test_attachment_view_refuses_not_found(blob_store):
     result = await attachment_view(
-        blob_store, f"s3://{TEST_BUCKET}/{TEST_BUTLER}/2026/01/01/nope.jpg"
+        blob_store,
+        f"s3://{TEST_BUCKET}/{TEST_BUTLER}/2026/01/01/nope.jpg",
+        origin_butler=TEST_BUTLER,
     )
     assert result["status"] == "refused"
     assert result["reason"] == "not_found"
+
+
+@pytest.mark.parametrize(
+    ("ref_owner", "origin_butler", "expected"),
+    [
+        ("finance", TEST_BUTLER, "attachment_forbidden"),
+        ("connectors", TEST_BUTLER, "image"),
+        (TEST_BUTLER, "", "attachment_forbidden"),
+    ],
+    ids=["other_butler", "connector_prefix", "no_origin"],
+)
+async def test_media_reads_enforce_rfc0016_prefix(
+    blob_store, monkeypatch, ref_owner, origin_butler, expected
+):
+    """attachment_view and get_attachment read only the caller's or connectors' blobs.
+
+    A foreign ref is refused before any fetch, so its bytes never reach the caller.
+    """
+    owner_store = S3BlobStore(
+        bucket=TEST_BUCKET,
+        butler_name=ref_owner,
+        endpoint_url=blob_store.endpoint_url,
+        access_key_id="testing",
+        secret_access_key="testing",
+        region="us-east-1",
+    )
+    image_ref = await owner_store.put(b"\x89PNG\r\n\x1a\nx", content_type="image/png")
+    text_ref = await owner_store.put(b"private", content_type="text/plain")
+    fetched: list[str] = []
+    real_get = blob_store.get
+
+    async def spy_get(storage_ref: str) -> bytes:
+        fetched.append(storage_ref)
+        return await real_get(storage_ref)
+
+    monkeypatch.setattr(blob_store, "get", spy_get)
+
+    view = await attachment_view(blob_store, image_ref, origin_butler=origin_butler)
+    inline = await get_attachment(blob_store, text_ref, origin_butler=origin_butler)
+
+    if expected == "image":
+        assert isinstance(view, Image)
+        assert base64.b64decode(inline["data_base64"]) == b"private"
+        return
+    for result in (view, inline):
+        assert result["status"] == "refused"
+        assert result["reason"] == expected
+        assert "data_base64" not in result and "data" not in result
+    assert fetched == []
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +206,7 @@ async def test_get_attachment_never_returns_data_base64_over_inline_cap(blob_sto
     """get_attachment refuses (never truncates/dumps) once base64 would exceed the cap."""
     just_under = b"x" * (MAX_INLINE_BASE64_BYTES // 2)  # well under the 64KB cap
     ref_small = await blob_store.put(just_under, content_type="application/octet-stream")
-    small_result = await get_attachment(blob_store, ref_small)
+    small_result = await get_attachment(blob_store, ref_small, origin_butler=TEST_BUTLER)
     assert "data_base64" in small_result
     assert len(small_result["data_base64"]) <= MAX_INLINE_BASE64_BYTES
 
@@ -161,7 +214,7 @@ async def test_get_attachment_never_returns_data_base64_over_inline_cap(blob_sto
     # this used to return several hundred KB of base64 JSON; now it refuses.
     over_cap = b"x" * (MAX_INLINE_BASE64_BYTES * 4)
     ref_large = await blob_store.put(over_cap, content_type="application/octet-stream")
-    large_result = await get_attachment(blob_store, ref_large)
+    large_result = await get_attachment(blob_store, ref_large, origin_butler=TEST_BUTLER)
     assert large_result["status"] == "refused"
     assert "data_base64" not in large_result
 

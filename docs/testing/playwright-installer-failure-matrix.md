@@ -29,7 +29,8 @@ and a sudo boundary shim. A changed cap is provisional and source-derived:
 healthy current p95 calibration and long-tail measurements remain unearned.
 
 Local focused command:
-`uv run --no-sync pytest tests/contracts/test_ci_test_targets.py::test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift -q --tb=short -n 0`
+`uv run --no-sync pytest tests/contracts/test_playwright_installer.py -q --tb=short -n 0`
+(moved from the retired `test_ci_test_targets.py` in bu-29wkwj.3; each lifecycle mode is now its own parametrized case)
 passed all fourteen original lifecycle modes on the original correction tree. The recovery
 change extends this same node to twenty lifecycle modes and input/configuration negatives;
 new exact-head receipts belong to its PR. The reservation

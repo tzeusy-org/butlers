@@ -3342,3 +3342,104 @@ async def test_create_rule_high_risk_tool_is_validated_like_the_mcp_tool(app, ov
         resp = await _post_rule(app, {**_RULE_BODY, **overrides, "butler": "general"})
     assert resp.status_code == 400
     assert fragment in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Standing-reply template drafts are owner-only and never activatable (bu-jv1moa.10)
+# ---------------------------------------------------------------------------
+
+
+async def test_reply_template_drafts_are_owner_session_only_and_never_active(app):
+    """REQ-module-approvals-007: only the owner's dashboard session authors drafts.
+
+    The shared domain app authenticates with an API key and no dashboard session,
+    standing in for a runtime/session caller: it is refused before any database
+    read.  The owner session can create a draft but cannot submit ``active`` and
+    gets 404 for a forged draft id.
+    """
+    from types import SimpleNamespace
+
+    from tests.api.auth_helpers import create_authenticated_domain_app
+
+    friend = uuid4()
+    draft_row = {
+        "id": uuid4(),
+        "tool_name": "telegram_send_message",
+        "content_templates": {
+            "text": [{"text": "On my way, there by "}, {"slot": "at", "type": "time"}]
+        },
+        "recipient_entity_ids": [friend],
+        "description": "",
+        "status": "draft",
+        "revision": 1,
+        "idempotency_key": "k1",
+        "created_at": _NOW,
+        "updated_at": _NOW,
+        "revoked_at": None,
+    }
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[{"id": friend}])
+    conn.fetchrow = AsyncMock(return_value=draft_row)
+    conn.fetchval = AsyncMock(side_effect=lambda sql, *a: True if "to_regclass" in sql else False)
+
+    class _Acquire:
+        async def __aenter__(self):
+            return conn
+
+        async def __aexit__(self, *a):
+            return False
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=lambda: _Acquire())
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["messenger"]
+    mock_db.pool.return_value = pool
+    body = {
+        "butler": "messenger",
+        "tool_name": "telegram_send_message",
+        "templates": {"text": "On my way, there by {at:time}"},
+        "recipient_entity_ids": [str(friend)],
+        "idempotency_key": "k1",
+    }
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        refused = [
+            await client.post("/api/approvals/reply-templates", json=body),
+            await client.get("/api/approvals/reply-templates"),
+            await client.get(f"/api/approvals/reply-templates/{uuid4()}"),
+        ]
+    assert [r.status_code for r in refused] == [403, 403, 403]
+    assert refused[0].json()["detail"]["error"] == "owner_dashboard_session_required"
+    mock_db.pool.assert_not_called()
+
+    class _OwnerSession:
+        async def authorize(self, **_kwargs):
+            return SimpleNamespace(method="session", expires_at=None, session_digest="digest")
+
+    owner_app = create_authenticated_domain_app()
+    owner_app.state.owner_auth_service = _OwnerSession()
+    owner_app.dependency_overrides[get_db] = lambda: mock_db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=owner_app), base_url="http://test"
+    ) as client:
+        activate = await client.post(
+            "/api/approvals/reply-templates", json={**body, "active": True}
+        )
+        assert activate.status_code == 422
+        conn.fetchrow.assert_not_awaited()
+
+        created = await client.post("/api/approvals/reply-templates", json=body)
+        assert created.status_code == 200
+        data = created.json()["data"]
+        assert data["state"] == "draft"
+        assert data["templates"] == {"text": "On my way, there by {at:time}"}
+        assert "active" not in data
+
+        forged = await client.post(
+            f"/api/approvals/reply-templates/{uuid4()}/preview",
+            json={"tool_name": "telegram_send_message", "tool_args": {"chat_id": "1"}},
+        )
+        assert forged.status_code == 404

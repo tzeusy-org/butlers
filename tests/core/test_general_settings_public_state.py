@@ -17,11 +17,6 @@ from butlers.core.general_settings import load_general_settings, resolve_general
 
 docker_available = shutil.which("docker") is not None
 
-_CREATE_STATE = (
-    "CREATE TABLE IF NOT EXISTS {}.state (key TEXT PRIMARY KEY, value JSONB NOT NULL, "
-    "updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
-)
-
 
 def _pool(stored):
     pool = MagicMock()
@@ -58,27 +53,26 @@ async def test_resolve_general_timezone_and_owner_zoneinfo_use_the_qualified_rea
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.parametrize("schema", ["finance", "health"])
 async def test_butler_pool_with_its_own_state_still_resolves_the_owner_zone(
-    provisioned_postgres_pool, schema: str
+    db, schema: str
 ) -> None:
     """Both tables hold ``settings.general``; only ``public.state`` is the owner's."""
-    async with provisioned_postgres_pool(schema=schema) as pool:
-        await pool.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
-        await pool.execute(_CREATE_STATE.format("public"))
-        await pool.execute(_CREATE_STATE.format(schema))
-        await pool.execute(
-            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
-            {"timezone": "Europe/Berlin", "currency": "EUR"},
-        )
-        await pool.execute(
-            f"INSERT INTO {schema}.state (key, value) VALUES ('settings.general', $1)",
-            {"timezone": "America/Los_Angeles", "currency": "JPY"},
-        )
+    # The core chain in a butler schema creates <schema>.state and public.state (core_087).
+    pool = await db("core", schemas={"core": schema}, schema=schema)
+    await pool.execute(
+        "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
+        {"timezone": "Europe/Berlin", "currency": "EUR"},
+    )
+    await pool.execute(
+        f"INSERT INTO {schema}.state (key, value) VALUES ('settings.general', $1)",
+        {"timezone": "America/Los_Angeles", "currency": "JPY"},
+    )
 
-        assert await resolve_general_timezone(pool) == "Europe/Berlin"
-        settings = await load_general_settings(pool)
-        assert settings["timezone"] == "Europe/Berlin"
-        assert settings["currency"] == "EUR"
-        assert (await owner_zoneinfo(pool)).key == "Europe/Berlin"
+    assert await resolve_general_timezone(pool) == "Europe/Berlin"
+    settings = await load_general_settings(pool)
+    assert settings["timezone"] == "Europe/Berlin"
+    assert settings["currency"] == "EUR"
+    assert (await owner_zoneinfo(pool)).key == "Europe/Berlin"
