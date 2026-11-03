@@ -16,6 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -76,24 +78,6 @@ def _blob_store(content: str, *, encoding: str = "utf-8") -> AsyncMock:
     return blob_store
 
 
-def _make_pool(
-    *, fetchrow_return=None, fetchval_return=None, execute_return=None, fetch_return=None
-):
-    """Build a minimal async mock pool.
-
-    fetch_return: return value for pool.fetch() (used by _check_duplicates_batch).
-      - None (default) → empty list, meaning no duplicates found.
-      - A non-empty list of rows → those (merchant, amount, posted_at) tuples are
-        treated as existing duplicates and the corresponding batch rows are skipped.
-    """
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=fetchrow_return)
-    pool.fetchval = AsyncMock(return_value=fetchval_return)
-    pool.execute = AsyncMock(return_value=execute_return or "INSERT 0 1")
-    pool.fetch = AsyncMock(return_value=fetch_return if fetch_return is not None else [])
-    return pool
-
-
 # ---------------------------------------------------------------------------
 # 5.1  Core import_transactions behaviour
 # ---------------------------------------------------------------------------
@@ -106,7 +90,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -117,7 +101,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -127,7 +111,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(AMEX_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -137,7 +121,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CAPITAL_ONE_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -147,7 +131,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(GENERIC_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -157,7 +141,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -169,7 +153,7 @@ class TestImportTransactionsPipeline:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -196,7 +180,7 @@ class TestImportTransactionsPipeline:
         content = "\n".join(lines)
 
         blob_store = _blob_store(content)
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
         )
@@ -208,7 +192,7 @@ class TestImportTransactionsPipeline:
         blob_store = _blob_store(content)
         from butlers.tools.finance.data_import import import_transactions
 
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         result = await import_transactions(
             pool,
             blob_store=blob_store,
@@ -229,7 +213,7 @@ class TestImportTransactionsPipeline:
             inserted_rows.append(args)
             return "INSERT 0 1"
 
-        pool = _make_pool()
+        pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
         pool.execute = AsyncMock(side_effect=fake_execute)
         # No duplicate found
         pool.fetchrow = AsyncMock(return_value=None)
@@ -257,7 +241,7 @@ class TestImportDeduplication:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool(fetchval_return=False)
+        pool = fake_pool(fetchrow=None, fetchval=False, fetch=[], execute="INSERT 0 1")
         pool.execute = AsyncMock()
 
         # Patch _check_duplicates_batch to report all rows as duplicates.
@@ -279,7 +263,7 @@ class TestImportDeduplication:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool(fetchrow_return=None, fetchval_return=False)
+        pool = fake_pool(fetchrow=None, fetchval=False, fetch=[], execute="INSERT 0 1")
         pool.execute = AsyncMock()
 
         result = await import_transactions(
@@ -511,7 +495,7 @@ class TestPostImportTriggers:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = _make_pool(fetchval_return=False)
+        pool = fake_pool(fetchrow=None, fetchval=False, fetch=[], execute="INSERT 0 1")
         pool.execute = AsyncMock()
 
         # Report all batch rows as duplicates so imported == 0.

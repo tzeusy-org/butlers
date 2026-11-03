@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.tools.health.diet import _write_to_health_meals, meal_log
 
 _EATEN_AT = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
@@ -38,34 +39,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCM:
-    def __init__(self, value):
-        self._value = value
-
-    async def __aenter__(self):
-        return self._value
-
-    async def __aexit__(self, *args):
-        return False
-
-
-def _make_pool(*, execute_side_effect=None) -> MagicMock:
-    """Build a mock pool wired for both fetchrow (owner entity) and execute (health.meals)."""
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=None)  # no owner entity
-    if execute_side_effect is not None:
-        pool.execute = AsyncMock(side_effect=execute_side_effect)
-    else:
-        pool.execute = AsyncMock(return_value=None)
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)
-    conn.fetchrow = AsyncMock(return_value=None)
-    conn.execute = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=_AsyncCM(None))
-    pool.acquire = MagicMock(return_value=_AsyncCM(conn))
-    return pool
-
-
 # ---------------------------------------------------------------------------
 # _write_to_health_meals unit tests
 # ---------------------------------------------------------------------------
@@ -73,7 +46,7 @@ def _make_pool(*, execute_side_effect=None) -> MagicMock:
 
 async def test_write_to_health_meals_inserts_row_with_ordered_args() -> None:
     """_write_to_health_meals issues the ON CONFLICT INSERT with column-ordered args."""
-    pool = _make_pool()
+    pool = fake_pool(execute=None)
     meal_id = uuid.uuid4()
 
     await _write_to_health_meals(
@@ -102,7 +75,7 @@ async def test_write_to_health_meals_inserts_row_with_ordered_args() -> None:
 
 async def test_write_to_health_meals_nutrition_jsonb() -> None:
     """When nutrition is provided, the INSERT binds a JSON string."""
-    pool = _make_pool()
+    pool = fake_pool(execute=None)
     nutrition = {"calories": 600, "protein_g": 40, "carbs_g": 20, "fat_g": 30}
 
     await _write_to_health_meals(
@@ -127,7 +100,9 @@ async def test_write_to_health_meals_nutrition_jsonb() -> None:
 
 async def test_write_to_health_meals_swallows_postgres_error() -> None:
     """A PostgresError from the INSERT must be caught and logged, not re-raised."""
-    pool = _make_pool(execute_side_effect=asyncpg.exceptions.PostgresError("connection reset"))
+    pool = fake_pool(
+        execute=AsyncMock(side_effect=asyncpg.exceptions.PostgresError("connection reset"))
+    )
 
     # Must not raise
     await _write_to_health_meals(
@@ -155,7 +130,9 @@ async def test_meal_log_health_meals_failure_does_not_raise() -> None:
     that ``_write_to_health_meals`` runs for real, catches the error, and
     ``meal_log`` returns successfully.
     """
-    pool = _make_pool(execute_side_effect=asyncpg.exceptions.PostgresError("disk full"))
+    pool = fake_pool(
+        fetchrow=None, execute=AsyncMock(side_effect=asyncpg.exceptions.PostgresError("disk full"))
+    )
     fact_id = uuid.uuid4()
 
     with (
@@ -181,7 +158,7 @@ async def test_meal_log_stable_meal_id_passed_to_both_surfaces() -> None:
     provides real idempotency on retries: store_fact returns the same fact_id for
     identical content, and health.meals deduplicates on the same id.
     """
-    pool = _make_pool()
+    pool = fake_pool(fetchrow=None)
     fact_id = uuid.uuid4()
     captured_meal_ids: list[uuid.UUID] = []
 
