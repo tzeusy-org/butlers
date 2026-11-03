@@ -204,3 +204,23 @@ def test_unit_groups_require_native_session_host_proof() -> None:
     test_step = next(step for step in steps if step.get("name", "").startswith("Unit tests (group"))
     assert "BUTLERS_REQUIRE_SESSION_HOST_NATIVE" not in test_step.get("env", {})
     assert "continue-on-error" not in test_step and "if" not in test_step
+
+
+def test_unit_native_policy_experiment_is_scoped_and_always_cleaned() -> None:
+    job = _workflow()["jobs"]["check-unit"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    steps = job["steps"]
+    prepare = next(
+        step for step in steps if step.get("name") == "Prove scoped session-host user namespaces"
+    )
+    cleanup = next(
+        step
+        for step in steps
+        if step.get("name") == "Remove scoped session-host user namespace profile"
+    )
+    tests = next(step for step in steps if step.get("name", "").startswith("Unit tests (group"))
+    assert prepare["run"] == "uv run --no-sync python scripts/session_host_ci.py prepare"
+    assert "if" not in prepare and "continue-on-error" not in prepare
+    assert cleanup["if"] == "always()" and "continue-on-error" not in cleanup
+    assert cleanup["run"] == "uv run --no-sync python scripts/session_host_ci.py cleanup"
+    assert steps.index(prepare) < steps.index(tests) < steps.index(cleanup)

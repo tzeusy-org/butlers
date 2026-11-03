@@ -96,6 +96,23 @@ built-in or provider-hosted tool denial proof is claimed. Exact runtime/model/im
 settings tuples still need adversarial tool inventory and provider-wire proofs;
 provider-hosted tools cannot be disabled by host network isolation alone.
 
+The scoped CI-host profile experiment is specific to Noble ABI4 and does not
+establish production deployment policy. It uses Canonical's purpose-built
+[Bubblewrap guidance](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)
+and the [Noble package](https://packages.ubuntu.com/noble-updates/apparmor-profiles),
+version `4.0.1really4.0.1-0ubuntu0.24.04.9`. The helper pins the published package
+SHA256 and exact `bwrap-userns-restrict` member SHA256; the latter also defines the
+necessary `unpriv_bwrap` child restriction. It leaves the global restriction enabled,
+refuses uncertain policy ownership, and removes observed owned policy in the job's
+always cleanup path. No live policy changes run on developer hosts through tests.
+Local helper controls use fake host operations and earn no hosted/AppArmor credit;
+only the exact hosted negative/positive sequence and zero-skip native cases do.
+
+The initial source CI also hit a distinct integration-group Postgres `DiskFull`
+fixture failure. A userns profile cannot repair database disk exhaustion; that
+infra family needs separate bounded handling and the full required checks must
+still succeed before merge.
+
 Production CA/workload identity, key lifecycle/rotation and pin distribution,
 durable replay and restart ledger, fleet admission, authenticated production service,
 runner/broker integration, restricted gateway and deployment, OAuth/Codex/dashboard

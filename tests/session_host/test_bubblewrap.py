@@ -12,6 +12,7 @@ import pytest
 from butlers.session_host.bubblewrap import BubblewrapDomain, ImageFile
 from butlers.session_host.contracts import Refused
 from butlers.session_host.lifecycle import InvocationOwner
+from scripts.session_host_ci import failure_category
 from tests.session_host.test_core import request
 
 _PAYLOAD = r"""
@@ -141,7 +142,9 @@ def native_image(tmp_path_factory):
     # exit31 demonstrates the namespace setup reached it (not a proof pass).
     if probe.returncode != 31:
         _native_unavailable(
-            f"native boundary: namespace preflight refused (exit {probe.returncode})"
+            f"native boundary: namespace preflight refused (exit {probe.returncode}, "
+            f"category={failure_category(probe.stderr)}, "
+            f"stderr_sha256={hashlib.sha256(probe.stderr).hexdigest()})"
         )
     return tuple(
         ImageFile(

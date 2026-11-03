@@ -159,8 +159,21 @@ synthetic static payloads and execute real filesystem/PID namespace isolation an
 cleanup proofs; their local TLS tests use generated synthetic certificates.
 Missing Bubblewrap or a denied namespace preflight fails under hosted `CI=true` or
 that strict flag. A local non-strict skip is setup information, never native evidence.
-Do not weaken AppArmor/seccomp, add privileged fallback, or convert a hosted failure
-to a skip. Report the actual runner/package/kernel boundary and resolve it separately.
+The unit jobs pin Ubuntu24.04 and run a bounded CI-host-only AppArmor experiment.
+The global userns restriction stays1. The helper verifies the published Noble
+`apparmor-profiles` package and purpose-built ABI4 Bubblewrap member by pinned
+SHA256, extracts only that member, and refuses preloaded/conflicting or local
+policy overrides. It loads the `/usr/bin/bwrap` policy with its inseparable
+child-capability-deny companion, never a generic unconfined profile. The exact
+unprivileged synthetic preflight must change from an attributed namespace refusal
+to payload exit31 while generic map-root `unshare` remains denied. Cleanup runs
+with `always()` and removal is observed. An unproven/partial load is quarantined
+as NONPASS rather than removing policy whose ownership is uncertain.
+No global sysctl relaxation, disabled AppArmor/seccomp, privileged fallback or
+hosted skip is permitted. Package/profile verification, setup or cleanup failure
+fails the job; no production policy is installed. Fixture diagnostics expose only
+fixed failure categories and a stderr digest. The primary sources and separate
+integration disk-exhaustion limitation are recorded in the session-host page.
 The unit JUnit evidence must include passing native and TLS cases; no new CI job or
 second broad lane is introduced. The private API and remaining production gates are in
 [session host](../runtime/session-host.md).

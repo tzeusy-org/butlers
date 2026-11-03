@@ -478,7 +478,7 @@ jobs:
 
   check-unit:
     timeout-minutes: 28
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
@@ -503,10 +503,17 @@ jobs:
           cc --version | head -n 1
           openssl version
 
+      - name: Prove scoped session-host user namespaces
+        run: uv run --no-sync python scripts/session_host_ci.py prepare
+
       - name: Unit tests (group ${{ matrix.group }})
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}
         run: uv run python scripts/ci_lanes.py run --lane unit --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}"
+
+      - name: Remove scoped session-host user namespace profile
+        if: always()
+        run: uv run --no-sync python scripts/session_host_ci.py cleanup
 
       - name: Prepare unit group ${{ matrix.group }} duration evidence
         if: always()
