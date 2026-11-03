@@ -146,6 +146,15 @@ async def test_delivered_sends_notify_v1_to_owner_and_records_ref(boundary):
             "Paperwork reminder (bAXAb httpxio): cancel by Tue 3 Nov 2026, tomorrow.",
         ),
         (
+            # A row stored before the tighter sanitizer is re-reduced when rendered.
+            {
+                "kind": "due",
+                "issuer": "call 9123 4567 to avoid penalty",
+                "deadline": {"target_date": "2026-10-28", "days_remaining": 3},
+            },
+            "Paperwork reminder (call to avoid penalty): payment due Wed 28 Oct 2026, in 3 days.",
+        ),
+        (
             {
                 "kind": "expiry",
                 "issuer": None,
@@ -155,7 +164,7 @@ async def test_delivered_sends_notify_v1_to_owner_and_records_ref(boundary):
         ),
         ({"kind": "pay_now", "issuer": "Evil", "deadline": {"target_date": "2026-11-02"}}, None),
     ],
-    ids=["due", "inert_issuer", "no_issuer", "unknown_kind"],
+    ids=["due", "inert_issuer", "phone_in_issuer", "no_issuer", "unknown_kind"],
 )
 async def test_paperwork_deadline_notice_sends_only_a_fixed_template_to_the_owner(
     boundary, job_args, message

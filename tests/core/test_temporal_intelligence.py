@@ -68,6 +68,40 @@ def test_deadline_validation_invalid_raises():
             )
 
 
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("SP Group", "SP Group"),
+        ("Smith & Sons", "Smith & Sons"),
+        ("O'Brien-Lee Insurance", "O'Brien-Lee Insurance"),
+        ("Société Générale", "Société Générale"),
+        # A contact channel (phone, link, email) never survives as something to act on.
+        ("call 9123 4567 to avoid penalty", "call to avoid penalty"),
+        ("+65-9123-4567", None),
+        ("SP Group (6671 7000)", "SP Group"),
+        ("pay at evil.com", "pay at evilcom"),
+        ("https://x.io/pay", "httpsxiopay"),
+        ("help@evil.example", "helpevilexample"),
+        ("SP Group ９１２３ ٤٥٦٧", "SP Group"),
+        ("<b>AXA</b>\n[pay](http://x.io)", "bAXAb payhttpxio"),
+        # A long issuer is cut to 40 characters at a word boundary.
+        (
+            "Inland Revenue Authority of Singapore Collections",
+            "Inland Revenue Authority of Singapore",
+        ),
+        ("A" * 80, "A" * 40),
+        (None, None),
+        (42, None),
+        ("  ...  ", None),
+    ],
+)
+def test_document_deadline_issuer_keeps_only_a_short_name(raw, shown):
+    """Issuer text from an untrusted document is reduced to a name-like token set."""
+    from butlers.core.temporal.document_deadlines import sanitize_issuer
+
+    assert sanitize_issuer(raw) == shown
+
+
 def test_document_deadline_plan_pins_the_template_and_refuses_bad_input():
     """A document deadline is a prompt-free job keyed on (document, kind); bad input refuses."""
     from butlers.core.temporal.document_deadlines import (
