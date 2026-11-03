@@ -68,7 +68,7 @@ OP GET /api/butlers 44b4d9ade975
 OP GET /api/butlers/board 8c402d0a3b7a
 OP GET /api/butlers/{name} cf932cf97998
 OP GET /api/butlers/{name}/activity-feed 39ecf7362f78
-OP GET /api/butlers/{name}/analytics/daily-activity 1e21b85fd80b
+OP GET /api/butlers/{name}/analytics/daily-activity 06c5571e78b9
 OP GET /api/butlers/{name}/analytics/friction 29fb734afef3
 OP GET /api/butlers/{name}/analytics/hourly-activity 44bbaee72ddd
 OP GET /api/butlers/{name}/analytics/latency-stats cc2b77dddd67
@@ -220,6 +220,7 @@ OP GET /api/home/entities/{entity_id} 201db69dbe1b
 OP GET /api/home/maintenance 0b6e56c40750
 OP GET /api/home/places 3121184e9d2b
 OP GET /api/home/safety-watch 022eebc6c393
+OP GET /api/home/settings/presence/owner-entities 1ed414543f3d
 OP GET /api/home/settings/thresholds 70f7d9fbd4d2
 OP GET /api/home/snapshot-status af4687a47b48
 OP GET /api/identity/email-match-rate 5d9b9db172d7
@@ -257,7 +258,7 @@ OP GET /api/memory/entities 9403922a2880
 OP GET /api/memory/entities/{entity_id} 1eba6514ce06
 OP GET /api/memory/episodes 618d9e6432e8
 OP GET /api/memory/episodes/{episode_id} 31bbecd98062
-OP GET /api/memory/facts a53a5b7e85d1
+OP GET /api/memory/facts 1f433a6b635d
 OP GET /api/memory/facts/{fact_id} e5c38b50a85f
 OP GET /api/memory/gaps f457cbbc6276
 OP GET /api/memory/gaps/demand 7b86976af5d7
@@ -529,6 +530,7 @@ OP POST /api/memory/entities/{entity_id}/unarchive c077d38be582
 OP POST /api/memory/episodes/{episode_id}/requeue d06201d9a6d8
 OP POST /api/memory/facts/{fact_id}/confirm 69cc3f2d9687
 OP POST /api/memory/facts/{fact_id}/retract 5ae242e0fe9d
+OP POST /api/memory/facts/{fact_id}/vouch 1a6c55b8af49
 OP POST /api/memory/gaps/{gap_id}/dismiss 550159b8f877
 OP POST /api/memory/reembed 7836b979383e
 OP POST /api/memory/rules/{rule_id}/endorse 9d85f99576fc
@@ -536,6 +538,7 @@ OP POST /api/notifications/ack-failed 5338c3b3047a
 OP POST /api/notifications/{notification_id}/escalate 968f63b9f6db
 OP POST /api/notifications/{notification_id}/retry 8b66dd930f06
 OP POST /api/projections 58c43352cca6
+OP POST /api/projections/{projection_id}/rotate 3a12d90d65bb
 OP POST /api/qa/circuit-breaker/reset 5fb5e25e6746
 OP POST /api/qa/dev/synthetic-findings 7c3867151090
 OP POST /api/qa/force-patrol e061d785d64e
@@ -617,6 +620,7 @@ OP PUT /api/health/research/{research_id} 7dda678096a4
 OP PUT /api/health/symptoms/{symptom_id} c75b6bc0bd80
 OP PUT /api/home/places/{place_id} ef4960199b00
 OP PUT /api/home/safety-watch 38d220541c78
+OP PUT /api/home/settings/presence/owner-entities 18b47fa2054e
 OP PUT /api/memory/retention-policies dcb89fe73a05
 OP PUT /api/oauth/google/accounts/{account_id}/primary 64d2cf46701d
 OP PUT /api/oauth/google/credentials 0b20bb692316
@@ -857,6 +861,7 @@ ROUTE APIRoute GET '/api/home/entities/{entity_id:path}' name=get_entity op=get_
 ROUTE APIRoute GET '/api/home/maintenance' name=list_maintenance op=list_maintenance_api_home_maintenance_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/places' name=list_owner_places op=list_owner_places_api_home_places_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/safety-watch' name=list_safety_watch op=list_safety_watch_api_home_safety_watch_get tags=home schema=True
+ROUTE APIRoute GET '/api/home/settings/presence/owner-entities' name=get_presence_owner_entities op=get_presence_owner_entities_api_home_settings_presence_owner_entities_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/settings/thresholds' name=get_thresholds op=get_thresholds_api_home_settings_thresholds_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/snapshot-status' name=get_snapshot_status op=get_snapshot_status_api_home_snapshot_status_get tags=home schema=True
 ROUTE APIRoute GET '/api/identity/email-match-rate' name=get_email_match_rate op=get_email_match_rate_api_identity_email_match_rate_get tags=identity schema=True
@@ -1156,6 +1161,7 @@ ROUTE APIRoute POST '/api/memory/entities/{entity_id}/unarchive' name=unarchive_
 ROUTE APIRoute POST '/api/memory/episodes/{episode_id}/requeue' name=requeue_episode op=requeue_episode_api_memory_episodes__episode_id__requeue_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/facts/{fact_id}/confirm' name=confirm_fact op=confirm_fact_api_memory_facts__fact_id__confirm_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/facts/{fact_id}/retract' name=retract_fact op=retract_fact_api_memory_facts__fact_id__retract_post tags=memory schema=True
+ROUTE APIRoute POST '/api/memory/facts/{fact_id}/vouch' name=vouch_held_fact op=vouch_held_fact_api_memory_facts__fact_id__vouch_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/gaps/{gap_id}/dismiss' name=dismiss_memory_gap op=dismiss_memory_gap_api_memory_gaps__gap_id__dismiss_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/reembed' name=run_reembed op=run_reembed_api_memory_reembed_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/rules/{rule_id}/endorse' name=endorse_held_rule op=endorse_held_rule_api_memory_rules__rule_id__endorse_post tags=memory schema=True
@@ -1163,6 +1169,7 @@ ROUTE APIRoute POST '/api/notifications/ack-failed' name=ack_failed_notification
 ROUTE APIRoute POST '/api/notifications/{notification_id}/escalate' name=escalate_notification op=escalate_notification_api_notifications__notification_id__escalate_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/notifications/{notification_id}/retry' name=retry_notification op=retry_notification_api_notifications__notification_id__retry_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/projections' name=mint_projection op=mint_projection_api_projections_post tags=projections schema=True
+ROUTE APIRoute POST '/api/projections/{projection_id}/rotate' name=rotate_projection op=rotate_projection_api_projections__projection_id__rotate_post tags=projections schema=True
 ROUTE APIRoute POST '/api/qa/circuit-breaker/reset' name=reset_circuit_breaker op=reset_circuit_breaker_api_qa_circuit_breaker_reset_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/dev/synthetic-findings' name=create_synthetic_finding op=create_synthetic_finding_api_qa_dev_synthetic_findings_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/force-patrol' name=force_patrol op=force_patrol_api_qa_force_patrol_post tags=qa schema=True
@@ -1244,6 +1251,7 @@ ROUTE APIRoute PUT '/api/health/research/{research_id}' name=update_research op=
 ROUTE APIRoute PUT '/api/health/symptoms/{symptom_id}' name=update_symptom op=update_symptom_api_health_symptoms__symptom_id__put tags=health schema=True
 ROUTE APIRoute PUT '/api/home/places/{place_id}' name=update_owner_place op=update_owner_place_api_home_places__place_id__put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/safety-watch' name=upsert_safety_watch op=upsert_safety_watch_api_home_safety_watch_put tags=home schema=True
+ROUTE APIRoute PUT '/api/home/settings/presence/owner-entities' name=put_presence_owner_entities op=put_presence_owner_entities_api_home_settings_presence_owner_entities_put tags=home schema=True
 ROUTE APIRoute PUT '/api/memory/retention-policies' name=update_retention_policies op=update_retention_policies_api_memory_retention_policies_put tags=memory schema=True
 ROUTE APIRoute PUT '/api/oauth/google/accounts/{account_id}/primary' name=set_primary_google_account op=set_primary_google_account_api_oauth_google_accounts__account_id__primary_put tags=oauth schema=True
 ROUTE APIRoute PUT '/api/oauth/google/credentials' name=upsert_google_credentials op=upsert_google_credentials_api_oauth_google_credentials_put tags=oauth schema=True
@@ -1371,6 +1379,7 @@ SCHEMA ApiResponse_Entity_ 3d5529a65599
 SCHEMA ApiResponse_Episode_ 93c681fdc78e
 SCHEMA ApiResponse_ExpireStaleActionsResponse_ 1ebb47ee8a8b
 SCHEMA ApiResponse_ExportResponse_ b2b59c7e18ce
+SCHEMA ApiResponse_FactVouch_ a0245542d094
 SCHEMA ApiResponse_Fact_ 19c9bd5b91c6
 SCHEMA ApiResponse_FleetCaseDetail_ e7c95ac15925
 SCHEMA ApiResponse_FleetHaltAttentionObservation_ 8257b408efa9
@@ -1408,6 +1417,7 @@ SCHEMA ApiResponse_NotificationSummary_ f93c713fd366
 SCHEMA ApiResponse_OwnerPlaceResponse_ 42593605fbe9
 SCHEMA ApiResponse_PermissionSetResponse_ bbc0b29c8c20
 SCHEMA ApiResponse_PermissionsMatrix_ 8dca22714444
+SCHEMA ApiResponse_PresenceOwnerEntitiesResponse_ 3bcdcedaa5ca
 SCHEMA ApiResponse_ProbeAllResponse_ c073da7d79c0
 SCHEMA ApiResponse_ProjectDetail_ 41bfd56c3e2e
 SCHEMA ApiResponse_ProjectionView_ 64e8b26cc857
@@ -1578,8 +1588,9 @@ SCHEMA BlobStorageStatus 6ceaee39dfa6
 SCHEMA BlobStorageTestResult 245626d039e7
 SCHEMA BlurbSegment 0455939842d0
 SCHEMA BoardAggregates fb7726d03672
+SCHEMA BoardHourlyBucket 9ed3902333fa
 SCHEMA BoardResponse 8097dc5fcddc
-SCHEMA BoardRow 00687e544138
+SCHEMA BoardRow 78d07e451570
 SCHEMA Body_snooze_insight_api_switchboard_insights__insight_id__snooze_post b41f2623e87e
 SCHEMA BreakEntry 4967d0ebd302
 SCHEMA BreakThroughClauseCreate 4819c3f4c968
@@ -1717,11 +1728,11 @@ SCHEMA ConnectorRoutingRule dc72eb705b64
 SCHEMA ConnectorRoutingRulesResponse 535bca6cc246
 SCHEMA ConnectorScopeRow f0f96a8c27f4
 SCHEMA ConnectorSettingsUpdateRequest ac0ccf8cec3a
-SCHEMA ConnectorStatsDaily 10de3da1b9ad
-SCHEMA ConnectorStatsHourly b8f4da95adb7
-SCHEMA ConnectorSummary f3cf454c57ad
-SCHEMA ConnectorSummaryResponse 8b9c453c249d
-SCHEMA ConnectorSummaryToday e5d7cf366522
+SCHEMA ConnectorStatsDaily 0ef30dfd029e
+SCHEMA ConnectorStatsHourly 968dede076eb
+SCHEMA ConnectorSummary 03fdba496598
+SCHEMA ConnectorSummaryResponse cb36f60d43be
+SCHEMA ConnectorSummaryToday e30f956cc9f9
 SCHEMA ConsoleResponse 224de954d12b
 SCHEMA ConsolidationStatus 4f287708b615
 SCHEMA ContactFact f85fc146c9ae
@@ -1848,8 +1859,9 @@ SCHEMA ExpiringDocumentModel ea551fdf73b4
 SCHEMA ExpiringDocumentsResponse f72c9027f2e0
 SCHEMA ExportRequest c8aef78925f4
 SCHEMA ExportResponse 18e048fff3c1
-SCHEMA Fact e0887460d59c
+SCHEMA Fact 09aa35aedf1a
 SCHEMA FactReporter f3d0403b438b
+SCHEMA FactVouch 290d06ded71b
 SCHEMA FailureEntry b2a49e785caf
 SCHEMA FanoutRow 25790cdd5e25
 SCHEMA FinanceExpectedSignalModel 50d49052c996
@@ -2098,6 +2110,7 @@ SCHEMA PermissionsMatrix 69eab06b0634
 SCHEMA PreTripActionModel ca7f0085208b
 SCHEMA PredicateTab b88253f822af
 SCHEMA PreferenceEntry 2a25de211be4
+SCHEMA PresenceOwnerEntitiesResponse 263a32cfdb98
 SCHEMA PriorityContactAddRequest e05a70e06178
 SCHEMA PriorityContactAddResponse cb1bab04fc54
 SCHEMA PriorityContactEntry ded0024322ee
