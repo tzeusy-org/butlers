@@ -1292,7 +1292,7 @@
     "fixtures": 0
   },
   "tests/modules/memory/test_consolidation_runs.py": {
-    "create_table": 2,
+    "create_table": 1,
     "fixtures": 0
   },
   "tests/modules/memory/test_entity_credential_anchor_exclusion.py": {
