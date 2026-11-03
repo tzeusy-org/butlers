@@ -181,7 +181,7 @@ async def condition_update(
 
     # Fetch existing condition fact by ID
     row = await pool.fetchrow(
-        "SELECT id, subject, metadata FROM facts"
+        "SELECT id, subject, content, metadata FROM facts"
         " WHERE id = $1 AND predicate = 'condition' AND scope = 'health'",
         cond_uuid,
     )
@@ -201,7 +201,13 @@ async def condition_update(
             new_meta[k] = v
 
     name = new_meta.get("name", "")
-    status = new_meta.get("status", "active")
+    # A status-less row (stripped by the old decay sweep) still states its status in its
+    # content ("<name>: <status>"); keep that rather than defaulting to "active", and always
+    # persist it so the successor is never status-less.
+    if "status" not in new_meta:
+        suffix = (row.get("content") or "").rpartition(": ")[2]
+        new_meta["status"] = suffix if suffix in VALID_CONDITION_STATUSES else "active"
+    status = new_meta["status"]
     content = f"{name}: {status}"
 
     embedding_engine = _get_embedding_engine()
