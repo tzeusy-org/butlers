@@ -45,30 +45,16 @@ async def _apply(pool, fn_name: str) -> None:
         await pool.execute(sql)
 
 
-async def _provision_permissions(pool) -> None:
-    await pool.execute(
-        """
-        CREATE TABLE public.permissions (
-            butler TEXT NOT NULL,
-            permission TEXT NOT NULL,
-            granted BOOLEAN NOT NULL,
-            reason TEXT,
-            updated_at TIMESTAMPTZ,
-            PRIMARY KEY (butler, permission)
-        )
-        """
-    )
-
-
-class _SwitchboardDb:
+def _switchboard_db(pool) -> MagicMock:
     """Minimal dashboard DB manager backed by the real migrated pool."""
 
-    def __init__(self, pool) -> None:
-        self._pool = pool
-
-    def pool(self, name: str):
+    def _pool_for(name: str):
         assert name == "switchboard"
-        return self._pool
+        return pool
+
+    db = MagicMock()
+    db.pool.side_effect = _pool_for
+    return db
 
 
 @pytest.mark.unit
@@ -105,43 +91,41 @@ async def test_upgrade_noops_when_permissions_table_is_absent(provisioned_postgr
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_removes_only_exact_legacy_rows_and_is_idempotent(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _provision_permissions(pool)
-        explicit_grant_at = datetime(2026, 7, 23, 9, 0, tzinfo=UTC)
-        explicit_revoke_at = datetime(2026, 7, 23, 9, 1, tzinfo=UTC)
-        near_match_at = datetime(2026, 7, 23, 9, 2, tzinfo=UTC)
-        await pool.executemany(
-            """
-            INSERT INTO public.permissions (butler, permission, granted, reason, updated_at)
-            VALUES ($1, $2, $3, $4, $5)
-            """,
-            [
-                ("legacy", "spawn", True, _LEGACY_REASON, None),
-                ("grant", "spawn", True, "operator grant", explicit_grant_at),
-                ("revoke", "spawn", False, "operator revoke", explicit_revoke_at),
-                ("near-match", "spawn", True, f"{_LEGACY_REASON} ", near_match_at),
-            ],
-        )
+async def test_upgrade_removes_only_exact_legacy_rows_and_is_idempotent(db) -> None:
+    # core_180's predecessor: the real core_121 seed rows are still present.
+    pool = await db("core", revisions={"core": "core_179"})
+    explicit_grant_at = datetime(2026, 7, 23, 9, 0, tzinfo=UTC)
+    explicit_revoke_at = datetime(2026, 7, 23, 9, 1, tzinfo=UTC)
+    near_match_at = datetime(2026, 7, 23, 9, 2, tzinfo=UTC)
+    await pool.executemany(
+        """
+        INSERT INTO public.permissions (butler, permission, granted, reason, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        [
+            ("legacy", "spawn", True, _LEGACY_REASON, datetime(2026, 7, 23, tzinfo=UTC)),
+            ("grant", "spawn", True, "operator grant", explicit_grant_at),
+            ("revoke", "spawn", False, "operator revoke", explicit_revoke_at),
+            ("near-match", "spawn", True, f"{_LEGACY_REASON} ", near_match_at),
+        ],
+    )
 
-        await _apply(pool, "upgrade")
-        first_rows = await pool.fetch(
-            """
-            SELECT butler, permission, granted, reason, updated_at
-            FROM public.permissions
-            ORDER BY butler
-            """
-        )
-        await _apply(pool, "upgrade")
-        second_rows = await pool.fetch(
-            """
-            SELECT butler, permission, granted, reason, updated_at
-            FROM public.permissions
-            ORDER BY butler
-            """
-        )
+    await _apply(pool, "upgrade")
+    first_rows = await pool.fetch(
+        """
+        SELECT butler, permission, granted, reason, updated_at
+        FROM public.permissions
+        ORDER BY butler
+        """
+    )
+    await _apply(pool, "upgrade")
+    second_rows = await pool.fetch(
+        """
+        SELECT butler, permission, granted, reason, updated_at
+        FROM public.permissions
+        ORDER BY butler
+        """
+    )
 
     expected = [
         ("grant", "spawn", True, "operator grant", explicit_grant_at),
@@ -155,38 +139,37 @@ async def test_upgrade_removes_only_exact_legacy_rows_and_is_idempotent(
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_migrated_api_serializes_inherited_and_explicit_permission_states(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _provision_permissions(pool)
-        await pool.execute("CREATE TABLE public.butler_registry (name TEXT PRIMARY KEY)")
-        await pool.executemany(
-            "INSERT INTO public.butler_registry (name) VALUES ($1)",
-            [("legacy",), ("grant",), ("revoke",)],
-        )
-        await pool.executemany(
-            """
-            INSERT INTO public.permissions (butler, permission, granted, reason, updated_at)
-            VALUES ($1, $2, $3, $4, $5)
-            """,
-            [
-                ("legacy", "spawn", True, _LEGACY_REASON, None),
-                ("grant", "spawn", True, "operator grant", datetime(2026, 7, 23, tzinfo=UTC)),
-                ("revoke", "spawn", False, "operator revoke", datetime(2026, 7, 23, 1, tzinfo=UTC)),
-            ],
-        )
-        await _apply(pool, "upgrade")
+async def test_migrated_api_serializes_inherited_and_explicit_permission_states(db) -> None:
+    pool = await db(
+        "core",
+        "switchboard",
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        schema="switchboard",
+    )
+    await pool.executemany(
+        "INSERT INTO butler_registry (name, endpoint_url) VALUES ($1, 'http://test')",
+        [("legacy",), ("grant",), ("revoke",)],
+    )
+    await pool.executemany(
+        """
+        INSERT INTO public.permissions (butler, permission, granted, reason, updated_at)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        [
+            ("legacy", "spawn", True, _LEGACY_REASON, datetime(2026, 7, 22, tzinfo=UTC)),
+            ("grant", "spawn", True, "operator grant", datetime(2026, 7, 23, tzinfo=UTC)),
+            ("revoke", "spawn", False, "operator revoke", datetime(2026, 7, 23, 1, tzinfo=UTC)),
+        ],
+    )
+    await _apply(pool, "upgrade")
 
-        app = create_app()
-        app.dependency_overrides[get_db] = lambda: _SwitchboardDb(pool)
-        try:
-            async with AsyncClient(
-                transport=ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                response = await client.get("/api/permissions")
-        finally:
-            app.dependency_overrides.clear()
+    app = create_app()
+    app.dependency_overrides[get_db] = lambda: _switchboard_db(pool)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get("/api/permissions")
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 200
     cells = response.json()["data"]["cells"]
