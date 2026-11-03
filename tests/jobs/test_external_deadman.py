@@ -130,6 +130,7 @@ async def test_get_last_deadman_success_normalizes_naive_timestamp():
 
 class HealthyPool:
     def __init__(self):
+        self.in_transaction = False
         self.released = 0
         self.committed = False
         self.existing = None
@@ -161,14 +162,23 @@ class HealthyPool:
 
         return Acquisition()
 
+    def is_in_transaction(self):
+        return self.in_transaction
+
+    async def execute(self, sql):
+        assert self.in_transaction and sql == "SELECT 1"
+        return "SELECT 1"
+
     def transaction(self):
         pool = self
 
         class Transaction:
             async def __aenter__(self):
+                pool.in_transaction = True
                 return self
 
             async def __aexit__(self, kind, *exc):
+                pool.in_transaction = False
                 pool.committed = kind is None
 
         return Transaction()

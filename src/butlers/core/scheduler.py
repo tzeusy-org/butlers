@@ -26,6 +26,7 @@ from opentelemetry import trace
 
 from butlers.config import ScheduleSpec
 from butlers.core.approvals_policy import is_policy_quiet_now
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
 from butlers.core.owner_creation import owner_creation_transaction
@@ -1056,7 +1057,7 @@ async def ensure_module_default_schedule(
     next_run_at = _next_run(cron)
 
     async with pool.acquire() as connection:
-        async with connection.transaction():
+        async with audit_transaction(connection):
             inserted = await connection.fetchrow(
                 """
                 INSERT INTO scheduled_tasks (

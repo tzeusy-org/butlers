@@ -37,6 +37,7 @@ from butlers.connectors.home_assistant_statistics import (
     parse_statistics_change_series,
 )
 from butlers.core.audit import append as append_audit
+from butlers.core.audit_transaction import audit_transaction
 from butlers.credential_store import upsert_owner_entity_info
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 from butlers.roster_imports import roster_module
@@ -1720,7 +1721,7 @@ async def _audit_place(
 async def _place_transaction(pool: Any, decide: Any) -> Any:
     """Run ``decide`` under the registry lock in one transaction; map failures blind."""
     try:
-        async with pool.acquire() as connection, connection.transaction():
+        async with pool.acquire() as connection, audit_transaction(connection):
             await connection.execute(
                 "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
                 _PLACES_LOCK,
