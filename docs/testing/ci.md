@@ -171,8 +171,11 @@ with `always()` and removal is observed. An unproven/partial load is quarantined
 as NONPASS rather than removing policy whose ownership is uncertain.
 No global sysctl relaxation, disabled AppArmor/seccomp, privileged fallback or
 hosted skip is permitted. Package/profile verification, setup or cleanup failure
-fails the job; no production policy is installed. Fixture diagnostics expose only
-fixed failure categories and a stderr digest. The primary sources and separate
+fails the job; no production policy is installed. Native fixture diagnostics expose
+fixed failure categories and a stderr digest. The CI prerequisite additionally logs
+at most the first 512 stderr bytes from its fixed synthetic preflight, preserving
+printable ASCII and replacing control/non-ASCII bytes with question marks. That
+command receives no invocation or provider material. The primary sources and separate
 integration disk-exhaustion limitation are recorded in the session-host page.
 The unit JUnit evidence must include passing native and TLS cases; no new CI job or
 second broad lane is introduced. The private API and remaining production gates are in

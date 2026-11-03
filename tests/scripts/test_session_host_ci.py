@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 import subprocess
 import tarfile
 from pathlib import Path
@@ -223,3 +224,20 @@ def test_lost_owned_profile_observation_refuses_cleanup(host, names):
         ci.cleanup(root)
     assert not any("-R" in args for args in state["calls"])
     assert state["names"] == names
+
+
+def test_unknown_synthetic_preflight_emits_bounded_sanitized_diagnostic_and_refuses(host, capsys):
+    state, root, _, _ = host
+    state["before"] = b"synthetic denial\x1b\n\xff" + b"x" * 700
+    with pytest.raises(ci.Refusal, match="unattributed_native_preflight"):
+        ci.prepare(root)
+    entry = json.loads(capsys.readouterr().out)
+    assert "stderr_preview" in entry
+    assert entry["stderr_preview"] == "synthetic denial???" + "x" * 493
+    assert len(entry["stderr_preview"]) == 512
+    assert entry["stderr_sha256"] == hashlib.sha256(state["before"]).hexdigest()
+    assert entry["category"] == "unknown_preflight_failure"
+    assert not any("apparmor_parser" in args for args in state["calls"])
+    assert not (root / "loaded.json").exists()
+    ci.cleanup(root)
+    assert not any("-R" in args for args in state["calls"])

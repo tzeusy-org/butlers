@@ -36,7 +36,12 @@ int main(void) {
 
 
 class Refusal(Exception):
-    """Fixed categories only; command output never enters an error/log."""
+    """Fixed refusal categories; other command output stays private.
+
+    Fixed synthetic preflight logs separately include a digest and a preview of
+    the first 512 stderr bytes, replacing control/non-ASCII bytes with question marks. Invocation
+    and provider material never enters that command or its diagnostics.
+    """
 
 
 def failure_category(stderr: bytes) -> str:
@@ -45,6 +50,12 @@ def failure_category(stderr: bytes) -> str:
     if b"Creating new namespace failed: Operation not permitted" in stderr:
         return "namespace_denied"
     return "unknown_preflight_failure"
+
+
+def preflight_diagnostic(stderr: bytes) -> str:
+    # Only the fixed synthetic preflight: never invocation/provider material.
+    # Bound bytes before decoding, and replace terminal/control/non-ASCII bytes.
+    return "".join(chr(value) if 32 <= value <= 126 else "?" for value in stderr[:512])
 
 
 def run(arguments: list[str], *, timeout: int = 15) -> subprocess.CompletedProcess:
@@ -180,6 +191,7 @@ def prepare(root: Path) -> None:
                 "native_exit": before.returncode,
                 "category": category,
                 "stderr_sha256": hashlib.sha256(before.stderr).hexdigest(),
+                "stderr_preview": preflight_diagnostic(before.stderr),
                 "global_restriction": 1,
                 "generic_userns": "denied",
             }
@@ -221,6 +233,7 @@ def prepare(root: Path) -> None:
                 if after.returncode == 31
                 else failure_category(after.stderr),
                 "stderr_sha256": hashlib.sha256(after.stderr).hexdigest(),
+                "stderr_preview": preflight_diagnostic(after.stderr),
                 "global_restriction": 1,
                 "generic_userns": "denied",
             }
