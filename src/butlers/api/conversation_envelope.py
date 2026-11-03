@@ -40,22 +40,28 @@ def _build_context_preamble(
     if not recent:
         return ""
 
-    lines = ["## Conversation history"]
+    header = "## Conversation history"
+    turns = []
     for msg in recent:
         role = msg["role"].capitalize()
         content = str(msg["content"]).strip()
         # Truncate very long individual messages
         if len(content) > 500:
             content = content[:497] + "..."
-        lines.append(f"{role}: {content}")
-    lines.append("")  # blank line before new message
+        turns.append(f"{role}: {content}")
 
-    preamble = "\n".join(lines)
+    # Trailing "" leaves a blank line before the new message.
+    preamble = "\n".join([header, *turns, ""])
+    if len(preamble) <= _MAX_CONTEXT_CHARS:
+        return preamble
 
-    # Truncate the whole preamble if it exceeds the limit
-    if len(preamble) > _MAX_CONTEXT_CHARS:
-        preamble = preamble[-_MAX_CONTEXT_CHARS:]
-
+    # Over budget: drop the oldest whole turns (never a partial, role-unlabelled
+    # line) and say so, so the consumer knows earlier context exists but is absent.
+    for omitted in range(1, len(turns) + 1):
+        marker = f"[Earlier conversation history omitted: {omitted} older message(s) not shown.]"
+        preamble = "\n".join([header, marker, *turns[omitted:], ""])
+        if len(preamble) <= _MAX_CONTEXT_CHARS:
+            break
     return preamble
 
 
