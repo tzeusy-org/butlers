@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from collections.abc import AsyncIterator
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -37,18 +36,11 @@ pytestmark = [
 ]
 
 
-async def _bare_pool(fresh_db, *chains: str, min_size: int, max_size: int) -> asyncpg.Pool:
-    # Deliberately no JSONB codec: delegation_ledger binds pre-serialized JSON text
-    # into ``$8::jsonb``, and the ``metadata->>'origin_key'`` lookups below read it.
-    url = await asyncio.to_thread(fresh_db, *chains)
-    return await asyncpg.create_pool(url, min_size=min_size, max_size=max_size)
-
-
 @pytest.fixture
-async def ledger_pool(fresh_db) -> AsyncIterator[asyncpg.Pool]:
-    p = await _bare_pool(fresh_db, "core", min_size=1, max_size=3)
-    yield p
-    await p.close()
+async def ledger_pool(db) -> asyncpg.Pool:
+    # Production-shaped pool (JSONB codec registered), so the
+    # ``metadata->>'origin_key'`` lookups below see what a live butler writes.
+    return await db("core")
 
 
 def _origin_key_lookup(pool: asyncpg.Pool, asking_butler: str, origin_key: str) -> Any:
@@ -100,6 +92,8 @@ async def test_successful_dispatch_records_routed_row_with_origin_key(
     assert row["status"] == "routed"
     assert row["asking_butler"] == "relationship"
     assert row["target_butler"] == "finance"
+    # Stored as a JSON object, not a double-encoded string scalar (bu-yuuk69).
+    assert row["metadata"] == {"origin_key": origin_key, "seed": "birthday_gift_budget_ask"}
 
     # The exact dedup lookup the briefing seed performs finds this row.
     found_id = await _origin_key_lookup(ledger_pool, "relationship", origin_key)
@@ -175,14 +169,10 @@ async def test_route_failure_records_failed_row_not_routed(ledger_pool: asyncpg.
 
 
 @pytest.fixture
-async def gift_ask_pool(fresh_db) -> AsyncIterator[asyncpg.Pool]:
+async def gift_ask_pool(db) -> asyncpg.Pool:
     # min/max > 1 so both concurrent job runs get their own connection -- the
     # lock must be doing the serializing, not pool exhaustion.
-    p = await _bare_pool(
-        fresh_db, "core", "memory", "relationship", "contacts", min_size=2, max_size=5
-    )
-    yield p
-    await p.close()
+    return await db("core", "memory", "relationship", "contacts", min_size=2, max_size=5)
 
 
 async def test_concurrent_runs_dispatch_at_most_one_ask(
