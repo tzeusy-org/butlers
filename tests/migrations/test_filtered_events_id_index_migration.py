@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -16,22 +15,14 @@ from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, load_migration, migration_db_name
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
 
-def _load_migration(revision, filename):
-    path = Path(__file__).resolve().parents[2] / f"alembic/versions/core/{filename}"
-    spec = importlib.util.spec_from_file_location(revision, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _rerun(connection, revision, filename):
-    migration = _load_migration(revision, filename)
+    path = Path(__file__).resolve().parents[2] / f"alembic/versions/core/{filename}"
+    migration = load_migration(path, revision)
     context = MigrationContext.configure(connection)
     with context.begin_transaction(), patch.object(migration, "op", Operations(context)):
         migration.upgrade()

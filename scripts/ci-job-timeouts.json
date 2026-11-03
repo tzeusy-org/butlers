@@ -409,22 +409,6 @@
       "state": "provisional source-derived bound for a sparse checkout plus a few Actions API pages and cancels (bu-29wkwj.16); current calibration unknown",
       "sample_source": "none; local dry run against the live repo took seconds",
       "p95_s": null
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
-      "job": "check",
-      "installed_timeout_minutes": 3,
-      "state": "provisional source-derived bound for a one-line mirror of alls-green (bu-29wkwj.3 compatibility adapter); no checkout or install",
-      "sample_source": "none; same envelope as alls-green",
-      "p95_s": null
-    },
-    {
-      "workflow": ".github/workflows/ci.yml",
-      "job": "frontend",
-      "installed_timeout_minutes": 3,
-      "state": "provisional source-derived bound for a one-line mirror of alls-green (bu-29wkwj.3 compatibility adapter); no checkout or install",
-      "sample_source": "none; same envelope as alls-green",
-      "p95_s": null
     }
   ],
   "tests": [

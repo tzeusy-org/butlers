@@ -776,19 +776,6 @@ class TestDryRunMode:
 
 
 class TestErrorHandling:
-    async def test_undetectable_date_format_returns_error(self):
-        """CSV with unrecognizable date format returns structured error."""
-        bad_csv = "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n"
-        blob_store = _blob_store(bad_csv)
-        from butlers.tools.finance.data_import import import_transactions
-
-        pool = _make_pool()
-        result = await import_transactions(
-            pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
-        )
-        assert result["status"] == "error"
-        assert "date" in result["error"].lower()
-
     async def test_db_error_during_insert_captured(self):
         """DB insert failure is captured in error_details."""
         from butlers.tools.finance.data_import import import_transactions

@@ -36,9 +36,6 @@ REQUIRED_WORKLOADS = frozenset(
         "frontend-e2e",
     }
 )
-# Downstream-only mirrors of alls-green for the ruleset's legacy contexts, until the
-# owner switches the required set to alls-green alone.
-ADAPTERS = frozenset({"check", "frontend"})
 NON_SUCCESS_RESULTS = ("failure", "cancelled", "skipped", "", "unknown")
 
 
@@ -61,7 +58,7 @@ def fan_in_is_complete(workflow: dict) -> bool:
         len(needs) == len(set(needs))
         and set(needs) == REQUIRED_WORKLOADS
         and all(name in jobs for name in needs)
-        and set(jobs) - {FAN_IN} - ADAPTERS == REQUIRED_WORKLOADS
+        and set(jobs) - {FAN_IN} == REQUIRED_WORKLOADS
         and str(expected) == str(len(needs))
     )
 
@@ -115,7 +112,7 @@ def test_no_workload_can_be_skipped_or_soft_failed_by_configuration() -> None:
 
     for name, job in jobs.items():
         # Any job-level condition (`if: false`, a route output) can skip a workload.
-        if name != FAN_IN and name not in ADAPTERS:
+        if name != FAN_IN:
             assert "if" not in job, f"{name} has a job-level condition"
         assert "continue-on-error" not in job, f"{name} can soft-fail"
         assert "needs.route" not in json.dumps(job), f"{name} still reads the retired route job"
@@ -175,19 +172,9 @@ def test_fan_in_count_check_is_load_bearing() -> None:
     assert _run_fan_in(json.dumps(needs), run=mutated).returncode == 0
 
 
-@pytest.mark.parametrize("adapter", sorted(ADAPTERS))
-def test_legacy_contexts_only_mirror_the_fan_in(adapter: str) -> None:
-    job = _workflow()["jobs"][adapter]
-    (step,) = job["steps"]
+def test_the_ruleset_script_requires_alls_green_alone() -> None:
+    """The ruleset source of truth names the fan-in as its only required context."""
+    script = (REPO_ROOT / "scripts/setup_main_ruleset.sh").read_text(encoding="utf-8")
+    contexts = re.findall(r'"context":\s*"([^"]+)"', script)
 
-    assert job["needs"] == [FAN_IN]
-    assert job["if"] == "always()"
-    assert step["env"] == {"RESULT": "${{ needs.alls-green.result }}"}
-    for result, code in [("success", 0), *((r, 1) for r in NON_SUCCESS_RESULTS)]:
-        ran = subprocess.run(
-            ["bash", "-e", "-c", step["run"]],
-            env={**os.environ, "RESULT": result},
-            capture_output=True,
-            timeout=10,
-        )
-        assert ran.returncode == code, result
+    assert contexts == [FAN_IN]

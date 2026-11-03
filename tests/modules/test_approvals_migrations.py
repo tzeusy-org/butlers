@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from butlers.testing.migration import load_migration
 
 _MIGRATIONS_DIR = (
     Path(__file__).resolve().parents[2] / "src" / "butlers" / "modules" / "approvals" / "migrations"
 )
-
-
-def _load_migration(filename: str):
-    path = _MIGRATIONS_DIR / filename
-    spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _collect_sqls(mod, fn_name: str = "upgrade") -> list[str]:
@@ -30,7 +22,7 @@ def _collect_sqls(mod, fn_name: str = "upgrade") -> list[str]:
 
 
 def test_initial_approvals_migration_creates_pending_actions_dossier_columns() -> None:
-    mod = _load_migration("001_approvals_tables.py")
+    mod = load_migration(_MIGRATIONS_DIR / "001_approvals_tables.py")
     sqls = _collect_sqls(mod)
 
     # schema-standin-exempt: this asserts on the migration's own SQL text, it
@@ -45,7 +37,7 @@ def test_initial_approvals_migration_creates_pending_actions_dossier_columns() -
 
 
 def test_approvals_repair_migration_adds_missing_dossier_columns() -> None:
-    mod = _load_migration("002_pending_actions_why_evidence.py")
+    mod = load_migration(_MIGRATIONS_DIR / "002_pending_actions_why_evidence.py")
     sqls = _collect_sqls(mod)
     normalized = " ".join(sqls[0].lower().split())
 
@@ -57,13 +49,13 @@ def test_approvals_repair_migration_adds_missing_dossier_columns() -> None:
 
 
 def test_approvals_repair_migration_downgrade_is_noop() -> None:
-    mod = _load_migration("002_pending_actions_why_evidence.py")
+    mod = load_migration(_MIGRATIONS_DIR / "002_pending_actions_why_evidence.py")
 
     assert _collect_sqls(mod, "downgrade") == []
 
 
 def test_fingerprint_v2_migration_backfills_versioned_history_and_suggestions() -> None:
-    mod = _load_migration("003_fingerprint_v2.py")
+    mod = load_migration(_MIGRATIONS_DIR / "003_fingerprint_v2.py")
     normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
 
     assert mod.revision == "approvals_003"
@@ -76,7 +68,7 @@ def test_fingerprint_v2_migration_backfills_versioned_history_and_suggestions() 
 
 def test_decision_dossier_migration_uses_next_safe_revision_and_upgrades_evidence() -> None:
     """The RFC 0021 dossier migration follows the fingerprint-v2 revision."""
-    mod = _load_migration("005_decision_dossier.py")
+    mod = load_migration(_MIGRATIONS_DIR / "005_decision_dossier.py")
     sqls = _collect_sqls(mod)
     normalized = " ".join("\n".join(sqls).lower().split())
 
@@ -92,7 +84,7 @@ def test_decision_dossier_migration_uses_next_safe_revision_and_upgrades_evidenc
 
 def test_approval_push_emissions_migration_reserves_one_row_per_action() -> None:
     """A durable action-id row makes park pushes idempotent across retries."""
-    mod = _load_migration("006_approval_push_emissions.py")
+    mod = load_migration(_MIGRATIONS_DIR / "006_approval_push_emissions.py")
     normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
 
     assert mod.revision == "approvals_006"
@@ -105,7 +97,7 @@ def test_approval_push_emissions_migration_reserves_one_row_per_action() -> None
 
 def test_autonomy_suggestion_action_link_follows_approval_push_revision() -> None:
     """Action deep links are additive and preserve the approvals_006 chain."""
-    mod = _load_migration("007_autonomy_suggestion_action_link.py")
+    mod = load_migration(_MIGRATIONS_DIR / "007_autonomy_suggestion_action_link.py")
     normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
 
     assert mod.revision == "approvals_007"
@@ -117,7 +109,7 @@ def test_autonomy_suggestion_action_link_follows_approval_push_revision() -> Non
 
 def test_action_event_provenance_outlives_terminal_action_retention() -> None:
     """Audit event references validate on insert without blocking parent retention."""
-    mod = _load_migration("008_retain_event_action_provenance.py")
+    mod = load_migration(_MIGRATIONS_DIR / "008_retain_event_action_provenance.py")
     normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
 
     assert mod.revision == "approvals_008"
@@ -130,7 +122,7 @@ def test_action_event_provenance_outlives_terminal_action_retention() -> None:
 
 def test_rule_creator_provenance_outlives_terminal_action_retention() -> None:
     """A retained standing rule cannot block cleanup of its terminal creator action."""
-    mod = _load_migration("009_retain_rule_creator_provenance.py")
+    mod = load_migration(_MIGRATIONS_DIR / "009_retain_rule_creator_provenance.py")
     normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
 
     assert mod.revision == "approvals_009"
@@ -146,7 +138,7 @@ def test_rule_creator_provenance_outlives_terminal_action_retention() -> None:
 
 def test_rule_event_provenance_outlives_rule_retention() -> None:
     """Rule-event references validate on insert without blocking rule retention."""
-    mod = _load_migration("011_retain_event_rule_provenance.py")
+    mod = load_migration(_MIGRATIONS_DIR / "011_retain_event_rule_provenance.py")
     normalized = " ".join("\n".join(_collect_sqls(mod)).lower().split())
 
     assert mod.revision == "approvals_011"
@@ -159,7 +151,7 @@ def test_rule_event_provenance_outlives_rule_retention() -> None:
 
 def test_abandoned_recovery_migration_extends_only_approval_vocabularies() -> None:
     """The durable recovery state and event are additive, with safe rollback guards."""
-    mod = _load_migration("012_abandoned_recovery.py")
+    mod = load_migration(_MIGRATIONS_DIR / "012_abandoned_recovery.py")
     upgrade = " ".join("\n".join(_collect_sqls(mod)).lower().split())
     downgrade = " ".join("\n".join(_collect_sqls(mod, "downgrade")).lower().split())
 
@@ -174,7 +166,7 @@ def test_abandoned_recovery_migration_extends_only_approval_vocabularies() -> No
 
 def test_pending_action_deduplication_migration_follows_abandonment() -> None:
     """Semantic keys must include every owner-decision state at the chain head."""
-    mod = _load_migration("013_pending_action_deduplication_key.py")
+    mod = load_migration(_MIGRATIONS_DIR / "013_pending_action_deduplication_key.py")
     upgrade = " ".join("\n".join(_collect_sqls(mod)).lower().split())
     downgrade = " ".join("\n".join(_collect_sqls(mod, "downgrade")).lower().split())
 

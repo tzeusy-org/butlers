@@ -691,7 +691,9 @@ resources — without invoking a real LLM.
 
 #### Scenario: Startup reaches accepting-connections
 - **WHEN** a `ButlerDaemon` is started via `start()` (which delegates to
-  `lifecycle.run_startup`) against a provisioned database and a mock spawner
+  `lifecycle.run_startup`) against a provisioned database and a fake runtime
+  adapter under the real spawner (no real LLM; the `booted_daemon` kit), or a mock
+  spawner for tests not yet moved to the kit
 - **THEN** startup completes and `daemon._accepting_connections` is `True`
 - **AND** `daemon._started_at` is set
 - **AND** the database pool is connected (`daemon.db.pool` is not `None`)
@@ -757,7 +759,7 @@ authentication and reports a healthy status when the API is up.
   string returned regardless of server state
 
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
-Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
+Fresh full pytest inventory and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
 
 The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
 pull request as a fast gate, distinct from and faster than the integration tier,
@@ -1248,7 +1250,7 @@ Scope: v1-mandatory
 - **AND** no root or peer venv, live deployment, settings, refs, cache or elapsed evidence is modified by PRIMARY
 
 ### Requirement: Composed read-only local pre-push refusal
-The repository SHALL provide an installed read-only pre-push path for its applicable deterministic guards that preserves existing Beads hook behavior and exact Git ref-update input. Actual collection-dependent inventory/budget predicates SHALL require freshly collected real selected items, not planner/cache/count inference. The hook SHALL execute no test bodies, DB/provider/network calls or tracked-tree rewrites. Installation SHALL preserve exact prior common configuration and managed hook bodies/modes, refuse uncomposable custom inputs, and be reversible. The required CI guards and complete terminal merge-group SHALL remain independently authoritative. The original twenty natural-push p95-under30s target SHALL remain mandatory and unearned until measured.
+The repository SHALL provide an installed read-only pre-push path for its applicable deterministic guards that preserves existing Beads hook behavior and exact Git ref-update input. Actual collection-dependent inventory predicates SHALL require freshly collected real selected items, not planner/cache/count inference. The hook SHALL execute no test bodies, DB/provider/network calls or tracked-tree rewrites. Installation SHALL preserve exact prior common configuration and managed hook bodies/modes, refuse uncomposable custom inputs, and be reversible. The required CI guards and complete terminal merge-group SHALL remain independently authoritative. The original twenty natural-push p95-under30s target SHALL remain mandatory and unearned until measured.
 
 ID: REQ-testing-052
 Source: bu-ly3lv5.10 approved A123/B168 R1; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md; AGENTS.md Test Scope Policy
@@ -1281,7 +1283,7 @@ Scope: v1-mandatory
 
 ### Requirement: Condensation requires current executable survivor evidence
 
-Test removal SHALL be governed by review alone. The repository SHALL NOT keep a protected-test inventory, survivor ledger, contract-evolution manifest or deletion guard script, and no required check SHALL refuse a pull request because it removes or weakens tests. A pull request that deletes, moves or renames a test, or weakens one in place by dropping an assertion, parameter case, fixture or marker, SHALL carry a `Tests: +a ~m -d` line in its body, measured from its own collection. For each removed check it SHALL either name the executing survivor that still enforces that behavior at the pull-request head, or state that the behavior itself is intentionally removed or changed by the same pull request. Architecture, wire, privacy, authorization, no-send, retry, idempotency and migration-outcome checks SHALL keep a named executing survivor unless their governing requirement changes in the same pull request. Reviewers SHALL refuse a missing delta line, a survivor that does not exist or does not exercise the removed behavior, and a protected-check loss with neither a survivor nor a requirement change. Matching names, smaller counts and deleted production paths are not survivors on their own. This rule SHALL NOT change the per-lane collected-test budget, test selection, markers, coverage, required checks or the complete terminal merge-group gate.
+Test removal SHALL be governed by review alone. The repository SHALL NOT keep a protected-test inventory, survivor ledger, contract-evolution manifest or deletion guard script, and no required check SHALL refuse a pull request because it removes or weakens tests. A pull request that deletes, moves or renames a test, or weakens one in place by dropping an assertion, parameter case, fixture or marker, SHALL carry a `Tests: +a ~m -d` line in its body, measured from its own collection. For each removed check it SHALL either name the executing survivor that still enforces that behavior at the pull-request head, or state that the behavior itself is intentionally removed or changed by the same pull request. Architecture, wire, privacy, authorization, no-send, retry, idempotency and migration-outcome checks SHALL keep a named executing survivor unless their governing requirement changes in the same pull request. Reviewers SHALL refuse a missing delta line, a survivor that does not exist or does not exercise the removed behavior, and a protected-check loss with neither a survivor nor a requirement change. Matching names, smaller counts and deleted production paths are not survivors on their own. The repository SHALL NOT enforce a collected-test count cap (owner decision 2026-11-03); test growth SHALL be governed by CI duration SLAs, namely the five-minute routine-lane target and job timeouts as they exist today, with an enforced duration gate to follow. This rule SHALL NOT change test selection, markers, coverage, required checks or the complete terminal merge-group gate.
 
 This requirement supersedes the executable survivor-proof admission, the intentional contract-evolution mode and the single bu-mmax8j.8 replay conformance account that it previously defined; none of them remains an admission route or an obligation.
 

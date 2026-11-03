@@ -87,6 +87,15 @@ Scope: v1-mandatory
 - **THEN** the full event is returned from the provider
 - **AND** a 404 response returns `{"status": "not_found", "event": null}`
 
+#### Scenario: Caller arguments cannot open a calendar approval gate
+
+- **WHEN** a session passes an approval-asserting argument (such as `_approval_bypass`) to a calendar mutation tool
+- **THEN** argument validation SHALL reject it, or the ordinary approval gate SHALL still park the call, and no mutation SHALL occur
+- **AND** no calendar tool input schema SHALL declare a parameter that asserts approval
+- **AND** a gated mutation SHALL run without parking only while the approvals executor replays the exact stored call, proven by the execution context for that tool and argument digest
+- **AND** a parked call SHALL store every public parameter, defaults included, so the replay executes exactly what the owner approved
+- **AND** a parked call to a tool that takes `calendar_id` SHALL bind the concrete calendar resolved at park time, so a later default-calendar change cannot redirect the approved effect; an approved row without a bound `calendar_id` SHALL be refused before effect
+
 #### Scenario: Create butler-generated event
 
 - **WHEN** `calendar_create_event` is called with title, start_at, end_at, and optional fields

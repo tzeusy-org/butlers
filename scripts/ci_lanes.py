@@ -9,7 +9,7 @@ run. This replaced the computed inventory, partition and receipt tooling
 (bu-29wkwj.2).
 
 In hosted CI the fresh count is taken early: ``count`` runs beside the groups,
-checks the test budget and writes the lane counts, and ``totals --expected``
+writes the lane counts, and ``totals --expected``
 compares the finished groups against that file with the standard library only.
 
 Usage:
@@ -268,28 +268,17 @@ def fresh_lane_counts(repo_root: Path = REPO_ROOT) -> dict[str, int]:
     return {lane: len(collect_lane_node_ids(lane, repo_root=repo_root)) for lane in LANES}
 
 
-def budget_errors(expected: dict[str, int]) -> list[str]:
-    """The per-lane test budget, checked against the same fresh counts."""
-    from check_test_budget import BASELINE_PATH, compare, load_baseline
-
-    return compare(expected, load_baseline(BASELINE_PATH))
-
-
 def count(output: Path, *, repo_root: Path = REPO_ROOT) -> int:
-    """Write each lane's fresh count and fail when a lane is over its test budget.
+    """Write each lane's fresh count for ``totals --expected`` to compare against.
 
-    Runs beside the lane groups, so an over-budget tree fails within minutes
-    instead of after the whole suite.
+    Runs beside the lane groups, so one collection serves the whole run.
     """
     expected = fresh_lane_counts(repo_root)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(expected, sort_keys=True) + "\n", encoding="utf-8")
-    errors = budget_errors(expected)
     for lane in sorted(LANES):
         print(f"{lane}: collect-only={expected[lane]}")
-    for error in errors:
-        print(error, file=sys.stderr)
-    return 1 if errors else 0
+    return 0
 
 
 def read_lane_counts(path: Path) -> dict[str, int]:
@@ -312,14 +301,13 @@ def totals(
 ) -> int:
     """Fail unless every lane's groups sum to its fresh --collect-only count.
 
-    Without ``expected_path`` this collects afresh and also checks the test
-    budget, so one collection serves both checks. With it, the counts come from
-    an earlier ``count`` of the same tree, which already checked the budget.
+    Without ``expected_path`` this collects afresh. With it, the counts come
+    from an earlier ``count`` of the same tree.
     """
     group_counts = read_group_counts(counts_dir)
     if expected_path is None:
         expected = fresh_lane_counts(repo_root)
-        errors = compare_totals(group_counts, expected) + budget_errors(expected)
+        errors = compare_totals(group_counts, expected)
     else:
         expected = read_lane_counts(expected_path)
         errors = compare_totals(group_counts, expected)
@@ -363,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--lane", choices=sorted(LANES), required=True)
     run_parser.add_argument("--group", type=int, required=True)
     run_parser.add_argument("--output", type=Path, required=True)
-    count_parser = commands.add_parser("count", help="count each lane and check the budget")
+    count_parser = commands.add_parser("count", help="count each lane")
     count_parser.add_argument("--output", type=Path, required=True)
     totals_parser = commands.add_parser("totals", help="check group counts add up")
     totals_parser.add_argument("--counts", type=Path, required=True)

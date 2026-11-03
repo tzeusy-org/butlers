@@ -9,12 +9,13 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark_unit = pytest.mark.unit
 pytestmark_integration = pytest.mark.integration
@@ -24,15 +25,6 @@ _CORE_186_PATH = _REPO_ROOT / "alembic" / "versions" / "core" / "core_186_domain
 _CORE_190_PATH = (
     _REPO_ROOT / "alembic" / "versions" / "core" / "core_190_domain_event_delivery_retry.py"
 )
-
-
-def _load_migration(path: Path, mod_name: str):
-    """Import migration module by file path."""
-    spec = importlib.util.spec_from_file_location(mod_name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +47,7 @@ class TestCore190UpgradeSQLShape:
     @pytest.mark.unit
     def test_upgrade_adds_attempt_count(self) -> None:
         """upgrade() adds attempt_count column."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
+        mod = load_migration(_CORE_190_PATH, "core_190")
         sqls = self._collect_execute_calls(mod)
         joined = "\n".join(sqls)
         assert "ADD COLUMN IF NOT EXISTS attempt_count" in joined
@@ -63,7 +55,7 @@ class TestCore190UpgradeSQLShape:
     @pytest.mark.unit
     def test_upgrade_expands_status_constraint(self) -> None:
         """upgrade() adds 'failed_permanent' to status CHECK constraint."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
+        mod = load_migration(_CORE_190_PATH, "core_190")
         sqls = self._collect_execute_calls(mod)
         joined = "\n".join(sqls)
         assert "failed_permanent" in joined
@@ -77,7 +69,7 @@ class TestCore190UpgradeSQLShape:
     @pytest.mark.unit
     def test_upgrade_creates_status_index(self) -> None:
         """upgrade() creates idx_domain_event_deliveries_status_updated_at."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
+        mod = load_migration(_CORE_190_PATH, "core_190")
         sqls = self._collect_execute_calls(mod)
         joined = "\n".join(sqls)
         assert "idx_domain_event_deliveries_status_updated_at" in joined
@@ -98,7 +90,7 @@ class TestCore190DowngradeSQLShape:
     @pytest.mark.unit
     def test_downgrade_has_update_before_constraint_change(self) -> None:
         """downgrade() reclassifies failed_permanent to failed BEFORE constraint change."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
+        mod = load_migration(_CORE_190_PATH, "core_190")
         sqls = self._collect_execute_calls(mod)
 
         # Find positions of UPDATE and DROP CONSTRAINT
@@ -118,7 +110,7 @@ class TestCore190DowngradeSQLShape:
     @pytest.mark.unit
     def test_downgrade_drops_index(self) -> None:
         """downgrade() drops idx_domain_event_deliveries_status_updated_at."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
+        mod = load_migration(_CORE_190_PATH, "core_190")
         sqls = self._collect_execute_calls(mod)
         joined = "\n".join(sqls)
         assert "DROP INDEX IF EXISTS idx_domain_event_deliveries_status_updated_at" in joined
@@ -126,7 +118,7 @@ class TestCore190DowngradeSQLShape:
     @pytest.mark.unit
     def test_downgrade_drops_attempt_count_column(self) -> None:
         """downgrade() drops attempt_count column."""
-        mod = _load_migration(_CORE_190_PATH, "core_190")
+        mod = load_migration(_CORE_190_PATH, "core_190")
         sqls = self._collect_execute_calls(mod)
         joined = "\n".join(sqls)
         assert "DROP COLUMN IF EXISTS attempt_count" in joined
@@ -146,7 +138,7 @@ class TestCore190DowngradeIntegration:
         """Provision a pool and create domain_event_deliveries table via core_186."""
         async with provisioned_postgres_pool() as pool:
             # Create the tables from core_186 (the base state before core_190)
-            mod_186 = _load_migration(_CORE_186_PATH, "core_186")
+            mod_186 = load_migration(_CORE_186_PATH, "core_186")
             sqls_186: list[str] = []
             mock_op = MagicMock()
             mock_op.execute.side_effect = lambda sql: sqls_186.append(sql)
@@ -165,7 +157,7 @@ class TestCore190DowngradeIntegration:
 
     async def _run_upgrade_190(self, pool) -> None:
         """Run core_190 upgrade against the pool."""
-        mod_190 = _load_migration(_CORE_190_PATH, "core_190")
+        mod_190 = load_migration(_CORE_190_PATH, "core_190")
         sqls_190: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls_190.append(sql)
@@ -176,7 +168,7 @@ class TestCore190DowngradeIntegration:
 
     async def _run_downgrade_190(self, pool) -> None:
         """Run core_190 downgrade against the pool."""
-        mod_190 = _load_migration(_CORE_190_PATH, "core_190")
+        mod_190 = load_migration(_CORE_190_PATH, "core_190")
         sqls_190: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls_190.append(sql)

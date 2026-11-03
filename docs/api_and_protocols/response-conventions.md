@@ -69,6 +69,8 @@ second envelope or a second codec.
   keeps the same envelope but its cursor encodes a page offset, so a cursor from one sort mode is a
   400 in the other.
 - `GET /api/memory/gaps` orders by `asked_at DESC, id DESC`, merged across memory pools.
+  `GET /api/memory/gaps/demand` is not paged: a plain `{data, meta}` list (open gaps and asks
+  per predicate) that names failed pools in `meta.sources_degraded`.
 
 **Offset pagination** (`PaginatedResponse[T]`, `meta.total/offset/limit`) stays on the many list
 endpoints whose pages are random-access with an exact `total` (health and finance registers,

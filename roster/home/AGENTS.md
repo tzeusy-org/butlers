@@ -82,7 +82,7 @@ The following scheduled tasks each have a dedicated skill defining their step-by
 
 - **`weekly-energy-digest`** (Sun 9am): see `.agents/skills/weekly-energy-digest/SKILL.md`
 - **`environment-report`** (Daily 8am): see `.agents/skills/environment-report/SKILL.md`
-- **`device-health-check`** (Every 4 hours): see `.agents/skills/device-health-check/SKILL.md`
+- **`device-health-check`** (Every 4 hours): see `.agents/skills/device-health-check/SKILL.md`. The deterministic job also reconciles owner-condition source `home:device-threshold` (bu-6im1ew: one condition per `{entity_id, battery|offline}` at warning/critical; a non-numeric battery is carried forward, and an unmeasurable HA source or empty snapshot never resolves)
 
 ### Safety sentinel (deterministic, no model)
 

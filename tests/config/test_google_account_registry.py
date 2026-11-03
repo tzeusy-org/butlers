@@ -24,7 +24,7 @@ from butlers.google_account_registry import (
     list_google_accounts,
     set_primary_account,
 )
-from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.fake_pool import FakeConnection, fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -81,25 +81,6 @@ def _make_value_row(value: str) -> MagicMock:
     return row
 
 
-class _FakeConn:
-    def __init__(self):
-        self.fetchrow = AsyncMock(return_value=None)
-        self.fetch = AsyncMock(return_value=[])
-        self.execute = AsyncMock(return_value="")
-
-    def transaction(self):
-        return AsyncCtx(None)
-
-
-def _make_pool(conn: _FakeConn) -> MagicMock:
-    pool = MagicMock()
-    ctx = AsyncMock()
-    ctx.__aenter__ = AsyncMock(return_value=conn)
-    ctx.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=ctx)
-    return pool
-
-
 # ---------------------------------------------------------------------------
 # GoogleAccount._from_row, create, list, get, set_primary
 # ---------------------------------------------------------------------------
@@ -116,87 +97,87 @@ async def test_create_list_get_set_primary() -> None:
     list: primary first. get: primary by default, raises when missing.
     set_primary: returns updated account; raises not-found."""
     # First account is primary
-    conn = _FakeConn()
-    conn.fetchrow = AsyncMock(
-        side_effect=[
-            _make_count_row(0),
-            None,
-            None,
-            _make_id_row(_ENTITY_ID),
-            _make_account_row(is_primary=True),
-        ]
+    pool = fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[
+                _make_count_row(0),
+                None,
+                None,
+                _make_id_row(_ENTITY_ID),
+                _make_account_row(is_primary=True),
+            ]
+        ),
+        execute="",
     )
-    assert (
-        await create_google_account(_make_pool(conn), email="first@gmail.com")
-    ).is_primary is True
+    assert (await create_google_account(pool, email="first@gmail.com")).is_primary is True
 
     # Second account is not primary
-    conn2 = _FakeConn()
     ep = MagicMock()
     ep.__getitem__ = MagicMock(return_value=True)
-    conn2.fetchrow = AsyncMock(
-        side_effect=[
-            _make_count_row(1),
-            None,
-            ep,
-            _make_id_row(_ENTITY_ID_2),
-            _make_account_row(
-                id=_ACCOUNT_ID_2, entity_id=_ENTITY_ID_2, email="second@gmail.com", is_primary=False
-            ),
-        ]
+    pool2 = fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[
+                _make_count_row(1),
+                None,
+                ep,
+                _make_id_row(_ENTITY_ID_2),
+                _make_account_row(
+                    id=_ACCOUNT_ID_2,
+                    entity_id=_ENTITY_ID_2,
+                    email="second@gmail.com",
+                    is_primary=False,
+                ),
+            ]
+        ),
+        execute="",
     )
-    assert (
-        await create_google_account(_make_pool(conn2), email="second@gmail.com")
-    ).is_primary is False
+    assert (await create_google_account(pool2, email="second@gmail.com")).is_primary is False
 
     # Duplicate raises
-    conn3 = _FakeConn()
-    conn3.fetchrow = AsyncMock(side_effect=[_make_count_row(1), _make_id_row(_ACCOUNT_ID)])
+    pool3 = fake_pool(
+        fetchrow=AsyncMock(side_effect=[_make_count_row(1), _make_id_row(_ACCOUNT_ID)])
+    )
     with pytest.raises(GoogleAccountAlreadyExistsError):
-        await create_google_account(_make_pool(conn3), email="test@gmail.com")
+        await create_google_account(pool3, email="test@gmail.com")
 
     # Limit raises
-    conn4 = _FakeConn()
-    conn4.fetchrow = AsyncMock(side_effect=[_make_count_row(10)])
+    pool4 = fake_pool(fetchrow=AsyncMock(side_effect=[_make_count_row(10)]))
     with pytest.raises(GoogleAccountLimitExceededError):
-        await create_google_account(_make_pool(conn4), email="new@gmail.com")
+        await create_google_account(pool4, email="new@gmail.com")
 
     # list: primary first
-    conn5 = _FakeConn()
-    conn5.fetch = AsyncMock(
-        return_value=[
+    pool5 = fake_pool(
+        fetch=[
             _make_account_row(is_primary=True),
             _make_account_row(id=_ACCOUNT_ID_2, is_primary=False),
         ]
     )
-    accounts = await list_google_accounts(_make_pool(conn5))
+    accounts = await list_google_accounts(pool5)
     assert len(accounts) == 2 and accounts[0].is_primary is True
 
     # get: primary
-    conn6 = _FakeConn()
-    conn6.fetchrow = AsyncMock(return_value=_make_account_row(is_primary=True))
-    assert (await get_google_account(_make_pool(conn6))).is_primary is True
+    pool6 = fake_pool(fetchrow=AsyncMock(return_value=_make_account_row(is_primary=True)))
+    assert (await get_google_account(pool6)).is_primary is True
 
     # get: raises missing
-    conn7 = _FakeConn()
-    conn7.fetchrow = AsyncMock(return_value=None)
-    pool7 = _make_pool(conn7)
+    pool7 = fake_pool(fetchrow=None)
     with pytest.raises(MissingGoogleCredentialsError):
         await get_google_account(pool7)
     with pytest.raises(GoogleAccountNotFoundError):
         await get_google_account(pool7, "missing@gmail.com")
 
     # set_primary
-    conn8 = _FakeConn()
-    conn8.fetchrow = AsyncMock(
-        side_effect=[_make_id_row(_ACCOUNT_ID), _make_account_row(is_primary=True)]
+    pool8 = fake_pool(
+        fetchrow=AsyncMock(
+            side_effect=[_make_id_row(_ACCOUNT_ID), _make_account_row(is_primary=True)]
+        ),
+        execute="",
     )
-    assert (await set_primary_account(_make_pool(conn8), _ACCOUNT_ID)).is_primary is True
+    assert (await set_primary_account(pool8, _ACCOUNT_ID)).is_primary is True
 
-    conn9 = _FakeConn()
-    conn9.fetchrow = AsyncMock(return_value=None)
+    pool9 = fake_pool(fetchrow=None, execute="")
     with pytest.raises(GoogleAccountNotFoundError):
-        await set_primary_account(_make_pool(conn9), uuid.uuid4())
+        await set_primary_account(pool9, uuid.uuid4())
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +210,8 @@ class _MultiPool:
 def _make_disconnect_conns(
     *, account_exists=True, was_primary=True, has_next=True, has_refresh_token=True
 ):
-    conn1 = _FakeConn()
-    conn2 = _FakeConn()
+    conn1 = FakeConnection(fetchrow=None, fetch=[], execute="")
+    conn2 = FakeConnection(fetchrow=None, fetch=[], execute="")
     if not account_exists:
         conn1.fetchrow = AsyncMock(return_value=None)
     else:
