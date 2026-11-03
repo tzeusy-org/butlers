@@ -80,6 +80,24 @@ Every create/update operation runs through the conflict engine before writing:
 - **`fail`**: Rejects the operation with an error listing conflicting events.
 - **`allow_overlap`**: Proceeds with the write. When the approvals module is co-loaded, an overlap approval may be enqueued for high-impact operations.
 
+### Overcommitment owner conditions
+
+The dashboard-api process runs a supervised `calendar_overcommitment` loop
+(`src/butlers/jobs/calendar_overcommitment.py`, REQ-owner-condition-ledger-007) that scans
+`[owner-local midnight today, + N days)` with the radar's own `query_calendar_conflicts` and
+reconciles `public.owner_conditions` under source `calendar:overcommitment`. Only `warning`
+`overlap` and `overloaded_day` issues qualify; `back_to_back` never does. An overlap's identity
+is a pair of provider identities (`origin_ref`, plus start for a recurring occurrence), not
+instance ids, because the dedup survivor rotates between butler schemas as each one syncs. An
+overloaded day's identity is its owner-local date. Condition text carries the kind, date,
+severity, overlap minutes and entry ids, or meeting hours and event count, never a title,
+attendee or location.
+
+A scan with a failed schema fan-out confirms what it saw and resolves nothing. A tick with no
+Switchboard pool, an unreadable owner timezone, or an unread dedup store reconciles nothing.
+Environment: `CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S` (default 1800) and
+`CALENDAR_OVERCOMMITMENT_LOOKAHEAD_DAYS` (default 7, 1..90).
+
 ## Workspace Projection
 
 The module maintains a local projection of calendar data for the dashboard at `/butlers/calendar`. The projection store normalizes both external provider events and internal butler schedules/reminders into unified records. A background projector refreshes this data periodically (default: every 15 minutes) and on sync completion.

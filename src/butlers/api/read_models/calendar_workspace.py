@@ -35,7 +35,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -1220,6 +1220,24 @@ class CalendarConflictScan:
 
     issues: list[DetectedIssue]
     available: bool = True
+    #: ``False`` when the dedup rules or keep-separate pins could not be read and the
+    #: collapse fell back to the defaults. The radar ignores it (its fail-open contract);
+    #: the overcommitment producer must not treat such a scan as complete, since a
+    #: different collapse can change which events exist and so which issues are seen.
+    dedup_available: bool = True
+    #: ``entry_id`` -> provider identity of each scanned entry: the ``origin_ref``
+    #: dedup cluster key (non-recurring: ``origin_ref``; recurring: ``origin_ref`` plus
+    #: start), or the instance id for a refless row. Unlike ``entry_id``, it does not
+    #: change when a resync makes another schema's copy of the same event survive the
+    #: collapse. Opaque provider ids only, never a title.
+    entry_identity_keys: dict[str, str] = field(default_factory=dict)
+
+
+def _entry_identity_key(row: Mapping[str, Any]) -> str:
+    """Provider identity of one deduped row; see ``CalendarConflictScan.entry_identity_keys``."""
+    if row.get("origin_ref"):
+        return _cluster_key(row, "origin_ref", aggressive=False)
+    return f"instance\x01{row['instance_id']}"
 
 
 @dataclass
@@ -1474,8 +1492,8 @@ async def query_calendar_conflicts(
     flattened = [shallow_asdict(row) for row in rows]
     flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
 
-    dedup_rules = await load_dedup_rules(db)
-    keep_separate = await load_keep_separate_keys(db)
+    dedup_rules, rules_read = await _read_dedup_rules(db)
+    keep_separate, pins_read = await _read_keep_separate_keys(db)
     deduped, _clusters = _dedup_workspace_rows(
         flattened, strategy=dedup_rules.match_strategy, keep_separate=keep_separate
     )
@@ -1524,7 +1542,12 @@ async def query_calendar_conflicts(
     # A partial events fan-out failure means we scanned an incomplete event set,
     # so a real conflict could be hidden — degrade honestly even though ``issues``
     # may be non-empty from the schemas that did respond.
-    return CalendarConflictScan(issues=issues, available=not failed)
+    return CalendarConflictScan(
+        issues=issues,
+        available=not failed,
+        dedup_available=rules_read and pins_read,
+        entry_identity_keys={str(row["instance_id"]): _entry_identity_key(row) for row in deduped},
+    )
 
 
 async def query_calendar_proposal_by_id(
@@ -1992,22 +2015,33 @@ async def load_dedup_rules(db: DatabaseManager) -> CalendarDedupRules:
     table (never configured), or any query failure degrades to the defaults
     (``balanced`` strategy, threshold ``2``) rather than raising.
     """
+    rules, _read = await _read_dedup_rules(db)
+    return rules
+
+
+async def _read_dedup_rules(db: DatabaseManager) -> tuple[CalendarDedupRules, bool]:
+    """:func:`load_dedup_rules` plus whether the store was actually read.
+
+    An empty table is a genuine read (never configured); no pool or a failed
+    query is not.
+    """
     pool = _dedup_pool(db)
     if pool is None:
-        return CalendarDedupRules()
+        return CalendarDedupRules(), False
     try:
         row = await pool.fetchrow(
             f"SELECT match_strategy, noisy_threshold FROM {_DEDUP_RULES_TABLE} WHERE id = TRUE"
         )
     except Exception:
         logger.warning("load_dedup_rules failed; returning defaults (fail-open)", exc_info=True)
-        return CalendarDedupRules()
+        return CalendarDedupRules(), False
     if row is None:
-        return CalendarDedupRules()
+        return CalendarDedupRules(), True
     strategy = row["match_strategy"]
     if strategy not in DEDUP_STRATEGIES:
         strategy = DEDUP_DEFAULT_STRATEGY
-    return CalendarDedupRules(match_strategy=strategy, noisy_threshold=int(row["noisy_threshold"]))
+    rules = CalendarDedupRules(match_strategy=strategy, noisy_threshold=int(row["noisy_threshold"]))
+    return rules, True
 
 
 async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
@@ -2016,12 +2050,18 @@ async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
     A missing ``public.calendar_dedup_overrides`` table or any query failure
     degrades to an empty set (no overrides) rather than raising.
     """
+    keys, _read = await _read_keep_separate_keys(db)
+    return keys
+
+
+async def _read_keep_separate_keys(db: DatabaseManager) -> tuple[set[str], bool]:
+    """:func:`load_keep_separate_keys` plus whether the store was actually read."""
     pool = _dedup_pool(db)
     if pool is None:
-        return set()
+        return set(), False
     try:
         rows = await pool.fetch(f"SELECT cluster_key FROM {_DEDUP_OVERRIDES_TABLE}")
     except Exception:
         logger.warning("load_keep_separate_keys failed; returning empty (fail-open)", exc_info=True)
-        return set()
-    return {row["cluster_key"] for row in rows}
+        return set(), False
+    return {row["cluster_key"] for row in rows}, True
