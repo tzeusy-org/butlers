@@ -313,6 +313,49 @@ class TestExplicitOwnerConditionResolution:
         assert transition.transition == "resolved"
         assert transition.state == "resolved"
 
+    async def test_explicit_resolution_amends_the_delivered_insight_exactly_once(
+        self, codec_pool: asyncpg.Pool
+    ) -> None:
+        """bu-q7vx1q.32: the owner-settled path amends as the snapshot path does."""
+        pool = codec_pool  # propose_insight_candidate writes premise JSONB as a dict
+        source = f"finance:bill-overdue-{uuid.uuid4().hex}"
+        fp = compute_fingerprint(source, 1, {"bill_id": "explicit"})
+        await reconcile_snapshot(
+            pool,
+            source=source,
+            observations=[Observation(fingerprint=fp)],
+            snapshot_complete=False,
+            initial_grace_seconds=3600,
+        )
+        dedup_key = f"finance:bill:{uuid.uuid4().hex}:explicit"
+        await propose_insight_candidate(
+            pool,
+            origin_butler="finance",
+            priority=50,
+            category="bill-due",
+            dedup_key=dedup_key,
+            message="Synthetic bill remains overdue",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            premise=owner_condition_premise(source, fp),
+        )
+        candidate_id = await pool.fetchval(
+            "UPDATE public.insight_candidates SET status = 'delivered', "
+            "delivered_at = now() - interval '1 minute' WHERE dedup_key = $1 RETURNING id",
+            dedup_key,
+        )
+
+        first = await resolve_condition(pool, source=source, fingerprint=fp)
+        second = await resolve_condition(pool, source=source, fingerprint=fp)
+
+        assert first is not None and second is None
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM public.insight_amendments WHERE candidate_id = $1",
+                candidate_id,
+            )
+            == 1
+        )
+
     async def test_req_owner_condition_ledger_004_jsonb_codec_stores_object_metadata(
         self, codec_pool: asyncpg.Pool
     ) -> None:

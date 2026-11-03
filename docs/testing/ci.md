@@ -326,6 +326,9 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
     direct baseline edits and to `## REMOVED` blocks.
   - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
     `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
+    A modified heading keeps its existing canonical ID, including an already-synced rename;
+    otherwise same-delta `RENAMED` FROM/TO chains resolve its canonical ancestor. A newly minted
+    replacement ID fails, and an unanchored rename cycle fails rather than looping.
   - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
