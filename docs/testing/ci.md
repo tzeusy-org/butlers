@@ -151,6 +151,20 @@ No local gate command matches CI's scope; check which command produced a number.
   for it and the root `conftest.py` turns a "Docker not available" skip into a failure there.
   Local runs leave the flag unset, so Docker-less hosts keep skipping real-PG tests.
 
+### Session-host native proof
+
+The existing unit groups install Bubblewrap, static C build prerequisites and OpenSSL,
+and set `BUTLERS_REQUIRE_SESSION_HOST_NATIVE=1`. The dark session-host tests compile
+synthetic static payloads and execute real filesystem/PID namespace isolation and
+cleanup proofs; their local TLS tests use generated synthetic certificates.
+Missing Bubblewrap or a denied namespace preflight fails under hosted `CI=true` or
+that strict flag. A local non-strict skip is setup information, never native evidence.
+Do not weaken AppArmor/seccomp, add privileged fallback, or convert a hosted failure
+to a skip. Report the actual runner/package/kernel boundary and resolve it separately.
+The unit JUnit evidence must include passing native and TLS cases; no new CI job or
+second broad lane is introduced. The private API and remaining production gates are in
+[session host](../runtime/session-host.md).
+
 ## Removing or weakening tests
 
 Review is the only deletion gate; there is no inventory, ledger or guard script

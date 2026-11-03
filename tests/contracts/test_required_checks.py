@@ -178,3 +178,29 @@ def test_the_ruleset_script_requires_alls_green_alone() -> None:
     contexts = re.findall(r'"context":\s*"([^"]+)"', script)
 
     assert contexts == [FAN_IN]
+
+
+def test_unit_groups_require_native_session_host_proof() -> None:
+    job = _workflow()["jobs"]["check-unit"]
+    assert job["env"]["BUTLERS_REQUIRE_SESSION_HOST_NATIVE"] == "1"
+    steps = job["steps"]
+    setup = next(
+        step
+        for step in steps
+        if step.get("name") == "Install session-host native proof prerequisites"
+    )
+    assert "if" not in setup and not setup.get("continue-on-error", False)
+    command = setup["run"]
+    assert (
+        "sudo apt-get install -y --no-install-recommends bubblewrap build-essential openssl"
+        in command
+    )
+    assert "/usr/bin/bwrap --version" in command
+    assert steps.index(setup) < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name", "").startswith("Unit tests (group")
+    )
+    test_step = next(step for step in steps if step.get("name", "").startswith("Unit tests (group"))
+    assert "BUTLERS_REQUIRE_SESSION_HOST_NATIVE" not in test_step.get("env", {})
+    assert "continue-on-error" not in test_step and "if" not in test_step
