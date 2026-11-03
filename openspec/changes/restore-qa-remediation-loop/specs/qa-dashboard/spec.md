@@ -17,6 +17,9 @@ Scope: v1-mandatory
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
 - **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, `published`, `ambiguous`, or `unavailable`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the sanitized bounded `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
+- **AND** known PR identity is independent of nullable PR lifecycle: terminal attempt outcomes never imply a closed PR, and unavailable lifecycle metadata retains the PR summary/link and published classification
+- **AND** read-only dossier metadata may supersede a positive local PR state with explicit GitHub open/draft/closed/merged evidence; only a positively merged observation supplies the merge timestamp, never the attempt's closure time
+- **AND** missing, malformed or unavailable provider observations do not synthesize lifecycle; an unavailable checks observation does not discard valid PR lifecycle metadata, and case-list reads perform no provider lookup
 
 #### Scenario: GET /api/qa/cases/:id/journal
 - **WHEN** `GET /api/qa/cases/:id/journal` is called with optional `cursor` and `limit` (default 50, max 500)
@@ -228,6 +231,7 @@ Scope: v1-mandatory
 - **WHEN** the Case Dossier renders the right column
 - **THEN** it renders a PR panel (when `pr` is non-null) containing:
   - State chip (drafted/open/merged/closed) with appropriate state color from the Dispatch palette
+  - A neutral `PR state unknown` chip when a known PR has nullable lifecycle; its Open PR link remains available, without a no-PR, closed, merged or success claim
   - Mono `pr #<number> · <state>`
   - Sans-500 14 px PR title
   - Mono caption with branch name, CI status, `+<additions> −<deletions>`

@@ -68,11 +68,16 @@ def _normalize_tool_name(name: str, butler_name: str | None) -> str:
     """Strip runtime-specific prefixes so the same underlying MCP tool matches
     regardless of which runtime emitted the record.
 
-    Runtimes emit the same tool under three forms:
+    Runtimes emit the same tool under four forms:
 
     - bare ``fn.__name__`` (server-side capture in ``tool_call_capture``)
     - ``mcp__{butler_name}__{fn}`` (claude_code / codex parsers)
+    - ``mcp_{butler_name}_{fn}`` (gemini parser)
     - ``{butler_name}_{fn}`` (opencode parser)
+
+    Prefixed forms match against the known butler name (the spawner's sole MCP
+    server key) rather than splitting on underscores, which both butler and tool
+    names may contain.
 
     Without normalization the merge-by-(name, payload) signature never matches
     across those forms, causing duplicate rows in ``sessions.tool_calls``.
@@ -98,6 +103,9 @@ def _normalize_tool_name(name: str, butler_name: str | None) -> str:
         mcp_prefix = f"mcp__{butler_name}__"
         if name.startswith(mcp_prefix):
             return name[len(mcp_prefix) :]
+        gemini_prefix = f"mcp_{butler_name}_"
+        if name.startswith(gemini_prefix):
+            return name[len(gemini_prefix) :]
         opencode_prefix = f"{butler_name}_"
         if name.startswith(opencode_prefix):
             return name[len(opencode_prefix) :]
@@ -113,8 +121,9 @@ def _merge_tool_call_records(
     """Merge parser + executed call records while preserving retry attempts.
 
     ``butler_name`` drives normalization of runtime-specific tool-name prefixes
-    so parser-side records (e.g. ``mcp__lifestyle__memory_entity_resolve`` or
-    ``lifestyle_memory_entity_resolve``) collapse against capture-side records
+    so parser-side records (e.g. ``mcp__lifestyle__memory_entity_resolve``,
+    ``mcp_lifestyle_memory_entity_resolve`` or ``lifestyle_memory_entity_resolve``)
+    collapse against capture-side records
     that use the bare ``fn.__name__`` form. It is required: every production
     caller passes ``self._config.name``, which the config layer guarantees is a
     non-empty butler name.
@@ -217,7 +226,7 @@ def _is_mcp_tool_call(call: dict[str, Any]) -> bool:
     """Return whether a record is MCP work rather than a runtime-native tool.
 
     Runtime-native work is Codex/OpenCode shell (``command_execution``) or a
-    Claude CLI built-in, which the Claude adapter marks ``builtin``.
+    Claude or Gemini CLI built-in, which those adapters mark ``builtin``.
     """
     if call.get("builtin") is True:
         return False

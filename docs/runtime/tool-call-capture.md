@@ -55,9 +55,10 @@ After a session completes, the spawner calls `_merge_tool_call_records(parsed_ca
 Parser records can describe work that never reaches the butler's MCP server, so capture never
 sees it. The merged list keeps it, because it is still session work with side effects:
 
-- **Runtime-native tools** are Codex/OpenCode shell work (`command_execution`) and Claude CLI
-  built-ins (`Bash`, `Read`, `ToolSearch`, `Agent`, ...), which the Claude parser marks
-  `builtin: true`. They count toward `max_tool_calls` and block failover, but they are not
+- **Runtime-native tools** are Codex/OpenCode shell work (`command_execution`) and CLI
+  built-ins, which the parsers mark `builtin: true`: Claude's (`Bash`, `Read`, `ToolSearch`,
+  `Agent`, ...; any name not `mcp__<server>__<tool>`) and Gemini's (`run_shell_command`,
+  `read_file`, `list_directory`, ...; any name not `mcp_<server>_<tool>`). They count toward `max_tool_calls` and block failover, but they are not
   confirmed MCP work: a text-less session whose only tools are runtime-native fails as an empty
   response (`_is_mcp_tool_call` in `spawner_tool_calls.py`).
 - **Subagent calls** (Claude `tool_use` with a non-null `parent_tool_use_id`) carry that id. They
