@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.scheduler import _tick_deferred_notification_pass
+from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 from butlers.core.temporal.delivery_db import (
     WakeHoldProvenance,
     envelope_digest,
