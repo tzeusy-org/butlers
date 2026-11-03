@@ -15,13 +15,13 @@ def admit_rule_boundary_for_non_auth_owner(monkeypatch):
     from butlers.api.routers import approvals as routes
     from butlers.modules.approvals import module, operations, stepup
 
-    async def admitted(pool, kind, parameters, writer):
+    async def admitted(pool, kind, parameters, writer, *, audit_owned=False):
         parent = _enlisted_write.get()
         if parent is not None and parent.connection is pool:
             return await writer(pool)
         transaction = getattr(pool, "is_in_transaction", None)
         borrowed = callable(transaction) and transaction()
-        async with _approval_write_transaction(pool) as connection:
+        async with _approval_write_transaction(pool, audit_owned=audit_owned) as connection:
             token = _enlisted_write.set(_EnlistedWrite(connection, kind))
             try:
                 result = await writer(connection)

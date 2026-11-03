@@ -1710,6 +1710,7 @@ async def test_audit_scope_probe_commit_cancellation_and_recorder_failure(monkey
 
 @pytest.mark.integration
 @pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
 async def test_audit_commit_metrics_and_real_permission_owner(db, audit_counter, monkeypatch):
     from butlers.api.routers import permissions
     from butlers.core import audit
@@ -1772,6 +1773,7 @@ async def test_audit_commit_metrics_and_real_permission_owner(db, audit_counter,
 @pytest.mark.integration
 @pytest.mark.db
 @pytest.mark.parametrize("outer_rollback", [False, True])
+@pytest.mark.asyncio(loop_scope="session")
 async def test_audit_nested_savepoints_merge_or_discard(db, audit_counter, outer_rollback):
     from butlers.core import audit
     from butlers.core.audit_transaction import audit_transaction
@@ -1809,6 +1811,7 @@ async def test_audit_nested_savepoints_merge_or_discard(db, audit_counter, outer
 
 @pytest.mark.integration
 @pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
 async def test_audit_native_failed_transaction_and_missing_storage(db, audit_counter):
     import asyncpg
 
@@ -1868,6 +1871,7 @@ async def test_audit_native_failed_transaction_and_missing_storage(db, audit_cou
 
 @pytest.mark.integration
 @pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
 async def test_audit_concurrent_owners_and_cancelled_task(db, audit_counter):
     from butlers.core import audit
     from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
@@ -1918,6 +1922,7 @@ async def test_audit_concurrent_owners_and_cancelled_task(db, audit_counter):
 
 @pytest.mark.integration
 @pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
 async def test_audit_stepup_owning_transaction_waits_for_outer_commit(db, audit_counter):
     from butlers.core import audit
     from butlers.core.audit_transaction import audit_transaction
