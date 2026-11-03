@@ -501,12 +501,17 @@ async def run_insight_scan(
             continue
 
         doses_per_day = _frequency_to_doses_per_day(frequency)
+        med_subject = med_row.get("subject") or f"medication:{med_name}"
 
         # Count real doses consumed since the supply was last set/refilled.
         # Doses are temporal facts (predicate='took_dose', scope='health') with
         # valid_at=taken_at; medication_id and skipped live in metadata. Mirrors the
         # medication_log_dose write path and the dashboard GET /medications/{id}/doses
         # read surface. The legacy health.medication_doses relational table is orphaned.
+        # A dose carries the medication fact id current when it was logged, and every
+        # edit supersedes that fact with a new id, so match any fact of this
+        # medication's stable subject (bu-uc6wh2). quantity_updated_at alone decides
+        # which doses drew the current supply.
         dose_rows = await db_pool.fetch(
             """
             SELECT valid_at AS taken_at
@@ -514,13 +519,23 @@ async def run_insight_scan(
             WHERE predicate = 'took_dose'
               AND validity = 'active'
               AND scope = 'health'
-              AND metadata->>'medication_id' = $1
+              AND (
+                  metadata->>'medication_id' = $1
+                  OR metadata->>'medication_id' IN (
+                      SELECT m.id::text
+                      FROM facts m
+                      WHERE m.predicate = 'medication'
+                        AND m.scope = 'health'
+                        AND m.subject = $3
+                  )
+              )
               AND valid_at >= $2
               AND COALESCE((metadata->>'skipped')::boolean, false) = false
             ORDER BY valid_at DESC
             """,
             med_id,
             quantity_updated_at,
+            med_subject,
         )
 
         # dose_rows already filters skipped=false, so all rows are non-skipped doses
@@ -561,7 +576,7 @@ async def run_insight_scan(
                 "health",
                 "medication_refill_still_due",
                 {
-                    "subject": med_row.get("subject") or f"medication:{med_name}",
+                    "subject": med_subject,
                     "doses_per_day": doses_per_day,
                     "warning_days": _REFILL_WARNING_DAYS,
                 },

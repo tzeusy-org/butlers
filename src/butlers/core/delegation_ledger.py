@@ -49,7 +49,6 @@ RFC 0006) or invoke the Switchboard.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -85,10 +84,6 @@ VALID_WAKE_STATES = frozenset(
 )
 
 _WAKE_KEY_PREFIX = "delegation-wake:v1"
-
-
-def _dumps_metadata(metadata: dict[str, Any] | None) -> str | None:
-    return json.dumps(metadata) if metadata is not None else None
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
@@ -139,7 +134,9 @@ async def record_ask(
         catalog_score,
         status,
         reason,
-        _dumps_metadata(metadata),
+        # A dict, not json.dumps(...): the pools' JSONB codec serializes it, so
+        # a pre-dumped str would land as a JSON string scalar (bu-yuuk69).
+        metadata,
     )
     return str(row_id)
 
