@@ -157,15 +157,36 @@ describe("useNavIntent", () => {
   });
 
   it("contains a rejected chunk and a rejected query without cancelling the other", async () => {
-    loader.mockImplementation(() => Promise.reject(new Error("offline")));
-    queryFn.mockImplementation(() => Promise.reject(new Error("401")));
-    const { result } = mount("/sessions/abc");
-    act(() => result.current.onFocus());
-    await act(async () => {
-      await Promise.resolve();
+    vi.useRealTimers();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    let loaderCalls = 0;
+    let queryCalls = 0;
+    // Plain functions, not vi.fn: vitest marks a vi.fn's returned rejection as handled,
+    // which would hide an escaped rejection from the collector.
+    mockLoader.mockReturnValue((() => {
+      loaderCalls += 1;
+      return Promise.reject(new Error("offline"));
+    }) as never);
+    mockQuery.mockReturnValue({
+      queryKey: ["mapped", "abc"],
+      queryFn: () => {
+        queryCalls += 1;
+        return Promise.reject(new Error("401"));
+      },
+      staleTime: 60_000,
     });
-    expect(loader).toHaveBeenCalledTimes(1);
-    expect(queryFn).toHaveBeenCalledTimes(1);
+    try {
+      const { result } = mount("/sessions/abc");
+      act(() => result.current.onFocus());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(loaderCalls).toBe(1);
+      expect(queryCalls).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("cancels the pending timer on unmount and when the target changes", () => {

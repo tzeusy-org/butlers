@@ -183,6 +183,7 @@ async def test_whatsapp_entrypoint_restores_codex_auth() -> None:
         ),
         patch.object(wa, "WhatsAppUserClientConnector", return_value=conn),
         patch.object(wa, "_run_health_server", new=AsyncMock()),
+        patch.object(wa, "resolve_dedup_key", new=AsyncMock(return_value=True)) as dedup,
         patch(
             "butlers.cli_auth.persistence.restore_connector_cli_auth",
             new=AsyncMock(return_value={"codex": True}),
@@ -192,6 +193,9 @@ async def test_whatsapp_entrypoint_restores_codex_auth() -> None:
 
     restore.assert_awaited_once()
     assert restore.await_args.args[0].pool is pool
+    # bu-0a161m: startup must resolve the owner-outbound dedup key on the connector pool.
+    dedup.assert_awaited_once()
+    assert dedup.await_args.args[0].pool is pool
     assert restore.await_args.kwargs == {
         "codex_authority": authority,
         "context": "whatsapp_user_client",
@@ -257,6 +261,7 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
             ),
         ),
         patch.object(tg, "TelegramUserClientConnector", return_value=conn),
+        patch.object(tg, "resolve_dedup_key", new=AsyncMock(return_value=True)) as dedup,
         patch(
             "butlers.cli_auth.persistence.restore_connector_cli_auth",
             new=AsyncMock(return_value={"codex": True}),
@@ -266,6 +271,9 @@ async def test_telegram_user_entrypoint_restores_codex_auth() -> None:
 
     restore.assert_awaited_once()
     assert restore.await_args.args[0].pool is pool
+    # bu-0a161m: startup must resolve the owner-outbound dedup key on the connector pool.
+    dedup.assert_awaited_once()
+    assert dedup.await_args.args[0].pool is pool
     assert restore.await_args.kwargs == {
         "codex_authority": authority,
         "context": "telegram_user_client",

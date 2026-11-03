@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; smoke owns the lane counts, test budget and smoke
+    # their exact scopes; smoke owns the lane counts and smoke
     # tests, and check-totals reconciles the lane totals after the groups finish.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
@@ -397,7 +397,7 @@ jobs:
       - name: Set up the CI Python environment
         uses: ./.github/actions/ci-python-environment
 
-      - name: Count each lane and check the test budget
+      - name: Count each lane
         # One fresh --collect-only count per lane of the same selection the groups
         # run; check-totals requires the groups to sum to it (bu-29wkwj.2).
         run: uv run --no-sync python scripts/ci_lanes.py count --output "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"

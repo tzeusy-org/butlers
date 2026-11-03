@@ -28,6 +28,8 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner_context import compose_effective_system_prompt_receipt
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record, records
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -42,62 +44,8 @@ _FORGED_ACTOR = "attacker-not-the-owner"
 # ---------------------------------------------------------------------------
 
 
-def _make_record(data: dict) -> MagicMock:
-    """Return a mock asyncpg Record backed by ``data``."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k, _r=data: _r[k])
-    return m
-
-
-def _make_records(rows: list[dict]) -> list[MagicMock]:
-    return [_make_record(r) for r in rows]
-
-
 def _now_str() -> str:
     return str(datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC))
-
-
-class _NullTxCtx:
-    """No-op async context manager standing in for ``conn.transaction()``."""
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False  # never suppress — let exceptions propagate/rollback
-
-
-class _AcquireCtx:
-    """Async context manager standing in for ``pool.acquire()``.
-
-    Yields *conn* (the same mock as the pool itself) so existing assertions
-    against ``pool.fetchrow``/``pool.execute`` keep working unchanged even
-    though the routes now issue those calls via an acquired connection.
-    """
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    async def __aenter__(self):
-        return self._conn
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-
-def _make_pool(
-    fetchrow_return=None,
-    fetch_return: list[dict] | None = None,
-    fetchval_return=None,
-) -> AsyncMock:
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=fetchrow_return)
-    pool.fetch = AsyncMock(return_value=_make_records(fetch_return or []))
-    pool.fetchval = AsyncMock(return_value=fetchval_return)
-    pool.execute = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
-    pool.transaction = MagicMock(return_value=_NullTxCtx())
-    return pool
 
 
 def _make_db(pool: AsyncMock) -> MagicMock:
@@ -130,7 +78,7 @@ def clear_overrides(app):
 
 async def test_get_prompt_no_history_returns_empty_version_zero(app):
     """When no history exists, returns version 0 with empty prompt."""
-    pool = _make_pool(fetchrow_return=None)
+    pool = fake_pool(fetchrow=None)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -147,8 +95,8 @@ async def test_get_prompt_no_history_returns_empty_version_zero(app):
 
 async def test_get_prompt_returns_latest_version(app):
     """Returns the most-recent version from system_prompt_history."""
-    pool = _make_pool(
-        fetchrow_return=_make_record(
+    pool = fake_pool(
+        fetchrow=Record(
             {
                 "butler_name": "qa",
                 "prompt": "You are QA.",
@@ -173,7 +121,7 @@ async def test_get_prompt_returns_latest_version(app):
 
 async def test_get_prompt_404_unknown_butler(app):
     """Returns 404 for unknown butler names."""
-    pool = _make_pool()
+    pool = fake_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -205,7 +153,7 @@ async def test_effective_prompt_preview_detects_changed_roster_source(
             (source.source, source.status, source.content) for source in resolved.sources
         ],
     )
-    latest = _make_record(
+    latest = Record(
         {
             "effective_system_prompt": receipt.prompt,
             "prompt_digest": receipt.digest,
@@ -213,8 +161,8 @@ async def test_effective_prompt_preview_detects_changed_roster_source(
             "started_at": datetime(2026, 9, 13, 10, 0, tzinfo=UTC),
         }
     )
-    shared_pool = _make_pool(fetchval_return=None)
-    session_pool = _make_pool(fetchrow_return=latest)
+    shared_pool = fake_pool(fetchval=None)
+    session_pool = fake_pool(fetchrow=latest)
     db = _make_db(shared_pool)
     db.pool = MagicMock(return_value=session_pool)
     app.dependency_overrides[get_db] = lambda: db
@@ -257,9 +205,10 @@ async def test_effective_prompt_query_failure_is_unavailable_not_static_preview(
         "Static roster content that must not be returned",
         encoding="utf-8",
     )
-    shared_pool = _make_pool(fetchval_return="Mutable override that must not be returned")
-    session_pool = _make_pool()
-    session_pool.fetchrow = AsyncMock(side_effect=RuntimeError("synthetic query failure"))
+    shared_pool = fake_pool(fetchval="Mutable override that must not be returned")
+    session_pool = fake_pool(
+        fetchrow=AsyncMock(side_effect=RuntimeError("synthetic query failure"))
+    )
     db = _make_db(shared_pool)
     db.pool = MagicMock(return_value=session_pool)
     app.dependency_overrides[get_db] = lambda: db
@@ -308,8 +257,8 @@ async def test_effective_prompt_verified_absence_remains_a_roster_preview(
     config_dir = roster_root / "qa"
     config_dir.mkdir(parents=True)
     (config_dir / "CLAUDE.md").write_text("Synthetic roster preview", encoding="utf-8")
-    shared_pool = _make_pool(fetchval_return=None)
-    session_pool = _make_pool(fetchrow_return=None)
+    shared_pool = fake_pool(fetchval=None)
+    session_pool = fake_pool(fetchrow=None)
     db = _make_db(shared_pool)
     db.pool = MagicMock(return_value=session_pool)
     app.dependency_overrides[get_db] = lambda: db
@@ -337,7 +286,7 @@ async def test_effective_prompt_requires_owner_control_before_prompt_access(
 ):
     """Absent owner control refuses before a prompt pool or roster read."""
     app = create_guarded_app(api_key="")
-    pool = _make_pool()
+    pool = fake_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -356,7 +305,7 @@ async def test_effective_prompt_requires_owner_control_before_prompt_access(
 
 async def test_put_prompt_inserts_new_version(app):
     """PUT prompt: next version = max(existing) + 1."""
-    inserted_row = _make_record(
+    inserted_row = Record(
         {
             "butler_name": "qa",
             "prompt": "Updated prompt text.",
@@ -365,7 +314,7 @@ async def test_put_prompt_inserts_new_version(app):
             "updated_by": "owner",
         }
     )
-    pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=3)
+    pool = fake_pool(fetchrow=inserted_row, fetchval=3)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -393,7 +342,7 @@ async def test_put_prompt_inserts_new_version(app):
 
 async def test_put_prompt_version_increments_monotonically(app):
     """When current_version=0 (first PUT), new version is 1."""
-    inserted_row = _make_record(
+    inserted_row = Record(
         {
             "butler_name": "qa",
             "prompt": "First prompt.",
@@ -402,7 +351,7 @@ async def test_put_prompt_version_increments_monotonically(app):
             "updated_by": "owner",
         }
     )
-    pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=0)
+    pool = fake_pool(fetchrow=inserted_row, fetchval=0)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -448,7 +397,7 @@ async def test_get_prompt_history_ordered_desc(app):
             "updated_by": "owner",
         },
     ]
-    pool = _make_pool(fetch_return=rows, fetchval_return=3)
+    pool = fake_pool(fetch=records(rows), fetchval=3)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -477,7 +426,7 @@ async def test_get_prompt_history_ordered_desc(app):
 )
 async def test_retired_tool_grant_routes_return_404(app, method, path, payload):
     """The unenforced per-butler tool-grant routes are gone and touch no state."""
-    pool = _make_pool()
+    pool = fake_pool()
     app.dependency_overrides[get_db] = lambda: _make_db(pool)
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
 
@@ -562,7 +511,7 @@ async def test_kill_butler_audits_and_returns_shutdown_initiated(app):
 
     from butlers.api.deps import get_mcp_manager
 
-    pool = _make_pool()
+    pool = fake_pool()
     db = _make_db(pool)
 
     mock_result = MagicMock()
@@ -602,7 +551,7 @@ async def test_kill_butler_503_when_unreachable(app):
     """POST /kill returns 503 when butler MCP is unreachable."""
     from butlers.api.deps import ButlerUnreachableError, get_mcp_manager
 
-    pool = _make_pool()
+    pool = fake_pool()
     db = _make_db(pool)
 
     mock_manager = MagicMock()
@@ -626,7 +575,7 @@ async def test_kill_butler_invalid_grace_seconds(app):
     """POST /kill with negative grace_seconds returns 422."""
     from butlers.api.deps import get_mcp_manager
 
-    pool = _make_pool()
+    pool = fake_pool()
     db = _make_db(pool)
     mock_manager = MagicMock()
     app.dependency_overrides[get_db] = lambda: db
@@ -649,7 +598,7 @@ async def test_kill_butler_invalid_grace_seconds(app):
 
 async def test_put_prompt_ignores_caller_supplied_actor(app):
     """A forged ``actor`` must not reach ``updated_by`` or the audit entry."""
-    inserted_row = _make_record(
+    inserted_row = Record(
         {
             "butler_name": "qa",
             "prompt": "Updated prompt text.",
@@ -658,7 +607,7 @@ async def test_put_prompt_ignores_caller_supplied_actor(app):
             "updated_by": authenticated_principal(),
         }
     )
-    pool = _make_pool(fetchrow_return=inserted_row, fetchval_return=3)
+    pool = fake_pool(fetchrow=inserted_row, fetchval=3)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_butler_configs] = lambda: _stub_configs()
@@ -689,7 +638,7 @@ async def test_kill_ignores_caller_supplied_actor(app):
 
     from butlers.api.deps import get_mcp_manager
 
-    pool = _make_pool()
+    pool = fake_pool()
     db = _make_db(pool)
 
     mock_result = MagicMock()

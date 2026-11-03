@@ -15,9 +15,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.jobs.meeting_debrief import run_meeting_debrief
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.relationship.meeting_debrief import meeting_debrief_answer
 
 pytestmark = [
@@ -37,28 +35,12 @@ _TRUNCATE = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=1,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "relationship, public"},
-    )
+async def debrief_pool(db) -> asyncpg.Pool:
+    p = await db("core", "memory", "relationship", schema="relationship", max_size=1)
     for table in _TRUNCATE:
         await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
-    yield p
-    await p.close()
+    return p
 
 
 class _Proposer:
@@ -172,45 +154,49 @@ async def _prompted_debrief(pool, email: str) -> str:
 
 
 @pytest.mark.parametrize("posture", ["memorial", "quiet", "no_contact"])
-async def test_answer_naming_a_no_longer_active_counterparty_is_refused(pool, posture) -> None:
-    await _person(pool, "Owner Person", "owner@example.test", owner=True)
-    sam = await _person(pool, "Sam Rivera", "sam@example.test")
-    debrief_id = await _prompted_debrief(pool, "sam@example.test")
-    await pool.execute("UPDATE public.entities SET posture = $2 WHERE id = $1", sam, posture)
+async def test_answer_naming_a_no_longer_active_counterparty_is_refused(
+    debrief_pool, posture
+) -> None:
+    await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+    sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+    debrief_id = await _prompted_debrief(debrief_pool, "sam@example.test")
+    await debrief_pool.execute(
+        "UPDATE public.entities SET posture = $2 WHERE id = $1", sam, posture
+    )
 
     result = await meeting_debrief_answer(
-        pool,
+        debrief_pool,
         debrief_id=debrief_id,
         commitments=[{"summary": "Send Sam the deck", "counterparty_entity_id": str(sam)}],
     )
 
     assert result["status"] == "invalid"
     assert posture not in result["reason"] and "posture" not in result["reason"]
-    assert await _commitments(pool) == []
-    state = await pool.fetchrow(
+    assert await _commitments(debrief_pool) == []
+    state = await debrief_pool.fetchrow(
         "SELECT state, answered_at FROM meeting_debriefs WHERE id = $1", uuid.UUID(debrief_id)
     )
     assert state["state"] == "pending" and state["answered_at"] is None
 
 
-async def test_reanswering_without_the_refused_item_is_captured(pool) -> None:
-    await _person(pool, "Owner Person", "owner@example.test", owner=True)
-    sam = await _person(pool, "Sam Rivera", "sam@example.test")
-    debrief_id = await _prompted_debrief(pool, "sam@example.test")
-    await pool.execute("UPDATE public.entities SET posture = 'memorial' WHERE id = $1", sam)
+async def test_reanswering_without_the_refused_item_is_captured(debrief_pool) -> None:
+    await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+    sam = await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+    debrief_id = await _prompted_debrief(debrief_pool, "sam@example.test")
+    await debrief_pool.execute("UPDATE public.entities SET posture = 'memorial' WHERE id = $1", sam)
 
     refused = await meeting_debrief_answer(
-        pool,
+        debrief_pool,
         debrief_id=debrief_id,
         commitments=[{"summary": "Send Sam the deck", "counterparty_entity_id": str(sam)}],
     )
     assert refused["status"] == "invalid"
 
     retry = await meeting_debrief_answer(
-        pool,
+        debrief_pool,
         debrief_id=debrief_id,
         commitments=[{"summary": "Book the room", "direction": "self"}],
     )
 
     assert retry["status"] == "captured"
-    assert {row["summary"] for row in await _commitments(pool)} == {"Book the room"}
+    assert {row["summary"] for row in await _commitments(debrief_pool)} == {"Book the room"}
