@@ -2549,13 +2549,11 @@ async def get_metrics(
 async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
     """Return whether APPROVAL_CALLBACK_SECRET resolves via the shared credential store.
 
-    Missing this Tier 1 secret structurally disables every approval push
-    (``emit_approval_push`` resolves 'failed' before dispatch, every time) --
-    previously visible only as a per-push warning log line an operator would
-    have to go looking for. Surfacing it on the metrics endpoint that the
-    dashboard already polls makes it a loud, always-visible degraded signal
-    instead (bu-mda0r). Returns ``None`` (undetermined, not "missing") when
-    the shared credential pool itself is unavailable.
+    Durable delivery needs this Tier 1 secret to sign single-action callbacks.
+    Surfacing its availability on the metrics endpoint that the dashboard
+    already polls keeps missing configuration visible without enabling delivery.
+    Returns ``None`` (undetermined, not "missing") when the shared credential
+    pool itself is unavailable.
     """
     from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
     from butlers.credential_store import CredentialStore
