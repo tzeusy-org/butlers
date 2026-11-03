@@ -53,6 +53,7 @@ from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     DetectedIssue,
     detect_conflict_issues,
+    overlap_pair_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -1451,7 +1452,7 @@ async def query_calendar_conflicts(
     runs the pure :func:`~butlers.core.temporal.conflicts.detect_conflict_issues`
     detector over the eligible collapsed set, and joins any ``pending``
     ``calendar_event_proposals`` whose ``source_event_id`` equals an overlap
-    issue's canonical pair id.
+    issue's provider-identity pair id (or its legacy instance-based pair id).
 
     **Dedup-aware radar (bu-hmdqz.10).** Before this pass, a duplicate cluster
     of N synced copies of one real-world event (the same Google event synced
@@ -1526,9 +1527,23 @@ async def query_calendar_conflicts(
         overloaded_day_hours=overloaded_day_hours,
     )
 
-    # Join pending proposals by the canonical overlap-pair id. query_calendar_proposals
-    # is itself fail-open (returns [] on failure), so a missing proposals table
-    # leaves proposal_ids empty rather than degrading the whole scan.
+    identity_keys = {str(row["instance_id"]): _entry_identity_key(row) for row in deduped}
+
+    # Re-key each overlap's pair_id onto provider identity (bu-nd32y3). The detector's
+    # pair id hashes instance ids, and the surviving instance of a provider event rotates
+    # between butler schemas on resync, so a proposal stored under it would detach. The
+    # instance-based id is kept as a legacy join key for proposals written before.
+    legacy_pair_ids: dict[int, str] = {}
+    for issue in issues:
+        if issue.pair_id is not None and len(issue.events) == 2:
+            legacy_pair_ids[id(issue)] = str(issue.pair_id)
+            issue.pair_id = overlap_pair_id(
+                *(identity_keys.get(e.entry_id, f"instance\x01{e.entry_id}") for e in issue.events)
+            )
+
+    # Join pending proposals by the provider-identity pair id, or the legacy instance
+    # pair id. query_calendar_proposals is itself fail-open (returns [] on failure), so a
+    # missing proposals table leaves proposal_ids empty rather than degrading the scan.
     pending = await query_calendar_proposals(db, start=start, end=end, butlers=butlers)
     by_source: dict[str, list[str]] = {}
     for proposal in pending:
@@ -1537,7 +1552,8 @@ async def query_calendar_conflicts(
     if by_source:
         for issue in issues:
             if issue.pair_id is not None:
-                issue.proposal_ids = by_source.get(str(issue.pair_id), [])
+                keys = [str(issue.pair_id), legacy_pair_ids.get(id(issue))]
+                issue.proposal_ids = [pid for key in keys if key for pid in by_source.get(key, [])]
 
     # A partial events fan-out failure means we scanned an incomplete event set,
     # so a real conflict could be hidden — degrade honestly even though ``issues``
@@ -1546,7 +1562,7 @@ async def query_calendar_conflicts(
         issues=issues,
         available=not failed,
         dedup_available=rules_read and pins_read,
-        entry_identity_keys={str(row["instance_id"]): _entry_identity_key(row) for row in deduped},
+        entry_identity_keys=identity_keys,
     )
 
 

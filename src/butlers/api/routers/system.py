@@ -99,6 +99,7 @@ from butlers.core.backup_facts import (
     offsite_copy_expected_from_env,
     read_backup_facts_from_dir,
 )
+from butlers.core.commitments import COMMITMENT_METADATA_CLASS, COMMITMENT_SPHERES
 from butlers.core.fleet_conditions import (
     FLEET_FINGERPRINT,
     FLEET_SOURCE,
@@ -279,6 +280,11 @@ class EgressActor(BaseModel):
     last_seen_at: str
     total_calls: int
     data_types: list[str]
+    # The exact audit-log ``action`` this actor stands for. Unregistered actions are not
+    # egress and never reach the catalog, so every actor carries one; None is accepted only as
+    # a defensive default. Lets the dashboard link to GET /api/audit-log?action=<audit_action>
+    # without copying the registry client-side.
+    audit_action: str | None = None
 
 
 class EgressCatalog(BaseModel):
@@ -443,9 +449,6 @@ _OPERATION_DATA_TYPES: dict[str, list[str]] = {
     "google_calendar_write": ["calendar_event"],
     "gmail_send": ["message_text"],
 }
-
-_UNKNOWN_ACTOR_ID = "other"
-_UNKNOWN_ACTOR_NAME = "Other / Unrecognized"
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1027,8 @@ async def get_egress_catalog(
     """Return the data-egress catalog for this instance (owner-only).
 
     Aggregates the unified audit log by operation, mapping each operation to an
-    external actor via the server-side actor registry. The source is the
+    external actor via the server-side actor registry. Operations absent from the
+    registry (internal audit actions) are excluded. The source is the
     canonical ``public.audit_log`` primitive alone (``action`` -> ``operation``,
     ``ts`` -> ``created_at``); the legacy ``switchboard.dashboard_audit_log``
     UNION arm was removed (bu-j26e8) after migration core_124 backfilled the
@@ -1051,6 +1055,7 @@ async def get_egress_catalog(
                 WITH egress_source AS (
                     SELECT action AS operation, ts AS created_at
                     FROM public.audit_log
+                    WHERE action = ANY($1::text[])
                 )
                 SELECT
                     operation,
@@ -1060,11 +1065,15 @@ async def get_egress_catalog(
                 FROM egress_source
                 GROUP BY operation
                 ORDER BY last_seen_at DESC
-                """
+                """,
+                list(_ACTOR_REGISTRY),
             )
         except Exception as exc:
             logger.warning("Egress catalog query failed: %s", exc)
             raise HTTPException(status_code=503, detail="Egress catalog query failed") from exc
+
+        # Only registry-mapped operations are egress; internal audit actions are excluded.
+        rows = [row for row in rows if row["operation"] in _ACTOR_REGISTRY]
 
         # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
         # No second query needed -- we already have min(created_at) per operation above.
@@ -1086,13 +1095,9 @@ async def get_egress_catalog(
             last_seen = row["last_seen_at"]
             total_calls = int(row["total_calls"] or 0)
 
-            if operation in _ACTOR_REGISTRY:
-                actor_id, display_name = _ACTOR_REGISTRY[operation]
-                data_types = _OPERATION_DATA_TYPES.get(operation, [])
-            else:
-                actor_id = _UNKNOWN_ACTOR_ID
-                display_name = _UNKNOWN_ACTOR_NAME
-                data_types = []
+            actor_id, display_name = _ACTOR_REGISTRY[operation]
+            data_types = _OPERATION_DATA_TYPES.get(operation, [])
+            audit_action = operation
 
             if actor_id not in actor_buckets:
                 actor_buckets[actor_id] = {
@@ -1101,6 +1106,7 @@ async def get_egress_catalog(
                     "last_seen_at": last_seen,
                     "total_calls": 0,
                     "data_types": set(data_types),
+                    "audit_action": audit_action,
                 }
             else:
                 # Update last_seen_at to the latest across merged operations
@@ -1131,6 +1137,7 @@ async def get_egress_catalog(
                 ),
                 total_calls=a["total_calls"],
                 data_types=sorted(a["data_types"]),
+                audit_action=a["audit_action"],
             )
             for a in actors
             if a["last_seen_at"] is not None
@@ -1410,6 +1417,8 @@ async def get_insight_delivery_state(
 
 
 VALID_LEDGERS = frozenset({"infra", "owner"})
+_SPHERE_UNDECLARED = "undeclared"
+_SPHERE_FILTERS = COMMITMENT_SPHERES | {_SPHERE_UNDECLARED}
 _ATTENTION_IDENTITIES = frozenset(
     {
         (FLEET_SOURCE, FLEET_FINGERPRINT),
@@ -1498,6 +1507,13 @@ async def get_conditions(
     ),
     source: str | None = Query(None, description="Filter by producer source."),
     state: str | None = Query(None, description="Filter by state. One of: open, aging, resolved."),
+    sphere: str | None = Query(
+        None,
+        description=(
+            "Owner ledger only: narrow to commitments by declared sphere. One of: "
+            "work, personal, undeclared (a commitment with no declared sphere)."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     *,
@@ -1520,6 +1536,11 @@ async def get_conditions(
     fleet-wide degraded-envelope convention, a failed ledger query sets
     ``conditions_available=False`` with an empty list, never a fabricated
     all-clear.
+
+    ``sphere`` (``ledger=owner`` only) keeps just commitment rows by the sphere
+    the owner declared at ``create_commitment``; ``undeclared`` is its own
+    choice, never folded into a sphere (REQ-commitment-lifecycle-010). It runs
+    in SQL, so ``total`` counts the filtered set.
     """
     if ledger not in VALID_LEDGERS:
         allowed = ", ".join(sorted(VALID_LEDGERS))
@@ -1540,6 +1561,22 @@ async def get_conditions(
             detail=f"Invalid state {state!r}. Must be one of: {allowed}",
         )
 
+    sphere_filters: dict[str, Any] = {}
+    if sphere is not None:
+        if ledger != "owner":
+            raise HTTPException(status_code=400, detail="sphere is only valid with ledger=owner")
+        if sphere not in _SPHERE_FILTERS:
+            allowed = ", ".join(sorted(_SPHERE_FILTERS))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid sphere {sphere!r}. Must be one of: {allowed}",
+            )
+        sphere_filters = {"metadata_equals": {"class": COMMITMENT_METADATA_CLASS}}
+        if sphere == _SPHERE_UNDECLARED:
+            sphere_filters["metadata_missing"] = ["sphere"]
+        else:
+            sphere_filters["metadata_equals"]["sphere"] = sphere
+
     try:
         pool = db.pool("switchboard")
     except KeyError as exc:
@@ -1549,7 +1586,7 @@ async def get_conditions(
 
     try:
         total, rows = await list_conditions(
-            pool, source=source, state=state, offset=offset, limit=limit
+            pool, source=source, state=state, offset=offset, limit=limit, **sphere_filters
         )
     except Exception as exc:
         logger.warning("%s_conditions query failed (degraded state returned): %s", ledger, exc)

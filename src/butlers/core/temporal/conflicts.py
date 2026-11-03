@@ -76,7 +76,9 @@ class DetectedIssue:
     """A detected scheduling issue (pre proposal-join).
 
     ``pair_id`` is set only for ``overlap`` issues — the read-model uses it to
-    attach any matching ``pending`` proposal ids. Other kinds carry ``None``.
+    attach any matching ``pending`` proposal ids. Other kinds carry ``None``. The
+    detector hashes entry ids; ``query_calendar_conflicts`` re-keys it onto
+    provider identity so it survives a dedup-survivor rotation (bu-nd32y3).
     """
 
     kind: ConflictKind

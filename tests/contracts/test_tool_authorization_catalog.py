@@ -100,6 +100,7 @@ async def test_enabled_calendar_has_complete_post_approval_authorization(monkeyp
         assert response.effect_class == "communicate"
         assert response.owner_domain == name
         assert response.approval_policy["configured_gate"] is True
+        assert response.approval_policy["mode"] == "always_per_event"
         assert not {"_command_id", "_command_digest"} & response.input_schema["properties"].keys()
         assert catalog["calendar_response_fence_status"].llm_presentable is False
         # The same actual owner also supports response-disabled registration:
@@ -316,6 +317,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
                 assert descriptor.owner_domain == daemon.config.name
                 if descriptor.llm_presentable:
                     assert descriptor.authorization_complete, descriptor.canonical_name
+                    assert descriptor.approval_policy["mode"] in {"default", "always_per_event"}
             catalogs[directory.name] = catalog
             assert not daemon._tool_registration_failures
             assert all(status.status != "failed" for status in daemon._module_statuses.values())
@@ -335,6 +337,7 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         assert not {"_command_id", "_command_digest"} & response.input_schema["properties"].keys()
         assert response.approval_policy["enabled"] is True
         assert response.approval_policy["configured_gate"] is True
+        assert response.approval_policy["mode"] == "always_per_event"
     union = {d.canonical_name: d for c in catalogs.values() for d in c.descriptors}
     assert "drive_share_file" not in union
     assert "drive_write_file" in union
@@ -490,7 +493,7 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
 
 
 async def test_authorization_policy_freezes_and_changes_generation_only() -> None:
-    policy = {"enabled": True, "constraints": {"recipient": ["owner"]}}
+    policy = {"mode": "default", "enabled": True, "constraints": {"recipient": ["owner"]}}
     parties = ["query"]
 
     from butlers.core.tool_catalog import RecipientParameters
@@ -674,3 +677,81 @@ async def test_finance_fixed_warning_read_is_registered_sensitive_and_never_owne
     assert descriptor.output_sensitivity == "sensitive"
     assert descriptor.read_stores == ("subscriptions",) and descriptor.write_stores == ()
     assert descriptor.llm_presentable is False
+
+
+async def test_declared_approval_modes_survive_real_roster_publication(monkeypatch) -> None:
+    """D4/D13 mode is declared by the tool, independent of configured gate facts."""
+    from butlers.core.catalog_publication import decode_publication, publication
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    catalog = await _roster_catalog("messenger")
+    restored = decode_publication(publication(catalog, "messenger"), "messenger")
+    assert restored.generation_digest == catalog.generation_digest
+    for snapshot in (catalog, restored):
+        response = snapshot["calendar_respond"]
+        assert response.approval_policy["mode"] == "always_per_event"
+        assert response.approval_policy["enabled"] is True
+        assert response.approval_policy["configured_gate"] is True
+        assert response.grantable
+        # A configured gate is not an always-mode declaration.
+        assert snapshot["state_get"].approval_policy["mode"] == "default"
+        assert snapshot["calendar_response_fence_status"].approval_policy["mode"] == "default"
+        for field in ("enabled", "configured_gate"):
+            policy = {**response.approval_policy, field: False}
+            unready = replace(response, approval_policy=policy)
+            assert unready.authorization_complete
+            assert not unready.grantable
+            ungated = replace(
+                snapshot,
+                descriptors=tuple(
+                    unready if d.canonical_name == response.canonical_name else d
+                    for d in snapshot.descriptors
+                ),
+            )
+            with pytest.raises(ToolCatalogError, match="always_per_event.*calendar_respond"):
+                validate_authorization_catalog(ungated, store_writers=STORE_WRITERS)
+        with pytest.raises(TypeError):
+            response.approval_policy["mode"] = "default"
+
+
+@pytest.mark.parametrize("mode", [None, "", "sometimes", True, 1, [], {}])
+async def test_final_catalog_refuses_missing_or_invalid_approval_mode(mode) -> None:
+    catalog = await _complete_core_catalog("general")
+    reader = catalog["state_get"]
+    assert reader.authorization_complete and reader.grantable
+    policy = {} if mode is None else {"mode": mode}
+    broken = replace(reader, approval_policy=policy)
+    assert not broken.authorization_complete
+    assert not broken.grantable
+    replaced = replace(
+        catalog,
+        descriptors=tuple(
+            broken if d.canonical_name == "state_get" else d for d in catalog.descriptors
+        ),
+    )
+    with pytest.raises(ToolCatalogError, match="state_get.*approval_policy"):
+        validate_authorization_catalog(replaced, store_writers=STORE_WRITERS)
+
+
+@pytest.mark.parametrize(
+    "policy", [{}, {"mode": "sometimes"}, {"mode": "always_per_event", "enabled": False}]
+)
+async def test_finalizer_refuses_invalid_or_gate_overriding_declaration(
+    monkeypatch, policy
+) -> None:
+    from butlers.modules.calendar import CalendarModule
+
+    original = CalendarModule.tool_metadata
+
+    def invalid_declaration(module):
+        metadata = original(module)
+        if "calendar_respond" in metadata:
+            metadata["calendar_respond"] = replace(
+                metadata["calendar_respond"], approval_policy=policy
+            )
+        return metadata
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    monkeypatch.setattr(CalendarModule, "tool_metadata", invalid_declaration)
+    with pytest.raises(ToolCatalogError, match="approval_policy.*calendar_respond"):
+        await _roster_catalog("messenger")
