@@ -1237,6 +1237,23 @@ async def _run_relationship_maintenance_job(
     return await run_relationship_maintenance(pool)
 
 
+async def _run_relationship_geocode_owner_addresses_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Geocode the owner's anchor addresses for Chronicler (bu-r3fmja.3; zero LLM).
+
+    Delegates to ``run_owner_address_geocoding`` in the Relationship roster module
+    ``butlers.tools.relationship.owner_address_geocoding``, resolved at call time so
+    tests can substitute it.
+    """
+    del job_args
+    import importlib
+
+    geocoding = importlib.import_module("butlers.tools.relationship.owner_address_geocoding")
+    return await geocoding.run_owner_address_geocoding(pool)
+
+
 async def _run_prepared_action_orphan_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2148,6 +2165,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "entity_dedup_curation": _run_relationship_entity_dedup_curation_job,
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
+            "relationship_geocode_owner_addresses": (_run_relationship_geocode_owner_addresses_job),
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             **_retention_pruner_job_handlers("relationship"),
             "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,

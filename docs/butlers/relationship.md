@@ -116,6 +116,62 @@ pinned dashboard conversation, so it reaches the `meeting-debrief` skill without
 Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
 endpoint custody.
 
+## Owner anchor-address geocoding
+
+Chronicler needs to know where the owner's home and work are; Relationship owns the address
+facts, so it converts them (bu-r3fmja.3; openspec change `chronicler-situational-inference`).
+The deterministic hourly `relationship_geocode_owner_addresses` job (no session, no model;
+`roster/relationship/tools/owner_address_geocoding.py`) geocodes **only** the owner's anchor
+addresses:
+active literal `has-address` facts on
+
+1. the owner entity (`'owner' = ANY(public.entities.roles)`);
+2. an entity the owner has an active `works-at` edge to;
+3. a `place` entity the owner has an active `rental-location` or `lives-at` edge to.
+
+No contact's address and no location trail is ever sent to a geocoder. Merged or deleted
+entities are skipped.
+
+**Registering a work address.** Tell Relationship "I work at Acme; Acme's address is 1 Example
+Way, Singapore 012345". That records an owner `works-at` edge to the Acme organization entity
+and a `has-address` fact on Acme (not on the owner). The next run geocodes it.
+
+**Providers.**
+
+- Singapore addresses (the text names Singapore, ends in country code `SG`, or carries a 6-digit
+  postal code and names no other country) go to OneMap search
+  (`https://www.onemap.gov.sg/api/common/elastic/search`, first result's `LATITUDE`/`LONGITUDE`,
+  confidence 0.9). An empty OneMap result falls back to Nominatim.
+- Everything else goes to Nominatim (`https://nominatim.openstreetmap.org/search?format=json&limit=1`,
+  confidence 0.7) with the fixed User-Agent `butlers-relationship-geocoder/1.0` and at least one
+  second between requests.
+- OneMap credentials are optional. To search with a bearer token from OneMap's `getToken`
+  endpoint, open `/secrets` in the dashboard, choose **Add credential**, then **System secret**,
+  and add keys `ONEMAP_EMAIL` and `ONEMAP_PASSWORD` with target `relationship`. Without them, or
+  when the token request fails, search runs unauthenticated. They are resolved through
+  `CredentialStore` from the database only, never from the environment.
+- Outbound HTTPS needs no extra declaration: butler pods already have public egress (only
+  private ranges are fenced).
+
+**`relationship.address_geocodes`** (rel_038) holds one row per anchor `has-address` fact:
+`fact_id` (PK, FK to `entity_facts`, cascades on delete), `address_sha256` (SHA-256 of the
+stripped fact text), `status` (`resolved` / `not_found` / `failed`), `lat NUMERIC(7,5)` and
+`lon NUMERIC(8,5)` (present exactly when resolved), `provider` (`onemap` / `nominatim`),
+`confidence`, `attempts`, `geocoded_at` and `next_attempt_at`. A geocode is current only when its
+`address_sha256` matches the fact's text; Chronicler must ignore stale or unresolved rows.
+Beyond Relationship, only `butler_chronicler_rw` can read it (SELECT only).
+
+**When a fact is geocoded.** A fact is due when it has no row, its text hash changed, or a
+`not_found`/`failed` retry is due. HTTP 429/5xx, other non-2xx responses, timeouts and malformed
+bodies are `failed`; an empty result is `not_found`. Both back off 1 h, 6 h, 24 h, then doubling
+up to 7 days. A run handles at most 20 facts (new or changed text first), is serialised by an
+advisory lock, and deletes the rows of facts that are no longer anchors (for example after the
+owner leaves a job). A `resolved` row is never re-queried until its text changes.
+
+**Privacy.** The job never logs or returns address text or coordinates: log lines carry fact
+ids, statuses and providers, httpx's own request log line is suppressed for these calls (its URL
+contains the address), and the job returns counts only.
+
 ## Entity life-graph reads
 
 Two owner-only reads back the entity page's "what do I owe them, when did we last meet" doors
