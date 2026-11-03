@@ -33,6 +33,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+_CORE_MIGRATIONS = Path(__file__).resolve().parents[3] / "alembic/versions/core"
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -541,9 +542,8 @@ class TestAnomalyScan:
         # job produces them, so the test produces them the same way.
         from butlers.jobs.finance_spend_baselines import refresh_category_baselines
 
-        path = Path(__file__).resolve().parents[3] / "alembic/versions/core"
         spec = importlib.util.spec_from_file_location(
-            "core_258", path / "core_258_personal_baselines.py"
+            "core_258", _CORE_MIGRATIONS / "core_258_personal_baselines.py"
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
