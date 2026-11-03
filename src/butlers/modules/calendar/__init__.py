@@ -275,6 +275,7 @@ class CalendarModule(
             metadata["calendar_response_fence_status"] = ToolMeta(
                 arg_sensitivities={"request": True},
                 canonical_name="calendar_response_fence_status",
+                approval_policy={"mode": "default"},
                 module_name="calendar",
                 group_name="direct",
                 namespace="calendar.response",
@@ -303,6 +304,7 @@ class CalendarModule(
                 "_command_digest": True,
             },
             canonical_name="calendar_respond",
+            approval_policy={"mode": "always_per_event"},
             module_name="calendar",
             group_name="response",
             namespace="calendar.response",

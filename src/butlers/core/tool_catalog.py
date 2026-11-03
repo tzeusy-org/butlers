@@ -128,6 +128,24 @@ class ToolCatalogError(ValueError):
     """The registered surface and its checked-in metadata disagree."""
 
 
+def declared_approval_mode(policy: Mapping[str, Any] | None) -> str:
+    """Read the explicit D4/D13 declaration without consulting gate configuration."""
+    if not isinstance(policy, Mapping):
+        raise ToolCatalogError("approval_policy requires an explicit mode")
+    mode = policy.get("mode")
+    if not isinstance(mode, str) or mode not in {"default", "always_per_event"}:
+        raise ToolCatalogError("approval_policy requires mode default or always_per_event")
+    return mode
+
+
+def _has_enabled_approval_gate(policy: Mapping[str, Any] | None) -> bool:
+    return (
+        isinstance(policy, Mapping)
+        and policy.get("enabled") is True
+        and policy.get("configured_gate") is True
+    )
+
+
 def _validate_posture(value: str) -> None:
     if value not in {"eager", "deferred"}:
         raise ValueError(f"invalid tool load posture: {value!r}")
@@ -247,6 +265,10 @@ class ToolDescriptor:
             and not _owner_only_tool(self.canonical_name)
             and self.authorization_complete
             and self.effect_class != "transact"
+            and (
+                declared_approval_mode(self.approval_policy) != "always_per_event"
+                or _has_enabled_approval_gate(self.approval_policy)
+            )
         )
 
 
@@ -385,7 +407,9 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         problems.append("idempotency")
     if not isinstance(descriptor.owner_authority, bool):
         problems.append("owner_authority")
-    if not isinstance(descriptor.approval_policy, Mapping):
+    try:
+        declared_approval_mode(descriptor.approval_policy)
+    except ToolCatalogError:
         problems.append("approval_policy")
     properties = descriptor.input_schema.get("properties", {})
     selection = descriptor.selection_bound
@@ -468,6 +492,10 @@ def validate_authorization_catalog(
             raise ToolCatalogError(
                 f"invalid authorization metadata for {name}: {', '.join(problems)}"
             )
+        if declared_approval_mode(descriptor.approval_policy) == "always_per_event" and not (
+            _has_enabled_approval_gate(descriptor.approval_policy)
+        ):
+            raise ToolCatalogError(f"always_per_event tool has no enabled approvals gate: {name}")
         if descriptor.output_trust == "trusted":
             for store in descriptor.read_stores:
                 writers = store_writers.get(store)
