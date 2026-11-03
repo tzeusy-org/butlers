@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -519,6 +519,64 @@ _install_serialized_testcontainers_run()
 _install_resilient_testcontainers_stop()
 
 
+# --- Docker-skip guard for lanes that guarantee Docker (bu-u5euwb.37) ---------
+#
+# Real-PG tests skip with exactly ``DOCKER_UNAVAILABLE_SKIP_REASON`` when the
+# docker CLI is absent, which keeps a Docker-less laptop usable. In a CI lane
+# that guarantees Docker, the same skip would let a broken runner pass green
+# while running none of those tests. ``scripts/ci_lanes.py`` sets
+# ``BUTLERS_REQUIRE_DOCKER=1`` for such lanes, and this hook turns that skip
+# into a failure there. Unset, nothing changes.
+
+DOCKER_UNAVAILABLE_SKIP_REASON = "Docker not available"
+REQUIRE_DOCKER_ENV = "BUTLERS_REQUIRE_DOCKER"
+
+
+def _docker_required() -> bool:
+    return os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_docker_unavailable_skip(report: pytest.TestReport | pytest.CollectReport) -> bool:
+    """True for a plain skip (not an xfail) whose reason is the Docker one."""
+    if not report.skipped or hasattr(report, "wasxfail"):
+        return False
+    longrepr = report.longrepr
+    if not (isinstance(longrepr, tuple) and len(longrepr) == 3):
+        return False
+    reason = str(longrepr[2]).removeprefix("Skipped: ")
+    return reason == DOCKER_UNAVAILABLE_SKIP_REASON
+
+
+def _fail_required_docker_skip(report: pytest.TestReport | pytest.CollectReport) -> None:
+    if _docker_required() and _is_docker_unavailable_skip(report):
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{REQUIRE_DOCKER_ENV}=1, but this skipped with "
+            f"{DOCKER_UNAVAILABLE_SKIP_REASON!r}: this lane guarantees Docker, "
+            "so a real-PG skip here means the runner lost it."
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None]
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report: pytest.TestReport = yield
+    _fail_required_docker_skip(report)
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(
+    collector: pytest.Collector,
+) -> Generator[None, pytest.CollectReport, pytest.CollectReport]:
+    # A module-level ``pytest.skip(..., allow_module_level=True)`` skips at
+    # collection, so it reaches a CollectReport and never a TestReport.
+    report: pytest.CollectReport = yield
+    _fail_required_docker_skip(report)
+    return report
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Cap ``-n auto`` to the repo's intended worker count.
 
@@ -692,9 +750,11 @@ async def db(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..
     """Async factory for pools on fresh migrated clones (``butlers.testing.db``).
 
     ``pool = await db("core", "relationship", schemas={"relationship": "relationship"},
-    schema="relationship")``. Every pool it opened closes at teardown.
+    schema="relationship")``. ``await db.open(url, schema=...)`` opens a pool on a URL
+    from ``fresh_db`` when a test also needs that URL (raw connections, admin sessions).
+    Every pool it opened closes at teardown.
     """
-    from butlers.testing.db import migrated_pool
+    from butlers.testing.db import migrated_pool, open_pool
 
     pools: list[Pool] = []
 
@@ -702,6 +762,13 @@ async def db(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..
         pool = await migrated_pool(postgres_container, *chains, **kwargs)
         pools.append(pool)
         return pool
+
+    async def _open(db_url: str, **kwargs: Any) -> Pool:
+        pool = await open_pool(db_url, **kwargs)
+        pools.append(pool)
+        return pool
+
+    _make.open = _open  # type: ignore[attr-defined]
 
     try:
         yield _make

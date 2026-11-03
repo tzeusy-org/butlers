@@ -104,9 +104,11 @@ digest keep binding the proposal, so the case API's `export_retained` proof and 
 rebuild (`head_sha`) are unchanged. The guard enforces the same eligibility for every role and makes a
 pruned row final. A BEFORE INSERT trigger (`qa_publication_exports_unpruned_insert`) refuses a row
 inserted with `pruned_at` set, so the guarded UPDATE is the only way to a tombstone. The window is
-measured from `healing_attempts.closed_at` as the QA role writes it. That table has no row-security
-fence, so the window is only as trustworthy as its writers; the lineage-hold check reads the fenced
-ledger. Only `butler_qa_rw` reaches a row for update (forced row security, UPDATE policy for
+measured from `healing_attempts.closed_at`, which no DML writer chooses: that table has no
+row-security fence, so core_305's `healing_attempts_closed_at_stamp` trigger (every role) stamps
+`closed_at` with database time when a row enters a terminal status, keeps it unchanged on any later
+update of a terminal row, and clears it on a non-terminal row. Backdating a close needs the table
+owner to disable the trigger. The lineage-hold check reads the fenced ledger. Only `butler_qa_rw` reaches a row for update (forced row security, UPDATE policy for
 that role alone). A pruned export refuses with `export_pruned` on load and on re-retention. The QA
 module runs the prune in the daily `qa_evidence_cleanup` job, at `retention_cleanup_hour`, 100 rows per
 run. A prune failure is logged and does not fail the evidence cleanup. Only the last schema to leave
@@ -137,6 +139,14 @@ Rollback: remove the injected publisher (the default). Ledger rows, holds and di
 kept, and no remote branch or PR is deleted.
 
 ## Durable operations and holds
+
+The case dossier observes PR lifecycle read-only through the existing bounded GitHub metadata
+client and TTL cache. An adopted PR's number, URL and branch remain visible when that lifecycle is
+unavailable: the panel says `PR state unknown` and keeps Open PR. A failed, timed-out or otherwise
+terminal investigation never proves that its PR closed. Explicit provider lifecycle supersedes the
+local positive state, and only a positively merged observation supplies a merge timestamp; attempt
+closure time is not that evidence. A checks lookup failure preserves a successful PR observation.
+This display does not change attempt history, publication receipts, lineage holds or activation gates.
 
 `public.qa_publication_operations` (migration `core_266`) holds one row per `(attempt, operation
 kind)`, where the kind is one of the closed set `branch_push`, `pr_create`, `pr_update`, `pr_labels`.

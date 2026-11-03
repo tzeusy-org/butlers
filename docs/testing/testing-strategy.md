@@ -42,6 +42,8 @@ three root `conftest.py` fixtures:
   `await db("core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard")`.
 - `fresh_db`: a sync factory returning a URL, for migration-subject tests, for example
   `fresh_db("core", revisions={"core": "core_170"})`.
+- `db.open(url, schema=...)`: a pool on a `fresh_db` URL, for tests that need both the pool and
+  the URL (raw `asyncpg.connect` sessions, admin connections); it closes at teardown too.
 
 Each xdist worker migrates once per distinct chain request into a template database; every
 test then gets its own `CREATE DATABASE ... TEMPLATE` clone, so isolation stays per test while
@@ -132,7 +134,7 @@ make test-ci-integration
 ```
 
 CI also runs static checks and a separate smoke/release-evidence step; terminal
-hosted CI is the only evidence for the whole `check` job. For a given SHA, one
+hosted CI is the only evidence for the whole `alls-green` check. For a given SHA, one
 owner may run a broad local lane from a clean worktree; its receipt records the
 SHA and rejects dirty state. Reviewers reuse only a matching clean receipt and
 run focused checks for any finding rather than repeating the entire suite.

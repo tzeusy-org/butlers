@@ -17,6 +17,9 @@ Scope: v1-mandatory
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
 - **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, `published`, `ambiguous`, or `unavailable`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the sanitized bounded `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
+- **AND** known PR identity is independent of nullable PR lifecycle: terminal attempt outcomes never imply a closed PR, and unavailable lifecycle metadata retains the PR summary/link and published classification
+- **AND** read-only dossier metadata may supersede a positive local PR state with explicit GitHub open/draft/closed/merged evidence; only a positively merged observation supplies the merge timestamp, never the attempt's closure time
+- **AND** missing, malformed or unavailable provider observations do not synthesize lifecycle; an unavailable checks observation does not discard valid PR lifecycle metadata, and case-list reads perform no provider lookup
 
 #### Scenario: GET /api/qa/cases/:id/journal
 - **WHEN** `GET /api/qa/cases/:id/journal` is called with optional `cursor` and `limit` (default 50, max 500)
@@ -38,7 +41,7 @@ Scope: v1-mandatory
 The QA summary SHALL expose an evidence-qualified, time-windowed incident funnel that distinguishes observations, admitted investigations, proposals, published PRs, merges, deployment and verified recovery; it SHALL not label merge time as repair time.
 
 ID: REQ-qa-dashboard-002
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D10, D17 and D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Summary KPI block
@@ -57,6 +60,7 @@ Scope: v1-mandatory
 - **AND** the five cells consume merged_prs, verified_recoveries, recovery_rate, active_cases and failed_executions, with current/prior equally sized cohorts for comparisons and no reads of retired mttr/self_resolved fields
 - **AND** event-time stages name their boundary: observation captured_at, incident admitted_at, immutable proposal sealed_at, PR created_at, merged_at, deployment observed_at, recovery verified_at and session ended_at
 - **AND** usage joins trusted initial/follow-up session lineage, reports covered/expected session counts and separate input/output/cache counters by reported model, and leaves absent billing/model/linkage as unknown
+- **AND** usage covers QA engineering-executor sessions only; `qa_triage_v1` staffer-goal usage remains RFC 0038 goal-ledger accounting and is either reported as a separately labeled figure from that ledger or named as excluded coverage, never folded into executor usage or shown as zero
 
 #### Scenario: Recovery requires deployment and observation evidence
 - **WHEN** a PR is merged but deployment is unknown, a source is partial, or no successful relevant observation exists
@@ -184,7 +188,7 @@ Scope: v1-mandatory
 The QA dashboard SHALL render any single case (either as the right-pane on `/qa?case=` or as the full body of `/qa/investigations/:attemptId`) using a shared Case Dossier component composed of a header, a two-column diagnosis/PR body, and a full-width patrol journal.
 
 ID: REQ-qa-dashboard-005
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D11 and D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Dossier header
@@ -227,6 +231,7 @@ Scope: v1-mandatory
 - **WHEN** the Case Dossier renders the right column
 - **THEN** it renders a PR panel (when `pr` is non-null) containing:
   - State chip (drafted/open/merged/closed) with appropriate state color from the Dispatch palette
+  - A neutral `PR state unknown` chip when a known PR has nullable lifecycle; its Open PR link remains available, without a no-PR, closed, merged or success claim
   - Mono `pr #<number> · <state>`
   - Sans-500 14 px PR title
   - Mono caption with branch name, CI status, `+<additions> −<deletions>`
@@ -240,6 +245,7 @@ Scope: v1-mandatory
 - **WHEN** the Case Dossier renders a case whose attempt carries a `healing_session_id` and/or a non-empty `session_ids[]`
 - **THEN** it renders a "Session trace" section with a real navigation door (a react-router `<Link>` to `/sessions/:id`, not a dead onClick) for the investigation session (`healing_session_id`) and one door per failing session in `session_ids[]`
 - **AND** when `healing_session_id` is null AND `session_ids` is empty, the section is not rendered at all — no empty header and no broken link
+- **AND** a failing goal invocation, which has no `/sessions/:id` row after the RFC 0038 switch, renders as a labeled goal/invocation identifier that links only to an existing dashboard goal-ledger view and otherwise stays plain text, never a dead `/sessions/:id` door
 
 #### Scenario: Patrol journal section
 - **WHEN** the Case Dossier renders the full-width patrol journal section

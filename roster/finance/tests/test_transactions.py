@@ -24,70 +24,14 @@ def _utcnow() -> datetime:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with finance tables and return a pool."""
-    async with provisioned_postgres_pool() as p:
-        # Create finance.accounts (dependency of transactions)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                institution TEXT NOT NULL,
-                type        TEXT NOT NULL
-                                CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-                name        TEXT,
-                last_four   CHAR(4),
-                currency    CHAR(3) NOT NULL DEFAULT 'USD',
-                metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # Create finance.transactions
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-                source_message_id TEXT,
-                posted_at         TIMESTAMPTZ NOT NULL,
-                merchant          TEXT NOT NULL,
-                description       TEXT,
-                amount            NUMERIC(14, 2) NOT NULL,
-                currency          CHAR(3) NOT NULL,
-                direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-                category          TEXT NOT NULL,
-                payment_method    TEXT,
-                receipt_url       TEXT,
-                external_ref      TEXT,
-                metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_transactions_posted_at
-                ON transactions (posted_at DESC)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_transactions_merchant
-                ON transactions (merchant)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_transactions_category
-                ON transactions (category)
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_transactions_source_message_id
-                ON transactions (source_message_id)
-        """)
-        # Dedupe partial index
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe
-                ON transactions (source_message_id, merchant, amount, posted_at)
-                WHERE source_message_id IS NOT NULL
-        """)
-
-        yield p
+async def finance_pool(db):
+    """Core+finance clone; seeds the non-system categories these tests record under."""
+    pool = await db("core", "finance")
+    await pool.executemany(
+        "INSERT INTO categories (name, display_name) VALUES ($1, $1) ON CONFLICT DO NOTHING",
+        [("fuel",), ("refunds",)],
+    )
+    return pool
 
 
 # ------------------------------------------------------------------
@@ -95,13 +39,13 @@ async def pool(provisioned_postgres_pool):
 # ------------------------------------------------------------------
 
 
-async def test_record_transaction_basic(pool):
+async def test_record_transaction_basic(finance_pool):
     """record_transaction creates a row and returns a TransactionRecord dict."""
     from butlers.tools.finance.transactions import record_transaction
 
     now = _utcnow()
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Trader Joe's",
         amount=-42.50,
@@ -118,12 +62,12 @@ async def test_record_transaction_basic(pool):
     assert result["id"] is not None
 
 
-async def test_record_transaction_positive_amount_is_credit(pool):
+async def test_record_transaction_positive_amount_is_credit(finance_pool):
     """Positive amount infers credit direction (money in / refund)."""
     from butlers.tools.finance.transactions import record_transaction
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="PayPal",
         amount=100.00,
@@ -135,12 +79,12 @@ async def test_record_transaction_positive_amount_is_credit(pool):
     assert Decimal(str(result["amount"])) == Decimal("100.00")
 
 
-async def test_record_transaction_explicit_debit_overrides_positive_amount(pool):
+async def test_record_transaction_explicit_debit_overrides_positive_amount(finance_pool):
     """Explicit debit direction coerces a positive amount into money-out semantics."""
     from butlers.tools.finance.transactions import record_transaction
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="Nutrition Kitchen SG",
         amount=162.00,
@@ -153,12 +97,12 @@ async def test_record_transaction_explicit_debit_overrides_positive_amount(pool)
     assert Decimal(str(result["amount"])) == Decimal("162.00")
 
 
-async def test_record_transaction_negative_amount_is_debit(pool):
+async def test_record_transaction_negative_amount_is_debit(finance_pool):
     """Negative amount infers debit direction (money out)."""
     from butlers.tools.finance.transactions import record_transaction
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="Netflix",
         amount=-15.49,
@@ -170,13 +114,13 @@ async def test_record_transaction_negative_amount_is_debit(pool):
     assert Decimal(str(result["amount"])) == Decimal("15.49")
 
 
-async def test_record_transaction_optional_fields(pool):
+async def test_record_transaction_optional_fields(finance_pool):
     """Optional fields are persisted when provided."""
     from butlers.tools.finance.transactions import record_transaction
 
     now = _utcnow()
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Amazon",
         amount=-29.99,
@@ -198,12 +142,12 @@ async def test_record_transaction_optional_fields(pool):
     assert result["metadata"]["order_id"] == "ORD-456"
 
 
-async def test_record_transaction_metadata_defaults_to_empty_dict(pool):
+async def test_record_transaction_metadata_defaults_to_empty_dict(finance_pool):
     """Metadata field defaults to empty dict when not provided."""
     from butlers.tools.finance.transactions import record_transaction
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="Starbucks",
         amount=-5.25,
@@ -214,13 +158,13 @@ async def test_record_transaction_metadata_defaults_to_empty_dict(pool):
     assert result["metadata"] == {} or result["metadata"] is not None
 
 
-async def test_record_transaction_dedupe_via_source_message_id(pool):
+async def test_record_transaction_dedupe_via_source_message_id(finance_pool):
     """Duplicate insert with same source_message_id returns existing row."""
     from butlers.tools.finance.transactions import record_transaction
 
     now = _utcnow()
     first = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Chase Alert",
         amount=-75.00,
@@ -230,7 +174,7 @@ async def test_record_transaction_dedupe_via_source_message_id(pool):
     )
 
     second = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Chase Alert",
         amount=-75.00,
@@ -242,13 +186,13 @@ async def test_record_transaction_dedupe_via_source_message_id(pool):
     assert first["id"] == second["id"]
 
     # Verify only one row exists
-    count = await pool.fetchval(
+    count = await finance_pool.fetchval(
         "SELECT COUNT(*) FROM transactions WHERE source_message_id = 'email-dedupe-001'"
     )
     assert count == 1
 
 
-async def test_cross_source_dedup_same_business_identity(pool):
+async def test_cross_source_dedup_same_business_identity(finance_pool):
     """Different source_message_ids with same business identity are deduped.
 
     Catches cross-source duplicates where the same real-world transaction
@@ -262,7 +206,7 @@ async def test_cross_source_dedup_same_business_identity(pool):
 
     now = datetime(2025, 1, 15, 12, tzinfo=UTC)
     first = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Lyft",
         amount=-12.00,
@@ -273,7 +217,7 @@ async def test_cross_source_dedup_same_business_identity(pool):
     # Second ingestion from different channel — different source_message_id
     # and posted_at offset by a few minutes (simulating email vs Telegram).
     second = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now + timedelta(minutes=3),
         merchant="Lyft",
         amount=-12.00,
@@ -285,13 +229,13 @@ async def test_cross_source_dedup_same_business_identity(pool):
     assert first["id"] == second["id"]
 
 
-async def test_record_transaction_no_source_id_allows_duplicates(pool):
+async def test_record_transaction_no_source_id_allows_duplicates(finance_pool):
     """Without source_message_id, identical transactions create separate rows."""
     from butlers.tools.finance.transactions import record_transaction
 
     now = _utcnow()
     first = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Uber",
         amount=-8.00,
@@ -299,7 +243,7 @@ async def test_record_transaction_no_source_id_allows_duplicates(pool):
         category="transport",
     )
     second = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=now,
         merchant="Uber",
         amount=-8.00,
@@ -310,12 +254,12 @@ async def test_record_transaction_no_source_id_allows_duplicates(pool):
     assert first["id"] != second["id"]
 
 
-async def test_record_transaction_currency_uppercased(pool):
+async def test_record_transaction_currency_uppercased(finance_pool):
     """Currency code is stored as uppercase."""
     from butlers.tools.finance.transactions import record_transaction
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="Wise",
         amount=-50.00,
@@ -326,12 +270,12 @@ async def test_record_transaction_currency_uppercased(pool):
     assert result["currency"] == "EUR"
 
 
-async def test_record_transaction_with_account_id(pool):
+async def test_record_transaction_with_account_id(finance_pool):
     """account_id is stored as UUID string when provided."""
     from butlers.tools.finance.transactions import record_transaction
 
     # Create an account first
-    account_id = await pool.fetchval(
+    account_id = await finance_pool.fetchval(
         """
         INSERT INTO accounts (institution, type, currency)
         VALUES ('Chase', 'credit', 'USD')
@@ -340,7 +284,7 @@ async def test_record_transaction_with_account_id(pool):
     )
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="Whole Foods",
         amount=-85.00,
@@ -352,11 +296,11 @@ async def test_record_transaction_with_account_id(pool):
     assert result["account_id"] == str(account_id)
 
 
-async def test_record_transaction_resolves_slugged_composite_account_label(pool):
+async def test_record_transaction_resolves_slugged_composite_account_label(finance_pool):
     """A documented slug label resolves across institution, type, and last four."""
     from butlers.tools.finance.transactions import record_transaction
 
-    account_id = await pool.fetchval(
+    account_id = await finance_pool.fetchval(
         """
         INSERT INTO accounts (institution, type, name, last_four, currency)
         VALUES ('Example Bank', 'credit', 'Example Rewards', '4321', 'SGD')
@@ -365,7 +309,7 @@ async def test_record_transaction_resolves_slugged_composite_account_label(pool)
     )
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="Example Merchant",
         amount=-12.34,
@@ -377,12 +321,12 @@ async def test_record_transaction_resolves_slugged_composite_account_label(pool)
     assert result["account_id"] == str(account_id)
 
 
-async def test_record_transaction_returns_string_id(pool):
+async def test_record_transaction_returns_string_id(finance_pool):
     """Returned id is a string (UUID serialized)."""
     from butlers.tools.finance.transactions import record_transaction
 
     result = await record_transaction(
-        pool=pool,
+        pool=finance_pool,
         posted_at=_utcnow(),
         merchant="BP Gas",
         amount=-45.00,
@@ -401,7 +345,7 @@ async def test_record_transaction_returns_string_id(pool):
 
 
 @pytest.fixture
-async def seeded_pool(pool):
+async def seeded_pool(finance_pool):
     """Pool with a set of pre-seeded transactions for filter testing."""
     from butlers.tools.finance.transactions import record_transaction
 
@@ -444,9 +388,9 @@ async def seeded_pool(pool):
         },
     ]
     for txn in txns:
-        await record_transaction(pool=pool, **txn)
+        await record_transaction(pool=finance_pool, **txn)
 
-    return pool
+    return finance_pool
 
 
 async def test_list_transactions_returns_all(seeded_pool):
@@ -577,11 +521,11 @@ async def test_list_transactions_pagination_offset(seeded_pool):
     assert len(page2["items"]) == 2  # remaining 2
 
 
-async def test_list_transactions_empty_result(pool):
+async def test_list_transactions_empty_result(finance_pool):
     """list_transactions returns empty items with total=0 when no rows."""
     from butlers.tools.finance.transactions import list_transactions
 
-    result = await list_transactions(pool=pool)
+    result = await list_transactions(pool=finance_pool)
 
     assert result["total"] == 0
     assert result["items"] == []

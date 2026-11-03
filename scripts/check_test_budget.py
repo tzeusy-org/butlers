@@ -47,7 +47,7 @@ BASELINE_PATH = SCRIPTS_DIR / "test-budget-baseline.json"
 HEADROOM = 0.05
 BASELINE_NOTE = (
     "Per-lane collected-test budget (scripts/check_test_budget.py). A lane over "
-    "budget fails check-preflight: condense tests in the same PR, or run "
+    "budget fails the smoke job: condense tests in the same PR, or run "
     "`uv run python scripts/check_test_budget.py --update-baseline` and state the "
     "net test delta (Tests: +added ~extended -removed) and why in the PR body. "
     "Budgets are current count + 5% at the last update; never raise them silently."
