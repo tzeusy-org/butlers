@@ -9,7 +9,6 @@ extension installed.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -20,6 +19,7 @@ from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migration_db,
     index_exists,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -31,14 +31,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_138_calendar_events_search_trgm.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_138", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +89,7 @@ def test_trgm_index_created_idempotent_and_downgrade_keeps_extension(postgres_co
     # across the core chain: later revisions install privileged boundaries
     # whose rollback is deliberately bootstrap-only, so migrating to head first
     # would make this one-revision rollback walk them.
-    command.upgrade(core, f"core@{_load_migration().revision}")
+    command.upgrade(core, f"core@{load_migration(_MIGRATION_PATH, 'core_138').revision}")
 
     assert index_exists(db_url, "ix_calendar_events_search_trgm"), (
         "trigram index should exist after upgrade"

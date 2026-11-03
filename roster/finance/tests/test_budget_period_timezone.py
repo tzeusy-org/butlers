@@ -17,76 +17,36 @@ day, and constant enough that the expected instants can be written down.
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-import asyncpg
 import pytest
 
 from butlers.core.general_settings import save_general_settings
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight.broker import create_insight_tables
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    # The shared `db` factory's pools live on the session loop.
+    pytest.mark.asyncio(loop_scope="session"),
 ]
 
 OWNER_TZ = "Asia/Singapore"  # UTC+8, no DST — a stable 8-hour skew from UTC
 SGT = ZoneInfo(OWNER_TZ)
 
-CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS finance"
-
-# ``state`` holds the shared general settings the owner timezone is read from;
-# it lives in ``public`` so any butler-scoped search_path can reach it.
-CREATE_STATE_SQL = """
-CREATE TABLE IF NOT EXISTS state (
-    key        TEXT PRIMARY KEY,
-    value      JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    version    INTEGER NOT NULL DEFAULT 1
-)
-"""
-
-CREATE_TRANSACTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS finance.transactions (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    posted_at  TIMESTAMPTZ NOT NULL,
-    merchant   TEXT NOT NULL,
-    amount     NUMERIC(14, 2) NOT NULL,
-    currency   CHAR(3) NOT NULL,
-    direction  TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    category   TEXT NOT NULL,
-    deleted_at TIMESTAMPTZ
-)
-"""
-
-CREATE_BUDGETS_SQL = """
-CREATE TABLE IF NOT EXISTS finance.budgets (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    category        TEXT NOT NULL,
-    period          TEXT NOT NULL CHECK (period IN ('daily','weekly','monthly','quarterly','yearly')),
-    amount          NUMERIC(14, 2) NOT NULL,
-    currency        CHAR(3) NOT NULL DEFAULT 'USD',
-    warn_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
-    alert_threshold NUMERIC(5, 4) NOT NULL DEFAULT 1.0000,
-    is_active       BOOLEAN NOT NULL DEFAULT true,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
 
 async def _setup(pool, *, timezone: str = OWNER_TZ) -> None:
-    """Provision the finance tables and pin the owner's configured timezone."""
-    await pool.execute(CREATE_SCHEMA_SQL)
-    await pool.execute(CREATE_STATE_SQL)
-    await pool.execute(CREATE_TRANSACTIONS_SQL)
-    await pool.execute(CREATE_BUDGETS_SQL)
+    """Seed the budgeted categories and pin the owner's configured timezone.
+
+    The finance tables and ``public.state`` come from the real migrations.
+    """
+    await pool.execute(
+        "INSERT INTO finance.categories (name, display_name) VALUES "
+        "('coffee', 'Coffee'), ('rent', 'Rent') ON CONFLICT (name) DO NOTHING"
+    )
     await save_general_settings(
         pool,
         timezone=timezone,
@@ -138,7 +98,7 @@ def _only(result: dict) -> dict:
 
 
 async def test_monthly_window_starts_at_owner_midnight_not_utc_midnight(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A day boundary: 2026-08-01 begins at 2026-07-31T16:00Z for a UTC+8 owner.
 
@@ -146,7 +106,7 @@ async def test_monthly_window_starts_at_owner_midnight_not_utc_midnight(
     it belongs to the August budget.  A UTC-derived window still calls that
     instant July and drops it.
     """
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="rent", period="monthly", amount="100.00")
         await _spend(pool, category="rent", at=datetime(2026, 7, 31, 17, 30, tzinfo=UTC))
@@ -159,13 +119,13 @@ async def test_monthly_window_starts_at_owner_midnight_not_utc_midnight(
         assert item["status"] == "exceeded"
 
 
-async def test_monthly_window_excludes_the_owners_previous_day(provisioned_postgres_pool):
+async def test_monthly_window_excludes_the_owners_previous_day(finance_clone):
     """The other side of the same boundary: 2026-07-31T15:00Z is still July.
 
     23:00 on July 31st in Singapore must not count against the August budget,
     even though the scan is running after UTC has ticked past that instant.
     """
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="rent", period="monthly", amount="100.00")
         await _spend(pool, category="rent", at=datetime(2026, 7, 31, 15, 0, tzinfo=UTC))
@@ -177,13 +137,13 @@ async def test_monthly_window_excludes_the_owners_previous_day(provisioned_postg
         assert item["status"] == "on_track"
 
 
-async def test_weekly_window_follows_the_owners_monday(provisioned_postgres_pool):
+async def test_weekly_window_follows_the_owners_monday(finance_clone):
     """An ISO-week boundary: 2026-07-06 is a Monday in Singapore while UTC says Sunday.
 
     2026-07-05T17:30Z is Monday 01:30 SGT — the first hours of ISO week 28 —
     so it opens the new week's budget rather than closing the old one's.
     """
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="coffee", period="weekly", amount="100.00")
         await _spend(pool, category="coffee", at=datetime(2026, 7, 5, 17, 30, tzinfo=UTC))
@@ -195,9 +155,9 @@ async def test_weekly_window_follows_the_owners_monday(provisioned_postgres_pool
         assert item["spent"] == "110.00"
 
 
-async def test_weekly_window_excludes_the_owners_sunday_night(provisioned_postgres_pool):
+async def test_weekly_window_excludes_the_owners_sunday_night(finance_clone):
     """2026-07-05T15:00Z is Sunday 23:00 SGT — the last hour of the PREVIOUS week."""
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="coffee", period="weekly", amount="100.00")
         await _spend(pool, category="coffee", at=datetime(2026, 7, 5, 15, 0, tzinfo=UTC))
@@ -208,9 +168,9 @@ async def test_weekly_window_excludes_the_owners_sunday_night(provisioned_postgr
         assert item["spent"] == "0"  # empty window
 
 
-async def test_weekly_window_excludes_the_owners_next_monday(provisioned_postgres_pool):
+async def test_weekly_window_excludes_the_owners_next_monday(finance_clone):
     """The upper edge: 2026-07-12T16:30Z is already Monday 00:30 SGT of week 29."""
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="coffee", period="weekly", amount="100.00")
         await _spend(pool, category="coffee", at=datetime(2026, 7, 12, 16, 30, tzinfo=UTC))
@@ -222,14 +182,14 @@ async def test_weekly_window_excludes_the_owners_next_monday(provisioned_postgre
         assert item["spent"] == "0"  # empty window
 
 
-async def test_window_bounds_are_half_open_on_the_exact_instants(provisioned_postgres_pool):
+async def test_window_bounds_are_half_open_on_the_exact_instants(finance_clone):
     """Owner-local midnight opens the window; the next period's midnight closes it.
 
     Both edges are asserted in one window so an off-by-one in either direction
     (an inclusive upper bound, or an exclusive lower one) shows up as a spend
     total that is not exactly one transaction.
     """
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="coffee", period="weekly", amount="100.00")
         # Exactly 2026-07-06T00:00 SGT — the first instant of the window.
@@ -253,13 +213,13 @@ async def test_window_bounds_are_half_open_on_the_exact_instants(provisioned_pos
         assert item["spent"] == "110.00"
 
 
-async def test_quarterly_window_follows_the_owners_quarter(provisioned_postgres_pool):
+async def test_quarterly_window_follows_the_owners_quarter(finance_clone):
     """A quarter boundary: Q3 opens at 2026-06-30T16:00Z for a UTC+8 owner.
 
     The rarest boundary to hit by accident and the costliest to get wrong — a
     quarterly budget mis-attributes for three months, not one day.
     """
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="travel", period="quarterly", amount="100.00")
         await _spend(pool, category="travel", at=datetime(2026, 6, 30, 17, 30, tzinfo=UTC))
@@ -272,10 +232,10 @@ async def test_quarterly_window_follows_the_owners_quarter(provisioned_postgres_
 
 
 async def test_quarterly_window_excludes_the_owners_last_quarter_night(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """2026-06-30T15:00Z is 23:00 SGT on the last night of Q2 — not Q3 spending."""
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool)
         await _budget(pool, category="travel", period="quarterly", amount="100.00")
         await _spend(pool, category="travel", at=datetime(2026, 6, 30, 15, 0, tzinfo=UTC))
@@ -286,13 +246,13 @@ async def test_quarterly_window_excludes_the_owners_last_quarter_night(
         assert item["spent"] == "0"  # empty window
 
 
-async def test_utc_owner_keeps_the_utc_window(provisioned_postgres_pool):
+async def test_utc_owner_keeps_the_utc_window(finance_clone):
     """An unconfigured (UTC) owner sees exactly the pre-existing behaviour.
 
     The timezone decision is a generalisation, not a redefinition: the default
     of ``UTC`` has to leave every existing deployment — and CI — untouched.
     """
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup(pool, timezone="UTC")
         await _budget(pool, category="coffee", period="weekly", amount="100.00")
         # Sunday 23:00 UTC: inside the UTC week, outside the Singapore one.
@@ -311,39 +271,12 @@ async def test_utc_owner_keeps_the_utc_window(provisioned_postgres_pool):
 
 
 @pytest.fixture
-def scan_db_url(postgres_container):
-    """Run full core and Finance migrations before entering the test's event loop."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-        schemas={"finance": "finance"},
-    )
-
-
-@pytest.fixture
-def migrated_scan_pool(scan_db_url):
-    """Keep public shared settings/Insight tables and real Finance tables distinct."""
+def finance_clone(db):
+    """Real core+finance clones; Finance in its own schema, shared settings in public."""
 
     @asynccontextmanager
     async def _pool():
-        candidate = asyncpg.create_pool(
-            scan_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-        )
-        try:
-            pool = await candidate
-        except BaseException:
-            candidate.terminate()
-            raise
-        try:
-            yield pool
-        finally:
-            try:
-                async with asyncio.timeout(5):
-                    await pool.close()
-            except BaseException:
-                pool.terminate()
-                raise
+        yield await db("core", "finance", schemas={"finance": "finance"})
 
     return _pool
 
@@ -406,7 +339,7 @@ def _budget_proposal(proposals: list[dict]) -> dict:
     return matches[0]
 
 
-async def test_insight_scan_dedup_key_uses_the_owners_iso_week(migrated_scan_pool, monkeypatch):
+async def test_insight_scan_dedup_key_uses_the_owners_iso_week(finance_clone, monkeypatch):
     """The dedup token is derived from the owner's week, so it turns over on the owner's Monday.
 
     Anchored at 2026-07-05T17:00Z — Monday 01:00 SGT, ISO week 28 — while UTC is
@@ -415,7 +348,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_iso_week(migrated_scan_poo
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with migrated_scan_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_scan(pool)
         proposals = _capture_proposals(monkeypatch)
         await _budget(pool, category="coffee", period="weekly", amount="50.00")
@@ -436,11 +369,11 @@ async def test_insight_scan_dedup_key_uses_the_owners_iso_week(migrated_scan_poo
         assert cand["expires_at"] == datetime(2026, 7, 13, tzinfo=SGT)
 
 
-async def test_insight_scan_dedup_key_uses_the_owners_quarter(migrated_scan_pool, monkeypatch):
+async def test_insight_scan_dedup_key_uses_the_owners_quarter(finance_clone, monkeypatch):
     """Anchored at 2026-06-30T17:00Z — Q3 for the owner, still Q2 for UTC."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with migrated_scan_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_scan(pool)
         proposals = _capture_proposals(monkeypatch)
         await _budget(pool, category="travel", period="quarterly", amount="1000.00")
@@ -458,7 +391,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_quarter(migrated_scan_pool
         assert cand["expires_at"] == datetime(2026, 10, 1, tzinfo=SGT)
 
 
-async def test_insight_scan_dedup_key_uses_the_owners_month(migrated_scan_pool, monkeypatch):
+async def test_insight_scan_dedup_key_uses_the_owners_month(finance_clone, monkeypatch):
     """The month-scoped identity comes from the owner's calendar too.
 
     One anchor governs every window the scan derives, so a key ending
@@ -467,7 +400,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_month(migrated_scan_pool, 
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with migrated_scan_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_scan(pool)
         proposals = _capture_proposals(monkeypatch)
         await _budget(pool, category="rent", period="monthly", amount="100.00")
@@ -480,7 +413,7 @@ async def test_insight_scan_dedup_key_uses_the_owners_month(migrated_scan_pool, 
         assert cand["expires_at"] == datetime(2026, 9, 1, tzinfo=SGT)
 
 
-async def test_daily_owner_windows_drive_status_alert_and_pressure(migrated_scan_pool, monkeypatch):
+async def test_daily_owner_windows_drive_status_alert_and_pressure(finance_clone, monkeypatch):
     """Daily spending and both outputs use the same local day, including DST edges."""
     from datetime import date, time, timedelta
     from unittest.mock import AsyncMock
@@ -489,7 +422,7 @@ async def test_daily_owner_windows_drive_status_alert_and_pressure(migrated_scan
 
     publisher = AsyncMock()
     monkeypatch.setattr("butlers.core_tools._domain_events.publish_domain_event_once", publisher)
-    async with migrated_scan_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_scan(pool)
         for zone_name, day in (
             ("UTC", date(2026, 7, 6)),

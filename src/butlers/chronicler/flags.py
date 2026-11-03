@@ -121,6 +121,7 @@ SOURCE_CRON_MINUTES: dict[str, int] = {
     "comms.message_bursts": 15,
     "activitywatch.window": 15,
     "chronicler.occupation_inferred": 60,
+    "chronicler.situation_inferred": 30,
     "home_assistant.sensor_activity": 30,
 }
 

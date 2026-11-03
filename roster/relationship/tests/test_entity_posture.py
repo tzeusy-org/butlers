@@ -22,14 +22,9 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.jobs.briefing import _count_birthdays_on, run_relationship_briefing_contribution
 from butlers.jobs.calendar_overlay import run_relationship_calendar_overlay_contribution
-from butlers.testing.migration import (
-    create_migrated_test_db,
-    migration_bootstrap_db_url,
-    migration_db_name,
-)
+from butlers.testing.migration import migration_bootstrap_db_url
 from butlers.tools.relationship.posture import entity_set_posture
 
 pytestmark = [
@@ -44,43 +39,25 @@ _PROBE_ROLE = "butler_posture_probe_rw"
 _RELATIONSHIP_ROLE = "butler_relationship_rw"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship", "contacts"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> AsyncIterator[asyncpg.Pool]:
-    connection_pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
-    )
-    # contacts_004 supplies the entity anchor AND nullable contact_id required by
-    # the contactless arm. Retain this original idempotent fixture guard as a no-op
-    # after the canonical contacts chain; do not hand-copy its schema constraints.
-    await connection_pool.execute(
-        "ALTER TABLE important_dates ADD COLUMN IF NOT EXISTS local_entity_id UUID"
-    )
-    yield connection_pool
-    await connection_pool.close()
+async def rel_pool(db) -> asyncpg.Pool:
+    # contacts_004 supplies the entity anchor and nullable contact_id (contactless arm).
+    return await db("core", "memory", "relationship", "contacts")
 
 
-async def _person_with_birthday(pool: asyncpg.Pool, name: str, on: date) -> Any:
-    entity_id = await pool.fetchval(
+async def _person_with_birthday(rel_pool: asyncpg.Pool, name: str, on: date) -> Any:
+    entity_id = await rel_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) "
         "VALUES ($1, 'person') RETURNING id",
         name,
     )
-    contact_id = await pool.fetchval("SELECT gen_random_uuid()")
-    await pool.execute(
+    contact_id = await rel_pool.fetchval("SELECT gen_random_uuid()")
+    await rel_pool.execute(
         "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
         contact_id,
         entity_id,
     )
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO important_dates (contact_id, label, month, day) "
         "VALUES ($1, 'Birthday', $2, $3)",
         contact_id,
@@ -90,16 +67,16 @@ async def _person_with_birthday(pool: asyncpg.Pool, name: str, on: date) -> Any:
     return entity_id
 
 
-async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool) -> None:
-    entity_id = await _person_with_birthday(pool, "Person Count", _TOMORROW)
-    assert await _count_birthdays_on(pool, _TOMORROW) == 1
+async def test_posture_gates_birthday_count_and_is_reversible(rel_pool: asyncpg.Pool) -> None:
+    entity_id = await _person_with_birthday(rel_pool, "Person Count", _TOMORROW)
+    assert await _count_birthdays_on(rel_pool, _TOMORROW) == 1
 
     for posture in ("memorial", "quiet", "no_contact"):
-        await entity_set_posture(pool, entity_id, posture)
-        assert await _count_birthdays_on(pool, _TOMORROW) == 0
+        await entity_set_posture(rel_pool, entity_id, posture)
+        assert await _count_birthdays_on(rel_pool, _TOMORROW) == 0
 
-    await entity_set_posture(pool, entity_id, "active")
-    assert await _count_birthdays_on(pool, _TOMORROW) == 1
+    await entity_set_posture(rel_pool, entity_id, "active")
+    assert await _count_birthdays_on(rel_pool, _TOMORROW) == 1
 
     from fastmcp import FastMCP
 
@@ -114,35 +91,37 @@ async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool
 
     # Position literal empty before other planted dates. Keep all original count
     # and reversible writer assertions above, with a three-days-ahead birthday.
-    await pool.execute(
+    await rel_pool.execute(
         "UPDATE important_dates SET month=3,day=9 WHERE contact_id IN (SELECT contact_id FROM contact_entity_map WHERE entity_id=$1)",
         entity_id,
     )
-    await entity_set_posture(pool, entity_id, "memorial")
+    await entity_set_posture(rel_pool, entity_id, "memorial")
     old = baseline_function("upcoming_dates", {**vars(dates), "datetime": FrozenDateTime})
-    assert len(await old(pool, 7)) == 1  # actual old SQL leaks the sole memorial
+    assert len(await old(rel_pool, 7)) == 1  # actual old SQL leaks the sole memorial
     with patch.object(dates, "datetime", FrozenDateTime):
-        assert await dates.upcoming_dates(pool, 7) == []
-        await entity_set_posture(pool, entity_id, "active")
-        assert [r["contact_name"] for r in await dates.upcoming_dates(pool, 7)] == ["Person Count"]
+        assert await dates.upcoming_dates(rel_pool, 7) == []
+        await entity_set_posture(rel_pool, entity_id, "active")
+        assert [r["contact_name"] for r in await dates.upcoming_dates(rel_pool, 7)] == [
+            "Person Count"
+        ]
         # Both UNION arms must exclude each posture while finding planted active
         # positives; SQL mutations independently neutralize each predicate.
         for anchored in (False, True):
             for posture in ("active", "memorial", "quiet", "no_contact"):
                 name = f"Arm {anchored} {posture}"
                 if anchored:
-                    target = await pool.fetchval(
+                    target = await rel_pool.fetchval(
                         "INSERT INTO public.entities(canonical_name,entity_type) VALUES($1,'person') RETURNING id",
                         name,
                     )
-                    await pool.execute(
+                    await rel_pool.execute(
                         "INSERT INTO important_dates(local_entity_id,label,month,day) VALUES($1,'Anniversary',3,9)",
                         target,
                     )
                 else:
-                    target = await _person_with_birthday(pool, name, date(2031, 3, 9))
-                await entity_set_posture(pool, target, posture)
-        current = await dates.upcoming_dates(pool, 7)
+                    target = await _person_with_birthday(rel_pool, name, date(2031, 3, 9))
+                await entity_set_posture(rel_pool, target, posture)
+        current = await dates.upcoming_dates(rel_pool, 7)
         assert {r["contact_name"] for r in current} == {
             "Person Count",
             "Arm False active",
@@ -157,7 +136,7 @@ async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool
             changed = src[:at] + src[at + len(needle) :]
             ns = {**vars(dates), "datetime": FrozenDateTime}
             exec(compile(changed, "posture-arm-control", "exec"), ns)
-            wrong = await ns["upcoming_dates"](pool, 7)
+            wrong = await ns["upcoming_dates"](rel_pool, 7)
             assert any(r["contact_name"] == f"Arm {bool(occurrence)} memorial" for r in wrong)
             assert any(r["contact_name"] == "Arm True active" for r in wrong)
         module = RelationshipModule()
@@ -176,14 +155,14 @@ async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool
                     "management",
                 ]
             ),
-            SimpleNamespace(pool=pool),
+            SimpleNamespace(pool=rel_pool),
             "relationship",
         )
         tool = await mcp.get_tool("upcoming_dates")
         assert await tool.fn(days_ahead=7) == current
         # Failed real SQL is not an empty result; restore via rollback and prove
         # the active data is still visible from a fresh acquisition.
-        async with pool.acquire() as connection:
+        async with rel_pool.acquire() as connection:
             transaction = connection.transaction()
             await transaction.start()
             try:
@@ -194,15 +173,15 @@ async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool
                     await dates.upcoming_dates(connection, 7)
             finally:
                 await transaction.rollback()
-        assert await dates.upcoming_dates(pool, 7) == current
+        assert await dates.upcoming_dates(rel_pool, 7) == current
 
 
 async def test_briefing_has_no_birthday_highlight_for_a_memorial_person(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
 ) -> None:
-    await _person_with_birthday(pool, "Person Active", date(2031, 3, 8))
-    memorial_id = await _person_with_birthday(pool, "Person Memorial", date(2031, 3, 9))
-    await entity_set_posture(pool, memorial_id, "memorial")
+    await _person_with_birthday(rel_pool, "Person Active", date(2031, 3, 8))
+    memorial_id = await _person_with_birthday(rel_pool, "Person Memorial", date(2031, 3, 9))
+    await entity_set_posture(rel_pool, memorial_id, "memorial")
 
     write = AsyncMock()
     with (
@@ -213,19 +192,19 @@ async def test_briefing_has_no_birthday_highlight_for_a_memorial_person(
             new=AsyncMock(return_value={"status": "skipped"}),
         ),
     ):
-        await run_relationship_briefing_contribution(pool, None)
+        await run_relationship_briefing_contribution(rel_pool, None)
 
     texts = [h["text"] for h in write.await_args.args[1]["highlights"]]
     assert any("Person Active" in text for text in texts)
     assert not any("Person Memorial" in text for text in texts)
 
 
-async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(pool: asyncpg.Pool) -> None:
-    quiet_id = await _person_with_birthday(pool, "Person Quiet", date(2031, 3, 10))
-    memorial_id = await _person_with_birthday(pool, "Person Remembered", date(2031, 3, 11))
-    await _person_with_birthday(pool, "Person Overlay Active", date(2031, 3, 12))
-    await entity_set_posture(pool, quiet_id, "quiet")
-    await entity_set_posture(pool, memorial_id, "memorial")
+async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(rel_pool: asyncpg.Pool) -> None:
+    quiet_id = await _person_with_birthday(rel_pool, "Person Quiet", date(2031, 3, 10))
+    memorial_id = await _person_with_birthday(rel_pool, "Person Remembered", date(2031, 3, 11))
+    await _person_with_birthday(rel_pool, "Person Overlay Active", date(2031, 3, 12))
+    await entity_set_posture(rel_pool, quiet_id, "quiet")
+    await entity_set_posture(rel_pool, memorial_id, "memorial")
 
     store: dict[str, Any] = {}
 
@@ -239,7 +218,7 @@ async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(pool: asyncp
         patch("butlers.jobs.calendar_overlay.state_list", new=AsyncMock(return_value=[])),
         patch("butlers.jobs.calendar_overlay.state_delete", new=AsyncMock()),
     ):
-        result = await run_relationship_calendar_overlay_contribution(pool, None)
+        result = await run_relationship_calendar_overlay_contribution(rel_pool, None)
 
     # The module DB is shared with the other tests, so assert per person, never on the
     # whole overlay: other active people legitimately yield birthdays.
@@ -255,15 +234,15 @@ async def test_overlay_turns_a_memorial_birthday_into_a_remembrance(pool: asyncp
 
 
 async def test_set_posture_is_idempotent_and_audits_without_the_value(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
 ) -> None:
-    entity_id = await _person_with_birthday(pool, "Person Idempotent", date(2031, 4, 1))
+    entity_id = await _person_with_birthday(rel_pool, "Person Idempotent", date(2031, 4, 1))
 
-    first = await entity_set_posture(pool, str(entity_id), "no_contact")
-    again = await entity_set_posture(pool, str(entity_id), "no_contact")
+    first = await entity_set_posture(rel_pool, str(entity_id), "no_contact")
+    again = await entity_set_posture(rel_pool, str(entity_id), "no_contact")
     assert (first["changed"], again["changed"]) == (True, False)
 
-    row = await pool.fetchrow(
+    row = await rel_pool.fetchrow(
         "SELECT posture, posture_since, posture_set_by FROM public.entities WHERE id = $1",
         entity_id,
     )
@@ -271,7 +250,7 @@ async def test_set_posture_is_idempotent_and_audits_without_the_value(
     assert row["posture_since"] is not None
     assert row["posture_set_by"] == "relationship"
 
-    audit = await pool.fetch(
+    audit = await rel_pool.fetch(
         "SELECT note, metadata::text AS metadata FROM public.audit_log "
         "WHERE action = 'entity_set_posture' AND target = $1",
         str(entity_id),
@@ -282,27 +261,27 @@ async def test_set_posture_is_idempotent_and_audits_without_the_value(
 
 
 async def test_set_posture_rejects_unknown_values_entities_and_the_owner(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
 ) -> None:
-    entity_id = await _person_with_birthday(pool, "Person Rejected", date(2031, 4, 2))
+    entity_id = await _person_with_birthday(rel_pool, "Person Rejected", date(2031, 4, 2))
     with pytest.raises(ValueError, match="posture must be one of"):
-        await entity_set_posture(pool, entity_id, "deceased")
+        await entity_set_posture(rel_pool, entity_id, "deceased")
     with pytest.raises(ValueError, match="not found"):
-        await entity_set_posture(pool, "00000000-0000-0000-0000-00000000dead", "memorial")
+        await entity_set_posture(rel_pool, "00000000-0000-0000-0000-00000000dead", "memorial")
 
-    owner_id = await pool.fetchval(
+    owner_id = await rel_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ('Owner Synthetic', 'person', ARRAY['owner']) RETURNING id"
     )
     with pytest.raises(ValueError, match="owner"):
-        await entity_set_posture(pool, owner_id, "quiet")
+        await entity_set_posture(rel_pool, owner_id, "quiet")
 
 
 @pytest.fixture
-async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator[None]:
+async def posture_roles(rel_pool: asyncpg.Pool, postgres_container) -> AsyncIterator[None]:
     """Administer disposable roles separately from the ordinary pool under test."""
-    database = await pool.fetchval("SELECT current_database()")
-    login = await pool.fetchval("SELECT current_user")
+    database = await rel_pool.fetchval("SELECT current_database()")
+    login = await rel_pool.fetchval("SELECT current_user")
     quoted_login = login.replace('"', '""')
     admin_url = migration_bootstrap_db_url(postgres_container, database)
     admin = await asyncpg.connect(admin_url.replace("postgresql+psycopg2://", "postgresql://"))
@@ -380,28 +359,30 @@ async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator
         ("migration_owner", True),
     ],
 )
-async def test_posture_writer_role_decision(pool: asyncpg.Pool, role: str, allowed: bool) -> None:
+async def test_posture_writer_role_decision(
+    rel_pool: asyncpg.Pool, role: str, allowed: bool
+) -> None:
     """The decision the trigger applies to current_user, exercised without creating roles."""
-    assert await pool.fetchval("SELECT public.posture_writer_allowed($1)", role) is allowed
+    assert await rel_pool.fetchval("SELECT public.posture_writer_allowed($1)", role) is allowed
 
 
 async def test_trigger_admits_the_session_user_and_still_writes_posture(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
 ) -> None:
     """The migration/test login is not a butler role, so the guard lets it through."""
-    entity_id = await _person_with_birthday(pool, "Person Session", date(2031, 4, 4))
-    await pool.execute("UPDATE public.entities SET posture = 'quiet' WHERE id = $1", entity_id)
-    assert await pool.fetchval("SELECT posture FROM public.entities WHERE id = $1", entity_id) == (
-        "quiet"
-    )
+    entity_id = await _person_with_birthday(rel_pool, "Person Session", date(2031, 4, 4))
+    await rel_pool.execute("UPDATE public.entities SET posture = 'quiet' WHERE id = $1", entity_id)
+    assert await rel_pool.fetchval(
+        "SELECT posture FROM public.entities WHERE id = $1", entity_id
+    ) == ("quiet")
 
 
 async def test_only_the_relationship_role_can_change_posture(
-    pool: asyncpg.Pool, posture_roles: None
+    rel_pool: asyncpg.Pool, posture_roles: None
 ) -> None:
-    entity_id = await _person_with_birthday(pool, "Person Guarded", date(2031, 4, 3))
+    entity_id = await _person_with_birthday(rel_pool, "Person Guarded", date(2031, 4, 3))
 
-    async with pool.acquire() as conn:
+    async with rel_pool.acquire() as conn:
         await conn.execute(f'SET ROLE "{_PROBE_ROLE}"')
         try:
             with pytest.raises(asyncpg.InsufficientPrivilegeError):

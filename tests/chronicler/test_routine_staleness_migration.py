@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -15,18 +16,8 @@ _MIGRATIONS_DIR = (
 _MIGRATION_FILE = "022_routine_staleness.py"
 
 
-def _load_migration():
-    path = _MIGRATIONS_DIR / _MIGRATION_FILE
-    assert path.exists(), f"Migration file not found: {path}"
-    spec = importlib.util.spec_from_file_location("chronicler_022", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_routine_staleness_migration_chains_from_current_head() -> None:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATIONS_DIR / _MIGRATION_FILE, "chronicler_022")
 
     assert migration.revision == "chronicler_022"
     assert migration.down_revision == "chronicler_021"

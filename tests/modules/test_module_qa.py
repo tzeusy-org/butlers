@@ -35,6 +35,7 @@ from pydantic import BaseModel, ValidationError
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.modules.base import Module, ToolMeta
 from butlers.modules.qa import QaConfig, QaModule, _qa_finding_from_row
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.mcp import registered_tools as snapshot_registered_tools
 
 pytestmark = pytest.mark.unit
@@ -49,19 +50,16 @@ def _make_module() -> QaModule:
     return QaModule()
 
 
-def _make_pool(
+def _qa_pool(
     patrol_id: uuid.UUID | None = None,
     skip_patrol_rows: list[dict] | None = None,
-) -> MagicMock:
-    pool = MagicMock()
-    if patrol_id is None:
-        patrol_id = uuid.uuid4()
-
-    pool.fetchval = AsyncMock(return_value=patrol_id)
-    pool.fetch = AsyncMock(return_value=skip_patrol_rows or [])
-    pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    return pool
+) -> FakePool:
+    return fake_pool(
+        fetchval=patrol_id or uuid.uuid4(),
+        fetch=skip_patrol_rows or [],
+        execute=None,
+        fetchrow=None,
+    )
 
 
 def _make_db(pool: object | None = None) -> MagicMock:
@@ -143,7 +141,7 @@ class TestOnStartup:
         assert mod._log_scanner_source._suppress_session_duplicate_timeouts is False
 
         mod2 = _make_module()
-        pool = _make_pool()
+        pool = _qa_pool()
         await mod2.on_startup(QaConfig(), _make_db(pool=pool))
         source_names2 = [s.name for s in mod2._sources]
         for s in ["butler_reports", "log_scanner", "session_records"]:
@@ -152,16 +150,14 @@ class TestOnStartup:
         assert mod2._log_scanner_source._suppress_session_duplicate_timeouts is True
 
         mod3 = _make_module()
-        await mod3.on_startup(
-            QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_make_pool())
-        )
+        await mod3.on_startup(QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_qa_pool()))
         names3 = [s.name for s in mod3._sources]
         assert "butler_reports" not in names3 and "log_scanner" in names3
         assert mod3._log_scanner_source is not None
         assert mod3._log_scanner_source._suppress_session_duplicate_timeouts is False
 
     async def test_recovers_stale_patrol_rows(self):
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetch = AsyncMock(return_value=[{"id": uuid.uuid4()}])
         mod = _make_module()
         with (
@@ -206,7 +202,7 @@ class TestWireRuntime:
 class TestReportFinding:
     async def test_accepted_and_rejected(self):
         mod = _make_module()
-        pool = _make_pool()
+        pool = _qa_pool()
         await mod.on_startup(QaConfig(), _make_db(pool=pool))
         result = await mod._handle_report_finding(
             fingerprint="a" * 64,
@@ -220,9 +216,7 @@ class TestReportFinding:
         assert result["accepted"] is True
 
         mod2 = _make_module()
-        await mod2.on_startup(
-            QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_make_pool())
-        )
+        await mod2.on_startup(QaConfig(enabled_sources=["log_scanner"]), _make_db(pool=_qa_pool()))
         r2 = await mod2._handle_report_finding(
             fingerprint="a" * 64,
             exception_type="ValueError",
@@ -237,7 +231,7 @@ class TestReportFinding:
     @pytest.mark.parametrize("severity,should_schedule", [(0, True), (2, False)])
     async def test_severity_mini_patrol_scheduling(self, severity, should_schedule):
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
         scheduled = False
 
         def mock_schedule(fp: str) -> None:
@@ -259,7 +253,7 @@ class TestReportFinding:
     async def test_fingerprint_canonicalization_ignores_caller_value(self):
         """Caller-supplied fingerprint is replaced by canonical computation."""
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
 
         bogus_fingerprint = "b" * 64
         canonical = compute_fingerprint_from_report(
@@ -288,7 +282,7 @@ class TestReportFinding:
     async def test_stable_dedup_fingerprint_across_repeated_reports(self):
         """Same error reported twice always produces the same canonical fingerprint."""
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
 
         common_args = dict(
             exception_type="asyncpg.PostgresError",
@@ -321,7 +315,7 @@ class TestReportFinding:
         import logging
 
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
 
         with caplog.at_level(logging.WARNING):
             result = await mod._handle_report_finding(
@@ -347,7 +341,7 @@ class TestReportFinding:
     async def test_canonical_severity_drives_mini_patrol_not_caller_severity(self):
         """When canonical severity is 0 (critical), mini-patrol fires even if caller passed higher severity."""
         mod = _make_module()
-        await mod.on_startup(QaConfig(), _make_db(pool=_make_pool()))
+        await mod.on_startup(QaConfig(), _make_db(pool=_qa_pool()))
         scheduled_fps = []
 
         def mock_schedule(fp: str) -> None:
@@ -382,14 +376,14 @@ class TestForcePatrol:
     async def test_returns_skipped(self, setup, reason):
         mod = _make_module()
         mod._config = QaConfig(enabled=setup["enabled"])
-        mod._pool = _make_pool() if setup["pool"] else None
+        mod._pool = _qa_pool() if setup["pool"] else None
         result = await mod._handle_force_patrol()
         assert result["status"] == "skipped" and result["reason"] == reason
 
     async def test_returns_skipped_when_patrol_running(self):
         mod = _make_module()
         mod._config = QaConfig(enabled=True)
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         await mod._patrol_lock.acquire()
         try:
             result = await mod._handle_force_patrol()
@@ -405,7 +399,7 @@ class TestForcePatrol:
         """
         mod = _make_module()
         mod._config = QaConfig(enabled=True)
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._run_patrol_body = AsyncMock(
             return_value={
                 "status": "completed",
@@ -432,7 +426,7 @@ class TestForcePatrol:
         """
         mod = _make_module()
         mod._config = QaConfig(enabled=True)
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._run_patrol_body = AsyncMock(side_effect=RuntimeError("boom"))
         with pytest.raises(RuntimeError):
             await mod._handle_force_patrol()
@@ -479,13 +473,13 @@ class TestPatrolOverlapAndSkip:
         mod = _make_module()
         if setup == "disabled":
             mod._config = QaConfig(enabled=False)
-            mod._pool = _make_pool()
+            mod._pool = _qa_pool()
         elif setup == "no_pool":
             mod._config = QaConfig(enabled=True)
             mod._pool = None
         else:  # overlap
             mod._config = QaConfig(enabled=True)
-            mod._pool = _make_pool()
+            mod._pool = _qa_pool()
             await mod._patrol_lock.acquire()
 
         try:
@@ -511,7 +505,7 @@ class TestSourceFailureIsolation:
 
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._sources = [FailingSource(), GoodSource()]
 
         with (
@@ -535,7 +529,7 @@ class TestFullCycleNoFindings:
 
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        mod._pool = _make_pool()
+        mod._pool = _qa_pool()
         mod._sources = [EmptySource()]
         mod._butler_reports_source = None
 
@@ -574,7 +568,7 @@ class TestMetrics:
             qa_module._qa_patrol_total = FakeCounter()
             mod = _make_module()
             mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-            pool = _make_pool()
+            pool = _qa_pool()
             pool.fetchval = AsyncMock(side_effect=[uuid.uuid4(), 0])
             pool.fetch = AsyncMock(return_value=[])
             mod._pool = pool
@@ -608,7 +602,7 @@ class TestMetrics:
             def observe(self, value):
                 observed.append((self._status, value))
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetchval = AsyncMock(return_value=3)
         pool.fetch = AsyncMock(
             return_value=[
@@ -633,7 +627,7 @@ class TestMetrics:
     async def test_db_error_swallowed_but_cancelled_error_propagates(self):
         import butlers.modules.qa as qa_module
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetchval = AsyncMock(side_effect=RuntimeError("db down"))
         pool.fetch = AsyncMock(side_effect=RuntimeError("db down"))
 
@@ -647,7 +641,7 @@ class TestMetrics:
             qa_module._qa_investigations_active = orig
 
         # CancelledError must propagate
-        pool2 = _make_pool()
+        pool2 = _qa_pool()
         pool2.fetchval = AsyncMock(side_effect=asyncio.CancelledError())
         mod2 = _make_module()
         mod2._config = QaConfig()
@@ -661,7 +655,7 @@ class TestMetrics:
             fetch_calls.append({"args": args})
             return []
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetchval = AsyncMock(return_value=0)
         pool.fetch = capturing_fetch
 
@@ -790,7 +784,7 @@ class TestRunPatrolBodyNotifyOnMissingToken:
         """_run_patrol_body calls _notify_missing_gh_token when gh_token is None."""
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        pool = _make_pool()
+        pool = _qa_pool()
         mod._pool = pool
         mod._sources = []
 
@@ -825,7 +819,7 @@ class TestRunPatrolBodyNotifyOnMissingToken:
         """_run_patrol_body does NOT call notify when gh_token is resolved."""
         mod = _make_module()
         mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
-        pool = _make_pool()
+        pool = _qa_pool()
         mod._pool = pool
         mod._sources = []
 

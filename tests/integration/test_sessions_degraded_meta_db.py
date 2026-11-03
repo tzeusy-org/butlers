@@ -30,7 +30,6 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db as _sessions_get_db
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -47,24 +46,20 @@ _REACHABLE = "general"
 _DOWN = "finance"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
+@pytest.fixture
+def sessions_url(fresh_db) -> str:
     """Provision the core chain — per-butler schemas each with a `sessions` table."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
+    return fresh_db("core")
 
 
 @pytest.fixture
-async def db_manager(migrated_db_url: str):
+async def db_manager(sessions_url: str):
     """A real DatabaseManager with two butler pools over distinct schemas.
 
     ``general`` and ``finance`` are real role schemas from core_001, each with
     its own ``sessions`` table (schema-scoped via the pool's search_path).
     """
-    parsed = urlparse(migrated_db_url)
+    parsed = urlparse(sessions_url)
     mgr = DatabaseManager(
         host=parsed.hostname or "localhost",
         port=parsed.port or 5432,

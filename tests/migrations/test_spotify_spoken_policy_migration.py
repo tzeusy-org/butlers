@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -18,16 +19,8 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("sw_030", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def _apply(pool, operation: str) -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "sw_030")
     statements: list[str] = []
     fake_op = MagicMock()
     fake_op.execute.side_effect = statements.append

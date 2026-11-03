@@ -16,17 +16,7 @@ from butlers.chronicler.adapters.occupation import (
     OccupationInferredAdapter,
 )
 from butlers.chronicler.models import Confidence, Layer, Precision, Routine, RoutineOrigin
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
+from butlers.testing.fake_pool import AsyncCtx
 
 
 class _FakeConn:
@@ -57,7 +47,7 @@ class _FakeConn:
 
 def _chronicler_pool(conn: _FakeConn) -> AsyncMock:
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
