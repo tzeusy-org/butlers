@@ -735,29 +735,3 @@ jobs:
           printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
           printf '%s' "$NEEDS_JSON" | jq -e --argjson n "$EXPECTED_JOBS" \
             'type == "object" and length == $n and all(.[]; .result == "success")' > /dev/null
-
-  # Compatibility adapters for the `main-merge-queue` ruleset, which still requires
-  # the `check`, `guards` and `frontend` contexts. Each only mirrors `alls-green`.
-  # The ruleset switch to `alls-green` alone is a separate owner act
-  # (scripts/setup_main_ruleset.sh); a follow-up then deletes these two jobs.
-  check:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [alls-green]
-    if: always()
-    steps:
-      - name: Mirror alls-green
-        env:
-          RESULT: ${{ needs.alls-green.result }}
-        run: test "$RESULT" = success
-
-  frontend:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [alls-green]
-    if: always()
-    steps:
-      - name: Mirror alls-green
-        env:
-          RESULT: ${{ needs.alls-green.result }}
-        run: test "$RESULT" = success
