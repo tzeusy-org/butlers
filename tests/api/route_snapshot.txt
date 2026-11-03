@@ -180,6 +180,9 @@ OP GET /api/finance/spending-summary 00f7e3b0f47c
 OP GET /api/finance/subscriptions a8282d43adf5
 OP GET /api/finance/transactions 61b377a24d24
 OP GET /api/finance/upcoming-bills 509acf3c9c39
+OP GET /api/general/capture-intake-context ac817128922d
+OP GET /api/general/captures 0cca53da94d1
+OP GET /api/general/captures/{capture_id} ca5f3e3c7e4f
 OP GET /api/general/collections a6f8143636c6
 OP GET /api/general/collections/{collection_id}/entities f250cc4078a5
 OP GET /api/general/entities 7b0f06922bfd
@@ -391,11 +394,11 @@ OP GET /api/switchboard/thread-affinity/settings a502cd777b0f
 OP GET /api/system/background-jobs 5ead18695502
 OP GET /api/system/backups 9ca247283096
 OP GET /api/system/butlers/heartbeat f03c7e358d2e
-OP GET /api/system/conditions 65afb5385a39
+OP GET /api/system/conditions b42c6a7efac7
 OP GET /api/system/database 76fb3119fccf
 OP GET /api/system/deployments 19a8f6234b25
 OP GET /api/system/drift f18f731504fd
-OP GET /api/system/egress d86eb9f15769
+OP GET /api/system/egress 56bbe0ca86ba
 OP GET /api/system/insights/delivery-state 81d3cf7d3f71
 OP GET /api/system/instance a8bf5a3586a2
 OP GET /api/system/stored-functions 30506f91fceb
@@ -497,6 +500,8 @@ OP POST /api/data/export ef7048daaa86
 OP POST /api/domain-events/deliveries/{delivery_id}/replay b5bac8bd9638
 OP POST /api/education/curriculum-requests 74c92c7ab429
 OP POST /api/finance/transactions/bulk 4675ebc67a2d
+OP POST /api/general/capture-chat eea4bae71469
+OP POST /api/general/captures 28d95ab17c3a
 OP POST /api/general/projects df7acf3ceebc
 OP POST /api/general/projects/{project_id}/close 381059e537c3
 OP POST /api/general/projects/{project_id}/links 9667bae5c5d3
@@ -1263,6 +1268,11 @@ ROUTE APIRoute PUT '/api/steam/accounts/{account_id}/primary' name=set_primary_s
 ROUTE APIRoute PUT '/api/switchboard/thread-affinity/overrides/{thread_id}' name=upsert_thread_affinity_override op=upsert_thread_affinity_override_api_switchboard_thread_affinity_overrides__thread_id__put tags=switchboard schema=True
 ROUTE APIRoute PUT '/api/webhooks/{webhook_id}' name=update_webhook op=update_webhook_api_webhooks__webhook_id__put tags=webhooks schema=True
 ROUTE APIWebSocketRoute  '/api/events/stream' name=events_stream op=- tags=- schema=-
+ROUTE CaptureRoute GET '/api/general/capture-intake-context' name=get_capture_intake_context op=get_capture_intake_context_api_general_capture_intake_context_get tags=general-capture schema=True
+ROUTE CaptureRoute GET '/api/general/captures' name=list_captures op=list_captures_api_general_captures_get tags=general-capture schema=True
+ROUTE CaptureRoute GET '/api/general/captures/{capture_id}' name=get_capture op=get_capture_api_general_captures__capture_id__get tags=general-capture schema=True
+ROUTE CaptureRoute POST '/api/general/capture-chat' name=admit_chat_capture op=admit_chat_capture_api_general_capture_chat_post tags=general-capture schema=True
+ROUTE CaptureRoute POST '/api/general/captures' name=admit_capture op=admit_capture_api_general_captures_post tags=general-capture schema=True
 ROUTE IngestionReadBudgetRoute GET '/api/ingestion/events' name=list_ingestion_events op=list_ingestion_events_api_ingestion_events_get tags=ingestion schema=True
 ROUTE IngestionReadBudgetRoute GET '/api/ingestion/events/dropped-known' name=get_ingestion_dropped_known op=get_ingestion_dropped_known_api_ingestion_events_dropped_known_get tags=ingestion schema=True
 ROUTE IngestionReadBudgetRoute GET '/api/ingestion/events/histogram' name=get_ingestion_events_histogram op=get_ingestion_events_histogram_api_ingestion_events_histogram_get tags=ingestion schema=True
@@ -1340,6 +1350,8 @@ SCHEMA ApiResponse_CalendarWorkspaceMutationResponse_ 8d018749e078
 SCHEMA ApiResponse_CalendarWorkspaceReadResponse_ c09ddfaf7823
 SCHEMA ApiResponse_CalendarWorkspaceSearchResponse_ f901a1c81720
 SCHEMA ApiResponse_CalendarWorkspaceSyncResponse_ 1a6f32404f84
+SCHEMA ApiResponse_CaptureIntakeContext_ 96d0b0c109f0
+SCHEMA ApiResponse_CaptureStatus_ eeeab5263771
 SCHEMA ApiResponse_CategoryBuckets_ d2acd356e445
 SCHEMA ApiResponse_ChroniclesKpi_ 95e38bd79815
 SCHEMA ApiResponse_CircuitBreakerResetResponse_ 4ed022864d1f
@@ -1650,6 +1662,9 @@ SCHEMA CalendarWorkspaceSyncTarget a010ea065d21
 SCHEMA CalendarWorkspaceUserMutationRequest 68a358684172
 SCHEMA CalendarWorkspaceWritableCalendar 8c6fdc9a6e15
 SCHEMA Callback e23f0afbc25c
+SCHEMA CaptureIntakeContext 926b4b66df26
+SCHEMA CaptureStatus f436da8c8071
+SCHEMA CaptureTarget 2da7a121faad
 SCHEMA CategoryBucket 77803ca47ea0
 SCHEMA CategoryBuckets ec314a7fafca
 SCHEMA ChannelDefaultEntry fa7d27ba2425
@@ -1812,7 +1827,7 @@ SCHEMA DunbarEntry 280df7d6f197
 SCHEMA DunbarRankingResponse 6c0710d47a41
 SCHEMA DunbarTierOverrideRequest 18416094ab98
 SCHEMA DunbarTierOverrideResponse a4577d4426f7
-SCHEMA EgressActor 42272b86da5a
+SCHEMA EgressActor da88fbb6243f
 SCHEMA EgressCatalog 0f508083d282
 SCHEMA EmailMatchRate 57d6f5deba23
 SCHEMA EnergyThresholds ac7b3c527013
@@ -2023,6 +2038,7 @@ SCHEMA OwnerEntityInfoResponse d596c1058f5d
 SCHEMA OwnerPlaceResponse 9ed0de620fd9
 SCHEMA OwnerSetupStatus 32f995df4bb1
 SCHEMA PageContext 182e6b0803de
+SCHEMA Page_CaptureStatus_ 71149e250264
 SCHEMA Page_EntityFactEntry_ 11ad68f8a95a
 SCHEMA Page_FleetCaseSummary_ 594f7698dd4e
 SCHEMA Page_IngestionEventSummary_ 307e0f0b28bc
