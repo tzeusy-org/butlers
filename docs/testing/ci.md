@@ -165,8 +165,11 @@ The global userns restriction stays1. The helper verifies the published Noble
 SHA256, extracts only that member, and refuses preloaded/conflicting or local
 policy overrides. It loads the `/usr/bin/bwrap` policy with its inseparable
 child-capability-deny companion, never a generic unconfined profile. The exact
-unprivileged synthetic preflight must change from an attributed namespace refusal
-to payload exit31 while generic map-root `unshare` remains denied. Cleanup runs
+unprivileged synthetic preflight must change from a recognized refusal to payload
+exit31 while generic map-root `unshare` remains denied. The exact observed
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` line (including its
+terminal newline) admits only this bounded experiment; the before-profile error
+does not establish AppArmor as its cause. Near misses remain refused. Cleanup runs
 with `always()` and removal is observed. An unproven/partial load is quarantined
 as NONPASS rather than removing policy whose ownership is uncertain.
 No global sysctl relaxation, disabled AppArmor/seccomp, privileged fallback or

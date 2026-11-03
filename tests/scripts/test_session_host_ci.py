@@ -241,3 +241,58 @@ def test_unknown_synthetic_preflight_emits_bounded_sanitized_diagnostic_and_refu
     assert not (root / "loaded.json").exists()
     ci.cleanup(root)
     assert not any("-R" in args for args in state["calls"])
+
+
+_LOOPBACK_REFUSAL = b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n"
+_LOOPBACK_DIGEST = "ed3471f7900377f86150471417911309833a36d664cb5af7409e139103f67ddf"
+
+
+@pytest.mark.parametrize("after", [31, 1])
+def test_exact_loopback_refusal_allows_only_bounded_experiment(host, capsys, after):
+    state, root, _, _ = host
+    assert hashlib.sha256(_LOOPBACK_REFUSAL).hexdigest() == _LOOPBACK_DIGEST
+    assert ci.synthetic_preflight_category(_LOOPBACK_REFUSAL) == "loopback_address_denied"
+    # Runtime fixture classification is unchanged; new admission is synthetic-only.
+    assert ci.failure_category(_LOOPBACK_REFUSAL) == "unknown_preflight_failure"
+    state["before"] = _LOOPBACK_REFUSAL
+    state["after"] = after
+    if after == 31:
+        ci.prepare(root)
+    else:
+        with pytest.raises(ci.Refusal, match="native_preflight_still_refused"):
+            ci.prepare(root)
+    records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert records[0]["category"] == "loopback_address_denied"
+    assert records[0]["stderr_sha256"] == _LOOPBACK_DIGEST
+    assert any(record.get("status") == "scoped_profile_proven" for record in records) == (
+        after == 31
+    )
+    assert state["restriction"] == b"1"
+    assert sum(args[0] == "unshare" for args in state["calls"]) == 2
+    assert state["names"] == {"bwrap", "unpriv_bwrap"}
+    ci.cleanup(root)
+    assert not state["names"]
+    assert state["restriction"] == b"1"
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        _LOOPBACK_REFUSAL.rstrip(b"\n"),
+        _LOOPBACK_REFUSAL + b"extra\n",
+        b"warning\n" + _LOOPBACK_REFUSAL,
+        _LOOPBACK_REFUSAL.replace(b"\n", b"\r\n"),
+        _LOOPBACK_REFUSAL.replace(b"Operation not permitted", b"Permission denied"),
+        _LOOPBACK_REFUSAL.replace(b"loopback:", b"loopback: "),
+        _LOOPBACK_REFUSAL.replace(b"Failed", b"failed"),
+        _LOOPBACK_REFUSAL.replace(b"\n", b"\x00\n"),
+    ],
+)
+def test_near_miss_loopback_refusal_never_loads_policy(host, stderr):
+    state, root, _, _ = host
+    assert ci.synthetic_preflight_category(stderr) == "unknown_preflight_failure"
+    state["before"] = stderr
+    with pytest.raises(ci.Refusal, match="unattributed_native_preflight"):
+        ci.prepare(root)
+    ci.cleanup(root)
+    assert not any("apparmor_parser" in args for args in state["calls"])

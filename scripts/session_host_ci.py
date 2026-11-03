@@ -52,6 +52,13 @@ def failure_category(stderr: bytes) -> str:
     return "unknown_preflight_failure"
 
 
+def synthetic_preflight_category(stderr: bytes) -> str:
+    # Observed fixed-command refusal; this does not establish its policy cause.
+    if stderr == b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n":
+        return "loopback_address_denied"
+    return failure_category(stderr)
+
+
 def preflight_diagnostic(stderr: bytes) -> str:
     # Only the fixed synthetic preflight: never invocation/provider material.
     # Bound bytes before decoding, and replace terminal/control/non-ASCII bytes.
@@ -183,7 +190,7 @@ def prepare(root: Path) -> None:
     profile_absent()
     generic_denied()
     before = repeat_preflight(root / "before")
-    category = failure_category(before.stderr)
+    category = synthetic_preflight_category(before.stderr)
     print(
         json.dumps(
             {
@@ -231,7 +238,7 @@ def prepare(root: Path) -> None:
                 "native_exit": after.returncode,
                 "category": "payload_reached"
                 if after.returncode == 31
-                else failure_category(after.stderr),
+                else synthetic_preflight_category(after.stderr),
                 "stderr_sha256": hashlib.sha256(after.stderr).hexdigest(),
                 "stderr_preview": preflight_diagnostic(after.stderr),
                 "global_restriction": 1,
