@@ -365,9 +365,17 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
 - **Not owner quota**: `token_limits` is an owner-set budget on one entry; allowance is the
   provider's own cap and never writes quota rows.
 
-Not yet built: the Models-tab/System-verdict countdown and
-`GET /api/settings/models/allowance`, an owner-turn reserve for background work, and a canary probe
-at the default horizon when the reset is unknown (see change `provider-allowance-windows`).
+Read surfaces: `GET /api/settings/models/allowance` (owner-only, read-only) feeds the Models-tab
+Allowance strip and the `/system` verdict countdown.
+
+Not yet built: a probe at the default horizon when the reset is unknown (`bu-q7vx1q.53`). The
+owner-turn reserve for background work moved to the spend-lane owner reserve (`bu-jv1moa.1`).
+
+After the RFC 0038 switch (change `provider-allowance-windows`): the goal runner applies the same
+exclusion to each invocation's model, its one D14 relaunch and escalation, and writes the
+`allowance_exhausted` attempt, without admitting a new goal or resetting the goal budget. The
+scheduler check runs before the daemon submits a prompt-mode obligation admission, so a deferred
+occurrence has no goal and no budget reservation.
 
 ### Attempt Provenance
 
