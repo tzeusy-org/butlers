@@ -444,9 +444,6 @@ _OPERATION_DATA_TYPES: dict[str, list[str]] = {
     "gmail_send": ["message_text"],
 }
 
-_UNKNOWN_ACTOR_ID = "other"
-_UNKNOWN_ACTOR_NAME = "Other / Unrecognized"
-
 
 # ---------------------------------------------------------------------------
 # GET /api/system/instance
@@ -1024,7 +1021,8 @@ async def get_egress_catalog(
     """Return the data-egress catalog for this instance (owner-only).
 
     Aggregates the unified audit log by operation, mapping each operation to an
-    external actor via the server-side actor registry. The source is the
+    external actor via the server-side actor registry. Operations absent from the
+    registry (internal audit actions) are excluded. The source is the
     canonical ``public.audit_log`` primitive alone (``action`` -> ``operation``,
     ``ts`` -> ``created_at``); the legacy ``switchboard.dashboard_audit_log``
     UNION arm was removed (bu-j26e8) after migration core_124 backfilled the
@@ -1051,6 +1049,7 @@ async def get_egress_catalog(
                 WITH egress_source AS (
                     SELECT action AS operation, ts AS created_at
                     FROM public.audit_log
+                    WHERE action = ANY($1::text[])
                 )
                 SELECT
                     operation,
@@ -1060,11 +1059,15 @@ async def get_egress_catalog(
                 FROM egress_source
                 GROUP BY operation
                 ORDER BY last_seen_at DESC
-                """
+                """,
+                list(_ACTOR_REGISTRY),
             )
         except Exception as exc:
             logger.warning("Egress catalog query failed: %s", exc)
             raise HTTPException(status_code=503, detail="Egress catalog query failed") from exc
+
+        # Only registry-mapped operations are egress; internal audit actions are excluded.
+        rows = [row for row in rows if row["operation"] in _ACTOR_REGISTRY]
 
         # Derive catalog_covers_from from the oldest first_seen_at already in the result set.
         # No second query needed -- we already have min(created_at) per operation above.
@@ -1086,13 +1089,8 @@ async def get_egress_catalog(
             last_seen = row["last_seen_at"]
             total_calls = int(row["total_calls"] or 0)
 
-            if operation in _ACTOR_REGISTRY:
-                actor_id, display_name = _ACTOR_REGISTRY[operation]
-                data_types = _OPERATION_DATA_TYPES.get(operation, [])
-            else:
-                actor_id = _UNKNOWN_ACTOR_ID
-                display_name = _UNKNOWN_ACTOR_NAME
-                data_types = []
+            actor_id, display_name = _ACTOR_REGISTRY[operation]
+            data_types = _OPERATION_DATA_TYPES.get(operation, [])
 
             if actor_id not in actor_buckets:
                 actor_buckets[actor_id] = {
