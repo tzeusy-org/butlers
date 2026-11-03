@@ -430,7 +430,9 @@ async def test_bulk_record_transactions_skips_duplicates():
 @pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_row_value_error_does_not_abort_batch():
     """A per-row ValueError (e.g. unresolvable account) errors that row; later rows import."""
-    from butlers.tools.finance.transactions import bulk_record_transactions
+    from butlers.tools.finance.transactions import (  # pyright: ignore[reportMissingImports]
+        bulk_record_transactions,
+    )
 
     async def _record(*args, **kwargs):
         if kwargs["merchant"] == "Bad Account":

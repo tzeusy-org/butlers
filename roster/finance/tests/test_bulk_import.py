@@ -17,9 +17,9 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.tools.finance.transactions import bulk_record_transactions
+from butlers.tools.finance.transactions import (  # pyright: ignore[reportMissingImports]
+    bulk_record_transactions,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -53,34 +53,28 @@ def _row(merchant: str, msg_id: str, amount: str = "-12.50") -> dict:
     }
 
 
+async def _as_finance_rw(conn: asyncpg.Connection) -> None:
+    await conn.execute("SET ROLE butler_finance_rw")
+
+
 @pytest.fixture
-async def pool(postgres_container):
-    db_url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
+async def finance_pool(db):
+    return await db(
+        "core",
+        "finance",
         schemas={"finance": "finance"},
+        schema="finance",
+        init=_as_finance_rw,
+        max_size=2,
     )
 
-    async def setup(conn: asyncpg.Connection) -> None:
-        await conn.execute("SET ROLE butler_finance_rw")
-        await conn.execute("SET search_path TO finance, public")
 
-    p = await asyncpg.create_pool(
-        db_url, min_size=1, max_size=2, init=register_jsonb_codec, setup=setup
-    )
-    try:
-        yield p
-    finally:
-        await p.close()
-
-
-async def test_mcp_bulk_counts_existing_duplicate_as_skipped(pool):
-    first = await bulk_record_transactions(pool, [_row("Existing Co", "m-1")])
+async def test_mcp_bulk_counts_existing_duplicate_as_skipped(finance_pool):
+    first = await bulk_record_transactions(finance_pool, [_row("Existing Co", "m-1")])
     assert (first["imported"], first["skipped"]) == (1, 0)
 
     result = await bulk_record_transactions(
-        pool, [_row("Existing Co", "m-1"), _row("Fresh Co", "m-2")]
+        finance_pool, [_row("Existing Co", "m-1"), _row("Fresh Co", "m-2")]
     )
 
     assert result["imported"] == 1
@@ -89,12 +83,12 @@ async def test_mcp_bulk_counts_existing_duplicate_as_skipped(pool):
     assert result["error_details"] == [{"index": 0, "reason": "duplicate"}]
 
 
-async def test_rest_bulk_rows_list_and_counts_are_exact(pool):
+async def test_rest_bulk_rows_list_and_counts_are_exact(finance_pool):
     from fastapi import FastAPI
 
     router_mod = _load_router()
     db = MagicMock()
-    db.pool.return_value = pool
+    db.pool.return_value = finance_pool
     app = FastAPI()
     app.include_router(router_mod.router)
     app.dependency_overrides[get_db] = lambda: db
