@@ -17,8 +17,9 @@ import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Literal, NoReturn, cast
 
+import asyncpg
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
@@ -298,7 +299,7 @@ def _raise_memory_detail_miss(
     *,
     resource: str,
     tracker: DegradedSources,
-) -> None:
+) -> NoReturn:
     """Raise a truthful error for an unresolved cross-pool detail lookup."""
     if tracker.failed:
         names = ", ".join(tracker.names)
@@ -1242,7 +1243,8 @@ async def vouch_held_fact(
         raise HTTPException(status_code=503, detail="No database pools available")
 
     tracker = DegradedSources(logger)
-    for name, pool in pools:
+    for name, source in pools:
+        pool = cast("asyncpg.Pool", source)
         try:
             receipt = await endorse_fact(
                 pool,
