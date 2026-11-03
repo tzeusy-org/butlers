@@ -1987,15 +1987,10 @@ class ButlerDaemon:
     async def _warn_if_approval_callback_secret_missing(self) -> None:
         """Log loudly, once at startup, when APPROVAL_CALLBACK_SECRET is unresolvable.
 
-        Without this Tier 1 secret, ``emit_approval_push`` structurally cannot
-        dispatch a single-action push: it resolves 'failed' before every
-        attempt (see ``notifications.py::_callback_secret``). That was
-        previously visible only as a per-push ``logger.warning`` an operator
-        would have to be looking at the right log line to see. This makes the
-        degraded state loud and startup-time visible instead -- a clear
-        operator-facing signal, not a silent per-push warning. This never
-        raises: a missing secret degrades approval pushes, it must not take
-        the daemon down (dashboard-only fallback remains available).
+        Durable delivery needs this Tier 1 secret to sign single-action callbacks.
+        Report missing configuration at startup without enabling admission or
+        worker startup. This never raises: unavailable callbacks must not take
+        the daemon down, and the dashboard review door remains available.
         """
         if self._credential_store is None:
             return

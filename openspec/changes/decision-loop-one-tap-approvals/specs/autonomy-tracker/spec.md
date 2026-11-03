@@ -24,6 +24,10 @@ fingerprint version. Promotion suggestions minted from a version-2 fingerprint
 MUST pin exactly the fingerprinted safety-critical args as rule constraints, so
 a suggested rule is never broader than what its fingerprint held constant.
 
+ID: REQ-autonomy-tracker-002
+Source: RFC-0021,RFC-0023; bu-jv1moa.2 S1; design.md D5
+Scope: v1-mandatory
+
 #### Scenario: Same safety-critical args with varying text produce identical fingerprints
 
 - **WHEN** `send_telegram` declares `chat_id` safety-critical and
@@ -47,15 +51,18 @@ a suggested rule is never broader than what its fingerprint held constant.
 
 #### Scenario: Tool name is part of the fingerprint
 
-- **WHEN** `compute_fingerprint("send_telegram", {"to": "mom"})` and
-  `compute_fingerprint("send_email", {"to": "mom"})` are computed with `to`
-  safety-critical on both tools
+- **WHEN** `compute_fingerprint("send_telegram", {"to": "mom"})` is computed
+  with `to` safety-critical
+- **AND** `compute_fingerprint("send_email", {"to": "mom"})` is computed with
+  `to` safety-critical
 - **THEN** the two fingerprints MUST be different
 
 #### Scenario: Arg key order does not affect fingerprint
 
-- **WHEN** the same invocation's args are supplied in different key orders
-- **THEN** the computed fingerprints MUST be identical
+- **WHEN** `compute_fingerprint("notify", {"channel": "email", "to": "a@b.com"})` is computed
+- **AND** `compute_fingerprint("notify", {"to": "a@b.com", "channel": "email"})` is computed
+- **THEN** both MUST produce the same fingerprint, whatever key order any
+  invocation supplies
 
 #### Scenario: Version segregation of counts
 

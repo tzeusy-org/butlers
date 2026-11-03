@@ -6096,22 +6096,6 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "finance",
         "bulk",
-        "import_transactions_from_file",
-        effect_class="record",
-        output_trust="untrusted",
-        output_sensitivity="sensitive",
-        resource_params=("account_id",),
-        selection_bound={"account_id": False},
-        safety_args=(),
-        idempotency="none",
-        owner_authority=False,
-        read_stores=(),
-        write_stores=(),
-        recipient_params=RecipientParameters(),
-    ),
-    *_declare(
-        "finance",
-        "bulk",
         "merge_duplicates",
         effect_class="record",
         output_trust="untrusted",
@@ -10056,10 +10040,7 @@ STORE_WRITERS = MappingProxyType(
         ),
         "approval_push_emissions": StoreWriters(
             record_capabilities=(),
-            native_writers=(
-                "butlers.modules.approvals.notifications._record_push_outcome",
-                "butlers.modules.approvals.notifications.reserve_approval_push",
-            ),
+            native_writers=(),
             unknown_writers=True,
         ),
         "approval_rules": StoreWriters(

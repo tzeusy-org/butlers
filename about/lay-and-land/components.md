@@ -71,7 +71,7 @@ butler in the roster runs one daemon instance.
 | **Healing substrate** | `core/healing/` | Error fingerprinting, severity scoring, `public.healing_attempts` CRUD and gates, worktree lifecycle, anonymizer, and the 10-gate dispatch engine used by QA (§4b). | Evolving |
 | **Buffer** | `core/buffer.py` | In-memory queue with durable cold-path scanner for backpressure management. Switchboard ingestion hot path. | Stable |
 | **Telemetry** | `core/telemetry.py` | OpenTelemetry tracing initialization. Single TracerProvider shared across all butlers in-process. TRACEPARENT propagation to spawned LLM sessions. | Stable |
-| **Metrics** | `core/metrics.py` | OTel metric instruments for spawner concurrency, buffer health, route accept/process latency, scheduler dispatch, ingest outcomes, and durable domain-event delivery failures. | Maturing |
+| **Metrics** | `core/metrics.py` | OTel metric instruments for spawner concurrency, buffer health, route accept/process latency, scheduler dispatch, ingest outcomes, durable domain-event delivery failures, and swallowed memory knowledge-gap closure failures. | Maturing |
 | **Skills** | `core/skills.py` | Discovers skill directories under `roster/{butler}/.agents/skills/`, reads system prompts, and injects them into spawned sessions. | Stable |
 | **Audit** | `core/audit.py` | Append-only audit trail for security-relevant operations (tool gating, credential access). | Evolving |
 
