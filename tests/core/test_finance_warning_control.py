@@ -552,11 +552,23 @@ async def test_actual_route_forces_current_receiver_even_cutover_off_and_binds_h
             assert await owner.read(args) is True
         else:
             assert control.DEADLINE_SECONDS == 5
-            monkeypatch.setattr(control, "DEADLINE_SECONDS", 0.5)
+            # Expire the issuer deadline only once MCP close is held, never on
+            # wall-clock setup time: capture the read's own timeout scope.
+            scopes, real_timeout_at = {}, asyncio.timeout_at
+
+            def timeout_at(when):
+                scope = real_timeout_at(when)
+                scopes.setdefault(asyncio.current_task(), scope)
+                return scope
+
+            proxy = SimpleNamespace(**{**vars(asyncio), "timeout_at": timeout_at})
+            monkeypatch.setattr(control, "asyncio", proxy)
             call = asyncio.create_task(owner.read(args))
-            await asyncio.wait_for(close_entered.wait(), 1)
+            await asyncio.wait_for(close_entered.wait(), control.DEADLINE_SECONDS)
             assert finance_pool.acquire.await_count == finance_pool.release.await_count == 1
             assert not call.done()  # successful SQL is not success before MCP cleanup
+            if cleanup == "deadline":
+                scopes[call].reschedule(asyncio.get_running_loop().time())
             if cleanup == "repeated-cancel":
                 call.cancel()
                 call.cancel()

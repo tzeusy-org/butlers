@@ -263,6 +263,18 @@ notification policy. While `isPaused=true`, Grafana performs no evaluation and
 creates no alert instances, so this rule cannot diagnose a missing series or
 evaluation error. Its configured `NoData` and `Error` policies take effect only
 after an owner explicitly enables evaluation.
+A route's series is created by its first failure, so `increase()` has no prior
+sample to compare against. For 15 minutes the rule also counts a series that
+had no sample in the hour before that
+(`m unless max_over_time(m[1h] offset 15m)`), so the first-ever failure on a
+route still alerts. The 1h probe keeps an ingest gap (collector or remote-write
+outage) shorter than an hour from replaying every route's lifetime count. The
+trade-off: after a daemon restart, `increase()` misses the first failure on a route
+whose last sample was 20 to 75 minutes earlier. The series is not pre-created at
+zero. The metric carries no per-process label, and two daemons (`butlers up` and a
+separately deployed Switchboard running the reconciliation sweep) can emit the
+same route labels. One daemon's zeros would interleave with the other's count, and
+`increase()` would read each alternation as a new failure.
 Enabling evaluation or notification delivery, changing a route, or exercising
 an alert requires a separate owner-approved operational change.
 
@@ -290,10 +302,23 @@ account and resource:
 They follow the same posture as the domain-event rule above: `isPaused=true`,
 `severity=warning`, and no contact point or notification policy. `NoData`
 resolves to OK, because a missing series means the connector is down or has not
-seen the condition; connector liveness belongs to its heartbeat. Enabling
+seen the condition; connector liveness belongs to its heartbeat. The connector
+creates the page-cap and quarantine counters at zero for every account and
+resource when it discovers the account, so `increase()` sees the first-ever
+event instead of mistaking the series' creation for its baseline. Enabling
 evaluation or routing notifications is a separate owner-approved operational
 change. A quarantined envelope is replayed from its `poison_quarantine` row in
 `connectors.filtered_events`.
+
+## Knowledge-Gap Closure Failures
+
+`butlers.memory.knowledge_gap_closure_failures_total` is an OTel counter for a
+knowledge-gap closure that failed while a fact write was committing. The fact write
+still succeeds and the gap stays open, so this counter is the operator signal that gap
+bookkeeping is broken (for example a lock or SQL error). It has a `butler` label (the
+registered butler name, or `unknown` outside a butler context) and a `stage` label
+(`closure` or `reservation`, the pair-lock step); entity, predicate and fact identifiers are deliberately excluded. No alert
+rule or dashboard panel ships with it yet; query it with `increase(...)`.
 
 ## Related Pages
 

@@ -16,23 +16,16 @@ Parent: bu-oluyt.7 (retire public.contacts) → bu-y6o7q (guarded DROP).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
 
+from butlers.testing.migration import load_migration
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "migrations" / "030_dedup_contacts_drop_contacts_fks.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_migration_rel_030", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -43,18 +36,18 @@ def _load_migration():
 @pytest.mark.unit
 class TestMigrationStructure:
     def test_revision(self):
-        assert _load_migration().revision == "rel_030"
+        assert load_migration(_MIGRATION_PATH).revision == "rel_030"
 
     def test_down_revision_chains_from_029(self):
-        assert _load_migration().down_revision == "rel_029"
+        assert load_migration(_MIGRATION_PATH).down_revision == "rel_029"
 
     def test_branch_labels_and_depends_on_none(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH)
         assert mod.branch_labels is None
         assert mod.depends_on is None
 
     def test_drops_all_eight_fk_constraints(self):
-        sql = _load_migration()._DROP_FK_SQL
+        sql = load_migration(_MIGRATION_PATH)._DROP_FK_SQL
         for fk in (
             "addresses_contact_id_fkey",
             "contact_labels_contact_id_fkey",
@@ -70,7 +63,7 @@ class TestMigrationStructure:
         assert "DROP CONSTRAINT IF EXISTS" in sql
 
     def test_dedup_snapshots_guards_and_parity_raises(self):
-        dedup = _load_migration()._SNAPSHOT_AND_DEDUP_SQL
+        dedup = load_migration(_MIGRATION_PATH)._SNAPSHOT_AND_DEDUP_SQL
         # Forward-compat guard: clean no-op if public.contacts is already dropped.
         assert "to_regclass('public.contacts')" in dedup
         # Snapshot-before-mutate for reversibility.
@@ -179,7 +172,7 @@ async def _seed(pool):
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_dedup_and_fk_drop(rel029_pool) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     pool = rel029_pool
     ids = await _seed(pool)
     c1, c2, c3, l1, l2 = ids["c1"], ids["c2"], ids["c3"], ids["l1"], ids["l2"]
@@ -260,7 +253,7 @@ async def test_dedup_and_fk_drop(rel029_pool) -> None:
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_noop_when_contacts_absent(core_only_pool) -> None:
     """Forward-compat: dedup cleanly no-ops if public.contacts is already gone."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     pool = core_only_pool
     # No public.contacts table at all — mirrors the post-DROP world.
     await pool.execute(mod._SNAPSHOT_AND_DEDUP_SQL)  # must not raise

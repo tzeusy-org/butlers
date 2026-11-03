@@ -481,7 +481,7 @@ async def test_connected_outer_failure_or_cancel_rolls_back_both_facts_and_answe
 
 @pytest.mark.parametrize("failure", ["reservation", "direct", "inverse"])
 async def test_real_sql_bookkeeping_failure_recovers_its_savepoint_and_commits_facts(
-    pool_factory, session_hook, failure
+    pool_factory, session_hook, failure, request
 ):
     pool, owner, _ = await pool_factory()
     session_hook(pool)
@@ -489,7 +489,14 @@ async def test_real_sql_bookkeeping_failure_recovers_its_savepoint_and_commits_f
     forward, reverse = await _edge_predicates(pool)
     for entity, predicate in ((left, forward), (right, reverse)):
         await _decline(pool, await _conversation(pool), entity, predicate)
-    before = knowledge_gaps.closure_failures
+    from tests.core.test_otel_metrics import (
+        _collect_metrics,
+        _make_in_memory_provider,
+        _reset_metrics_global_state,
+    )
+
+    _provider, reader = _make_in_memory_provider()
+    request.addfinalizer(_reset_metrics_global_state)
 
     # Transparent connection observer: the real SQL error is issued by PostgreSQL
     # inside the production savepoint; no lock, closure, or database result is mocked.
@@ -534,7 +541,12 @@ async def test_real_sql_bookkeeping_failure_recovers_its_savepoint_and_commits_f
         tuple([(await _gap(pool, e, p))["status"] for e, p in ((left, forward), (right, reverse))])
         == expected
     )
-    assert knowledge_gaps.closure_failures == before + 1
+    (point,) = _collect_metrics(reader)["butlers.memory.knowledge_gap_closure_failures_total"]
+    assert dict(point.attributes) == {
+        "butler": "unknown",
+        "stage": "reservation" if failure == "reservation" else "closure",
+    }
+    assert point.value == 1
     [listed] = [
         g
         for g in await knowledge_gaps.list_gaps(pool)

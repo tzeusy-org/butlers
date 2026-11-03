@@ -3,20 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import re
 import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-_THIS_FILE = Path(__file__).resolve()
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
+    pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
@@ -29,137 +26,18 @@ def _today() -> date:
     return datetime.now(UTC).date()
 
 
-# ---------------------------------------------------------------------------
-# Schema setup helpers (health schema tables + public.facts from memory schema)
-# ---------------------------------------------------------------------------
-
-CREATE_HEALTH_SCHEMA = "CREATE SCHEMA IF NOT EXISTS health"
-SET_HEALTH_SEARCH_PATH = "SET search_path TO health, public"
-
-# public.facts stores health measurements via predicate = "measurement_{type}".
-# This is the canonical write path; the old health.measurements table is no longer used.
-CREATE_FACTS_SQL = """
-CREATE TABLE IF NOT EXISTS public.facts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject TEXT NOT NULL,
-    predicate TEXT NOT NULL,
-    content TEXT NOT NULL,
-    embedding TEXT,
-    search_vector TSVECTOR,
-    importance FLOAT NOT NULL DEFAULT 5.0,
-    confidence FLOAT NOT NULL DEFAULT 1.0,
-    decay_rate FLOAT NOT NULL DEFAULT 0.008,
-    permanence TEXT NOT NULL DEFAULT 'standard',
-    source_butler TEXT,
-    source_episode_id UUID,
-    supersedes_id UUID,
-    validity TEXT NOT NULL DEFAULT 'active',
-    scope TEXT NOT NULL DEFAULT 'global',
-    reference_count INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_confirmed_at TIMESTAMPTZ,
-    tags JSONB DEFAULT '[]'::jsonb,
-    metadata JSONB DEFAULT '{}'::jsonb,
-    entity_id UUID,
-    object_entity_id UUID,
-    valid_at TIMESTAMPTZ DEFAULT NULL,
-    tenant_id TEXT NOT NULL DEFAULT 'owner',
-    request_id TEXT,
-    retention_class TEXT NOT NULL DEFAULT 'operational',
-    sensitivity TEXT NOT NULL DEFAULT 'normal',
-    idempotency_key TEXT,
-    observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ,
-    embedding_model_version TEXT DEFAULT 'unknown'
-)
-"""
-
-CREATE_MEDICATIONS_SQL = """
-CREATE TABLE IF NOT EXISTS health.medications (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    dosage TEXT NOT NULL,
-    frequency TEXT NOT NULL,
-    schedule JSONB NOT NULL DEFAULT '[]',
-    active BOOLEAN NOT NULL DEFAULT true,
-    notes TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_MEDICATION_DOSES_SQL = """
-CREATE TABLE IF NOT EXISTS health.medication_doses (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    medication_id UUID NOT NULL REFERENCES health.medications(id),
-    taken_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    skipped BOOLEAN NOT NULL DEFAULT false,
-    notes TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-CREATE_SYMPTOMS_SQL = """
-CREATE TABLE IF NOT EXISTS health.symptoms (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name TEXT NOT NULL,
-    severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 10),
-    condition_id UUID,
-    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    notes TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-
-async def _setup_health_schema(pool) -> None:
-    """Create the health schema and all required tables."""
-    await pool.execute(CREATE_HEALTH_SCHEMA)
-    await pool.execute(CREATE_FACTS_SQL)
-    await pool.execute(CREATE_MEDICATIONS_SQL)
-    await pool.execute(CREATE_MEDICATION_DOSES_SQL)
-    await pool.execute(CREATE_SYMPTOMS_SQL)
-    for migration_name in (
-        "core_087_public_state.py",
-        "core_210_expected_signals.py",
-        "core_211_expected_signal_endpoint_identity.py",
-    ):
-        migration_path = _THIS_FILE.parents[3] / "alembic/versions/core" / migration_name
-        spec = importlib.util.spec_from_file_location(migration_path.stem, migration_path)
-        assert spec is not None and spec.loader is not None
-        migration = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(migration)
-        statements: list[str] = []
-        mocked_op = MagicMock()
-        mocked_op.execute.side_effect = statements.append
-        with patch.object(migration, "op", mocked_op):
-            migration.upgrade()
-        for statement in statements:
-            await pool.execute(statement)
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS public._health_job_test_liveness (
-            connector_type text NOT NULL,
-            endpoint_identity text NOT NULL,
-            state text NOT NULL,
-            last_heartbeat_at timestamptz
-        )
-        """
+@pytest.fixture
+async def health_pool(db):
+    """Real migrations: core and memory (``public.facts``) in public, the health chain in
+    ``health``, and switchboard for the ``public.v_qa_connector_state`` liveness view."""
+    return await db(
+        "core",
+        "memory",
+        "health",
+        "switchboard",
+        schemas={"health": "health", "switchboard": "switchboard"},
+        schema="health",
     )
-    await pool.execute(
-        """
-        CREATE OR REPLACE VIEW public.v_qa_connector_state AS
-        SELECT connector_type, endpoint_identity, state, last_heartbeat_at
-        FROM public._health_job_test_liveness
-        """
-    )
-
-
-async def _setup_insight_tables(pool) -> None:
-    """Create insight_candidates and related tables for insight scan tests."""
-    from butlers.tools.switchboard.insight.broker import create_insight_tables
-
-    await create_insight_tables(pool)
 
 
 # ---------------------------------------------------------------------------
@@ -363,38 +241,30 @@ async def _insert_sleep_session(
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_no_data(provisioned_postgres_pool):
+async def test_insight_scan_no_data(health_pool):
     """No-op: returns zeros when no health data exists."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        assert result["candidates_proposed"] == 0
-        assert result["candidates_accepted"] == 0
-        assert result["candidates_filtered"] == 0
-        assert result["candidates_errored"] == 0
-        assert result["early_exit"] is False
+    assert result["candidates_proposed"] == 0
+    assert result["candidates_accepted"] == 0
+    assert result["candidates_filtered"] == 0
+    assert result["candidates_errored"] == 0
+    assert result["early_exit"] is False
 
 
-async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
+async def test_insight_scan_result_keys_present(health_pool):
     """Result dict always contains all expected keys."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        assert "candidates_proposed" in result
-        assert "candidates_accepted" in result
-        assert "candidates_filtered" in result
-        assert "candidates_errored" in result
-        assert "early_exit" in result
+    assert "candidates_proposed" in result
+    assert "candidates_accepted" in result
+    assert "candidates_filtered" in result
+    assert "candidates_errored" in result
+    assert "early_exit" in result
 
 
 # ---------------------------------------------------------------------------
@@ -402,234 +272,210 @@ async def test_insight_scan_result_keys_present(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_measurement_gap_no_gap_does_not_generate_candidate(provisioned_postgres_pool):
+async def test_measurement_gap_no_gap_does_not_generate_candidate(health_pool):
     """Recent measurements within normal cadence produce no gap insight."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    # 10 daily measurements with the latest being today — no gap
+    for i in range(10):
+        await _insert_measurement(health_pool, mtype="weight", measured_at=now - timedelta(days=i))
 
-        now = _utcnow()
-        # 10 daily measurements with the latest being today — no gap
-        for i in range(10):
-            await _insert_measurement(pool, mtype="weight", measured_at=now - timedelta(days=i))
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        gap_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'measurement-gap'"
-        )
-        assert len(gap_rows) == 0
-        assert result["candidates_proposed"] == 0
+    gap_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'measurement-gap'"
+    )
+    assert len(gap_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_measurement_gap_insufficient_history_excluded(provisioned_postgres_pool):
+async def test_measurement_gap_insufficient_history_excluded(health_pool):
     """Types with fewer than 3 historical entries are excluded from gap detection."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    # Only 2 measurements — below minimum of 3
+    await _insert_measurement(health_pool, mtype="glucose", measured_at=now - timedelta(days=60))
+    await _insert_measurement(health_pool, mtype="glucose", measured_at=now - timedelta(days=120))
 
-        now = _utcnow()
-        # Only 2 measurements — below minimum of 3
-        await _insert_measurement(pool, mtype="glucose", measured_at=now - timedelta(days=60))
-        await _insert_measurement(pool, mtype="glucose", measured_at=now - timedelta(days=120))
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        gap_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'measurement-gap'"
-        )
-        assert len(gap_rows) == 0
-        assert result["candidates_proposed"] == 0
+    gap_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'measurement-gap'"
+    )
+    assert len(gap_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_measurement_gap_2x_cadence_generates_warning_candidate(provisioned_postgres_pool):
+async def test_measurement_gap_2x_cadence_generates_warning_candidate(health_pool):
     """Gap exceeding 2x typical cadence generates a warning (priority 55) candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        # 5 weekly measurements, last one 16 days ago (2.28x cadence of 7 days)
-        for i in range(5):
-            offset_days = 16 + (i * 7)
-            await _insert_measurement(
-                pool, mtype="blood_pressure", measured_at=now - timedelta(days=offset_days)
-            )
-
-        result = await run_insight_scan(pool)
-
-        gap_rows = await pool.fetch(
-            "SELECT priority, dedup_key, message, metadata FROM insight_candidates"
-            " WHERE category = 'measurement-gap'"
+    now = _utcnow()
+    # 5 weekly measurements, last one 16 days ago (2.28x cadence of 7 days)
+    for i in range(5):
+        offset_days = 16 + (i * 7)
+        await _insert_measurement(
+            health_pool, mtype="blood_pressure", measured_at=now - timedelta(days=offset_days)
         )
-        assert len(gap_rows) == 1
-        row = gap_rows[0]
-        assert row["priority"] == 55
-        assert "health:measurement-gap:blood_pressure" == row["dedup_key"]
-        assert "blood_pressure" in row["message"]
-        metadata = row["metadata"]
-        assert metadata["measurement_door"] == {
-            "type": "blood_pressure",
-            "since": (now - timedelta(days=16)).date().isoformat(),
-            "until": now.date().isoformat(),
-        }
-        # bu-ep4ks.9 adoption: event_window carries since/until at full
-        # datetime precision. `since` (most_recent) round-trips deterministically
-        # through Postgres; `until` is the job's own internal now_utc, so only
-        # bounded (not compared for exact equality against the test's `now`).
-        event_window = metadata["event_window"]
-        assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=16)
-        assert datetime.fromisoformat(event_window["end"]) >= now
-        assert result["candidates_accepted"] == 1
-        signal = await pool.fetchrow(
-            "SELECT producer, producer_endpoint_identity FROM public.expected_signals "
-            "WHERE signal_key = 'health:measurement-gap:blood_pressure'"
-        )
-        assert signal["producer"] == "owner"
-        assert signal["producer_endpoint_identity"] is None
+
+    result = await run_insight_scan(health_pool)
+
+    gap_rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message, metadata FROM insight_candidates"
+        " WHERE category = 'measurement-gap'"
+    )
+    assert len(gap_rows) == 1
+    row = gap_rows[0]
+    assert row["priority"] == 55
+    assert "health:measurement-gap:blood_pressure" == row["dedup_key"]
+    assert "blood_pressure" in row["message"]
+    metadata = row["metadata"]
+    assert metadata["measurement_door"] == {
+        "type": "blood_pressure",
+        "since": (now - timedelta(days=16)).date().isoformat(),
+        "until": now.date().isoformat(),
+    }
+    # bu-ep4ks.9 adoption: event_window carries since/until at full
+    # datetime precision. `since` (most_recent) round-trips deterministically
+    # through Postgres; `until` is the job's own internal now_utc, so only
+    # bounded (not compared for exact equality against the test's `now`).
+    event_window = metadata["event_window"]
+    assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=16)
+    assert datetime.fromisoformat(event_window["end"]) >= now
+    assert result["candidates_accepted"] == 1
+    signal = await health_pool.fetchrow(
+        "SELECT producer, producer_endpoint_identity FROM public.expected_signals "
+        "WHERE signal_key = 'health:measurement-gap:blood_pressure'"
+    )
+    assert signal["producer"] == "owner"
+    assert signal["producer_endpoint_identity"] is None
 
 
-async def test_measurement_gap_3x_cadence_generates_critical_candidate(provisioned_postgres_pool):
+async def test_measurement_gap_3x_cadence_generates_critical_candidate(health_pool):
     """Gap exceeding 3x typical cadence generates a critical (priority 75) candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        # 5 weekly measurements, last one 25 days ago (3.57x cadence of 7 days)
-        for i in range(5):
-            offset_days = 25 + (i * 7)
-            await _insert_measurement(
-                pool, mtype="weight", measured_at=now - timedelta(days=offset_days)
-            )
-
-        result = await run_insight_scan(pool)
-
-        gap_rows = await pool.fetch(
-            "SELECT priority FROM insight_candidates WHERE category = 'measurement-gap'"
+    now = _utcnow()
+    # 5 weekly measurements, last one 25 days ago (3.57x cadence of 7 days)
+    for i in range(5):
+        offset_days = 25 + (i * 7)
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=now - timedelta(days=offset_days)
         )
-        assert len(gap_rows) == 1
-        assert gap_rows[0]["priority"] == 75
-        assert result["candidates_accepted"] == 1
+
+    result = await run_insight_scan(health_pool)
+
+    gap_rows = await health_pool.fetch(
+        "SELECT priority FROM insight_candidates WHERE category = 'measurement-gap'"
+    )
+    assert len(gap_rows) == 1
+    assert gap_rows[0]["priority"] == 75
+    assert result["candidates_accepted"] == 1
 
 
 @pytest.mark.parametrize("reverse_liveness", [False, True])
 async def test_measurement_gap_dead_connector_is_unmeasurable_without_owner_nudge(
-    provisioned_postgres_pool,
+    health_pool,
     reverse_liveness: bool,
 ):
     """Elapsed cadence cannot become an owner claim after producer liveness dies."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-        now = _utcnow()
-        rows = [
-            (
-                "google_health",
-                "google_health:user:owner",
-                "offline",
-                now,
-            ),
-            (
-                "google_health",
-                "google_health:user:sibling",
-                "healthy",
-                now,
-            ),
-        ]
-        if reverse_liveness:
-            rows.reverse()
-        await pool.executemany(
-            "INSERT INTO public._health_job_test_liveness VALUES ($1, $2, $3, $4)",
-            rows,
+    now = _utcnow()
+    rows = [
+        (
+            "google_health",
+            "google_health:user:owner",
+            "offline",
+            now,
+        ),
+        (
+            "google_health",
+            "google_health:user:sibling",
+            "healthy",
+            now,
+        ),
+    ]
+    if reverse_liveness:
+        rows.reverse()
+    # The liveness view is a simple single-table view, so it accepts the rows directly.
+    await health_pool.executemany(
+        "INSERT INTO public.v_qa_connector_state"
+        " (connector_type, endpoint_identity, state, last_heartbeat_at)"
+        " VALUES ($1, $2, $3, $4)",
+        rows,
+    )
+    for i in range(5):
+        await _insert_measurement(
+            health_pool,
+            mtype="weight",
+            measured_at=now - timedelta(days=25 + (i * 7)),
+            source="google_health",
+            source_endpoint_identity="google_health:user:owner",
         )
-        for i in range(5):
-            await _insert_measurement(
-                pool,
-                mtype="weight",
-                measured_at=now - timedelta(days=25 + (i * 7)),
-                source="google_health",
-                source_endpoint_identity="google_health:user:owner",
-            )
 
-        result = await run_insight_scan(pool)
+    result = await run_insight_scan(health_pool)
 
-        signal = await pool.fetchrow(
-            "SELECT measurability, unmeasurable_reason FROM public.expected_signals "
-            "WHERE signal_key = 'health:measurement-gap:weight'"
+    signal = await health_pool.fetchrow(
+        "SELECT measurability, unmeasurable_reason FROM public.expected_signals "
+        "WHERE signal_key = 'health:measurement-gap:weight'"
+    )
+    assert signal is not None
+    assert signal["measurability"] == "unmeasurable"
+    assert signal["unmeasurable_reason"] == "producer_stale_or_offline"
+    assert (
+        await health_pool.fetchval(
+            "SELECT count(*) FROM insight_candidates WHERE category = 'measurement-gap'"
         )
-        assert signal is not None
-        assert signal["measurability"] == "unmeasurable"
-        assert signal["unmeasurable_reason"] == "producer_stale_or_offline"
-        assert (
-            await pool.fetchval(
-                "SELECT count(*) FROM insight_candidates WHERE category = 'measurement-gap'"
-            )
-            == 0
-        )
-        assert result["candidates_proposed"] == 0
+        == 0
+    )
+    assert result["candidates_proposed"] == 0
 
 
-async def test_measurement_gap_dedup_key_format(provisioned_postgres_pool):
+async def test_measurement_gap_dedup_key_format(health_pool):
     """Measurement gap dedup_key follows health:measurement-gap:{type} format."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        for i in range(5):
-            await _insert_measurement(
-                pool, mtype="temperature", measured_at=now - timedelta(days=25 + i * 7)
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'measurement-gap'"
+    now = _utcnow()
+    for i in range(5):
+        await _insert_measurement(
+            health_pool, mtype="temperature", measured_at=now - timedelta(days=25 + i * 7)
         )
-        assert len(rows) == 1
-        assert rows[0]["dedup_key"] == "health:measurement-gap:temperature"
+
+    await run_insight_scan(health_pool)
+
+    rows = await health_pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'measurement-gap'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["dedup_key"] == "health:measurement-gap:temperature"
 
 
-async def test_measurement_gap_expires_3_days_from_now(provisioned_postgres_pool):
+async def test_measurement_gap_expires_3_days_from_now(health_pool):
     """Measurement gap candidate expires_at is 3 days from generation."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        for i in range(5):
-            await _insert_measurement(
-                pool, mtype="weight", measured_at=now - timedelta(days=25 + i * 7)
-            )
-
-        before = _utcnow()
-        await run_insight_scan(pool)
-        after = _utcnow()
-
-        rows = await pool.fetch(
-            "SELECT expires_at FROM insight_candidates WHERE category = 'measurement-gap'"
+    now = _utcnow()
+    for i in range(5):
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=now - timedelta(days=25 + i * 7)
         )
-        assert len(rows) == 1
-        expires_at = rows[0]["expires_at"]
-        # Should be approximately 3 days from now
-        expected_min = before + timedelta(days=2, hours=23)
-        expected_max = after + timedelta(days=3, hours=1)
-        assert expected_min <= expires_at <= expected_max
+
+    before = _utcnow()
+    await run_insight_scan(health_pool)
+    after = _utcnow()
+
+    rows = await health_pool.fetch(
+        "SELECT expires_at FROM insight_candidates WHERE category = 'measurement-gap'"
+    )
+    assert len(rows) == 1
+    expires_at = rows[0]["expires_at"]
+    # Should be approximately 3 days from now
+    expected_min = before + timedelta(days=2, hours=23)
+    expected_max = after + timedelta(days=3, hours=1)
+    assert expected_min <= expires_at <= expected_max
 
 
 # ---------------------------------------------------------------------------
@@ -637,179 +483,155 @@ async def test_measurement_gap_expires_3_days_from_now(provisioned_postgres_pool
 # ---------------------------------------------------------------------------
 
 
-async def test_medication_refill_inactive_medication_excluded(provisioned_postgres_pool):
+async def test_medication_refill_inactive_medication_excluded(health_pool):
     """Inactive medications are excluded from refill insights."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    med_id = await _insert_medication(health_pool, name="OldMed", active=False)
+    now = _utcnow()
+    for i in range(30):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
-        med_id = await _insert_medication(pool, name="OldMed", active=False)
-        now = _utcnow()
-        for i in range(30):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        refill_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
-        )
-        assert len(refill_rows) == 0
-        assert result["candidates_proposed"] == 0
+    refill_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(refill_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_medication_refill_no_doses_excluded(provisioned_postgres_pool):
+async def test_medication_refill_no_doses_excluded(health_pool):
     """Active medications with no dose history in 30 days are excluded."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    await _insert_medication(health_pool, name="UnloggedMed", active=True)
 
-        await _insert_medication(pool, name="UnloggedMed", active=True)
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        refill_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
-        )
-        assert len(refill_rows) == 0
-        assert result["candidates_proposed"] == 0
+    refill_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(refill_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_medication_refill_within_14_days_generates_candidate(provisioned_postgres_pool):
+async def test_medication_refill_within_14_days_generates_candidate(health_pool):
     """Active medication running out within 14 days generates a refill candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool,
+        name="Metformin",
+        frequency="daily",
+        active=True,
+        quantity=30,
+        quantity_updated_at=now - timedelta(days=30),
+    )
+    # Log 28 doses over the last 28 days (daily), consuming 28 of a real
+    # 30-pill supply recorded 30 days ago -- 2 days remain.
+    for i in range(28):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
-        now = _utcnow()
-        med_id = await _insert_medication(
-            pool,
-            name="Metformin",
-            frequency="daily",
-            active=True,
-            quantity=30,
-            quantity_updated_at=now - timedelta(days=30),
-        )
-        # Log 28 doses over the last 28 days (daily), consuming 28 of a real
-        # 30-pill supply recorded 30 days ago -- 2 days remain.
-        for i in range(28):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        refill_rows = await pool.fetch(
-            "SELECT priority, dedup_key, message FROM insight_candidates"
-            " WHERE category = 'medication-refill'"
-        )
-        assert len(refill_rows) == 1
-        row = refill_rows[0]
-        assert "Metformin" in row["message"]
-        assert "refill" in row["message"].lower()
-        assert result["candidates_accepted"] == 1
+    refill_rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message FROM insight_candidates"
+        " WHERE category = 'medication-refill'"
+    )
+    assert len(refill_rows) == 1
+    row = refill_rows[0]
+    assert "Metformin" in row["message"]
+    assert "refill" in row["message"].lower()
+    assert result["candidates_accepted"] == 1
 
 
-async def test_medication_refill_critical_priority_within_3_days(provisioned_postgres_pool):
+async def test_medication_refill_critical_priority_within_3_days(health_pool):
     """Medication depleting within 3 days gets priority 90 (time-critical)."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool,
+        name="Insulin",
+        frequency="daily",
+        active=True,
+        quantity=30,
+        quantity_updated_at=now - timedelta(days=30),
+    )
+    # Log 29 doses over the last 29 days — only ~1 day remaining
+    for i in range(29):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
-        now = _utcnow()
-        med_id = await _insert_medication(
-            pool,
-            name="Insulin",
-            frequency="daily",
-            active=True,
-            quantity=30,
-            quantity_updated_at=now - timedelta(days=30),
-        )
-        # Log 29 doses over the last 29 days — only ~1 day remaining
-        for i in range(29):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+    await run_insight_scan(health_pool)
 
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT priority FROM insight_candidates WHERE category = 'medication-refill'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 90
+    rows = await health_pool.fetch(
+        "SELECT priority FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 90
 
 
-async def test_medication_refill_dedup_key_format(provisioned_postgres_pool):
+async def test_medication_refill_dedup_key_format(health_pool):
     """Medication refill dedup_key follows health:medication-refill:{id} format."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool,
+        name="Lisinopril",
+        active=True,
+        quantity=30,
+        quantity_updated_at=now - timedelta(days=30),
+    )
+    for i in range(28):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
-        now = _utcnow()
-        med_id = await _insert_medication(
-            pool,
-            name="Lisinopril",
-            active=True,
-            quantity=30,
-            quantity_updated_at=now - timedelta(days=30),
-        )
-        for i in range(28):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+    await run_insight_scan(health_pool)
 
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'medication-refill'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["dedup_key"] == f"health:medication-refill:{med_id}"
+    rows = await health_pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["dedup_key"] == f"health:medication-refill:{med_id}"
 
 
-async def test_medication_refill_skipped_doses_excluded_from_count(provisioned_postgres_pool):
+async def test_medication_refill_skipped_doses_excluded_from_count(health_pool):
     """Skipped doses are excluded when computing supply consumption."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        med_id = await _insert_medication(
-            pool,
-            name="TestMed",
-            active=True,
-            quantity=30,
-            quantity_updated_at=now - timedelta(days=30),
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool,
+        name="TestMed",
+        active=True,
+        quantity=30,
+        quantity_updated_at=now - timedelta(days=30),
+    )
+    # Log 10 real doses and 20 skipped — should only count 10 consumed
+    for i in range(10):
+        await _insert_dose(
+            health_pool, medication_id=med_id, taken_at=now - timedelta(days=i), skipped=False
         )
-        # Log 10 real doses and 20 skipped — should only count 10 consumed
-        for i in range(10):
-            await _insert_dose(
-                pool, medication_id=med_id, taken_at=now - timedelta(days=i), skipped=False
-            )
-        for i in range(20):
-            await _insert_dose(
-                pool, medication_id=med_id, taken_at=now - timedelta(days=i + 10), skipped=True
-            )
-
-        result = await run_insight_scan(pool)
-
-        # With only 10 real doses consumed out of a genuine 30-pill supply,
-        # there are 20 days remaining which is > 14, so no refill candidate
-        # should be generated
-        refill_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
+    for i in range(20):
+        await _insert_dose(
+            health_pool, medication_id=med_id, taken_at=now - timedelta(days=i + 10), skipped=True
         )
-        assert len(refill_rows) == 0
-        assert result["candidates_proposed"] == 0
+
+    result = await run_insight_scan(health_pool)
+
+    # With only 10 real doses consumed out of a genuine 30-pill supply,
+    # there are 20 days remaining which is > 14, so no refill candidate
+    # should be generated
+    refill_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(refill_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_medication_refill_no_quantity_recorded_excluded(provisioned_postgres_pool):
+async def test_medication_refill_no_quantity_recorded_excluded(health_pool):
     """No refill candidate is fabricated when no real supply quantity was ever recorded.
 
     Regression test for bu-dtmbn: the insight-scan job used to assume a
@@ -820,25 +642,21 @@ async def test_medication_refill_no_quantity_recorded_excluded(provisioned_postg
     """
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    med_id = await _insert_medication(health_pool, name="UnknownSupplyMed", active=True)
+    now = _utcnow()
+    for i in range(29):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
-        med_id = await _insert_medication(pool, name="UnknownSupplyMed", active=True)
-        now = _utcnow()
-        for i in range(29):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        refill_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
-        )
-        assert len(refill_rows) == 0
-        assert result["candidates_proposed"] == 0
+    refill_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(refill_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_medication_refill_uses_real_quantity_and_refill_anchor(provisioned_postgres_pool):
+async def test_medication_refill_uses_real_quantity_and_refill_anchor(health_pool):
     """Depletion is computed from the real recorded quantity and refill timestamp.
 
     A medication refilled to 10 real pills 5 days ago, with 5 daily doses
@@ -847,32 +665,28 @@ async def test_medication_refill_uses_real_quantity_and_refill_anchor(provisione
     """
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool,
+        name="RefilledMed",
+        frequency="daily",
+        active=True,
+        quantity=10,
+        quantity_updated_at=now - timedelta(days=5),
+    )
+    for i in range(5):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=i))
 
-        now = _utcnow()
-        med_id = await _insert_medication(
-            pool,
-            name="RefilledMed",
-            frequency="daily",
-            active=True,
-            quantity=10,
-            quantity_updated_at=now - timedelta(days=5),
-        )
-        for i in range(5):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=i))
+    await run_insight_scan(health_pool)
 
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT priority, message FROM insight_candidates WHERE category = 'medication-refill'"
-        )
-        assert len(rows) == 1
-        # 5 days remaining is within the 7-day urgent band (priority 75) but
-        # outside the 3-day critical band.
-        assert rows[0]["priority"] == 75
-        assert "5 day" in rows[0]["message"]
+    rows = await health_pool.fetch(
+        "SELECT priority, message FROM insight_candidates WHERE category = 'medication-refill'"
+    )
+    assert len(rows) == 1
+    # 5 days remaining is within the 7-day urgent band (priority 75) but
+    # outside the 3-day critical band.
+    assert rows[0]["priority"] == 75
+    assert "5 day" in rows[0]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -880,133 +694,117 @@ async def test_medication_refill_uses_real_quantity_and_refill_anchor(provisione
 # ---------------------------------------------------------------------------
 
 
-async def test_symptom_trend_below_threshold_no_candidate(provisioned_postgres_pool):
+async def test_symptom_trend_below_threshold_no_candidate(health_pool):
     """Symptom logged only twice in 7 days does not trigger a trend alert."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    await _insert_symptom(
+        health_pool, name="nausea", severity=4, occurred_at=now - timedelta(days=1)
+    )
+    await _insert_symptom(
+        health_pool, name="nausea", severity=5, occurred_at=now - timedelta(days=3)
+    )
 
-        now = _utcnow()
-        await _insert_symptom(pool, name="nausea", severity=4, occurred_at=now - timedelta(days=1))
-        await _insert_symptom(pool, name="nausea", severity=5, occurred_at=now - timedelta(days=3))
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        trend_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'symptom-trend'"
-        )
-        assert len(trend_rows) == 0
-        assert result["candidates_proposed"] == 0
+    trend_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'symptom-trend'"
+    )
+    assert len(trend_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_symptom_trend_low_severity_excluded(provisioned_postgres_pool):
+async def test_symptom_trend_low_severity_excluded(health_pool):
     """Symptoms with severity below threshold are excluded even if frequent."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        # 5 occurrences but severity 2 (below threshold of 3)
-        for i in range(5):
-            await _insert_symptom(
-                pool, name="mild_discomfort", severity=2, occurred_at=now - timedelta(days=i)
-            )
-
-        result = await run_insight_scan(pool)
-
-        trend_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'symptom-trend'"
+    now = _utcnow()
+    # 5 occurrences but severity 2 (below threshold of 3)
+    for i in range(5):
+        await _insert_symptom(
+            health_pool, name="mild_discomfort", severity=2, occurred_at=now - timedelta(days=i)
         )
-        assert len(trend_rows) == 0
-        assert result["candidates_proposed"] == 0
+
+    result = await run_insight_scan(health_pool)
+
+    trend_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'symptom-trend'"
+    )
+    assert len(trend_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_symptom_trend_3x_in_7_days_generates_candidate(provisioned_postgres_pool):
+async def test_symptom_trend_3x_in_7_days_generates_candidate(health_pool):
     """Symptom logged 3+ times in 7 days with severity >= 3 generates a trend alert."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        for i in range(3):
-            await _insert_symptom(
-                pool, name="headache", severity=5, occurred_at=now - timedelta(days=i)
-            )
-
-        result = await run_insight_scan(pool)
-
-        trend_rows = await pool.fetch(
-            "SELECT priority, dedup_key, message FROM insight_candidates"
-            " WHERE category = 'symptom-trend'"
+    now = _utcnow()
+    for i in range(3):
+        await _insert_symptom(
+            health_pool, name="headache", severity=5, occurred_at=now - timedelta(days=i)
         )
-        assert len(trend_rows) == 1
-        row = trend_rows[0]
-        assert row["priority"] == 70
-        assert "headache" in row["message"]
-        assert "3" in row["message"]
-        assert result["candidates_accepted"] == 1
+
+    result = await run_insight_scan(health_pool)
+
+    trend_rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message FROM insight_candidates"
+        " WHERE category = 'symptom-trend'"
+    )
+    assert len(trend_rows) == 1
+    row = trend_rows[0]
+    assert row["priority"] == 70
+    assert "headache" in row["message"]
+    assert "3" in row["message"]
+    assert result["candidates_accepted"] == 1
 
 
-async def test_symptom_trend_dedup_key_includes_year_week(provisioned_postgres_pool):
+async def test_symptom_trend_dedup_key_includes_year_week(health_pool):
     """Symptom trend dedup_key includes health:symptom-trend:{name}:{year-week}."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        for i in range(3):
-            await _insert_symptom(
-                pool, name="fatigue", severity=4, occurred_at=now - timedelta(days=i)
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'symptom-trend'"
+    now = _utcnow()
+    for i in range(3):
+        await _insert_symptom(
+            health_pool, name="fatigue", severity=4, occurred_at=now - timedelta(days=i)
         )
-        assert len(rows) == 1
-        dedup_key = rows[0]["dedup_key"]
-        assert dedup_key.startswith("health:symptom-trend:fatigue:")
-        # year-week part should be present
-        year_week = now.strftime("%Y-W%W")
-        assert dedup_key == f"health:symptom-trend:fatigue:{year_week}"
+
+    await run_insight_scan(health_pool)
+
+    rows = await health_pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'symptom-trend'"
+    )
+    assert len(rows) == 1
+    dedup_key = rows[0]["dedup_key"]
+    assert dedup_key.startswith("health:symptom-trend:fatigue:")
+    # year-week part should be present
+    year_week = now.strftime("%Y-W%W")
+    assert dedup_key == f"health:symptom-trend:fatigue:{year_week}"
 
 
 async def test_recovery_state_not_published_when_no_symptoms_cross_severity_floor(
-    provisioned_postgres_pool,
+    health_pool,
 ):
     """bu-317s5 slice 3: no symptom crossed the severity floor -- nothing to advise."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
     publish_once_mock = AsyncMock()
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    # Below _SYMPTOM_MIN_SEVERITY (3) -- excluded from the underlying query.
+    await _insert_symptom(health_pool, name="mild_discomfort", severity=2, occurred_at=now)
 
-        now = _utcnow()
-        # Below _SYMPTOM_MIN_SEVERITY (3) -- excluded from the underlying query.
-        await _insert_symptom(pool, name="mild_discomfort", severity=2, occurred_at=now)
-
-        with patch(
-            "butlers.core_tools._domain_events.publish_domain_event_once",
-            new=publish_once_mock,
-        ):
-            await run_insight_scan(pool)
+    with patch(
+        "butlers.core_tools._domain_events.publish_domain_event_once",
+        new=publish_once_mock,
+    ):
+        await run_insight_scan(health_pool)
 
     publish_once_mock.assert_not_awaited()
 
 
 async def test_recovery_state_published_as_recovering_for_moderate_severity(
-    provisioned_postgres_pool,
+    health_pool,
 ):
     """bu-317s5 slice 3: a single moderate-severity symptom publishes
     health.recovery_state(state="recovering") -- one occurrence is enough for
@@ -1016,18 +814,14 @@ async def test_recovery_state_published_as_recovering_for_moderate_severity(
 
     publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    await _insert_symptom(health_pool, name="nausea", severity=4, occurred_at=now)
 
-        now = _utcnow()
-        await _insert_symptom(pool, name="nausea", severity=4, occurred_at=now)
-
-        with patch(
-            "butlers.core_tools._domain_events.publish_domain_event_once",
-            new=publish_once_mock,
-        ):
-            await run_insight_scan(pool)
+    with patch(
+        "butlers.core_tools._domain_events.publish_domain_event_once",
+        new=publish_once_mock,
+    ):
+        await run_insight_scan(health_pool)
 
     publish_once_mock.assert_awaited_once()
     kwargs = publish_once_mock.await_args.kwargs
@@ -1046,25 +840,21 @@ async def test_recovery_state_published_as_recovering_for_moderate_severity(
 
 
 async def test_recovery_state_published_as_depleted_for_high_severity(
-    provisioned_postgres_pool,
+    health_pool,
 ):
     """A severity >= 7 symptom escalates the advisory to state='depleted'."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
     publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    await _insert_symptom(health_pool, name="migraine", severity=8, occurred_at=now)
 
-        now = _utcnow()
-        await _insert_symptom(pool, name="migraine", severity=8, occurred_at=now)
-
-        with patch(
-            "butlers.core_tools._domain_events.publish_domain_event_once",
-            new=publish_once_mock,
-        ):
-            await run_insight_scan(pool)
+    with patch(
+        "butlers.core_tools._domain_events.publish_domain_event_once",
+        new=publish_once_mock,
+    ):
+        await run_insight_scan(health_pool)
 
     publish_once_mock.assert_awaited_once()
     kwargs = publish_once_mock.await_args.kwargs
@@ -1075,7 +865,7 @@ async def test_recovery_state_published_as_depleted_for_high_severity(
 
 
 async def test_publish_recovery_state_event_claims_state_via_state_claim_if_changed(
-    provisioned_postgres_pool,
+    health_pool,
 ):
     """bu-s7v6t: exercise the real state_claim_if_changed call inside
     _publish_recovery_state_event's publish_domain_event_once -> _claim_and_record_event
@@ -1089,36 +879,33 @@ async def test_publish_recovery_state_event_claims_state_via_state_claim_if_chan
     record_event_mock = AsyncMock(return_value=str(uuid.uuid4()))
     get_active_subscribers_mock = AsyncMock(return_value=[])
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
+    now = _utcnow()
+    year_week = now.strftime("%Y-W%W")
+    dedup_key = f"{year_week}-recovering"
 
-        now = _utcnow()
-        year_week = now.strftime("%Y-W%W")
-        dedup_key = f"{year_week}-recovering"
-
-        with (
-            patch("butlers.core_tools._domain_events.record_event", new=record_event_mock),
-            patch(
-                "butlers.core_tools._domain_events.get_active_subscribers",
-                new=get_active_subscribers_mock,
-            ),
-        ):
-            await _publish_recovery_state_event(
-                pool,
-                recovery={
-                    "state": "recovering",
-                    "max_severity": 4,
-                    "symptom_count": 1,
-                    "window_days": 7,
-                },
-                now_utc=now,
-                dedup_key=dedup_key,
-            )
-
-        state_row = await pool.fetchrow(
-            "SELECT value FROM state WHERE key = $1",
-            "domain_event_once:health.recovery_state:health.recovery_state",
+    with (
+        patch("butlers.core_tools._domain_events.record_event", new=record_event_mock),
+        patch(
+            "butlers.core_tools._domain_events.get_active_subscribers",
+            new=get_active_subscribers_mock,
+        ),
+    ):
+        await _publish_recovery_state_event(
+            health_pool,
+            recovery={
+                "state": "recovering",
+                "max_severity": 4,
+                "symptom_count": 1,
+                "window_days": 7,
+            },
+            now_utc=now,
+            dedup_key=dedup_key,
         )
+
+    state_row = await health_pool.fetchrow(
+        "SELECT value FROM state WHERE key = $1",
+        "domain_event_once:health.recovery_state:health.recovery_state",
+    )
 
     # The claim must have actually won (state row written with the dedup_key
     # value) and reached record_event, rather than raising asyncpg's
@@ -1128,90 +915,78 @@ async def test_publish_recovery_state_event_claims_state_via_state_claim_if_chan
     record_event_mock.assert_awaited_once()
 
 
-async def test_symptom_trend_excludes_symptoms_outside_7_days(provisioned_postgres_pool):
+async def test_symptom_trend_excludes_symptoms_outside_7_days(health_pool):
     """Symptoms older than 7 days are excluded from trend detection."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    # 2 recent + 2 old (outside 7-day window) — total < 3 in window
+    await _insert_symptom(
+        health_pool, name="backache", severity=4, occurred_at=now - timedelta(days=1)
+    )
+    await _insert_symptom(
+        health_pool, name="backache", severity=3, occurred_at=now - timedelta(days=2)
+    )
+    await _insert_symptom(
+        health_pool, name="backache", severity=4, occurred_at=now - timedelta(days=8)
+    )
+    await _insert_symptom(
+        health_pool, name="backache", severity=5, occurred_at=now - timedelta(days=10)
+    )
 
-        now = _utcnow()
-        # 2 recent + 2 old (outside 7-day window) — total < 3 in window
-        await _insert_symptom(
-            pool, name="backache", severity=4, occurred_at=now - timedelta(days=1)
-        )
-        await _insert_symptom(
-            pool, name="backache", severity=3, occurred_at=now - timedelta(days=2)
-        )
-        await _insert_symptom(
-            pool, name="backache", severity=4, occurred_at=now - timedelta(days=8)
-        )
-        await _insert_symptom(
-            pool, name="backache", severity=5, occurred_at=now - timedelta(days=10)
-        )
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        trend_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'symptom-trend'"
-        )
-        assert len(trend_rows) == 0
-        assert result["candidates_proposed"] == 0
+    trend_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'symptom-trend'"
+    )
+    assert len(trend_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_symptom_trend_message_includes_count_and_severity(provisioned_postgres_pool):
+async def test_symptom_trend_message_includes_count_and_severity(health_pool):
     """Symptom trend message includes occurrence count and average severity."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        severities = [4, 5, 6]
-        for i, sev in enumerate(severities):
-            await _insert_symptom(
-                pool, name="migraine", severity=sev, occurred_at=now - timedelta(days=i)
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT message FROM insight_candidates WHERE category = 'symptom-trend'"
+    now = _utcnow()
+    severities = [4, 5, 6]
+    for i, sev in enumerate(severities):
+        await _insert_symptom(
+            health_pool, name="migraine", severity=sev, occurred_at=now - timedelta(days=i)
         )
-        assert len(rows) == 1
-        message = rows[0]["message"]
-        assert "3" in message  # count
-        assert "migraine" in message
+
+    await run_insight_scan(health_pool)
+
+    rows = await health_pool.fetch(
+        "SELECT message FROM insight_candidates WHERE category = 'symptom-trend'"
+    )
+    assert len(rows) == 1
+    message = rows[0]["message"]
+    assert "3" in message  # count
+    assert "migraine" in message
 
 
-async def test_symptom_trend_expires_3_days_from_now(provisioned_postgres_pool):
+async def test_symptom_trend_expires_3_days_from_now(health_pool):
     """Symptom trend candidate expires_at is 3 days from generation."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        for i in range(3):
-            await _insert_symptom(
-                pool, name="chest_pain", severity=6, occurred_at=now - timedelta(days=i)
-            )
-
-        before = _utcnow()
-        await run_insight_scan(pool)
-        after = _utcnow()
-
-        rows = await pool.fetch(
-            "SELECT expires_at FROM insight_candidates WHERE category = 'symptom-trend'"
+    now = _utcnow()
+    for i in range(3):
+        await _insert_symptom(
+            health_pool, name="chest_pain", severity=6, occurred_at=now - timedelta(days=i)
         )
-        assert len(rows) == 1
-        expires_at = rows[0]["expires_at"]
-        expected_min = before + timedelta(days=2, hours=23)
-        expected_max = after + timedelta(days=3, hours=1)
-        assert expected_min <= expires_at <= expected_max
+
+    before = _utcnow()
+    await run_insight_scan(health_pool)
+    after = _utcnow()
+
+    rows = await health_pool.fetch(
+        "SELECT expires_at FROM insight_candidates WHERE category = 'symptom-trend'"
+    )
+    assert len(rows) == 1
+    expires_at = rows[0]["expires_at"]
+    expected_min = before + timedelta(days=2, hours=23)
+    expected_max = after + timedelta(days=3, hours=1)
+    assert expected_min <= expires_at <= expected_max
 
 
 # ---------------------------------------------------------------------------
@@ -1219,171 +994,153 @@ async def test_symptom_trend_expires_3_days_from_now(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_streak_no_measurements_no_candidate(provisioned_postgres_pool):
+async def test_streak_no_measurements_no_candidate(health_pool):
     """No measurements → no streak candidate generated."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        streak_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'health-streak'"
-        )
-        assert len(streak_rows) == 0
-        assert result["candidates_proposed"] == 0
+    streak_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'health-streak'"
+    )
+    assert len(streak_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_streak_5_consecutive_days_no_milestone(provisioned_postgres_pool):
+async def test_streak_5_consecutive_days_no_milestone(health_pool):
     """5 consecutive days does not hit any milestone threshold."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        for i in range(5):
-            # Use noon UTC to avoid date boundary issues
-            day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
-            await _insert_measurement(pool, mtype="weight", measured_at=day_dt - timedelta(days=i))
-
-        result = await run_insight_scan(pool)
-
-        streak_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'health-streak'"
+    today = _today()
+    for i in range(5):
+        # Use noon UTC to avoid date boundary issues
+        day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=day_dt - timedelta(days=i)
         )
-        assert len(streak_rows) == 0
-        assert result["candidates_proposed"] == 0
+
+    result = await run_insight_scan(health_pool)
+
+    streak_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'health-streak'"
+    )
+    assert len(streak_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
-async def test_streak_7_consecutive_days_generates_candidate(provisioned_postgres_pool):
+async def test_streak_7_consecutive_days_generates_candidate(health_pool):
     """7 consecutive days of measurements triggers the first streak milestone."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        for i in range(7):
-            day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
-            await _insert_measurement(pool, mtype="weight", measured_at=day_dt - timedelta(days=i))
-
-        result = await run_insight_scan(pool)
-
-        streak_rows = await pool.fetch(
-            "SELECT priority, dedup_key, message, cooldown_days FROM insight_candidates"
-            " WHERE category = 'health-streak'"
+    today = _today()
+    for i in range(7):
+        day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=day_dt - timedelta(days=i)
         )
-        assert len(streak_rows) == 1
-        row = streak_rows[0]
-        assert row["priority"] == 25
-        assert row["dedup_key"] == "health:streak:weight:7"
-        assert "7" in row["message"]
-        assert "weight" in row["message"]
-        assert row["cooldown_days"] == 30
-        assert result["candidates_accepted"] == 1
+
+    result = await run_insight_scan(health_pool)
+
+    streak_rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message, cooldown_days FROM insight_candidates"
+        " WHERE category = 'health-streak'"
+    )
+    assert len(streak_rows) == 1
+    row = streak_rows[0]
+    assert row["priority"] == 25
+    assert row["dedup_key"] == "health:streak:weight:7"
+    assert "7" in row["message"]
+    assert "weight" in row["message"]
+    assert row["cooldown_days"] == 30
+    assert result["candidates_accepted"] == 1
 
 
-async def test_streak_30_day_milestone(provisioned_postgres_pool):
+async def test_streak_30_day_milestone(health_pool):
     """30 consecutive days of measurements triggers the 30-day milestone."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        for i in range(30):
-            day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
-            await _insert_measurement(
-                pool, mtype="blood_pressure", measured_at=day_dt - timedelta(days=i)
-            )
-
-        result = await run_insight_scan(pool)
-
-        streak_rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'health-streak'"
+    today = _today()
+    for i in range(30):
+        day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
+        await _insert_measurement(
+            health_pool, mtype="blood_pressure", measured_at=day_dt - timedelta(days=i)
         )
-        assert len(streak_rows) == 1
-        assert streak_rows[0]["dedup_key"] == "health:streak:blood_pressure:30"
-        assert result["candidates_accepted"] == 1
+
+    result = await run_insight_scan(health_pool)
+
+    streak_rows = await health_pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'health-streak'"
+    )
+    assert len(streak_rows) == 1
+    assert streak_rows[0]["dedup_key"] == "health:streak:blood_pressure:30"
+    assert result["candidates_accepted"] == 1
 
 
-async def test_streak_only_one_milestone_per_type_per_run(provisioned_postgres_pool):
+async def test_streak_only_one_milestone_per_type_per_run(health_pool):
     """Only one milestone candidate is generated per measurement type per run."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        # Exactly 30 days — should only get the 30-day milestone, not 7
-        for i in range(30):
-            day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
-            await _insert_measurement(pool, mtype="glucose", measured_at=day_dt - timedelta(days=i))
-
-        await run_insight_scan(pool)
-
-        streak_rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'health-streak'"
+    today = _today()
+    # Exactly 30 days — should only get the 30-day milestone, not 7
+    for i in range(30):
+        day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
+        await _insert_measurement(
+            health_pool, mtype="glucose", measured_at=day_dt - timedelta(days=i)
         )
-        assert len(streak_rows) == 1
-        assert streak_rows[0]["dedup_key"] == "health:streak:glucose:30"
+
+    await run_insight_scan(health_pool)
+
+    streak_rows = await health_pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'health-streak'"
+    )
+    assert len(streak_rows) == 1
+    assert streak_rows[0]["dedup_key"] == "health:streak:glucose:30"
 
 
-async def test_streak_expires_7_days_from_now(provisioned_postgres_pool):
+async def test_streak_expires_7_days_from_now(health_pool):
     """Streak candidate expires_at is 7 days from generation."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        for i in range(7):
-            day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
-            await _insert_measurement(pool, mtype="weight", measured_at=day_dt - timedelta(days=i))
-
-        before = _utcnow()
-        await run_insight_scan(pool)
-        after = _utcnow()
-
-        rows = await pool.fetch(
-            "SELECT expires_at FROM insight_candidates WHERE category = 'health-streak'"
+    today = _today()
+    for i in range(7):
+        day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=day_dt - timedelta(days=i)
         )
-        assert len(rows) == 1
-        expires_at = rows[0]["expires_at"]
-        expected_min = before + timedelta(days=6, hours=23)
-        expected_max = after + timedelta(days=7, hours=1)
-        assert expected_min <= expires_at <= expected_max
+
+    before = _utcnow()
+    await run_insight_scan(health_pool)
+    after = _utcnow()
+
+    rows = await health_pool.fetch(
+        "SELECT expires_at FROM insight_candidates WHERE category = 'health-streak'"
+    )
+    assert len(rows) == 1
+    expires_at = rows[0]["expires_at"]
+    expected_min = before + timedelta(days=6, hours=23)
+    expected_max = after + timedelta(days=7, hours=1)
+    assert expected_min <= expires_at <= expected_max
 
 
-async def test_streak_non_consecutive_days_no_milestone(provisioned_postgres_pool):
+async def test_streak_non_consecutive_days_no_milestone(health_pool):
     """Non-consecutive measurement days reset the streak and miss milestones."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        # Log today, skip yesterday, log 2 days ago — streak of 1
-        for i in [0, 2, 3, 4, 5, 6, 7]:
-            day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
-            await _insert_measurement(pool, mtype="weight", measured_at=day_dt - timedelta(days=i))
-
-        result = await run_insight_scan(pool)
-
-        streak_rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'health-streak'"
+    today = _today()
+    # Log today, skip yesterday, log 2 days ago — streak of 1
+    for i in [0, 2, 3, 4, 5, 6, 7]:
+        day_dt = datetime(today.year, today.month, today.day, 12, 0, tzinfo=UTC)
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=day_dt - timedelta(days=i)
         )
-        assert len(streak_rows) == 0
-        assert result["candidates_proposed"] == 0
+
+    result = await run_insight_scan(health_pool)
+
+    streak_rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'health-streak'"
+    )
+    assert len(streak_rows) == 0
+    assert result["candidates_proposed"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1392,59 +1149,51 @@ async def test_streak_non_consecutive_days_no_milestone(provisioned_postgres_poo
 
 
 async def test_insight_scan_verbosity_off_exits_early_on_measurement_gap(
-    provisioned_postgres_pool,
+    health_pool,
 ):
     """When verbosity=off, first measurement gap candidate causes early exit."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    await health_pool.execute(
+        "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'off') "
+        "ON CONFLICT (id) DO UPDATE SET verbosity = 'off'"
+    )
 
-        await pool.execute(
-            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'off') "
-            "ON CONFLICT (id) DO UPDATE SET verbosity = 'off'"
+    now = _utcnow()
+    for i in range(5):
+        await _insert_measurement(
+            health_pool, mtype="weight", measured_at=now - timedelta(days=25 + i * 7)
         )
 
-        now = _utcnow()
-        for i in range(5):
-            await _insert_measurement(
-                pool, mtype="weight", measured_at=now - timedelta(days=25 + i * 7)
-            )
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        assert result["early_exit"] is True
-        assert result["candidates_proposed"] >= 1
-        assert result["candidates_accepted"] == 0
+    assert result["early_exit"] is True
+    assert result["candidates_proposed"] >= 1
+    assert result["candidates_accepted"] == 0
 
 
 async def test_insight_scan_verbosity_off_exits_early_on_symptom_trend(
-    provisioned_postgres_pool,
+    health_pool,
 ):
     """When verbosity=off, first symptom trend candidate causes early exit."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    await health_pool.execute(
+        "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'off') "
+        "ON CONFLICT (id) DO UPDATE SET verbosity = 'off'"
+    )
 
-        await pool.execute(
-            "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'off') "
-            "ON CONFLICT (id) DO UPDATE SET verbosity = 'off'"
+    now = _utcnow()
+    for i in range(3):
+        await _insert_symptom(
+            health_pool, name="headache", severity=5, occurred_at=now - timedelta(days=i)
         )
 
-        now = _utcnow()
-        for i in range(3):
-            await _insert_symptom(
-                pool, name="headache", severity=5, occurred_at=now - timedelta(days=i)
-            )
+    result = await run_insight_scan(health_pool)
 
-        result = await run_insight_scan(pool)
-
-        assert result["early_exit"] is True
-        assert result["candidates_proposed"] >= 1
-        assert result["candidates_accepted"] == 0
+    assert result["early_exit"] is True
+    assert result["candidates_proposed"] >= 1
+    assert result["candidates_accepted"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1452,26 +1201,22 @@ async def test_insight_scan_verbosity_off_exits_early_on_symptom_trend(
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_origin_butler_is_health(provisioned_postgres_pool):
+async def test_insight_scan_origin_butler_is_health(health_pool):
     """All candidates submitted by the health insight scan have origin_butler='health'."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    for i in range(3):
+        await _insert_symptom(
+            health_pool, name="backpain", severity=4, occurred_at=now - timedelta(days=i)
+        )
 
-        now = _utcnow()
-        for i in range(3):
-            await _insert_symptom(
-                pool, name="backpain", severity=4, occurred_at=now - timedelta(days=i)
-            )
+    await run_insight_scan(health_pool)
 
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch("SELECT origin_butler FROM insight_candidates")
-        assert len(rows) >= 1
-        for row in rows:
-            assert row["origin_butler"] == "health"
+    rows = await health_pool.fetch("SELECT origin_butler FROM insight_candidates")
+    assert len(rows) >= 1
+    for row in rows:
+        assert row["origin_butler"] == "health"
 
 
 # ---------------------------------------------------------------------------
@@ -1479,60 +1224,58 @@ async def test_insight_scan_origin_butler_is_health(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_correlation_adherence_dip_then_symptom_flare(provisioned_postgres_pool):
+async def test_correlation_adherence_dip_then_symptom_flare(health_pool):
     """A medication-adherence dip followed by a symptom flare generates a candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        med_id = await _insert_medication(pool, name="Sertraline", frequency="daily", active=True)
-        # Prior week (days 15-21): the user normally logs the medication daily.
-        for day in range(15, 22):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=day))
-        # Dip week (days 7-14): no doses logged → adherence collapses.
-        # Flare week (days 0-7): two higher-severity symptom entries.
-        for day in (1, 3):
-            await _insert_symptom(
-                pool, name="nausea", severity=4, occurred_at=now - timedelta(days=day)
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT priority, dedup_key, message FROM insight_candidates"
-            " WHERE category = 'correlation-adherence'"
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool, name="Sertraline", frequency="daily", active=True
+    )
+    # Prior week (days 15-21): the user normally logs the medication daily.
+    for day in range(15, 22):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=day))
+    # Dip week (days 7-14): no doses logged → adherence collapses.
+    # Flare week (days 0-7): two higher-severity symptom entries.
+    for day in (1, 3):
+        await _insert_symptom(
+            health_pool, name="nausea", severity=4, occurred_at=now - timedelta(days=day)
         )
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["priority"] == 60
-        assert row["dedup_key"].startswith(f"health:correlation-adherence:{med_id}:")
-        assert "Sertraline" in row["message"]
+
+    await run_insight_scan(health_pool)
+
+    rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message FROM insight_candidates"
+        " WHERE category = 'correlation-adherence'"
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["priority"] == 60
+    assert row["dedup_key"].startswith(f"health:correlation-adherence:{med_id}:")
+    assert "Sertraline" in row["message"]
 
 
-async def test_correlation_adherence_no_flare_no_candidate(provisioned_postgres_pool):
+async def test_correlation_adherence_no_flare_no_candidate(health_pool):
     """An adherence dip with no following symptom flare does not generate a candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    med_id = await _insert_medication(
+        health_pool, name="Sertraline", frequency="daily", active=True
+    )
+    for day in range(15, 22):
+        await _insert_dose(health_pool, medication_id=med_id, taken_at=now - timedelta(days=day))
+    # Only one symptom in the flare window — below the flare threshold.
+    await _insert_symptom(
+        health_pool, name="nausea", severity=4, occurred_at=now - timedelta(days=1)
+    )
 
-        now = _utcnow()
-        med_id = await _insert_medication(pool, name="Sertraline", frequency="daily", active=True)
-        for day in range(15, 22):
-            await _insert_dose(pool, medication_id=med_id, taken_at=now - timedelta(days=day))
-        # Only one symptom in the flare window — below the flare threshold.
-        await _insert_symptom(pool, name="nausea", severity=4, occurred_at=now - timedelta(days=1))
+    await run_insight_scan(health_pool)
 
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'correlation-adherence'"
-        )
-        assert len(rows) == 0
+    rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'correlation-adherence'"
+    )
+    assert len(rows) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1540,72 +1283,64 @@ async def test_correlation_adherence_no_flare_no_candidate(provisioned_postgres_
 # ---------------------------------------------------------------------------
 
 
-async def test_correlation_measurement_drift_generates_candidate(provisioned_postgres_pool):
+async def test_correlation_measurement_drift_generates_candidate(health_pool):
     """A gradual upward median shift across recent readings generates a drift candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        # Daily weight readings drifting 70 → 80 over 9 days (newest = highest).
-        values = [80.0, 80.0, 80.0, 75.0, 75.0, 75.0, 70.0, 70.0, 70.0]
-        for i, value in enumerate(values):
-            await _insert_measurement(
-                pool,
-                mtype="weight",
-                value={"value": value},
-                measured_at=now - timedelta(days=i),
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT priority, dedup_key, message, metadata FROM insight_candidates"
-            " WHERE category = 'correlation-drift'"
+    now = _utcnow()
+    # Daily weight readings drifting 70 → 80 over 9 days (newest = highest).
+    values = [80.0, 80.0, 80.0, 75.0, 75.0, 75.0, 70.0, 70.0, 70.0]
+    for i, value in enumerate(values):
+        await _insert_measurement(
+            health_pool,
+            mtype="weight",
+            value={"value": value},
+            measured_at=now - timedelta(days=i),
         )
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["priority"] == 50
-        assert row["dedup_key"].startswith("health:correlation-drift:weight:")
-        assert "drift" in row["message"]
-        metadata = row["metadata"]
-        assert metadata["measurement_door"] == {
-            "type": "weight",
-            "since": (now - timedelta(days=8)).date().isoformat(),
-            "until": now.date().isoformat(),
-        }
-        # bu-ep4ks.9 adoption: event_window mirrors since/until (min/max of the
-        # inserted readings) at full datetime precision, deterministic from `now`.
-        event_window = metadata["event_window"]
-        assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=8)
-        assert datetime.fromisoformat(event_window["end"]) == now
+
+    await run_insight_scan(health_pool)
+
+    rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message, metadata FROM insight_candidates"
+        " WHERE category = 'correlation-drift'"
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["priority"] == 50
+    assert row["dedup_key"].startswith("health:correlation-drift:weight:")
+    assert "drift" in row["message"]
+    metadata = row["metadata"]
+    assert metadata["measurement_door"] == {
+        "type": "weight",
+        "since": (now - timedelta(days=8)).date().isoformat(),
+        "until": now.date().isoformat(),
+    }
+    # bu-ep4ks.9 adoption: event_window mirrors since/until (min/max of the
+    # inserted readings) at full datetime precision, deterministic from `now`.
+    event_window = metadata["event_window"]
+    assert datetime.fromisoformat(event_window["start"]) == now - timedelta(days=8)
+    assert datetime.fromisoformat(event_window["end"]) == now
 
 
-async def test_correlation_measurement_drift_stable_no_candidate(provisioned_postgres_pool):
+async def test_correlation_measurement_drift_stable_no_candidate(health_pool):
     """Stable readings (no meaningful drift) do not generate a drift candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
-
-        now = _utcnow()
-        for i in range(9):
-            await _insert_measurement(
-                pool,
-                mtype="weight",
-                value={"value": 70.0},
-                measured_at=now - timedelta(days=i),
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'correlation-drift'"
+    now = _utcnow()
+    for i in range(9):
+        await _insert_measurement(
+            health_pool,
+            mtype="weight",
+            value={"value": 70.0},
+            measured_at=now - timedelta(days=i),
         )
-        assert len(rows) == 0
+
+    await run_insight_scan(health_pool)
+
+    rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'correlation-drift'"
+    )
+    assert len(rows) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1613,87 +1348,56 @@ async def test_correlation_measurement_drift_stable_no_candidate(provisioned_pos
 # ---------------------------------------------------------------------------
 
 
-async def test_correlation_environment_with_reader_generates_candidate(provisioned_postgres_pool):
+async def test_correlation_environment_with_reader_generates_candidate(health_pool):
     """Adverse HA readings co-occurring with short sleep generate an environment candidate."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    day1 = now - timedelta(days=2)
+    day2 = now - timedelta(days=3)
+    # 5h sleep on two distinct nights.
+    await _insert_sleep_session(health_pool, duration_hours=5.0, occurred_at=day1)
+    await _insert_sleep_session(health_pool, duration_hours=5.0, occurred_at=day2)
 
-        now = _utcnow()
-        day1 = now - timedelta(days=2)
-        day2 = now - timedelta(days=3)
-        # 5h sleep on two distinct nights.
-        await _insert_sleep_session(pool, duration_hours=5.0, occurred_at=day1)
-        await _insert_sleep_session(pool, duration_hours=5.0, occurred_at=day2)
+    async def reader():
+        return [
+            {"captured_at": day1, "metric": "temperature", "adverse": True},
+            {"captured_at": day2, "metric": "temperature", "adverse": True},
+        ]
 
-        async def reader():
-            return [
-                {"captured_at": day1, "metric": "temperature", "adverse": True},
-                {"captured_at": day2, "metric": "temperature", "adverse": True},
-            ]
+    await run_insight_scan(health_pool, reader)
 
-        await run_insight_scan(pool, reader)
-
-        rows = await pool.fetch(
-            "SELECT priority, dedup_key, message FROM insight_candidates"
-            " WHERE category = 'correlation-environment'"
-        )
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["priority"] == 50
-        assert row["dedup_key"].startswith("health:correlation-env:temperature:")
-        assert "bedroom temperature" in row["message"]
+    rows = await health_pool.fetch(
+        "SELECT priority, dedup_key, message FROM insight_candidates"
+        " WHERE category = 'correlation-environment'"
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["priority"] == 50
+    assert row["dedup_key"].startswith("health:correlation-env:temperature:")
+    assert "bedroom temperature" in row["message"]
 
 
-async def test_correlation_environment_no_reader_skipped(provisioned_postgres_pool):
+async def test_correlation_environment_no_reader_skipped(health_pool):
     """Without an HA environment reader, no environment candidate is generated."""
     from butlers.jobs._roster.health_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_health_schema(pool)
-        await _setup_insight_tables(pool)
+    now = _utcnow()
+    await _insert_sleep_session(
+        health_pool, duration_hours=5.0, occurred_at=now - timedelta(days=2)
+    )
 
-        now = _utcnow()
-        await _insert_sleep_session(pool, duration_hours=5.0, occurred_at=now - timedelta(days=2))
+    await run_insight_scan(health_pool)  # no reader
 
-        await run_insight_scan(pool)  # no reader
-
-        rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'correlation-environment'"
-        )
-        assert len(rows) == 0
+    rows = await health_pool.fetch(
+        "SELECT id FROM insight_candidates WHERE category = 'correlation-environment'"
+    )
+    assert len(rows) == 0
 
 
 # ---------------------------------------------------------------------------
 # Pre-appointment visit brief (bu-jv1moa.15)
 # ---------------------------------------------------------------------------
-
-
-def _load_migration(name: str, root: str):
-    path = _THIS_FILE.parents[3] / root / name
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-async def _setup_visit_brief_tables(pool) -> None:
-    """Calendar ledger (core_003) and ``visit_briefs`` (health_005) in the default schema."""
-    for name, root in (
-        ("core_003_calendar.py", "alembic/versions/core"),
-        ("005_visit_briefs.py", "roster/health/migrations"),
-    ):
-        migration = _load_migration(name, root)
-        statements: list[str] = []
-        mocked_op = MagicMock()
-        mocked_op.execute.side_effect = statements.append
-        with patch.object(migration, "op", mocked_op):
-            migration.upgrade()
-        for statement in statements:
-            await pool.execute(statement)
 
 
 async def _insert_source(pool, *, lane: str = "user", health: bool = False) -> str:
@@ -1722,19 +1426,19 @@ async def _insert_event(
     all_day: bool = False,
     metadata: dict | None = None,
     booked: bool = False,
-    source_butler: str | None = None,
+    source_butler: str = "health",
 ) -> str:
-    """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row."""
+    """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row.
+
+    ``source_butler`` is NOT NULL in the real schema (core_076); the brief never reads it.
+    """
     event_id = str(uuid.uuid4())
-    source_column = ", source_butler" if source_butler is not None else ""
-    source_parameter = ", $10" if source_butler is not None else ""
-    source_args = (source_butler,) if source_butler is not None else ()
     await pool.execute(
-        f"""
+        """
         INSERT INTO calendar_events
             (id, source_id, origin_ref, title, timezone, starts_at, ends_at, all_day,
-             status, metadata{source_column})
-        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9{source_parameter})
+             status, metadata, source_butler)
+        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9, $10)
         """,
         event_id,
         source_id,
@@ -1745,7 +1449,7 @@ async def _insert_event(
         all_day,
         status,
         metadata or {},
-        *source_args,
+        source_butler,
     )
     if booked:
         await pool.execute(
@@ -1823,7 +1527,7 @@ def _brief_message(client: _FakeSwitchboard) -> str:
         "thin_history_reads_no_baseline_yet",
     ],
 )
-async def test_visit_brief(provisioned_postgres_pool, case):
+async def test_visit_brief(health_pool, case):
     from butlers.jobs import health_visit_brief as brief
 
     # A fixed instant keeps the day-boundary counts of the figures case deterministic.
@@ -1839,303 +1543,324 @@ async def test_visit_brief(provisioned_postgres_pool, case):
         patch.object(brief, "resolve_owner_telegram_recipient", AsyncMock(return_value="owner-1")),
         patch.object(brief, "record_attention_event", AsyncMock()),
     ):
-        async with provisioned_postgres_pool() as pool:
-            await _setup_health_schema(pool)
-            await _setup_visit_brief_tables(pool)
-            source = await _insert_source(pool, health=True)
-            generated = {"butler_generated": True, "butler_name": "health"}
+        source = await _insert_source(health_pool, health=True)
+        generated = {"butler_generated": True, "butler_name": "health"}
 
-            if case == "since_last_visit_with_traceable_figures":
-                prior_start = now - timedelta(days=10)
-                await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=prior_start, booked=True
+        if case == "since_last_visit_with_traceable_figures":
+            prior_start = now - timedelta(days=10)
+            await _insert_event(
+                health_pool, source, title="Dr Tan", starts_at=prior_start, booked=True
+            )
+            upcoming = await _insert_event(
+                health_pool,
+                source,
+                title="BUTLER: Dr Tan follow-up https://clinic.example/visit",
+                starts_at=now + timedelta(hours=36),
+                metadata=generated,
+                booked=True,
+            )
+            prior_end = prior_start + timedelta(hours=1)
+            # Rows before the prior visit are outside the period.
+            await _insert_symptom(health_pool, name="headache", severity=9, occurred_at=prior_start)
+            in_period = [
+                await _insert_symptom(
+                    health_pool, name="Headache", severity=sev, occurred_at=now - timedelta(days=d)
                 )
-                upcoming = await _insert_event(
-                    pool,
-                    source,
-                    title="BUTLER: Dr Tan follow-up https://clinic.example/visit",
-                    starts_at=now + timedelta(hours=36),
-                    metadata=generated,
-                    booked=True,
+                for sev, d in ((3, 8), (6, 5), (4, 2))
+            ]
+            med = await _insert_medication(health_pool, name="Metformin", frequency="daily")
+            await health_pool.execute(
+                "UPDATE public.facts SET created_at = $2 WHERE id = $1::uuid",
+                med,
+                now - timedelta(days=30),
+            )
+            doses = [
+                await _insert_dose(
+                    health_pool, medication_id=med, taken_at=now - timedelta(days=d, hours=1)
                 )
-                prior_end = prior_start + timedelta(hours=1)
-                # Rows before the prior visit are outside the period.
-                await _insert_symptom(pool, name="headache", severity=9, occurred_at=prior_start)
-                in_period = [
-                    await _insert_symptom(
-                        pool, name="Headache", severity=sev, occurred_at=now - timedelta(days=d)
-                    )
-                    for sev, d in ((3, 8), (6, 5), (4, 2))
-                ]
-                med = await _insert_medication(pool, name="Metformin", frequency="daily")
-                await pool.execute(
-                    "UPDATE public.facts SET created_at = $2 WHERE id = $1::uuid",
-                    med,
-                    now - timedelta(days=30),
-                )
-                doses = [
-                    await _insert_dose(
-                        pool, medication_id=med, taken_at=now - timedelta(days=d, hours=1)
-                    )
-                    for d in (8, 7, 6, 4, 3)
-                ]
-                weights = [
-                    await _insert_measurement(
-                        pool,
-                        mtype="weight",
-                        value={"value": 70.0 + i * 0.1},
-                        measured_at=now - timedelta(days=d),
-                    )
-                    for i, d in enumerate((50, 45, 40, 35, 30, 25, 20, 15))
-                ]
-                weights += [
-                    await _insert_measurement(
-                        pool,
-                        mtype="weight",
-                        value={"value": 71.0},
-                        measured_at=now - timedelta(days=3),
-                    )
-                ]
-                # Blood pressure was last logged before the period: a stale feed.
+                for d in (8, 7, 6, 4, 3)
+            ]
+            weights = [
                 await _insert_measurement(
-                    pool,
-                    mtype="blood_pressure",
-                    value={"value": {"systolic": 120, "diastolic": 80}},
-                    measured_at=now - timedelta(days=40),
-                )
-                cond = await _insert_condition(
-                    pool,
-                    name="Hypertension",
-                    status="managed",
-                    previous="active",
-                    at=now - timedelta(days=4),
-                )
-
-                result = await brief.run_visit_brief(pool, now=now)
-
-                assert result["sent"] == 1
-                row = await pool.fetchrow("SELECT * FROM visit_briefs")
-                assert row["event_id"] == upcoming and row["delivered_at"] is not None
-                assert row["period_start"] == prior_end
-                text = _brief_message(client)
-                assert "since your last visit" in text and "90 days" not in text
-                assert "headache: 3 entries" in text and "highest 6" in text
-                assert "Covers the 9 days since your last visit on Oct 5" in text
-                assert "Health brief for Dr Tan follow-up," in text
-                assert "BUTLER:" not in text and "https://" not in text
-                assert (
-                    "Metformin: 5 doses logged against 11 scheduled, 6 missed (tracked since Oct 5)"
-                ) in text
-                assert re.search(r"usual range 69\.[01] to 71\.[56] kg, latest is within it", text)
-                assert "+/-" not in text
-                assert "Blood pressure (systolic): no data since" in text
-                assert "Resting heart rate: no data recorded" in text
-                assert "Hypertension: active to managed" in text
-                assert "not a doctor" in text
-                figures = {(f["section"], f["label"]): f for f in row["digest"]["figures"]}
-                assert set(figures[("symptoms", "headache")]["fact_ids"]) == set(in_period)
-                assert set(figures[("medications", "Metformin")]["fact_ids"]) == set(doses)
-                assert set(figures[("measurements", "Weight")]["fact_ids"]) == {weights[-1]}
-                assert figures[("conditions", "Hypertension")]["fact_ids"] == [cond]
-                assert figures[("medications", "Metformin")]["value"] == {
-                    "scheduled": 11,
-                    "taken": 5,
-                    "missed": 6,
-                }
-                assert figures[("measurements", "Weight")]["value"]["baseline"]["state"] == "within"
-                # A stale feed is a note with no readings, never a zero reading.
-                assert (
-                    figures[("measurements", "Blood pressure (systolic)")]["value"]["readings"] == 0
-                )
-            elif case == "no_prior_visit_defaults_to_90_days":
-                await _insert_event(
-                    pool, source, title="Dr Lim", starts_at=now + timedelta(hours=30), booked=True
-                )
-
-                await brief.run_visit_brief(pool, now=now)
-
-                row = await pool.fetchrow("SELECT * FROM visit_briefs")
-                assert row["period_start"] == now - timedelta(days=90)
-                assert row["digest"]["default_lookback"] is True
-                assert "No earlier visit found" in _brief_message(client)
-                assert "last 90 days" in _brief_message(client)
-            elif case == "second_run_sends_nothing_and_reschedule_re_anchors":
-                event = await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
-                )
-
-                assert (await brief.run_visit_brief(pool, now=now))["sent"] == 1
-                assert (await brief.run_visit_brief(pool, now=now))["sent"] == 0
-                moved = now + timedelta(hours=40)
-                await pool.execute(
-                    "UPDATE calendar_events SET starts_at = $2, ends_at = $3 WHERE id = $1::uuid",
-                    event,
-                    moved,
-                    moved + timedelta(hours=1),
-                )
-                third = await brief.run_visit_brief(pool, now=now)
-
-                assert third["sent"] == 0
-                assert len([c for c in client.calls if c[0] == "deliver"]) == 1
-                row = await pool.fetchrow("SELECT event_start FROM visit_briefs")
-                assert row["event_start"] == moved
-                assert await pool.fetchval("SELECT count(*) FROM visit_briefs") == 1
-            elif case == "events_not_on_health_calendar_trigger_nothing":
-                soon = now + timedelta(hours=30)
-                primary = await _insert_source(pool)  # the owner's primary/shared calendars
-                butler_lane = await _insert_source(pool, lane="butler")
-                await _insert_event(pool, primary, title="Team meeting", starts_at=soon)
-                await _insert_event(pool, butler_lane, title="Take pills", starts_at=soon)
-                # Health's own scheduled-task and reminder mirrors: generated, no booking row,
-                # even when a task or reminder title starts with "BUTLER:".
-                await _insert_event(
-                    pool, source, title="weekly-health-summary", starts_at=soon, metadata=generated
-                )
-                await _insert_event(
-                    pool, source, title="BUTLER: Mirror", starts_at=soon, metadata=generated
-                )
-                # Another butler's booking on the shared Butlers calendar, and an owner-added
-                # event there: neither is a Health booking.
-                await _insert_event(
-                    pool,
-                    source,
-                    title="BUTLER: Flight SQ12",
-                    starts_at=soon,
-                    metadata={"butler_generated": True, "butler_name": "travel"},
-                )
-                await _insert_event(pool, source, title="Car service", starts_at=soon)
-                await _insert_event(pool, source, title="Later", starts_at=now + timedelta(days=5))
-                await _insert_event(pool, source, title="All day", starts_at=soon, all_day=True)
-                await _insert_event(
-                    pool, source, title="Cancelled", starts_at=soon, status="cancelled"
-                )
-                await _insert_event(
-                    pool,
-                    source,
-                    title="Declined",
-                    starts_at=soon,
-                    metadata={"attendees": [{"self": True, "response_status": "declined"}]},
-                )
-
-                result = await brief.run_visit_brief(pool, now=now)
-
-                assert result["considered"] == 0 and result["sent"] == 0
-                assert client.calls == []
-                assert await pool.fetchval("SELECT count(*) FROM visit_briefs") == 0
-            elif case == "only_health_bookings_are_briefed_and_pick_the_last_visit":
-                prior_start = now - timedelta(days=10)
-                await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=prior_start, booked=True
-                )
-                # Yesterday's other-butler booking and owner event must not become the last visit.
-                await _insert_event(
-                    pool,
-                    source,
-                    title="BUTLER: Dinner with Alex",
-                    starts_at=now - timedelta(hours=26),
-                    metadata={"butler_generated": True, "butler_name": "relationship"},
-                )
-                await _insert_event(
-                    pool, source, title="Car service", starts_at=now - timedelta(hours=30)
-                )
-                booked_event = await _insert_event(
-                    pool,
-                    source,
-                    title="BUTLER: Dr Lee",
-                    starts_at=now + timedelta(hours=30),
-                    metadata=generated,
-                    booked=True,
-                )
-                # The owner renamed a Health booking in Google Calendar: still Health's.
-                renamed_event = await _insert_event(
-                    pool,
-                    source,
-                    title="Dr Wong",
-                    starts_at=now + timedelta(hours=40),
-                    metadata=generated,
-                    booked=True,
-                )
-                await _insert_event(
-                    pool, source, title="Car service", starts_at=now + timedelta(hours=35)
-                )
-
-                result = await brief.run_visit_brief(pool, now=now)
-
-                assert result["sent"] == 2
-                rows = await pool.fetch("SELECT event_id, period_start FROM visit_briefs")
-                assert {r["event_id"] for r in rows} == {booked_event, renamed_event}
-                assert {r["period_start"] for r in rows} == {prior_start + timedelta(hours=1)}
-            elif case == "concurrent_runs_send_once":
-                await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
-                )
-                sends: list[str] = []
-
-                async def slow(message: str) -> str:
-                    sends.append(message)
-                    await asyncio.sleep(0.3)
-                    return brief.DELIVERED
-
-                first, second = await asyncio.gather(
-                    brief.run_visit_brief(pool, notify_fn=slow, now=now),
-                    brief.run_visit_brief(pool, notify_fn=slow, now=now),
-                )
-
-                assert len(sends) == 1
-                assert sorted([first["sent"], second["sent"]]) == [0, 1]
-                assert [first.get("skipped_concurrent"), second.get("skipped_concurrent")].count(
-                    True
-                ) == 1
-                # The lock is released: a later run proceeds and finds the row delivered.
-                again = await brief.run_visit_brief(pool, notify_fn=slow, now=now)
-                assert again["sent"] == 0 and "skipped_concurrent" not in again
-            elif case == "thin_history_reads_no_baseline_yet":
-                await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
-                )
-                earlier = await _insert_measurement(
-                    pool,
+                    health_pool,
                     mtype="weight",
-                    value={"value": 70.0},
-                    measured_at=now - timedelta(days=40),
+                    value={"value": 70.0 + i * 0.1},
+                    measured_at=now - timedelta(days=d),
                 )
-                latest = await _insert_measurement(
-                    pool,
+                for i, d in enumerate((50, 45, 40, 35, 30, 25, 20, 15))
+            ]
+            weights += [
+                await _insert_measurement(
+                    health_pool,
                     mtype="weight",
                     value={"value": 71.0},
                     measured_at=now - timedelta(days=3),
                 )
+            ]
+            # Blood pressure was last logged before the period: a stale feed.
+            await _insert_measurement(
+                health_pool,
+                mtype="blood_pressure",
+                value={"value": {"systolic": 120, "diastolic": 80}},
+                measured_at=now - timedelta(days=40),
+            )
+            cond = await _insert_condition(
+                health_pool,
+                name="Hypertension",
+                status="managed",
+                previous="active",
+                at=now - timedelta(days=4),
+            )
 
-                await brief.run_visit_brief(pool, now=now)
+            result = await brief.run_visit_brief(health_pool, now=now)
 
-                text = _brief_message(client)
-                assert "no baseline yet" in text and "(+/-" not in text
-                row = await pool.fetchrow("SELECT digest FROM visit_briefs")
-                weight = next(f for f in row["digest"]["figures"] if f["label"] == "Weight")
-                assert set(weight["fact_ids"]) == {earlier, latest}
-                assert weight["value"]["baseline"]["state"] == "insufficient_history"
-            else:
-                await _insert_event(
-                    pool, source, title="Dr Tan", starts_at=now + timedelta(hours=30), booked=True
-                )
-                outcomes = iter([brief.FAILED, brief.DELIVERED, brief.DELIVERED])
+            assert result["sent"] == 1
+            row = await health_pool.fetchrow("SELECT * FROM visit_briefs")
+            assert row["event_id"] == upcoming and row["delivered_at"] is not None
+            assert row["period_start"] == prior_end
+            text = _brief_message(client)
+            assert "since your last visit" in text and "90 days" not in text
+            assert "headache: 3 entries" in text and "highest 6" in text
+            assert "Covers the 9 days since your last visit on Oct 5" in text
+            assert "Health brief for Dr Tan follow-up," in text
+            assert "BUTLER:" not in text and "https://" not in text
+            assert (
+                "Metformin: 5 doses logged against 11 scheduled, 6 missed (tracked since Oct 5)"
+            ) in text
+            assert re.search(r"usual range 69\.[01] to 71\.[56] kg, latest is within it", text)
+            assert "+/-" not in text
+            assert "Blood pressure (systolic): no data since" in text
+            assert "Resting heart rate: no data recorded" in text
+            assert "Hypertension: active to managed" in text
+            assert "not a doctor" in text
+            figures = {(f["section"], f["label"]): f for f in row["digest"]["figures"]}
+            assert set(figures[("symptoms", "headache")]["fact_ids"]) == set(in_period)
+            assert set(figures[("medications", "Metformin")]["fact_ids"]) == set(doses)
+            assert set(figures[("measurements", "Weight")]["fact_ids"]) == {weights[-1]}
+            assert figures[("conditions", "Hypertension")]["fact_ids"] == [cond]
+            assert figures[("medications", "Metformin")]["value"] == {
+                "scheduled": 11,
+                "taken": 5,
+                "missed": 6,
+            }
+            assert figures[("measurements", "Weight")]["value"]["baseline"]["state"] == "within"
+            # A stale feed is a note with no readings, never a zero reading.
+            assert figures[("measurements", "Blood pressure (systolic)")]["value"]["readings"] == 0
+        elif case == "no_prior_visit_defaults_to_90_days":
+            await _insert_event(
+                health_pool,
+                source,
+                title="Dr Lim",
+                starts_at=now + timedelta(hours=30),
+                booked=True,
+            )
 
-                async def flaky(message: str) -> str:
-                    return next(outcomes)
+            await brief.run_visit_brief(health_pool, now=now)
 
-                first = await brief.run_visit_brief(pool, notify_fn=flaky, now=now)
-                assert first["sent"] == 0 and first["retry"] == 1
-                assert await pool.fetchval("SELECT delivered_at FROM visit_briefs") is None
-                second = await brief.run_visit_brief(pool, notify_fn=flaky, now=now)
-                third = await brief.run_visit_brief(pool, notify_fn=flaky, now=now)
-                assert (second["sent"], third["sent"]) == (1, 0)
+            row = await health_pool.fetchrow("SELECT * FROM visit_briefs")
+            assert row["period_start"] == now - timedelta(days=90)
+            assert row["digest"]["default_lookback"] is True
+            assert "No earlier visit found" in _brief_message(client)
+            assert "last 90 days" in _brief_message(client)
+        elif case == "second_run_sends_nothing_and_reschedule_re_anchors":
+            event = await _insert_event(
+                health_pool,
+                source,
+                title="Dr Tan",
+                starts_at=now + timedelta(hours=30),
+                booked=True,
+            )
 
-            # Owner-only: every delivery is one plain send to the resolved owner chat; the job
-            # never invokes any tool but ``deliver`` and emits no communicate effect.
-            for name, arguments in client.calls:
-                delivery = arguments["notify_request"]["delivery"]
-                assert name == "deliver"
-                assert delivery["recipient"] == "owner-1" and delivery["intent"] == "send"
+            assert (await brief.run_visit_brief(health_pool, now=now))["sent"] == 1
+            assert (await brief.run_visit_brief(health_pool, now=now))["sent"] == 0
+            moved = now + timedelta(hours=40)
+            await health_pool.execute(
+                "UPDATE calendar_events SET starts_at = $2, ends_at = $3 WHERE id = $1::uuid",
+                event,
+                moved,
+                moved + timedelta(hours=1),
+            )
+            third = await brief.run_visit_brief(health_pool, now=now)
+
+            assert third["sent"] == 0
+            assert len([c for c in client.calls if c[0] == "deliver"]) == 1
+            row = await health_pool.fetchrow("SELECT event_start FROM visit_briefs")
+            assert row["event_start"] == moved
+            assert await health_pool.fetchval("SELECT count(*) FROM visit_briefs") == 1
+        elif case == "events_not_on_health_calendar_trigger_nothing":
+            soon = now + timedelta(hours=30)
+            primary = await _insert_source(health_pool)  # the owner's primary/shared calendars
+            butler_lane = await _insert_source(health_pool, lane="butler")
+            await _insert_event(health_pool, primary, title="Team meeting", starts_at=soon)
+            await _insert_event(health_pool, butler_lane, title="Take pills", starts_at=soon)
+            # Health's own scheduled-task and reminder mirrors: generated, no booking row,
+            # even when a task or reminder title starts with "BUTLER:".
+            await _insert_event(
+                health_pool,
+                source,
+                title="weekly-health-summary",
+                starts_at=soon,
+                metadata=generated,
+            )
+            await _insert_event(
+                health_pool, source, title="BUTLER: Mirror", starts_at=soon, metadata=generated
+            )
+            # Another butler's booking on the shared Butlers calendar, and an owner-added
+            # event there: neither is a Health booking.
+            await _insert_event(
+                health_pool,
+                source,
+                title="BUTLER: Flight SQ12",
+                starts_at=soon,
+                metadata={"butler_generated": True, "butler_name": "travel"},
+            )
+            await _insert_event(health_pool, source, title="Car service", starts_at=soon)
+            await _insert_event(
+                health_pool, source, title="Later", starts_at=now + timedelta(days=5)
+            )
+            await _insert_event(health_pool, source, title="All day", starts_at=soon, all_day=True)
+            await _insert_event(
+                health_pool, source, title="Cancelled", starts_at=soon, status="cancelled"
+            )
+            await _insert_event(
+                health_pool,
+                source,
+                title="Declined",
+                starts_at=soon,
+                metadata={"attendees": [{"self": True, "response_status": "declined"}]},
+            )
+
+            result = await brief.run_visit_brief(health_pool, now=now)
+
+            assert result["considered"] == 0 and result["sent"] == 0
+            assert client.calls == []
+            assert await health_pool.fetchval("SELECT count(*) FROM visit_briefs") == 0
+        elif case == "only_health_bookings_are_briefed_and_pick_the_last_visit":
+            prior_start = now - timedelta(days=10)
+            await _insert_event(
+                health_pool, source, title="Dr Tan", starts_at=prior_start, booked=True
+            )
+            # Yesterday's other-butler booking and owner event must not become the last visit.
+            await _insert_event(
+                health_pool,
+                source,
+                title="BUTLER: Dinner with Alex",
+                starts_at=now - timedelta(hours=26),
+                metadata={"butler_generated": True, "butler_name": "relationship"},
+            )
+            await _insert_event(
+                health_pool, source, title="Car service", starts_at=now - timedelta(hours=30)
+            )
+            booked_event = await _insert_event(
+                health_pool,
+                source,
+                title="BUTLER: Dr Lee",
+                starts_at=now + timedelta(hours=30),
+                metadata=generated,
+                booked=True,
+            )
+            # The owner renamed a Health booking in Google Calendar: still Health's.
+            renamed_event = await _insert_event(
+                health_pool,
+                source,
+                title="Dr Wong",
+                starts_at=now + timedelta(hours=40),
+                metadata=generated,
+                booked=True,
+            )
+            await _insert_event(
+                health_pool, source, title="Car service", starts_at=now + timedelta(hours=35)
+            )
+
+            result = await brief.run_visit_brief(health_pool, now=now)
+
+            assert result["sent"] == 2
+            rows = await health_pool.fetch("SELECT event_id, period_start FROM visit_briefs")
+            assert {r["event_id"] for r in rows} == {booked_event, renamed_event}
+            assert {r["period_start"] for r in rows} == {prior_start + timedelta(hours=1)}
+        elif case == "concurrent_runs_send_once":
+            await _insert_event(
+                health_pool,
+                source,
+                title="Dr Tan",
+                starts_at=now + timedelta(hours=30),
+                booked=True,
+            )
+            sends: list[str] = []
+
+            async def slow(message: str) -> str:
+                sends.append(message)
+                await asyncio.sleep(0.3)
+                return brief.DELIVERED
+
+            first, second = await asyncio.gather(
+                brief.run_visit_brief(health_pool, notify_fn=slow, now=now),
+                brief.run_visit_brief(health_pool, notify_fn=slow, now=now),
+            )
+
+            assert len(sends) == 1
+            assert sorted([first["sent"], second["sent"]]) == [0, 1]
+            assert [first.get("skipped_concurrent"), second.get("skipped_concurrent")].count(
+                True
+            ) == 1
+            # The lock is released: a later run proceeds and finds the row delivered.
+            again = await brief.run_visit_brief(health_pool, notify_fn=slow, now=now)
+            assert again["sent"] == 0 and "skipped_concurrent" not in again
+        elif case == "thin_history_reads_no_baseline_yet":
+            await _insert_event(
+                health_pool,
+                source,
+                title="Dr Tan",
+                starts_at=now + timedelta(hours=30),
+                booked=True,
+            )
+            earlier = await _insert_measurement(
+                health_pool,
+                mtype="weight",
+                value={"value": 70.0},
+                measured_at=now - timedelta(days=40),
+            )
+            latest = await _insert_measurement(
+                health_pool,
+                mtype="weight",
+                value={"value": 71.0},
+                measured_at=now - timedelta(days=3),
+            )
+
+            await brief.run_visit_brief(health_pool, now=now)
+
+            text = _brief_message(client)
+            assert "no baseline yet" in text and "(+/-" not in text
+            row = await health_pool.fetchrow("SELECT digest FROM visit_briefs")
+            weight = next(f for f in row["digest"]["figures"] if f["label"] == "Weight")
+            assert set(weight["fact_ids"]) == {earlier, latest}
+            assert weight["value"]["baseline"]["state"] == "insufficient_history"
+        else:
+            await _insert_event(
+                health_pool,
+                source,
+                title="Dr Tan",
+                starts_at=now + timedelta(hours=30),
+                booked=True,
+            )
+            outcomes = iter([brief.FAILED, brief.DELIVERED, brief.DELIVERED])
+
+            async def flaky(message: str) -> str:
+                return next(outcomes)
+
+            first = await brief.run_visit_brief(health_pool, notify_fn=flaky, now=now)
+            assert first["sent"] == 0 and first["retry"] == 1
+            assert await health_pool.fetchval("SELECT delivered_at FROM visit_briefs") is None
+            second = await brief.run_visit_brief(health_pool, notify_fn=flaky, now=now)
+            third = await brief.run_visit_brief(health_pool, notify_fn=flaky, now=now)
+            assert (second["sent"], third["sent"]) == (1, 0)
+
+        # Owner-only: every delivery is one plain send to the resolved owner chat; the job
+        # never invokes any tool but ``deliver`` and emits no communicate effect.
+        for name, arguments in client.calls:
+            delivery = arguments["notify_request"]["delivery"]
+            assert name == "deliver"
+            assert delivery["recipient"] == "owner-1" and delivery["intent"] == "send"
 
 
 @pytest.mark.unit
@@ -2228,35 +1953,16 @@ async def test_visit_brief_partial_is_terminal_even_when_digest_write_initially_
     assert not brief._PARTIAL_BRIEFS.keys(pool)
 
 
-@pytest.fixture(scope="module")
-def terminal_visit_db_url(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "health"],
-        schemas={"core": "health", "health": "health"},
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("outcome", ["partial_delivery", "delivery_uncertain"])
 async def test_migrated_visit_brief_terminal_digest_survives_independent_readback(
-    terminal_visit_db_url, outcome, monkeypatch
+    db, outcome, monkeypatch
 ):
-    import asyncpg
-
-    from butlers.db import register_jsonb_codec
     from butlers.jobs import health_visit_brief as brief
 
-    pool = await asyncpg.create_pool(
-        terminal_visit_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "health,public"},
+    pool = await db(
+        "core", "health", schemas={"core": "health", "health": "health"}, schema="health"
     )
     now = _utcnow()
     send = AsyncMock(return_value=outcome)
@@ -2265,26 +1971,23 @@ async def test_migrated_visit_brief_terminal_digest_survives_independent_readbac
     monkeypatch.setattr(
         brief, "compose_brief", AsyncMock(return_value=("x" * 5000, {"source": []}))
     )
-    try:
-        source = await _insert_source(pool, health=True)
-        event_id = await _insert_event(
-            pool,
-            source,
-            title="Controlled appointment",
-            starts_at=now + timedelta(hours=1),
-            source_butler="health",
-            booked=True,
+    source = await _insert_source(pool, health=True)
+    event_id = await _insert_event(
+        pool,
+        source,
+        title="Controlled appointment",
+        starts_at=now + timedelta(hours=1),
+        source_butler="health",
+        booked=True,
+    )
+    first = await brief.run_visit_brief(pool, notify_fn=send, now=now)
+    second = await brief.run_visit_brief(pool, notify_fn=send, now=now)
+    assert first["sent"] == second["sent"] == second["retry"] == 0
+    send.assert_awaited_once()
+    async with pool.acquire() as independent:
+        row = await independent.fetchrow(
+            "SELECT delivered_at,digest FROM visit_briefs WHERE event_id=$1", event_id
         )
-        first = await brief.run_visit_brief(pool, notify_fn=send, now=now)
-        second = await brief.run_visit_brief(pool, notify_fn=send, now=now)
-        assert first["sent"] == second["sent"] == second["retry"] == 0
-        send.assert_awaited_once()
-        async with pool.acquire() as independent:
-            row = await independent.fetchrow(
-                "SELECT delivered_at,digest FROM visit_briefs WHERE event_id=$1", event_id
-            )
-        assert row["delivered_at"] is None and row["digest"]["source"] == []
-        flag = "partial_delivery" if outcome == brief.PARTIAL else "telegram_effect_uncertain"
-        assert row["digest"][flag] is True and row["digest"]["retryable"] is False
-    finally:
-        await pool.close()
+    assert row["delivered_at"] is None and row["digest"]["source"] == []
+    flag = "partial_delivery" if outcome == brief.PARTIAL else "telegram_effect_uncertain"
+    assert row["digest"][flag] is True and row["digest"]["retryable"] is False

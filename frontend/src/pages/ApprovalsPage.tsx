@@ -18,6 +18,8 @@
  *     autonomy rules (formerly the orphaned /approvals/rules CRUD page),
  *     with live use counts and inline revoke.
  *   - Policy section: Owner Attention Policy editor
+ *   - Standing-reply drafts: author/edit/revoke/preview inactive reply
+ *     templates; previews report authority none, no activation (bu-jv1moa.42)
  *   - History section: last 30 decided approvals — each row opens its
  *     (read-only) dossier via /approvals/:id.
  *   - Attention Ledger section: delivery-vs-suppression per source, with any
@@ -84,6 +86,7 @@ import {
 import { AutonomyPanel } from "@/components/approvals/autonomy-panel.tsx";
 import { ApprovalTeachingDigest } from "@/components/approvals/approval-teaching-digest.tsx";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
+import { ReplyTemplateDraftsPanel } from "@/components/approvals/reply-template-drafts-panel.tsx";
 import { UnroutableAttentionPanel } from "@/components/approvals/unroutable-attention-panel.tsx";
 import { ApprovalsVerdictOpener } from "@/components/approvals/approvals-verdict-opener.tsx";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
@@ -2430,6 +2433,7 @@ export default function ApprovalsPage() {
       {/* Bottom sections — policy, history, and the attention ledger */}
       <div className="px-6 pb-8 border-t border-border overflow-y-auto shrink-0 max-h-[40vh]">
         <PolicySection />
+        <ReplyTemplateDraftsPanel />
         <HistorySection />
         <AttentionLedgerPanel />
       </div>
