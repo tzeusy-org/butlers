@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
 from alembic import command
 from butlers.bootstrap_prerequisite import check_bootstrap_database
@@ -323,6 +325,79 @@ def get_chain_revision_ids(chain: str) -> frozenset[str]:
     return frozenset(rev.revision for rev in _chain_script_directory(chain).walk_revisions())
 
 
+def _chain_files_signature(chain_dir: Path) -> tuple[tuple[str, int, int], ...]:
+    """Name, size and mtime of each revision file: a cache key for the chain's heads."""
+    return tuple(
+        sorted(
+            (entry.name, entry.stat().st_size, entry.stat().st_mtime_ns)
+            for entry in os.scandir(chain_dir)
+            if entry.name.endswith(".py")
+        )
+    )
+
+
+def _chain_heads_uncached(chain: str) -> tuple[tuple[str, ...], frozenset[str]]:
+    """The chain's script heads and every revision id, from its files alone."""
+    script = _chain_script_directory(chain)
+    revisions = frozenset(rev.revision for rev in script.walk_revisions())
+    return tuple(sorted(script.get_heads())), revisions
+
+
+_CHAIN_HEADS: dict[tuple[str, tuple[tuple[str, int, int], ...]], tuple] = {}
+
+
+def _chain_heads(chain: str, chain_dir: Path) -> tuple[tuple[str, ...], frozenset[str]]:
+    """Cached :func:`_chain_heads_uncached`; loading a chain's scripts is the slow part.
+
+    The key includes the chain's file signature, so adding or editing a revision
+    file in a running process is seen on the next call.
+    """
+    key = (chain, _chain_files_signature(chain_dir))
+    cached = _CHAIN_HEADS.get(key)
+    if cached is None:
+        cached = _CHAIN_HEADS[key] = _chain_heads_uncached(chain)
+    return cached
+
+
+def _applied_revisions(db_url: str, schema: str | None) -> set[str] | None:
+    """Every row of the version table Alembic would use, or ``None`` if it is absent.
+
+    ``None`` also when the read fails, so the full Alembic path raises its own error.
+    """
+    table = "alembic_version" if schema is None else f'"{schema}".alembic_version'
+    engine = create_engine(db_url, poolclass=NullPool)
+    try:
+        with engine.connect() as conn:
+            if conn.execute(text("SELECT to_regclass(:t)"), {"t": table}).scalar() is None:
+                return None
+            return {row[0] for row in conn.execute(text(f"SELECT version_num FROM {table}"))}
+    except SQLAlchemyError:
+        return None
+    finally:
+        engine.dispose()
+
+
+def _chain_at_head(db_url: str, chain: str, schema: str | None) -> bool:
+    """Whether ``upgrade <chain>@head`` would apply nothing.
+
+    True only for a chain with exactly one head whose applied revisions in the
+    version table are exactly that head. Every other case (absent table, behind,
+    several heads) takes the full Alembic path, which keeps its exact behaviour
+    and errors. Rows other chains keep in the same table are left to their own
+    runs: resolving them would mean loading every chain, the cost this avoids.
+    """
+    chain_dir = _resolve_chain_dir(chain)
+    if chain_dir is None:
+        return False
+    heads, revisions = _chain_heads(chain, chain_dir)
+    if len(heads) != 1:
+        return False
+    applied = _applied_revisions(db_url, schema)
+    if applied is None:
+        return False
+    return applied & revisions == set(heads)
+
+
 def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:
     """Upgrade a single chain to head and emit contextual logs."""
     logger.info(
@@ -377,6 +452,17 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
     if "core" in chains or chain == "core":
         _bootstrap_extensions(db_url)
 
-    config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
+    # A chain already at head needs no Alembic environment: loading every chain's
+    # scripts to discover that dominated each daemon boot (bu-rvgzmf.2).
+    config: Config | None = None
     for resolved_chain in chains:
+        if _chain_at_head(db_url, resolved_chain, normalized_schema):
+            logger.debug(
+                "Migration chain already at head (chain=%s, schema=%s)",
+                resolved_chain,
+                normalized_schema or "<default>",
+            )
+            continue
+        if config is None:
+            config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
         _upgrade_chain(config, resolved_chain, normalized_schema)
