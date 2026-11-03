@@ -472,7 +472,7 @@ async def test_run_health_briefing_missed_doses_positive_case_from_facts():
     missed_med_row = {
         "name": "Metformin",
         "frequency": "daily",
-        "schedule": None,
+        "schedule": ["00:00"],  # due since midnight, so missed whatever the clock says
     }
     # fetch() order: missed_rows -> taken_rows. No weight fact (fetchrow None).
     pool = MagicMock()

@@ -154,7 +154,11 @@ _DAY_PART_TIMES: dict[str, time] = {
     "bedtime": time(21, 0),
 }
 
-_CLOCK_RE = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$")
+_CLOCK_RE = re.compile(r"^(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?$")
+
+# A dose with no known time is expected sometime today: it is due later until this
+# time has passed, and only then missed (bu-6cdsvf).
+_UNDATED_DOSE_DUE = time(21, 0)
 
 
 @dataclass(frozen=True)
@@ -213,8 +217,8 @@ def dose_status_today(
       ``doses_per_day`` doses.  Times come from *schedule* (``"08:00"``, ``"8am"``,
       ``"evening"``) or from a day-part word in *frequency*.  A dose whose time has
       passed and has not been taken is missed; a later one is due later.
-    - A dose with no known time keeps the legacy behaviour and counts as missed if
-      untaken (the briefing cannot tell it is not yet due).
+    - A dose with no known time (schedule-less daily, weekday-only weekly) is due
+      later until ``_UNDATED_DOSE_DUE`` has passed, then missed if untaken.
     """
     normalized = (frequency or "").strip().lower()
     if not normalized or is_as_needed(normalized) or normalized in _PHASE_UNKNOWN_FREQUENCIES:
@@ -239,8 +243,10 @@ def dose_status_today(
     times = sorted(t for t in (_parse_dose_time(e) for e in entries) if t is not None)[:count]
     now_time = now_local.time().replace(second=0, microsecond=0)
     undated = count - len(times)
-    due_now = sum(1 for t in times if t <= now_time) + undated
-    later = len(times) - sum(1 for t in times if t <= now_time)
+    timed_due = sum(1 for t in times if t <= now_time)
+    undated_due = undated if now_time >= _UNDATED_DOSE_DUE else 0
+    due_now = timed_due + undated_due
+    later = len(times) - timed_due + undated - undated_due
     taken = max(doses_taken, 0)
     missed = max(due_now - taken, 0)
     later = max(later - max(taken - due_now, 0), 0)
