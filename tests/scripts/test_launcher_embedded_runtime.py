@@ -275,3 +275,44 @@ def test_actual_embedded_preflight_refuses_before_privilege(tmp_path, mutation):
     result = run_code(embedded("Verify reviewed source before privileged setup"), env, tmp_path)
     assert SENTINEL.encode() not in result.stdout + result.stderr
     assert (result.returncode == 0) == (mutation is None)
+
+
+@pytest.mark.parametrize("mode", ["help", "nonexecute"])
+def test_actual_workflow_entrypoint_reaches_parser_and_refuses_without_execution(mode):
+    import shlex
+
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    step = next(
+        s
+        for s in workflow["jobs"]["causal"]["steps"]
+        if s.get("name") == "Execute only the reviewed causal experiment"
+    )
+    command = shlex.split(step["run"])
+    command.remove("--execute")
+    if mode == "help":
+        command.remove("--disposable-job")
+        command.append("--help")
+    environment = {**os.environ, "CI": "false", "GITHUB_ACTIONS": "false"}
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        command,
+        cwd=SOURCE_ROOT,
+        env=environment,
+        capture_output=True,
+        timeout=15,
+    )
+    # Separate the boolean before assertion rewriting can render private bytes.
+    stderr_empty, returncode, output = not result.stderr, result.returncode, result.stdout
+    del result
+    assert stderr_empty, "entrypoint emitted private stderr"
+    if mode == "help":
+        assert returncode == 0
+        assert b"--execute" in output and b"--disposable-job" in output
+    else:
+        assert returncode == 1
+        assert json.loads(output) == {
+            "version": 1,
+            "status": "refused",
+            "arms": [],
+            "reason": "probe_explicit_hosted_noble_required",
+        }

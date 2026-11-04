@@ -56,7 +56,7 @@ def _contract(workflow):
     stage = names.index("Stage only closed successful evidence")
     assert before < setup < native < probe < stage == len(steps) - 2
     assert (
-        steps[probe]["run"] == "uv run --no-sync python -B scripts/session_host_causal_probe.py "
+        steps[probe]["run"] == "uv run --no-sync python -B -m scripts.session_host_causal_probe "
         "--execute --disposable-job"
     )
     assert steps[probe]["timeout-minutes"] == 6

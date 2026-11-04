@@ -65,7 +65,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap build-essential openssl
       - name: Execute only the reviewed causal experiment
         timeout-minutes: 6
-        run: uv run --no-sync python -B scripts/session_host_causal_probe.py --execute --disposable-job
+        run: uv run --no-sync python -B -m scripts.session_host_causal_probe --execute --disposable-job
       # Default success() is deliberate: failure/quarantine has no later work.
       - name: Stage only closed successful evidence
         env:
