@@ -47,6 +47,50 @@ credential, bearer, runtime output and exception content are never returned or
 logged by this channel. `revoked` means local invocation settlement, not broker
 token revocation. The runner remains responsible for broker authority.
 
+## Exact profile admission (dark)
+
+`ProfileFactory()` has no installed tuples and refuses every runtime/model pair.
+A trusted host constructor may supply a `ReviewedProfile` only after independent
+review of actual runtime conformance evidence. A control request cannot supply a
+profile, proof, approval flag, expected hash, executable path or adapter setting.
+There is no fallback, runtime alias, model alias or duplicate-tuple resolution.
+
+`Profile` binds the exact runtime/model, sorted image destination/SHA256 inventory,
+and all command arguments plus the existing broker-only material contract. The
+backend still reopens, verifies and seals actual image bytes at use. The profile
+hash does not replace those consumption checks. Model/config/image changes require
+a matching new conformance subject; there are no generic permission booleans.
+Adapter denial settings must be present in the actual immutable image/command and
+proved by execution, rather than inferred from labels. The existing staging owner
+builds the sole-broker MCP configuration from the authenticated launch binding.
+The initial admission step did not implement runtime-specific config/pointer
+consumption. The closed OpenCode transport described below now implements that
+source path; actual CLI/parser and catalog/provider conformance remain unproved.
+
+The private conformance report is a bounded (16 KiB) closed JSON object with integer
+`version=1`, exact `subject`, exact `checks`, `execution_sha256` and `artifact_sha256`.
+Its subject contains `runtime`, `model`, `image_sha256`, `settings_sha256`. Every
+required check has the literal string outcome `pass`: filesystem/process isolation,
+restricted egress, built-in shell/filesystem/web denial, local MCP denial,
+provider-hosted search/fetch/remote-MCP/code denial, broker-only MCP and catalog
+conformance. Missing, unknown, duplicate, malformed or nonfinite fields refuse.
+The expected report SHA256 comes separately from trusted review/deployment
+configuration, never the report or request. Matching it establishes only the
+identity of those reviewed bytes; this parser does not run conformance or attest
+that a claimed observation happened. Review must reconcile the referenced actual
+execution/artifacts and their complete runtime/image/settings subject before
+configuring that pin. No real runtime/model report or eligible tuple is installed.
+
+`InvocationOwner` keeps its healthy/replay checks and consumes the invocation ID
+before resolving the inert host factory. An unsupported or unproven profile now
+refuses before credential staging. The factory must allocate no process, FD or
+other owned resource; only its returned domain's `execute` may start execution.
+Accepted profiles still use the existing staging, failure quarantine, cancellation
+and whole-domain settlement path. A failed admission does not release its consumed
+invocation ID for replay. Synthetic pinned reports and synthetic domain execution
+in admission tests earn only source-boundary evidence, never actual runtime,
+provider, networking or native-conformance credit.
+
 ## Isolation, settlement and restart
 
 `InvocationOwner` admits one invocation identity once per owner lifetime. The
@@ -130,3 +174,71 @@ credential-volume retargeting and tool-less model functions remain separate gate
 Existing Engineering/QA adapter behavior is unchanged. This child cannot complete
 parent AC1/3/4/5/6/7 or authorize activation; native evidence can support only the
 bounded dark-library portion of AC2 after hosted verification.
+
+## Closed OpenCode settings transport (dark)
+
+The trusted `opencode` preset targets the image-pinned OpenCode1.17.7 and an
+explicit OpenAI API-key credential mode. It generates one fresh native
+`opencode.jsonc` from the exact model and invocation BrokerBinding, with wildcard
+built-in denial, only `broker_*` allowed, one remote broker and OAuth discovery
+disabled. It imports no caller option map, plugin, local MCP or butler guidance.
+Credential text-format checks establish no auth provenance or capability. Other
+provider/auth modes are unsupported. The invocation text remains runner supplied;
+this transport does not prove lead/child governing-policy assembly.
+
+The native file is owned by the existing staging directory, hashed and copied to
+a sealed memfd, then mounted read-only at `/invocation/opencode.jsonc`. The fixed
+`OPENCODE_CONFIG` points there. Stdin uses an independently opened readonly
+file description of the same sealed prompt, positioned at byte zero. Bubblewrap's
+`--ro-bind-data` reads its bind descriptor to EOF; a plain `dup` would share that
+offset and leave stdin empty. Both descriptions remain owner-tracked and closed.
+Prompt and secret values never become argv or environment values. `HOME=/tmp/home`
+names only fresh private tmpfs scratch, with no inherited HOME or contents. The
+closed environment otherwise contains PATH and the credential-file pointer.
+Native-file preparation failure precedes any spawn; partial files remain under
+the existing settlement/discard/quarantine owner. Non-adapter domains retain
+their original plan and DEVNULL stdin.
+
+The exact proof subject includes the native template bytes, two broker binding
+slots, CLI version, model/provider/auth mode, command, paths and stdin contract.
+Changing those invalidates an old report. No real eligible tuple is installed.
+Permission refusal is not by itself proof that a tool is absent from the actual
+model-visible catalog, and no parser/provider-wire conformance is claimed. The
+synthetic native transport consumer proves neither OpenCode nor model behavior.
+The landed Dashboard CLI closure generator is not a goal image per-file proof.
+Pinned Codex0.159.2 can register ApplyPatchHandler for models advertising it even
+with shell features disabled; no supported complete disablement is established
+here, so no Codex tuple is configured. The full image, restricted-network, runtime
+conformance, credential-retargeting and tool-less-function acceptance criteria
+remain unfinished.
+
+
+## Installed-image evidence export (build only)
+
+The existing nightly `exact-image-sandbox` builder exports installed-image
+assets before its separate Dashboard user-namespace policy/proof steps. The
+exporter never starts OpenCode, Codex or the app entrypoint. A read-only,
+network-none, capability-free container runs only the fixed Python helper as
+an unprivileged UID, with one empty output mount, finite process/file/memory
+limits and a 120-second outer watchdog. Its exact owned container ID is removed
+before host verification or upload; failure leaves no success artifact upload.
+Existing v3 generation, base fingerprints and Dashboard proof steps are unchanged.
+
+The two-path artifact allowlist is `manifest.json` plus numbered `files/*.bin`.
+The host first reconciles its complete population, sizes and hashes. It contains
+only the v3 manifest, CLI build-version inventory, installed OpenCode package
+metadata and selected native payload, fixed init shim, individually listed
+regular loader/libraries, and fixed CA bundle. It omits resolver contents and
+package directories. Original inode/link/ownership/mode and logical symlink
+metadata remain in the report even though exported copies are regular files.
+Metadata findings do not waive session-host ImageFile restrictions.
+
+The report binds exact checkout/tree, workflow SHA, run/attempt/numeric job ID,
+actual built image ID, unchanged base-input fingerprint, exporter/generator
+hashes and pinned version inventory. ELF class, byte order, machine, interpreter
+and DT_NEEDED are parsed from exported bytes. These facts establish neither
+loader compatibility nor complete embedded/dlopen dependencies, CA consumption,
+parser acceptance, model-visible tool removal or provider-wire behavior. Actual
+artifacts require a successful future builder run. Goal-image assembly, native
+execution and runtime conformance remain unfinished; the eligible tuple set
+remains empty.

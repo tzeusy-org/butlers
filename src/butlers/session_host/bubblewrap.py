@@ -25,6 +25,7 @@ from typing import Any, cast
 
 from .contracts import Refused
 from .material import InvocationMaterial
+from .opencode import CONFIG_NAME, OpenCodeSettings
 
 _READY = b"BUTLERS_RUNTIME_CLI_SANDBOX_READY\n"
 _MAX_OUTPUT = 1024 * 1024
@@ -160,6 +161,7 @@ class BubblewrapDomain:
         command: tuple[str, ...],
         shim: str = "/runtime/init",
         bwrap: Path = Path("/usr/bin/bwrap"),
+        opencode: OpenCodeSettings | None = None,
     ) -> None:
         destinations = {entry.destination for entry in image}
         if (
@@ -171,6 +173,12 @@ class BubblewrapDomain:
             or sum(len(item) for item in command) > 16384
         ):
             raise Refused("invalid_domain_profile")
+        if opencode is not None and (
+            type(opencode) is not OpenCodeSettings or command != opencode.command
+        ):
+            raise Refused("invalid_domain_profile")
+        self._opencode = opencode
+        self._stdin: int | None = None
         self._image = image
         self._command = command
         self._shim = shim
@@ -238,6 +246,8 @@ class BubblewrapDomain:
     def _plan(
         self, material: InvocationMaterial
     ) -> tuple[list[str], tuple[int, ...], int, int, int]:
+        if self._opencode is not None:
+            material.prepare_opencode(self._opencode)
         metadata = self._bwrap.stat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
             raise Refused("bubblewrap_unavailable")
@@ -299,7 +309,20 @@ class BubblewrapDomain:
             self._fds.add(descriptor)
             inherited.append(descriptor)
             argv.extend(("--perms", "0555", "--ro-bind-data", str(descriptor), entry.destination))
-        for name in ("model-credential", "prompt", "mcp.json"):
+        if self._opencode is not None:
+            # Replace only the fixed non-adapter env block. Never accept a
+            # caller mapping or inherit the host HOME/config/credential stores.
+            start = argv.index("--setenv")
+            end = argv.index("--tmpfs")
+            argv[start:end] = [
+                item
+                for key, value in self._opencode.environment
+                for item in ("--setenv", key, value)
+            ]
+        names = ("model-credential", "prompt", "mcp.json")
+        if self._opencode is not None:
+            names += (CONFIG_NAME,)
+        for name in names:
             descriptor = _open_source(material.directory / name)
             metadata = os.fstat(descriptor)
             if (
@@ -321,6 +344,20 @@ class BubblewrapDomain:
             finally:
                 os.close(descriptor)
             self._fds.add(snapshot)
+            if self._opencode is not None and name == "prompt":
+                # --ro-bind-data consumes snapshot's current offset. dup() or
+                # subprocess stdin=snapshot would share that offset and leave
+                # the CLI at EOF. Reopen the owned sealed memfd to obtain an
+                # independent, readonly description starting at byte zero.
+                stdin = os.open(f"/proc/self/fd/{snapshot}", os.O_RDONLY | os.O_CLOEXEC)
+                self._fds.add(stdin)
+                if (
+                    _identity(os.fstat(stdin)) != _identity(os.fstat(snapshot))
+                    or fcntl.fcntl(stdin, _F_GET_SEALS) & _SEALS != _SEALS
+                    or os.lseek(stdin, 0, os.SEEK_CUR) != 0
+                ):
+                    raise Refused("invalid_prompt_input")
+                self._stdin = stdin
             inherited.append(snapshot)
             argv.extend(("--perms", "0400", "--ro-bind-data", str(snapshot), f"/invocation/{name}"))
         argv.extend(
@@ -347,10 +384,14 @@ class BubblewrapDomain:
         self._used = True
         try:
             argv, inherited, info_read, block_write, gate_write = self._plan(material)
+            if self._opencode is not None and self._stdin is None:
+                raise Refused("prompt_input_missing")
             self._spawn = self._task(
                 asyncio.create_subprocess_exec(
                     *argv,
-                    stdin=asyncio.subprocess.DEVNULL,
+                    stdin=(
+                        self._stdin if self._opencode is not None else asyncio.subprocess.DEVNULL
+                    ),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                     env={},
