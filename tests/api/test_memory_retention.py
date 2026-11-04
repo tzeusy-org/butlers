@@ -101,10 +101,15 @@ def _register_memory_runtime_pool(monkeypatch, pool) -> None:
 class _NullTxCtx:
     """No-op async context manager standing in for ``conn.transaction()``."""
 
+    def __init__(self, connection):
+        self.connection = connection
+
     async def __aenter__(self):
+        self.connection._audit_active = True
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
+        self.connection._audit_active = False
         return False  # never suppress — let exceptions propagate/rollback
 
 
@@ -167,7 +172,9 @@ def _wire_memory_mock(
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock(return_value="OK")
     mock_pool.acquire = MagicMock(return_value=_AcquireCtx(mock_pool))
-    mock_pool.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_pool._audit_active = False
+    mock_pool.is_in_transaction = MagicMock(side_effect=lambda: mock_pool._audit_active)
+    mock_pool.transaction = MagicMock(side_effect=lambda: _NullTxCtx(mock_pool))
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool = MagicMock(side_effect=lambda name: mock_pool)

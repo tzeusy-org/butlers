@@ -87,4 +87,22 @@ describe("ScheduleTable dual-mode rendering", () => {
     expect(html).toContain("job");
     expect(html).toContain("switchboard.connector_stats_rollup");
   });
+
+  it("labels a superseded deadline and names its replacement, unlike an owner's Off", () => {
+    const html = renderTable([
+      makeSchedule({
+        id: "deadline-old",
+        name: "paperwork:due:old",
+        enabled: false,
+        superseded_by: "deadline-new",
+        superseded_at: "2026-11-02T10:15:00Z",
+      }),
+      makeSchedule({ id: "deadline-new", name: "paperwork:due:new" }),
+      makeSchedule({ id: "owner-off", name: "owner-off", enabled: false }),
+    ]);
+
+    expect(html).toContain("Superseded");
+    expect(html).toContain("by paperwork:due:new");
+    expect(html.match(/>Off</g)).toHaveLength(1);
+  });
 });

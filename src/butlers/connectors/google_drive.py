@@ -41,6 +41,7 @@ import os
 import random
 import signal
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Thread
@@ -56,9 +57,12 @@ from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.gmail_policy import _normalize_email
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.known_contact_snapshot import PriorityContactSnapshotSource
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.core.known_contact_state import KnownContactSnapshot, not_applicable_classification
 from butlers.google_credentials import resolve_google_credentials
 from butlers.ingestion_bearer_scrub import scrub_text
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
@@ -913,9 +917,14 @@ class GDriveAccountLoop:
         config: GDriveAccountConfig,
         db_pool: asyncpg.Pool | None = None,
         cursor_pool: asyncpg.Pool | None = None,
+        known_contacts: PriorityContactSnapshotSource | None = None,
+        known_contacts_observer: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.email = email
         self.endpoint_identity = config.endpoint_identity
+        # Process-wide priority-contact snapshot owned by the manager (None = unclassified).
+        self._known_contacts = known_contacts
+        self._known_contacts_observer = known_contacts_observer
         self._config = config
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
@@ -1352,6 +1361,8 @@ class GDriveAccountLoop:
         if self._http_client is None:
             self._http_client = httpx.AsyncClient(timeout=30)
 
+        await self._refresh_known_contacts()
+
         # Load cursor from store (or None if first run)
         cursor = await self._load_cursor()
 
@@ -1609,6 +1620,29 @@ class GDriveAccountLoop:
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    async def _refresh_known_contacts(self) -> None:
+        """Refresh the TTL-bounded snapshot before a poll; failure never blocks polling."""
+        if self._known_contacts is None:
+            return
+        try:
+            await self._known_contacts.get_snapshot(self._known_contacts_observer)
+        except Exception:
+            logger.warning("Drive: known-contact refresh failed")
+
+    def _file_sharer(self, file_data: dict[str, Any]) -> str | None:
+        """The person who shared a file: ``sharingUser`` else the first non-self owner."""
+        sharing_user = file_data.get("sharingUser")
+        if isinstance(sharing_user, dict):
+            address = sharing_user.get("emailAddress")
+            if isinstance(address, str) and address.strip():
+                return address.strip()
+        for owner in file_data.get("owners") or []:
+            address = owner.get("emailAddress") if isinstance(owner, dict) else None
+            if isinstance(address, str) and address.strip():
+                if address.strip().lower() != self.email.lower():
+                    return address.strip()
+        return None
+
     def process_change(
         self,
         change: dict[str, Any],
@@ -1712,10 +1746,27 @@ class GDriveAccountLoop:
         # Build policy envelope for ingestion policy evaluation (task 11.1)
         # sender_address = file owner's email (falls back to endpoint_identity when unavailable)
         # raw_key = filename (enables substring rule matching against file names)
+        # A file someone shared with the owner is attributed to that sharer, so a drop of it can
+        # be marked and an "except people I know" rule honored. An owner-only file has no
+        # person behind it: "not applicable", certain and never counted.
+        sharer = self._file_sharer(file_data)
+        snapshot: KnownContactSnapshot | None = (
+            self._known_contacts.peek_snapshot() if self._known_contacts is not None else None
+        )
+        classified_at = datetime.now(UTC)
+        known_contact: bool | None = None
+        classification: dict[str, Any] | None = None
+        if sharer is None:
+            classification = not_applicable_classification(classified_at)
+        elif snapshot is not None:
+            classification = snapshot.historical(classified_at)
+            if snapshot.state == "loaded":
+                known_contact = _normalize_email(sharer) in snapshot.contacts
         policy_envelope = IngestionEnvelope(
-            sender_address=owner_email or self.endpoint_identity,
+            sender_address=sharer or owner_email or self.endpoint_identity,
             source_channel=_DESCRIPTOR.channel,
             raw_key=name,
+            known_contact=known_contact,
         )
 
         # Evaluate connector-scoped ingestion policy (synchronous — TTL refresh is background)
@@ -1747,6 +1798,8 @@ class GDriveAccountLoop:
                     sender_identity=self.endpoint_identity,
                     raw=None,
                     normalized_text=normalized_text,
+                    important_dropped_basis="known_contact" if known_contact else None,
+                    classification=classification,
                 ),
             )
             return None
@@ -1854,6 +1907,15 @@ class GDriveConnectorManager:
 
         # Active account loops keyed by email
         self._loops: dict[str, GDriveAccountLoop] = {}
+
+        # One process-wide priority-contact snapshot shared by every account loop.
+        self._known_contacts = PriorityContactSnapshotSource(
+            db_pool,
+            predicate="has-email",
+            normalize=_normalize_email,
+            label="DriveKnownContacts",
+            provider="Drive",
+        )
 
         # State
         self._start_time = time.time()
@@ -1998,6 +2060,8 @@ class GDriveConnectorManager:
                 config=config,
                 db_pool=self._db_pool,
                 cursor_pool=self._cursor_pool,
+                known_contacts=self._known_contacts,
+                known_contacts_observer=self._publish_known_contacts,
             )
             self._loops[email] = loop
             loop.start()
@@ -2162,6 +2226,10 @@ class GDriveConnectorManager:
             "reload_accounts": True,
         }
 
+    async def _publish_known_contacts(self) -> None:
+        if self._heartbeat is not None:
+            await self._heartbeat.publish_once()
+
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task (task 12.5).
 
@@ -2194,6 +2262,7 @@ class GDriveConnectorManager:
             metrics=self._metrics,
             get_health_state=self._get_health_state_for_heartbeat,
             get_capabilities=self._get_capabilities,
+            get_contact_snapshot=self._known_contacts.peek_snapshot,
         )
         self._heartbeat.start()
         logger.info("Drive manager: heartbeat started (interval=%ds)", self._heartbeat_interval_s)
@@ -2306,6 +2375,8 @@ class GDriveConnectorManager:
 
         # Start heartbeat (task 12.5) — MCP client must be wired externally before start()
         self._start_heartbeat()
+        # Publish unloaded classification before provider work; never blocks polling.
+        await self._publish_known_contacts()
 
         # Main rescan loop (task 12.1)
         try:

@@ -14,6 +14,12 @@ from uuid import UUID
 CONTACT_TTL_S = 900
 HEARTBEAT_TTL_S = 300
 CLASSIFICATION_KEY = "known_contact_check"
+#: Connectors whose drop sites stamp a frozen known-contact classification. Gmail, WhatsApp
+#: and Drive share one snapshot contract; the aggregate and heartbeat admission read this set.
+CLASSIFYING_CONNECTOR_TYPES = frozenset({"gmail", "whatsapp_user_client", "google_drive"})
+#: Drive publishes one process-wide snapshot on its manager row; its per-account rows are
+#: heartbeated by direct SQL and carry no classification evidence of their own.
+DRIVE_MANAGER_ENDPOINT = "google_drive:manager:process"
 STATES = frozenset({"loaded", "unloaded", "stale", "failed"})
 REASONS = frozenset(
     {
@@ -123,6 +129,35 @@ def parse_check(value: object) -> dict[str, Any] | None:
     if projection is None or instance is None or (raw_epoch is not None and epoch is None):
         return None
     return {**projection, "instance_id": instance, "admission_epoch": epoch}
+
+
+NOT_APPLICABLE_STATE = "not_applicable"
+
+
+def not_applicable_classification(observed_at: datetime) -> dict[str, Any]:
+    """Frozen marker for a drop with no single person behind it (group chat, owner-only file).
+
+    Such a drop is certain, not uncertain: nothing about it depends on the contact query, so it
+    is never counted as a known-contact drop and never raises the uncertainty count.
+    """
+    return {"version": 1, "state": NOT_APPLICABLE_STATE, "observed_at": observed_at.isoformat()}
+
+
+def parse_not_applicable(value: object) -> dict[str, Any] | None:
+    """Validate the exact ``not_applicable`` shape; anything else is rejected."""
+    if not isinstance(value, dict) or set(value) != {"version", "state", "observed_at"}:
+        return None
+    if type(value["version"]) is not int or value["version"] != 1:
+        return None
+    observed = utc_timestamp(value["observed_at"])
+    if value["state"] != NOT_APPLICABLE_STATE or observed is None:
+        return None
+    return not_applicable_classification(observed)
+
+
+def classification_certain(value: object) -> bool:
+    """True when a stored classification leaves no doubt: loaded in time, or not applicable."""
+    return historical_available(value) or parse_not_applicable(value) is not None
 
 
 def historical_available(value: object) -> bool:

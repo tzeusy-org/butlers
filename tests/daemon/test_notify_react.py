@@ -101,10 +101,22 @@ def _patch_infra() -> dict[str, Any]:
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
+    transaction_depth = 0
+
+    async def enter_transaction() -> None:
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc: object) -> bool:
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
     transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock()
-    transaction.__aexit__ = AsyncMock(return_value=False)
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
     mock_conn.transaction = MagicMock(return_value=transaction)
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
 
     @asynccontextmanager
     async def mock_acquire():

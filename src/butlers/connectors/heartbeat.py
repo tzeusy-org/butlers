@@ -445,7 +445,7 @@ class ConnectorHeartbeat:
             task = asyncio.create_task(self._mcp_client.call_tool("connector.heartbeat", envelope))
             done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
             if not done or loop.time() >= deadline:
-                logger.warning("Gmail classification publication outcome=timeout")
+                logger.warning("Connector classification publication outcome=timeout")
                 return False
             result = task.result()
             ack = (
@@ -454,7 +454,7 @@ class ConnectorHeartbeat:
                 else None
             )
             if ack is None or self._active_attempt != attempt:
-                logger.warning("Gmail classification publication outcome=invalid_ack")
+                logger.warning("Connector classification publication outcome=invalid_ack")
                 return False
             if ack["admitted"]:
                 self._admission_epoch = ack["admission_epoch"]
@@ -462,15 +462,15 @@ class ConnectorHeartbeat:
                 return True
             if self._admission_epoch == sent["admission_epoch"]:
                 self._admission_epoch = None
-            logger.warning("Gmail classification publication outcome=refused")
+            logger.warning("Connector classification publication outcome=refused")
             return False
         except TimeoutError:
-            logger.warning("Gmail classification publication outcome=timeout")
+            logger.warning("Connector classification publication outcome=timeout")
             return False
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.warning("Gmail classification publication outcome=failed")
+            logger.warning("Connector classification publication outcome=failed")
             return False
         finally:
             if acquired:

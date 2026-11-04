@@ -67,10 +67,15 @@ def _make_webhook_record(overrides: dict | None = None) -> dict:
 class _NullTxCtx:
     """No-op async context manager standing in for ``conn.transaction()``."""
 
+    def __init__(self, connection):
+        self.connection = connection
+
     async def __aenter__(self):
+        self.connection._audit_active = True
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
+        self.connection._audit_active = False
         return False  # never suppress — let exceptions propagate/rollback
 
 
@@ -108,7 +113,9 @@ def _make_pool(
     # ``async with pool.acquire() as conn, conn.transaction():`` exercises the
     # same execute/fetchrow mocks asserted on throughout this module.
     pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
-    pool.transaction = MagicMock(return_value=_NullTxCtx())
+    pool._audit_active = False
+    pool.is_in_transaction = MagicMock(side_effect=lambda: pool._audit_active)
+    pool.transaction = MagicMock(side_effect=lambda: _NullTxCtx(pool))
     return pool
 
 

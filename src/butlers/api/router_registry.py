@@ -61,6 +61,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.qa", "router"),
     ("butlers.api.routers.provider_settings", "router"),
     ("butlers.api.routers.general_settings", "router"),
+    ("butlers.api.routers.captures", "router"),
     ("butlers.api.routers.blob_storage", "router"),
     ("butlers.api.routers.owntracks", "router"),
     ("butlers.api.routers.home_assistant", "router"),

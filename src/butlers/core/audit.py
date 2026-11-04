@@ -21,6 +21,8 @@ import asyncpg
 from asyncpg.exceptions import UndefinedTableError
 from opentelemetry import metrics
 
+from butlers.core.audit_transaction import pending_append, record_append
+
 logger = logging.getLogger(__name__)
 
 #: The closed vocabulary a credential failure may be described by.
@@ -132,7 +134,11 @@ async def append(
 ) -> int:
     """Append one row to ``public.audit_log`` and return the new row id.
 
-    Adds 1 to the OTel counter ``butlers.audit.log.appended{action}`` on success.
+    Adds 1 to the OTel counter ``butlers.audit.log.appended{action}`` only after
+    acknowledged commit. An open transaction must belong to ``audit_transaction``;
+    the integer receipt is still returned before that owner commits. Savepoints
+    merge pending records into their outer owner; rollback discards them. An
+    interrupted commit has unknown durability and records nothing.
     The attribute is ``metric_action`` when given, else ``action``; callers whose
     ``action`` embeds request-derived text must pass a bounded ``metric_action``.
 
@@ -203,6 +209,8 @@ async def append(
     if pool is None or _native_storage_unavailable(pool):
         raise AuditTableNotAvailableError("Required audit storage is not available")
 
+    pending = pending_append(pool)
+
     # Sanitize metadata into a fully JSON-safe dict (UUID/datetime -> str) via
     # a json.dumps/loads round-trip. Bind the resulting DICT directly (no
     # json.dumps, no ::jsonb cast): every asyncpg pool in this codebase
@@ -266,7 +274,7 @@ async def append(
         ) from exc
     if type(row_id) is not int or row_id <= 0:
         raise AuditTableNotAvailableError("Required audit storage returned no receipt")
-    _record_appended(metric_action or action)
+    record_append(pending, metric_action or action, _record_appended)
 
     # Notify listeners (the dashboard's live "issue" event) whenever an
     # error-result row lands. Best-effort: never let a listener block or fail

@@ -185,11 +185,19 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.execute = AsyncMock(return_value=None)
 
+    transaction_depth = 0
+
     @asynccontextmanager
     async def _transaction():
-        yield
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield
+        finally:
+            transaction_depth -= 1
 
     mock_conn.transaction = MagicMock(side_effect=_transaction)
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
 
     @asynccontextmanager
     async def _acquire():

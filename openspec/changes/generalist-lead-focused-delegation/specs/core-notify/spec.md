@@ -236,8 +236,6 @@ Scope: v1-mandatory
 - **WHEN** an unexposed invocation calls `notify` for the owner
 - **THEN** the notification is delivered with its existing formatting and link behavior
 
-## ADDED Requirements
-
 ### Requirement: Owner notifications use canonical delivery subjects
 Owner notify and reply integration SHALL use S6's one subject/many presentations, route identity, generation/token and honest receipt interface. Existing per-event approvals, RFC0023 recovery, inert links and reply delivery accounting SHALL remain in force until their named successor is verified and atomically activated.
 

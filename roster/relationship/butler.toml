@@ -126,6 +126,15 @@ cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "email_identity_enrichment"
 
+# Owner anchor-address geocoding (bu-r3fmja.3): only the owner's own, works-at and
+# rental-location/lives-at place addresses go to OneMap (Singapore) or Nominatim.
+# Deterministic, no session; Chronicler reads relationship.address_geocodes.
+[[butler.schedule]]
+name = "relationship_geocode_owner_addresses"
+cron = "17 * * * *"
+dispatch_mode = "job"
+job_name = "relationship_geocode_owner_addresses"
+
 # contact-info-reconciler retired in migration bead 10 (bu-e2ja9 / core_115):
 # public.contact_info is dropped, so the dual-write reconciler has nothing to
 # sweep. Re-adding it would throw UndefinedTableError every 30 minutes.

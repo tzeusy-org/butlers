@@ -464,3 +464,72 @@ async def test_heartbeat_capabilities_updated_on_subsequent_heartbeat(valid_hear
         valid_heartbeat_payload["capabilities"] = {"backfill": False, "channel_kind": kind}
         parsed = parse_connector_heartbeat(valid_heartbeat_payload)
         assert parsed.capabilities == {"backfill": False}
+
+
+_UNLOADED_CHECK = {
+    "version": 1,
+    "state": "unloaded",
+    "reason": "not_loaded",
+    "generation": 0,
+    "last_success_at": None,
+    "admission_epoch": None,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("connector_type", "endpoint"),
+    [
+        ("gmail", "gmail:user:a@example.com"),
+        ("whatsapp_user_client", "whatsapp:+12025551234"),
+        ("google_drive", "google_drive:manager:process"),
+    ],
+)
+async def test_classification_admission_and_fencing_cover_every_marking_connector(
+    valid_heartbeat_payload, connector_type, endpoint
+):
+    """bu-q7vx1q.42: the first check is admitted with an epoch; a foreign instance is fenced
+    out and nothing is persisted. A non-marking connector gets no ack at all."""
+    connector = valid_heartbeat_payload["connector"]
+    connector.update(connector_type=connector_type, endpoint_identity=endpoint)
+    own = {**_UNLOADED_CHECK, "instance_id": connector["instance_id"]}
+    valid_heartbeat_payload["capabilities"] = {"known_contact_check": own}
+    pool = _pool()
+    pool.fetchrow.return_value = None
+
+    admitted = await heartbeat(pool, valid_heartbeat_payload)
+
+    ack = admitted.classification_ack
+    assert ack is not None and ack["admitted"] is True and ack["admission_epoch"]
+
+    pool = _pool()
+    pool.fetchrow.return_value = None
+    foreign = {**_UNLOADED_CHECK, "instance_id": str(uuid.uuid4())}
+    valid_heartbeat_payload["capabilities"] = {"known_contact_check": foreign}
+
+    fenced = await heartbeat(pool, valid_heartbeat_payload)
+
+    assert fenced.classification_ack["admitted"] is False
+    assert fenced.classification_ack["reason"] == "instance"
+    assert not any(
+        "INSERT INTO switchboard.connector_registry" in call[0][0]
+        for call in pool.execute.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_classification_is_not_admitted_for_a_non_marking_connector(
+    valid_heartbeat_payload,
+):
+    valid_heartbeat_payload["capabilities"] = {
+        "known_contact_check": {
+            **_UNLOADED_CHECK,
+            "instance_id": valid_heartbeat_payload["connector"]["instance_id"],
+        }
+    }
+    pool = _pool()
+    pool.fetchrow.return_value = None
+
+    result = await heartbeat(pool, valid_heartbeat_payload)
+
+    assert result.classification_ack is None

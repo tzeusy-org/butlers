@@ -5,6 +5,7 @@ Provides models for collections, entities and owner projects.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
@@ -64,6 +65,17 @@ ProjectState = Literal["draft", "closed", "expired"]
 ProjectLinkKind = Literal["deadline", "owner_condition", "trip", "drive_file", "calendar_event"]
 
 _STRICT = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+_BUTLER_NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+# Drive file ids are URL-safe base64-like tokens; no path, query or scheme.
+DRIVE_FILE_ID = re.compile(r"[A-Za-z0-9_-]{1,200}")
+
+
+def _is_canonical_uuid(value: str) -> bool:
+    try:
+        return str(UUID(value)) == value
+    except ValueError:
+        return False
 
 
 def _clean_text(value: str, limit: int) -> str:
@@ -159,14 +171,17 @@ class ProjectLinkRequest(BaseModel):
     ref_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 
     @model_validator(mode="after")
-    def _canonical_uuid_kinds(self) -> ProjectLinkRequest:
+    def _typed_ref_ids(self) -> ProjectLinkRequest:
         if self.ref_kind in {"owner_condition", "trip", "calendar_event"}:
-            try:
-                parsed = UUID(self.ref_id)
-            except ValueError as exc:
-                raise ValueError("this link kind takes a canonical UUID") from exc
-            if str(parsed) != self.ref_id:
+            if not _is_canonical_uuid(self.ref_id):
                 raise ValueError("this link kind takes a canonical UUID")
+        elif self.ref_kind == "deadline":
+            # A deadline lives in one butler's scheduled tasks: <butler>:<task uuid>.
+            butler, _, task_id = self.ref_id.partition(":")
+            if not _BUTLER_NAME.fullmatch(butler) or not _is_canonical_uuid(task_id):
+                raise ValueError("a deadline link takes <butler>:<canonical UUID>")
+        elif self.ref_kind == "drive_file" and not DRIVE_FILE_ID.fullmatch(self.ref_id):
+            raise ValueError("a Drive file link takes a Drive file id")
         return self
 
 
@@ -212,3 +227,27 @@ class ProjectDetail(ProjectSummary):
 
     charter: ProjectCharter
     links: list[ProjectLink]
+
+
+class DriveFileRecord(BaseModel):
+    """One Drive file's identity, as the owner single-record reader returns it.
+
+    Name and type only: no link, owner, sharing or content.  The name is
+    third-party text; the dashboard renders it inert.
+    """
+
+    id: str
+    name: str
+    mime_type: str | None = None
+    modified_time: datetime | None = None
+
+
+class DriveFileRead(BaseModel):
+    """The Drive reader's answer: the file, or Drive legitimately not connected.
+
+    ``not_connected`` means General runs without the Drive module or without a
+    connected account: a calm state, not a degraded reader.
+    """
+
+    state: Literal["resolved", "not_connected"]
+    file: DriveFileRecord | None = None

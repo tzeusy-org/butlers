@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+import asyncpg
+
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.core.audit import write_audit_entry
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION, require_permission
@@ -323,6 +325,57 @@ class MutationsMixin:
             request_id=self._normalize_request_id(request_id),
             error=error,
         )
+
+    async def _settle_orphaned_overlap_rows(self, *, limit: int = 100) -> int:
+        """Close pending overlap rows parked without a request_id (pre-#5397).
+
+        Those rows used a random idempotency key, so the approved replay never
+        resumed them. Once their approval is terminal they are settled: an
+        executed approval is superseded by the replay's own row (noop); a
+        rejected, expired or abandoned one failed. Bounded per call.
+        """
+        if not await self._projection_tables_available():  # pyright: ignore[reportAttributeAccessIssue]
+            return 0
+        db = self._db  # pyright: ignore[reportAttributeAccessIssue]
+        pool = getattr(db, "pool", None) if db is not None else None
+        if pool is None:
+            return 0
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT l.idempotency_key, p.status AS approval_status
+                FROM calendar_action_log l
+                JOIN pending_actions p ON p.id::text = l.action_result->>'action_id'
+                WHERE l.action_status = 'pending'
+                  AND l.idempotency_key LIKE '%:generated:%'
+                  AND l.action_result->>'status' = 'approval_required'
+                  AND p.status IN ('executed', 'rejected', 'expired', 'abandoned')
+                ORDER BY l.updated_at
+                LIMIT $1
+                """,
+                limit,
+            )
+        except asyncpg.UndefinedTableError:
+            return 0  # approvals module not enabled: no overlap approval could have parked
+        for row in rows:
+            approval_status = str(row["approval_status"])
+            executed = approval_status == "executed"
+            await pool.execute(
+                """
+                UPDATE calendar_action_log
+                SET action_status = $2,
+                    action_result = action_result || $3::jsonb,
+                    error = $4,
+                    applied_at = now(),
+                    updated_at = now()
+                WHERE idempotency_key = $1 AND action_status = 'pending'
+                """,
+                row["idempotency_key"],
+                MUTATION_STATUS_NOOP if executed else MUTATION_STATUS_FAILED,
+                {"settled_approval_status": approval_status},
+                None if executed else f"Overlap approval {approval_status}",
+            )
+        return len(rows)
 
     async def _refresh_user_projection(self, calendar_id: str) -> dict[str, Any]:
         if not await self._projection_tables_available():
