@@ -6,15 +6,16 @@ Verifies:
 3. The process span links back to the accept-phase span via SpanLink.
 4. The accept-phase span carries request_id as an attribute.
 5. The accept span still ends before the process span completes.
+
+Each test boots a real daemon (``booted_daemon``) and calls route.execute over MCP;
+the background task, route inbox and spawner are the production ones, and the
+spans come from the production instrumentation.
 """
 
 from __future__ import annotations
 
-import asyncio
-import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from opentelemetry import trace
@@ -24,24 +25,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.core.telemetry import inject_trace_context
-from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 _REQUEST_ID = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b"
-
-
-class _NoopLeaseHeartbeat:
-    async def __aenter__(self) -> asyncio.Event:
-        return asyncio.Event()
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Fixtures and helpers
-# ---------------------------------------------------------------------------
 
 
 def _reset_otel_global_state():
@@ -51,8 +39,10 @@ def _reset_otel_global_state():
 
 
 @pytest.fixture
-def otel_provider():
+def otel_provider(monkeypatch: pytest.MonkeyPatch):
     """Set up an in-memory TracerProvider for every test, then tear down."""
+    # Startup's init_telemetry then reuses this provider instead of exporting.
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     _reset_otel_global_state()
     exporter = InMemorySpanExporter()
     resource = Resource.create({"service.name": "butler-test"})
@@ -62,187 +52,6 @@ def otel_provider():
     yield exporter
     provider.shutdown()
     _reset_otel_global_state()
-
-
-def _toml_value(v: Any) -> str:
-    if isinstance(v, str):
-        return f'"{v}"'
-    if isinstance(v, list):
-        items = ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in v)
-        return f"[{items}]"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
-
-
-def _make_butler_toml(
-    tmp_path: Path,
-    *,
-    butler_name: str = "health",
-    port: int = 9400,
-) -> Path:
-    toml_lines = [
-        "[butler]",
-        f'name = "{butler_name}"',
-        f"port = {port}",
-        'description = "A test butler"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        f'schema = "{butler_name}"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
-
-
-def _make_runtime_config_row(butler_name: str = "health") -> dict:
-    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
-
-
-def _make_fetchrow_side_effect(butler_name: str = "health"):
-    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries and None for all other queries."""
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
-        return None
-
-    return _fetchrow
-
-
-def _patch_infra(butler_name: str = "health"):
-    mock_conn = AsyncMock()
-    # asyncpg uses synchronous factories for both asynchronous contexts.
-    transaction_depth = 0
-
-    async def enter_transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-
-    async def exit_transaction(*_exc):
-        nonlocal transaction_depth
-        transaction_depth -= 1
-        return False
-
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-    transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
-    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
-    mock_conn.transaction = MagicMock(return_value=transaction)
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock()
-    # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect(butler_name))
-    mock_pool.fetch = AsyncMock(return_value=[])
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict, *, otel_tracer):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        # Patch init_telemetry but return the real in-memory tracer so spans are captured
-        patch("butlers.lifecycle.init_telemetry", return_value=otel_tracer),
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patch("butlers.lifecycle.Spawner", return_value=patches["mock_spawner"]),
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
 
 
 def _route_request_context(
@@ -261,148 +70,63 @@ def _route_request_context(
     }
 
 
-@pytest.fixture(autouse=True)
-def _mock_route_inbox(monkeypatch):
-    """Patch route_inbox DB calls so tests don't need a real DB pool."""
-    fake_inbox_id = uuid.uuid4()
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_insert",
-        AsyncMock(return_value=fake_inbox_id),
+async def _route(booted_daemon, tmp_path: Path, **arguments: Any) -> None:
+    """Route one request, wait for its session, then drain the daemon."""
+    booted = await booted_daemon(write_butler_config(tmp_path))
+    result = await booted.call_tool(
+        "route.execute",
+        {
+            "schema_version": "route.v1",
+            "request_context": _route_request_context(),
+            "input": {"prompt": "Run health check."},
+            **arguments,
+        },
     )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_claim_processing",
-        AsyncMock(return_value=uuid.uuid4()),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
-    )
-    monkeypatch.setattr(
-        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processed",
-        AsyncMock(),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_errored",
-        AsyncMock(),
-    )
+    assert result["status"] == "accepted"
+    await booted.runtime.wait_for_invocations(1)
+    # The process span ends after the session returns; shutdown drains the task.
+    await booted.shutdown()
 
 
-# ---------------------------------------------------------------------------
-# Tests: Process span is a fresh root (not a child of switchboard's trace)
-# ---------------------------------------------------------------------------
+def _span(exporter: InMemorySpanExporter, name: str):
+    (span,) = [span for span in exporter.get_finished_spans() if span.name == name]
+    return span
 
 
 class TestProcessSpanTraceContinuity:
     """The background processing task should continue switchboard trace context."""
 
     async def test_process_span_shares_switchboard_trace(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
+        self, booted_daemon, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
         """route.process span shares switchboard trace; accept span ends before process span."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
-
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        trigger_started = asyncio.Event()
-
-        async def _trigger(**_kwargs: Any) -> MagicMock:
-            trigger_started.set()
-            return trigger_result
-
-        daemon.spawner.trigger = AsyncMock(side_effect=_trigger)
-
         parent_tracer = trace.get_tracer("test")
         with parent_tracer.start_as_current_span("switchboard.route") as parent_span:
             parent_trace_id = parent_span.get_span_context().trace_id
             parent_span_id = parent_span.get_span_context().span_id
             trace_context = inject_trace_context()
 
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-            trace_context=trace_context,
-        )
-        assert result["status"] == "accepted"
-        route_tasks = tuple(daemon._route_inbox_tasks)
-        assert len(route_tasks) == 1
-        await asyncio.gather(*route_tasks)
-        assert trigger_started.is_set()
-        daemon.spawner.trigger.assert_awaited_once()
+        await _route(booted_daemon, tmp_path, trace_context=trace_context)
 
-        spans = otel_provider.get_finished_spans()
-        process_spans = [s for s in spans if s.name == "route.process"]
-        assert len(process_spans) == 1
-        process_span = process_spans[0]
+        process_span = _span(otel_provider, "route.process")
         assert process_span.context.trace_id == parent_trace_id
         assert process_span.parent is not None
         assert process_span.parent.span_id == parent_span_id
+        accept_span = _span(otel_provider, "butler.tool.route.execute")
+        assert accept_span.end_time <= process_span.end_time
 
 
 class TestSpanLink:
     """The process span must carry a SpanLink back to the accept-phase span, with request_id."""
 
     async def test_process_span_has_link_and_request_id(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
+        self, booted_daemon, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
         """route.process: SpanLink references accept span; both spans carry request_id."""
-        patches = _patch_infra("health")
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        tracer = trace.get_tracer("butlers")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            butler_dir, patches, otel_tracer=tracer
-        )
-        assert route_execute_fn is not None
+        await _route(booted_daemon, tmp_path)
 
-        trigger_result = MagicMock()
-        trigger_result.session_id = uuid.uuid4()
-        trigger_started = asyncio.Event()
-        allow_trigger = asyncio.Event()
-
-        async def _trigger(**_kwargs: Any) -> MagicMock:
-            await allow_trigger.wait()
-            trigger_started.set()
-            return trigger_result
-
-        daemon.spawner.trigger = AsyncMock(side_effect=_trigger)
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-        assert result["status"] == "accepted"
-        route_tasks = tuple(daemon._route_inbox_tasks)
-        try:
-            assert len(route_tasks) == 1
-            # route.execute returns only after it registers the background task;
-            # release the mock after observing that boundary, not a wall-clock delay.
-            allow_trigger.set()
-            await asyncio.gather(*route_tasks)
-        finally:
-            # A failed cardinality assertion must not leak the deliberately
-            # blocked task used to exercise the scheduling boundary.
-            allow_trigger.set()
-            await asyncio.gather(*route_tasks, return_exceptions=True)
-        assert trigger_started.is_set()
-        daemon.spawner.trigger.assert_awaited_once()
-
-        spans = otel_provider.get_finished_spans()
-        accept_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
-        process_spans = [s for s in spans if s.name == "route.process"]
-        assert len(accept_spans) == 1 and len(process_spans) == 1
-        accept_span = accept_spans[0]
-        process_span = process_spans[0]
+        accept_span = _span(otel_provider, "butler.tool.route.execute")
+        process_span = _span(otel_provider, "route.process")
 
         # Both spans carry request_id
         assert accept_span.attributes.get("request_id") == _REQUEST_ID

@@ -100,6 +100,15 @@ await booted.shutdown()                           # optional; teardown shuts dow
   invocation), then `"ok"`. Work that runs in the background, such as a routed
   session after `route.execute` accepts, is awaited with
   `await booted.runtime.wait_for_invocations(n)`, which fails loudly on timeout.
+- Set `booted.runtime.supports_resume = True` to exercise provider-session resume:
+  each turn then reports a fresh `provider_session_id` (`fake-session-<n>`), and
+  each invocation records the `resume_session_id` the spawner passed.
+- `booted.admin_url` is the clone's owner connection (open it with
+  `butlers.testing.db.open_pool`), for seeding rows the butler's role may not
+  write, such as dashboard turns.
+- `booted_daemon(config_dir, credentials={...})` stores synthetic module
+  credentials in the butler's secret store before start; module credential checks
+  read only that store, never the environment.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
   sets environment seams: file logs under a temp root, MCP warmup off (it is an
@@ -115,8 +124,10 @@ await booted.shutdown()                           # optional; teardown shuts dow
   with the Switchboard's own `seed_missing_roster_butlers`, so the boot commits an
   epoch and accepts routes. The butler's name must then match its schema's runtime
   role (`butler_<name>_rw`, e.g. name and schema both `general`).
-- Startup's `configure_logging` replaces root-logger handlers process-wide. The
-  kit restores them after shutdown so pytest's capture keeps working.
+- Startup's `configure_logging` replaces root-logger handlers process-wide,
+  dropping pytest's capture handlers. The kit re-attaches them as soon as startup
+  returns, so `caplog` records what the running daemon logs, and restores the
+  original handlers after shutdown.
 - Async tests that use it carry `pytest.mark.asyncio(loop_scope="session")`.
   `tests/testing/test_kit_booted_daemon.py` reports the cost of one boot as
   `DAEMON-BOOT-SECONDS`.

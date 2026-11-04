@@ -73,12 +73,18 @@ class FakeRuntime(RuntimeAdapter):
     once the script runs out. An entry is the output text, an exception to raise
     (a runtime failure), or a callable that gets the recorded invocation and
     returns the text.
+
+    Set ``supports_resume = True`` to act as a resume-capable adapter (Claude's):
+    each turn then reports a fresh ``provider_session_id`` (``fake-session-<n>``)
+    in :attr:`last_process_info`, and invocations record the ``resume_session_id``
+    the spawner passed.
     """
 
     reply: str = "ok"
 
     def __init__(self, **_: Any) -> None:
         self.invocations: list[dict[str, Any]] = []
+        self._last_process_info: dict[str, Any] | None = None
         self._script: deque[Reply] = deque()
         self._invoked = asyncio.Condition()
 
@@ -106,6 +112,10 @@ class FakeRuntime(RuntimeAdapter):
     def binary_name(self) -> str:
         return sys.executable
 
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        return self._last_process_info
+
     async def invoke(
         self,
         prompt: str,
@@ -117,16 +127,23 @@ class FakeRuntime(RuntimeAdapter):
         runtime_args: list[str] | None = None,
         cwd: Path | None = None,
         timeout: int | None = None,  # noqa: ASYNC109 - RuntimeAdapter signature
+        resume_session_id: str | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         invocation = {
             "prompt": prompt,
             "system_prompt": system_prompt,
             "model": model,
             "mcp_servers": mcp_servers,
+            "resume_session_id": resume_session_id,
         }
         async with self._invoked:
             self.invocations.append(invocation)
             self._invoked.notify_all()
+        self._last_process_info = (
+            {"provider_session_id": f"fake-session-{len(self.invocations)}"}
+            if self.supports_resume
+            else None
+        )
         reply = self._script.popleft() if self._script else self.reply
         if isinstance(reply, BaseException):
             raise reply
@@ -141,6 +158,29 @@ class FakeRuntime(RuntimeAdapter):
     def parse_system_prompt_file(self, config_dir: Path) -> str:
         path = config_dir / "CLAUDE.md"
         return path.read_text() if path.exists() else ""
+
+
+def write_butler_config(
+    root: Path,
+    name: str = "general",
+    *,
+    schema: str = "general",
+    description: str = "booted_daemon test butler",
+    extra_toml: str = "",
+) -> Path:
+    """Write ``root/name/butler.toml`` for a one-db butler the kit can boot.
+
+    *schema* must have a runtime role (``butler_<schema>_rw``); for
+    ``registered=True`` boots, *name* must equal it. *extra_toml* is appended as is,
+    for example ``[modules.x]`` or ``[butler.security]`` sections.
+    """
+    config_dir = root / name
+    config_dir.mkdir(parents=True)
+    (config_dir / "butler.toml").write_text(
+        f'[butler]\nname = "{name}"\nport = 0\ndescription = "{description}"\n\n'
+        f'[butler.db]\nname = "butlers"\nschema = "{schema}"\n\n{extra_toml}'
+    )
+    return config_dir
 
 
 def _link_roster(roster: Path, config_dir: Path) -> None:
@@ -170,6 +210,19 @@ class _LoggingSnapshot:
             name: (list(logging.getLogger(name).handlers), logging.getLogger(name).level)
             for name in _NOISE_LOGGERS
         }
+
+    def reattach(self) -> None:
+        """Put back the pre-boot root handlers that startup's ``configure_logging`` dropped.
+
+        It closes and removes every non-file console handler, pytest's capture
+        handlers included; without them ``caplog`` records nothing while the daemon
+        runs, and a "not in caplog.text" check passes vacuously. The daemon's own
+        handlers stay.
+        """
+        root = logging.getLogger()
+        for handler in self._root[0]:
+            if handler not in root.handlers:
+                root.addHandler(handler)
 
     def restore(self) -> None:
         root = logging.getLogger()
@@ -212,11 +265,23 @@ async def _rearm_sse() -> None:
 
 
 class BootedDaemon:
-    """One started daemon: its ``ButlerDaemon``, MCP URL and fake runtime."""
+    """One started daemon: its ``ButlerDaemon``, MCP URL and fake runtime.
 
-    def __init__(self, daemon: Any, url: str, start_seconds: float, logs: _LoggingSnapshot):
+    ``admin_url`` is the clone's owner connection, for seeding rows the butler's
+    role may not write (open it with :func:`butlers.testing.db.open_pool`).
+    """
+
+    def __init__(
+        self,
+        daemon: Any,
+        url: str,
+        start_seconds: float,
+        logs: _LoggingSnapshot,
+        admin_url: str = "",
+    ):
         self.daemon = daemon
         self.url = url
+        self.admin_url = admin_url
         self.start_seconds = start_seconds
         self._logs = logs
         self._stopped = False
@@ -306,6 +371,7 @@ class DaemonBooter:
         *chains: str,
         registry: Any = None,
         registered: bool = False,
+        credentials: dict[str, str] | None = None,
     ) -> BootedDaemon:
         """Start the butler in *config_dir* on a fresh clone of *chains* (default ``core``).
 
@@ -313,6 +379,10 @@ class DaemonBooter:
         seeds this butler's roster row, as the Switchboard does in production, so boot
         registration commits an epoch and the daemon accepts routes. The butler's name
         must then match its schema's runtime role (``butler_<name>_rw``).
+
+        *credentials* are stored in the butler's secret store before start, where
+        module credential checks read them (they never fall back to the environment).
+        Pass synthetic values only.
         """
         from butlers.config import load_config
         from butlers.daemon import ButlerDaemon
@@ -334,6 +404,8 @@ class DaemonBooter:
         db_name = urlparse(url).path.lstrip("/")
         if registered:
             await self._seed_roster_row(url, config_dir)
+        if credentials:
+            await self._seed_credentials(url, schema, credentials)
         config.port = _free_port()
         config.db_name = db_name
         config.switchboard_url = None
@@ -363,11 +435,13 @@ class DaemonBooter:
             finally:
                 logs.restore()
             raise
+        logs.reattach()
         booted = BootedDaemon(
             daemon,
             f"http://127.0.0.1:{config.port}/mcp",
             time.monotonic() - began,
             logs,
+            admin_url=url,
         )
         self._booted.append(booted)
         return booted
@@ -388,6 +462,18 @@ class DaemonBooter:
         pool = await open_pool(url)
         try:
             await registry.seed_missing_roster_butlers(pool, roster)
+        finally:
+            await pool.close()
+
+    async def _seed_credentials(self, url: str, schema: str, credentials: dict[str, str]) -> None:
+        from butlers.credential_store import CredentialStore
+        from butlers.testing.db import open_pool
+
+        pool = await open_pool(url, schema=schema)
+        try:
+            store = CredentialStore(pool)
+            for key, value in credentials.items():
+                await store.store(key, value, category="test")
         finally:
             await pool.close()
 
