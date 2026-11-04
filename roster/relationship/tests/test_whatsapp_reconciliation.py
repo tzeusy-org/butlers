@@ -169,18 +169,6 @@ def _count(plan, category: ReconciliationCategory) -> int:
     return plan.counts[category]
 
 
-# The real core_243 receipt ledger has FKs to public.entities, so the merge's own
-# public.entity_rebind_log rows read as a live catalog reference to the source
-# and every committed apply stops at postcondition_failed. The FK-free stand-in
-# this file used before hid it.
-_REBIND_RECEIPT_COUNTED_AS_REFERENCE = pytest.mark.xfail(
-    strict=True,
-    raises=(reconciliation.PartialApplyError, AssertionError),
-    reason="bu-rvgzmf.8: apply postcondition treats the merge's own entity_rebind_log receipt "
-    "as a reference to the source",
-)
-
-
 async def test_planner_enumerates_distinct_phone_and_lid_candidates(reconciliation_pool) -> None:
     """REQ-entity-identity-002: exact matches plan; ambiguity never picks row one."""
     pool = reconciliation_pool
@@ -856,7 +844,6 @@ async def test_writer_before_apply_yields_content_blind_drift_without_mutation(
             await transaction.rollback()
 
 
-@_REBIND_RECEIPT_COUNTED_AS_REFERENCE
 async def test_apply_audits_tombstone_and_removes_pair_from_fresh_plan(
     reconciliation_pool,
 ) -> None:
@@ -899,6 +886,15 @@ async def test_apply_audits_tombstone_and_removes_pair_from_fresh_plan(
         )
         == 1
     )
+
+    receipts = await pool.fetch(
+        "SELECT source_entity_id, target_entity_id FROM public.entity_rebind_log "
+        "WHERE source_entity_id = $1",
+        source,
+    )
+    assert receipts
+    assert all(row["source_entity_id"] == source for row in receipts)
+    assert all(row["target_entity_id"] == target for row in receipts)
 
     after = await build_whatsapp_reconciliation_plan(pool)
     assert not after.pairs
@@ -973,7 +969,6 @@ async def test_apply_stops_on_first_pair_failure(reconciliation_pool, monkeypatc
     )
 
 
-@_REBIND_RECEIPT_COUNTED_AS_REFERENCE
 async def test_apply_reports_prior_commits_when_a_later_pair_fails(
     reconciliation_pool,
     monkeypatch,
