@@ -60,6 +60,8 @@ class MockDB:
     """In-memory mock asyncpg pool for approvals tests."""
 
     def __init__(self) -> None:
+        # Stands in for both the butler Database and its pool (``db.pool``).
+        self.pool = self
         self.pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_rules: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_events: list[dict[str, Any]] = []
@@ -279,10 +281,6 @@ class MockDB:
             return "UPDATE 1"
 
         return "OK"
-
-    @property
-    def pool(self):
-        return self
 
 
 @pytest.fixture

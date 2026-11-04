@@ -38,6 +38,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
+from butlers.testing.db_manager import db_manager
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -84,19 +86,9 @@ async def _make_owner_entity(rel_pool: asyncpg.Pool) -> UUID:
     )
 
 
-class _FakeDatabaseManager:
-    """Duck-types router.py's DatabaseManager enough for _pool(db) to work."""
-
-    def __init__(self, real_pool: asyncpg.Pool) -> None:
-        self._real_pool = real_pool
-
-    def pool(self, _butler_name: str) -> asyncpg.Pool:
-        return self._real_pool
-
-
 async def _call_promote_entity(rel_pool: asyncpg.Pool, body: Any):
     router_module = _load_relationship_api_router()
-    return await router_module.promote_entity(body, db=_FakeDatabaseManager(rel_pool))
+    return await router_module.promote_entity(body, db=db_manager({"relationship": rel_pool}))
 
 
 def _promote_entity_request(**kwargs: Any) -> Any:

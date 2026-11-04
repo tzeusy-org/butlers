@@ -37,6 +37,7 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -51,20 +52,6 @@ pytestmark = [
 # public.consolidation_runs, ...) exists with its real shape. An
 # UndefinedTableError on any one of them would drop the whole pool from the
 # response as "no memory schema" (see _is_missing_memory_schema_error).
-
-
-class _SinglePoolDB:
-    """DatabaseManager stand-in exposing one real pool under one butler name."""
-
-    def __init__(self, butler: str, pool: object) -> None:
-        self._butler = butler
-        self._pool = pool
-        self.butler_names = [butler]
-
-    def pool(self, name: str) -> object:
-        if name != self._butler:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
 
 
 @asynccontextmanager
@@ -117,7 +104,7 @@ async def test_stats_maturity_buckets_exclude_forgotten_rules(db) -> None:
         pool, content="forgotten anti-pattern", maturity="anti_pattern", forgotten=True
     )
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/stats")
 
@@ -144,7 +131,7 @@ async def test_list_rules_excludes_forgotten_by_default(db) -> None:
         pool, content="forgotten rule", maturity="proven", forgotten=True
     )
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
 
     async with _app_client(manager) as client:
         default_resp = await client.get("/api/memory/rules")
@@ -170,7 +157,7 @@ async def test_inspect_rule_search_excludes_forgotten(db) -> None:
     live_id = await _insert_rule(pool, content="visible rule", maturity="proven")
     await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
 
@@ -190,7 +177,7 @@ async def test_inspect_rule_total_counts_exactly_the_rows_it_returns(
     await _insert_rule(pool, content="visible rule", maturity="proven")
     await _insert_rule(pool, content="hidden rule", maturity="proven", forgotten=True)
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
 
@@ -217,7 +204,7 @@ async def test_stats_maturity_buckets_exclude_retired_rules(db) -> None:
     await _insert_rule(pool, content="another live proven", maturity="proven")
     await _insert_rule(pool, content="retired proven", maturity="proven", retired=True)
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/stats")
 
@@ -243,7 +230,7 @@ async def test_list_rules_includes_retired_with_retired_at_populated(
     live_id = await _insert_rule(pool, content="live rule", maturity="proven")
     retired_id = await _insert_rule(pool, content="retired rule", maturity="proven", retired=True)
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/rules")
 
@@ -267,7 +254,7 @@ async def test_inspect_rule_search_includes_retired_with_retired_at_populated(
         pool, content="visible retired rule", maturity="proven", retired=True
     )
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/inspect", params={"kind": "rule"})
 

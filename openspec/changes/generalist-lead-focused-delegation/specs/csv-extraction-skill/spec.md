@@ -37,6 +37,12 @@ Scope: v1-mandatory
 - **THEN** the invocation MUST explain to the user that previously imported rows will appear as "skipped (duplicate)" and this is expected, not data loss
 - **AND** the invocation MUST report only the newly imported count as the meaningful result
 
+#### Scenario: Historical backfill of several statements
+- **WHEN** the owner wants to import history spanning several statements or accounts
+- **THEN** the invocation MUST obtain one `storage_ref` per statement and MUST NOT offer to discover statements in a local folder
+- **AND** it MUST dry-run every statement before importing any, then import each statement whose preview was correct with its own `import_transactions(storage_ref)` call, holding back and reporting any statement whose preview failed
+- **AND** it MUST report per-statement counts and the totals across statements, relying on `import_transactions` deduplication for rows shared by overlapping statements
+
 ### Requirement: Token budget protection
 The skill MUST prevent the LLM from consuming excessive tokens during CSV import. This is a hard constraint, not a suggestion. The only CSV content that may enter an invocation's context MUST be what `import_transactions` returns: the dry-run preview and per-row error details.
 

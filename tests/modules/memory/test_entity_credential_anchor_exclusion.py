@@ -29,6 +29,7 @@ import pytest
 
 from butlers.api.deps import get_db
 from butlers.modules.memory.tools.entities import entity_neighbors, entity_resolve
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
@@ -75,25 +76,6 @@ async def _add_edge(
         obj,
         predicate,
     )
-
-
-class _SinglePoolDB:
-    """DatabaseManager stand-in exposing one real pool under one butler name.
-
-    The butler is deliberately *not* named ``relationship`` so the dashboard
-    list endpoint's Dunbar enrichment short-circuits (KeyError → empty map)
-    without needing relationship tables provisioned.
-    """
-
-    def __init__(self, butler: str, pool: object) -> None:
-        self._butler = butler
-        self._pool = pool
-        self.butler_names = [butler]
-
-    def pool(self, name: str) -> object:
-        if name != self._butler:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
 
 
 @asynccontextmanager
@@ -179,7 +161,8 @@ async def test_dashboard_entity_list_excludes_credential_anchor_companions(
             pool, canonical_name="Steam Anchor", roles=["steam_account"], entity_type="other"
         )
 
-        manager = _SinglePoolDB("memory", pool)
+        # Not "relationship": the list endpoint's Dunbar enrichment then short-circuits.
+        manager = db_manager({"memory": pool})
         async with _app_client(manager) as client:
             resp = await client.get("/api/memory/entities", params={"limit": 200})
 

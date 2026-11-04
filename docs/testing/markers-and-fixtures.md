@@ -83,8 +83,17 @@ await booted.shutdown()                           # optional; teardown shuts dow
 
 - `ButlerDaemon.start()` runs every production startup phase with the real
   `ModuleRegistry`, real FastMCP and the real `Spawner`. Only the runtime is
-  fake: `FakeRuntime` is registered as the default adapter for the test and
-  records invocations (`booted.runtime.invocations`) instead of starting a CLI.
+  fake: for the whole test, every registered runtime type resolves to one
+  `FakeRuntime`, because the spawner builds a per-model adapter for whichever
+  type the catalog resolves. Each stand-in declares its production adapter's
+  capabilities, so model resolution picks the models production would. The fake
+  records invocations (`booted.runtime.invocations`, with `prompt` and
+  `system_prompt`) instead of starting a CLI.
+- Script replies with `booted.runtime.script(*replies)`: each invocation takes the
+  next entry (output text, an exception to raise, or a callable given the recorded
+  invocation), then `"ok"`. Work that runs in the background, such as a routed
+  session after `route.execute` accepts, is awaited with
+  `await booted.runtime.wait_for_invocations(n)`, which fails loudly on timeout.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
   sets environment seams: file logs under a temp root, MCP warmup off (it is an
@@ -93,8 +102,13 @@ await booted.shutdown()                           # optional; teardown shuts dow
   role, for example `[butler.db] name = "butlers"` and `schema = "general"`. Each
   chain migrates into that schema.
 - Boot registration needs the Switchboard chain's `public.register_butler_boot`
-  and a registry row. Without them, `_accepting_connections` stays `False` and a
-  retry task runs until shutdown cancels it.
+  and a registry row. By default neither exists, so the daemon serves tools but
+  does not accept routes (`accepting_routes` is `False`) and a retry task runs
+  until shutdown cancels it. `booted_daemon(config_dir, registered=True)` also
+  migrates the Switchboard chain into its own schema and seeds the butler's row
+  with the Switchboard's own `seed_missing_roster_butlers`, so the boot commits an
+  epoch and accepts routes. The butler's name must then match its schema's runtime
+  role (`butler_<name>_rw`, e.g. name and schema both `general`).
 - Startup's `configure_logging` replaces root-logger handlers process-wide. The
   kit restores them after shutdown so pytest's capture keeps working.
 - Async tests that use it carry `pytest.mark.asyncio(loop_scope="session")`.

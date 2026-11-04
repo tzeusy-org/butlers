@@ -1,7 +1,7 @@
 ---
 name: transaction-csv-extraction
-description: Adaptive CSV import skill — previews a stored bank or card CSV with import_transactions(storage_ref, dry_run=true), fixes the column map if needed, then imports it in one call. Enforces strict token budget discipline throughout.
-version: 2.0.0
+description: Adaptive CSV import skill — previews a stored bank or card CSV with import_transactions(storage_ref, dry_run=true), fixes the column map if needed, then imports it in one call. Also covers a historical backfill of several statements, one import per stored file. Enforces strict token budget discipline throughout.
+version: 2.1.0
 ---
 
 # Transaction CSV Extraction Skill
@@ -208,6 +208,40 @@ If the user mentions this is a re-run after a partial failure, explain:
 
 ---
 
+## Several Statements (Historical Backfill)
+
+Use this when the user wants to load history: several months or several
+accounts, or an intelligence tool returned `status="insufficient_data"` and no
+history has been imported yet. It is the single-file flow repeated, one
+`import_transactions` call per stored statement. There is no folder or batch
+import: each statement needs its own `storage_ref`.
+
+1. **Collect one `storage_ref` per statement.** Ask the user to upload or
+   attach every export (Phase 1). Do not offer to scan a folder. Note which
+   account each statement belongs to and resolve each `account_id`.
+2. **Dry-run every file before importing any.** Run Phase 2 (and Phase 3 if
+   needed) for each `storage_ref`, so a bad file surfaces before anything is
+   written. Statements exported from the same institution usually share a
+   format; a `column_map` that fixed one is the first thing to try on the next.
+   The 3-preview limit applies per file.
+3. **Import the files whose preview was right**, one Phase 4 call each, with
+   that file's own `account_id`, `currency`, and `column_map`. Hold back any file
+   whose preview failed and say so; do not let one bad file block the rest.
+4. **Report per file, then the totals.** One line per statement (imported,
+   skipped, errors), then the sums across all files.
+
+Deduplication is the tool's job. Overlapping statements (two exports of one
+account covering the same weeks) import their shared rows once; the repeats show
+as `skipped`. A high skip
+rate on the second of two overlapping exports is expected; warn as in Phase 5
+only when it is not explained by an overlap the user described.
+
+Baselines are recomputed by each import (`baselines_triggered`); there is no
+separate baseline step to run afterwards. Suggest `budget-review` or
+`spending-review` once history is loaded.
+
+---
+
 ## Worked Examples
 
 ### Example 1: Known format, straight through
@@ -234,6 +268,18 @@ A dashboard upload of a European bank export whose date column is named
    `currency="EUR"`. The preview now shows dated rows with a supermarket
    purchase as a `debit` and a salary as a `credit`.
 3. Import with the same `column_map` and `currency`, then report.
+
+### Example 3: A year of history across two accounts
+
+The user says spending analysis keeps reporting insufficient data and attaches
+twelve monthly checking statements and one card export covering the same year.
+
+1. Thirteen dry runs: the checking statements all detect as `chase`; the card
+   export detects as `generic` with every charge previewing as `credit`.
+2. Import the twelve checking statements against the checking `account_id`.
+   Report each month's counts and the yearly total.
+3. Hold back the card export and tell the user its amounts would import with
+   the wrong direction (Phase 3, sign convention).
 
 ---
 

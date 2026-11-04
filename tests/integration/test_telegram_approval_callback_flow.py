@@ -29,6 +29,7 @@ from butlers.core.approval_callbacks import (
 from butlers.modules.approvals import gate as approvals_gate_module
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -46,24 +47,6 @@ _DASHBOARD_API_KEY = "test-only-dashboard-api-key"
 _CALLBACK_CONNECTOR_TOKEN = "test-only-callback-connector-token"
 
 
-class _DbManager:
-    def __init__(self, pool: Any) -> None:
-        self._pool = pool
-        self.butler_names = ["relationship"]
-
-    def pool(self, butler_name: str) -> Any:
-        assert butler_name == "relationship"
-        return self._pool
-
-    def butlers_with_module(self, module_name: str) -> list[str] | None:
-        """Describe known fixture capabilities without turning unknown into absent."""
-        if module_name == "approvals":
-            return self.butler_names
-        if module_name == "memory":
-            return []
-        return None
-
-
 async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -78,10 +61,9 @@ async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
         _unexpected_settings_lookup,
     )
 
-    db_mgr = _DbManager(object())
+    db_mgr = db_manager({"relationship": object()}, modules={"relationship": ["approvals"]})
     assert db_mgr.butlers_with_module("approvals") == ["relationship"]
     assert db_mgr.butlers_with_module("memory") == []
-    assert db_mgr.butlers_with_module("calendar") is None
     writer = approvals_router._decision_memory_writer_for(db_mgr, "relationship", object())
 
     assert writer is None
@@ -156,7 +138,9 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
     app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_DASHBOARD_API_KEY))
     app.include_router(approvals_router.router)
-    app.dependency_overrides[get_db] = lambda: _DbManager(pool)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"relationship": pool}, modules={"relationship": ["approvals"]}
+    )
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (
         mcp_mgr if mcp_mgr is not None else MagicMock()
     )

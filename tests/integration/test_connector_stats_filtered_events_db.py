@@ -30,7 +30,6 @@ import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -41,6 +40,7 @@ from fastapi import FastAPI
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.routers import ingestion_connectors
+from butlers.testing.db_manager import db_manager
 from butlers.tools.switchboard.connector.lifecycle import connector_disconnect
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -58,16 +58,6 @@ async def switchboard_pool(db) -> asyncpg.Pool:
     return await db(
         "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-
-
-class _RealPoolDB:
-    """Fake DatabaseManager whose pool() returns the real asyncpg pool."""
-
-    def __init__(self, pool: Any):
-        self._pool = pool
-
-    def pool(self, name: str) -> Any:
-        return self._pool
 
 
 class _GatedStatsConnection:
@@ -284,7 +274,7 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
         connector_type="home_assistant",
         endpoint_identity="default",
         period="24h",
-        db=_RealPoolDB(switchboard_pool),
+        db=db_manager({"switchboard": switchboard_pool}),
     )
 
     assert result.meta.hourly_events_available is True
@@ -355,7 +345,7 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
         connector_type="gmail",
         endpoint_identity="user@example.com",
         period="24h",
-        db=_RealPoolDB(switchboard_pool),
+        db=db_manager({"switchboard": switchboard_pool}),
     )
 
     # 24 dense buckets, oldest first, each keyed to its real UTC hour.
@@ -415,7 +405,7 @@ async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
                 connector_type="gmail",
                 endpoint_identity="dst@example.com",
                 period="7d",
-                db=_RealPoolDB(switchboard_pool),
+                db=db_manager({"switchboard": switchboard_pool}),
                 connection=connection,
             )
         finally:
@@ -446,7 +436,7 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
         connector_type="home_assistant",
         endpoint_identity="ws://ha:8123",
         period="24h",
-        db=_RealPoolDB(switchboard_pool),
+        db=db_manager({"switchboard": switchboard_pool}),
     )
 
     assert sum(r.messages_ingested for r in result.data) == 1
@@ -480,7 +470,7 @@ async def test_stats_row_lock_prevents_disconnect_until_history_read_completes(
             connector_type,
             endpoint_identity,
             period="24h",
-            db=_RealPoolDB(gated_pool),
+            db=db_manager({"switchboard": gated_pool}),
         )
     )
 

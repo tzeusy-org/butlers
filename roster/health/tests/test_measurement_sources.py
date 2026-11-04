@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -50,22 +51,10 @@ def _fake_embedding_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(measurements, "_get_embedding_engine", lambda: engine)
 
 
-class _SinglePoolDB:
-    """Minimal health-scoped DatabaseManager surface for the API route."""
-
-    def __init__(self, pool: object) -> None:
-        self._pool = pool
-
-    def pool(self, name: str) -> object:
-        if name != "health":
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
-
-
 @asynccontextmanager
 async def _sources_client(pool: object):
     app = create_app(api_key="")
-    app.dependency_overrides[_health_get_db_manager] = lambda: _SinglePoolDB(pool)
+    app.dependency_overrides[_health_get_db_manager] = lambda: db_manager({"health": pool})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

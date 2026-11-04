@@ -14,8 +14,10 @@ import httpx
 import pytest
 
 from butlers.api.deps import ButlerConnectionInfo, get_db, get_pricing
+from butlers.api.read_models.butlers import SESSIONS_24H_SQL
 from butlers.api.routers.butlers import _cadence_label
 from butlers.core.pricing import ModelPricing, PricingConfig
+from butlers.testing.db_manager import db_manager
 
 from .conftest import make_mock_mcp_manager, make_test_app
 
@@ -106,6 +108,8 @@ class _FakeButlerPool:
         raise AssertionError(f"unexpected fetchval SQL: {sql}")
 
     async def fetch(self, sql, *args):
+        if sql == SESSIONS_24H_SQL:
+            return []  # no 24h session-count row: the board defaults it to 0
         if "scheduled_tasks" in sql:
             return [{"cron": c} for c in self.crons]
         if "hours AS" in sql:
@@ -151,23 +155,8 @@ class _FakeSwitchboardPool:
         return list(self.rows)
 
 
-class _FakeDb:
-    def __init__(self, *, switchboard: _FakeSwitchboardPool, butlers: dict[str, _FakeButlerPool]):
-        self._switchboard = switchboard
-        self._butlers = butlers
-        self.butler_names = list(butlers)
-
-    def pool(self, name: str):
-        if name == "switchboard":
-            return self._switchboard
-        try:
-            return self._butlers[name]
-        except KeyError:
-            raise KeyError(name) from None
-
-    async def fan_out_with_status(self, sql, *, args=(), butler_names=None):
-        """Stand in for the 24h-sessions fan-out used by _fetch_sessions_24h."""
-        return {}, []
+def _db(*, switchboard: _FakeSwitchboardPool, butlers: dict[str, _FakeButlerPool]):
+    return db_manager({"switchboard": switchboard, **butlers})
 
 
 def _registry_row(
@@ -235,7 +224,7 @@ def test_cadence_label_uses_only_exact_canonical_intervals(
 async def test_board_happy_path_running_row_has_all_fields():
     now = _now()
     configs = [ButlerConnectionInfo(name="finance", port=41105)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[_registry_row("finance", last_seen_at=now - timedelta(seconds=30))]
         ),
@@ -281,7 +270,7 @@ async def test_board_cron_expectation_flags_overdue_butler():
     """A daily-cron butler silent for 5 days is 'overdue', not a flat idle."""
     now = _now()
     configs = [ButlerConnectionInfo(name="chronicler", port=41111)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[_registry_row("chronicler", last_seen_at=now - timedelta(days=5))]
         ),
@@ -308,7 +297,7 @@ async def test_board_idle_within_cadence_is_not_overdue():
     """A daily-cron butler silent for 2 hours is on_schedule, not overdue."""
     now = _now()
     configs = [ButlerConnectionInfo(name="chronicler", port=41111)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[_registry_row("chronicler", last_seen_at=now - timedelta(hours=2))]
         ),
@@ -330,7 +319,7 @@ async def test_board_idle_within_cadence_is_not_overdue():
 async def test_board_quarantined_row_surfaces_reason_and_red_tone():
     now = _now()
     configs = [ButlerConnectionInfo(name="qa", port=41200)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[
                 _registry_row(
@@ -374,7 +363,7 @@ async def test_board_uses_receiver_health_and_policy_when_legacy_heartbeat_is_ol
         ButlerConnectionInfo(name="health", port=41103),
         ButlerConnectionInfo(name="finance", port=41105),
     ]
-    db = _FakeDb(
+    db = _db(
         switchboard=switchboard,
         butlers={"health": _FakeButlerPool(), "finance": _FakeButlerPool()},
     )
@@ -395,7 +384,7 @@ async def test_board_flag_off_reads_legacy_projection(monkeypatch):
     monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
     switchboard = _FakeSwitchboardPool(rows=[_registry_row("health", last_seen_at=_now())])
     configs = [ButlerConnectionInfo(name="health", port=41103)]
-    db = _FakeDb(switchboard=switchboard, butlers={"health": _FakeButlerPool()})
+    db = _db(switchboard=switchboard, butlers={"health": _FakeButlerPool()})
 
     response = await _get_board(_build_app(configs, db))
 
@@ -411,7 +400,7 @@ async def test_board_future_last_seen_at_beyond_tolerance_degrades_to_unknown():
     guard (bu-y1am9)."""
     now = _now()
     configs = [ButlerConnectionInfo(name="finance", port=41105)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[_registry_row("finance", last_seen_at=now + timedelta(minutes=10))]
         ),
@@ -441,7 +430,7 @@ async def test_board_small_future_last_seen_at_within_tolerance_unaffected():
     and does not trip the skew guard."""
     now = _now()
     configs = [ButlerConnectionInfo(name="finance", port=41105)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[_registry_row("finance", last_seen_at=now + timedelta(minutes=1))]
         ),
@@ -464,7 +453,7 @@ async def test_board_small_future_last_seen_at_within_tolerance_unaffected():
 async def test_board_registry_failure_degrades_to_unknown_not_fake_health():
     """Registry outage must never render a butler as confidently healthy."""
     configs = [ButlerConnectionInfo(name="finance", port=41105)]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(fails=True),
         butlers={"finance": _FakeButlerPool(active_count=5)},
     )
@@ -488,7 +477,7 @@ async def test_board_cost_failure_is_partial_sum_with_error_flag():
         ButlerConnectionInfo(name="finance", port=41105),
         ButlerConnectionInfo(name="general", port=41101),
     ]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(rows=[_registry_row("finance"), _registry_row("general")]),
         butlers={
             "finance": _FakeButlerPool(cost_input_tokens=1000, cost_output_tokens=500),
@@ -511,7 +500,7 @@ async def test_board_hourly_stripe_failure_flags_error_never_fabricates_zero_str
         ButlerConnectionInfo(name="finance", port=41105),
         ButlerConnectionInfo(name="general", port=41101),
     ]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(rows=[_registry_row("finance"), _registry_row("general")]),
         butlers={
             "finance": _FakeButlerPool(hourly_counts=[2] * 24),
@@ -541,7 +530,7 @@ async def test_board_preserves_stable_roster_order_regardless_of_activity():
         ButlerConnectionInfo(name="alpha", port=2),
         ButlerConnectionInfo(name="mid", port=3),
     ]
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(rows=[]),
         butlers={
             "zeta": _FakeButlerPool(active_count=0),
@@ -565,7 +554,7 @@ async def test_board_frozen_stale_butler_ignores_stored_eligibility_state():
     # - stored eligibility_state = "active" (the raw stale value)
     # - last_seen_at = 10 minutes ago (exceeds the 300s default TTL)
     # Expected: board row should derive eligibility as "stale", not pass through "active"
-    db = _FakeDb(
+    db = _db(
         switchboard=_FakeSwitchboardPool(
             rows=[
                 _registry_row(

@@ -22,8 +22,9 @@ The system SHALL auto-detect common bank export CSV formats by analyzing header 
 #### Scenario: Manual column mapping override
 - **WHEN** `import_transactions(storage_ref, column_map={date: "Col1", merchant: "Col2", amount: "Col3"})` is called with an explicit column mapping
 - **THEN** the system SHALL use the provided mapping instead of auto-detection
-- **AND** required mapped columns SHALL be: `date`, `merchant` (or `description`), and `amount`
-- **AND** optional mapped columns SHALL include: `category`, `currency`, `account`, `reference`
+- **AND** required mapped columns SHALL be: `date`, `merchant`, and `amount`; `merchant` SHALL be the only key that maps the merchant column
+- **AND** optional mapped columns SHALL include: `description` (the transaction's own description field, never a merchant alias), `category`, `currency`, `account`, `reference`
+- **AND** when a generic CSV's merchant column is neither auto-detected nor mapped by `merchant`, the system SHALL return `status="unrecognized_format"` with `merchant` in `missing_columns`, even if `column_map` maps `description`
 
 ### Requirement: Blob Prefix Scoping
 `import_transactions(storage_ref, ...)` SHALL read only a blob under the importing butler's RFC 0016 key prefix (`{bucket}/{butler}/...`) or the connector prefix (`{bucket}/connectors/...`), where the butler name comes from the daemon context and never from the caller.

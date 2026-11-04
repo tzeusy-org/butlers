@@ -1049,14 +1049,14 @@
     "direct": 77,
     "direct_files": 35,
     "container": 86,
-    "supplementary": 36,
+    "supplementary": 37,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
       "NON_NAME_ENUM_OR_MODULE": 26,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 25,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
-      "SCHEMA_OWNERSHIP": 8
+      "SCHEMA_OWNERSHIP": 9
     },
     "direct_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 34,
@@ -2547,13 +2547,13 @@
       "public_source_commit": "4ed774826b3e498f68bea7ef154bd27249d8b868"
     },
     {
-      "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
-      "path": "src/butlers/core/scheduler.py",
+      "id": "3b3affcb701593a943a4107ce3be29d613fcf9884efa7e3be02af2528cd9ff1e",
+      "path": "src/butlers/core/scheduler/dispatch.py",
       "symbol": "tick",
       "kind": "alias_compare",
       "expression": "butler_name == _QA_BUTLER_NAME",
       "occurrence": 1,
-      "line": 2183,
+      "line": 187,
       "direct": false,
       "container": false,
       "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
@@ -4129,6 +4129,27 @@
       ],
       "baseline_ids": [],
       "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "a71ac4d44b93ed4ac7c6178eb9b1449101c1a84b36c3fe08c2969823e7d15dc0",
+      "path": "src/butlers/testing/daemon.py",
+      "symbol": "DaemonBooter.boot",
+      "kind": "lookup",
+      "expression": "schemas['switchboard']",
+      "occurrence": 1,
+      "line": 332,
+      "direct": false,
+      "container": false,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Map the Switchboard migration chain to the schema it owns in a test-kit clone.",
+      "citations": [
+        {
+          "path": "openspec/specs/testing/spec.md",
+          "requirement": "Daemon Lifecycle Smoke Test"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-rvgzmf.2 S7b: booted_daemon(registered=True) migrates the Switchboard chain into its own schema so public.register_butler_boot exists and the boot can accept routes. Test kit only; it writes a chain-to-schema mapping and no behaviour branches on the butler name. Not a host-policy conversion."
     }
   ],
   "retired": [
@@ -4147,6 +4168,10 @@
     {
       "id": "fd74ff6990933f5dd03f3c2ad63eb1277ac4b150d0a4509921feb9e6d9922731",
       "reason": "bu-fvw4ap.11: equivalent QA lookup relocated/coalesced into shared qa_patrol_contract selector c5df7c64f36d591a1f70b99ac37da905cea8f29fd3b1d64eea4813e876869595; original historical controller lineage and unresolved category retained. No caller fallback or policy conversion."
+    },
+    {
+      "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
+      "reason": "bu-m0vjeb.9: move-only split of core/scheduler.py into the core/scheduler/ package; tick() now lives in core/scheduler/dispatch.py, so the path-keyed identity moved to 3b3affcb701593a943a4107ce3be29d613fcf9884efa7e3be02af2528cd9ff1e. Selector and category unchanged."
     }
   ]
 }

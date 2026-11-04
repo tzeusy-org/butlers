@@ -17,6 +17,7 @@ import pytest
 from butlers.api.deps import get_db
 from butlers.modules.memory.content_authority import HELD_FACT_SQL
 from butlers.modules.memory.storage import FactNotEndorsableError
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -93,20 +94,9 @@ class _FactPool:
         return "UPDATE 1" if self._row is not None else "UPDATE 0"
 
 
-class _DB:
-    def __init__(self, pools: dict[str, _FactPool]) -> None:
-        self._pools = pools
-        self.butler_names = list(pools)
-
-    def pool(self, name: str) -> _FactPool:
-        if name not in self._pools:
-            raise KeyError(name)
-        return self._pools[name]
-
-
 def _wire(app, row: _Record | None) -> _FactPool:
     pool = _FactPool(row)
-    db = _DB({"atlas": pool, "memory": _FactPool(None)})
+    db = db_manager({"atlas": pool, "memory": _FactPool(None)})
     app.dependency_overrides[get_db] = lambda: db
     return pool
 

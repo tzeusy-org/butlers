@@ -657,25 +657,17 @@ async def test_options_and_mutation_use_trusted_cookie_projection_not_a_header_b
     from butlers.api.owner_auth.config import OwnerAuthConfig
     from butlers.api.owner_auth.http import OwnerAuthMiddleware
     from butlers.api.routers import approvals
+    from butlers.testing.db_manager import db_manager
 
     pool, service, key, handle, session, _ = authority
-
-    class Manager:
-        butler_names = ["home"]
-
-        def pool(self, name):
-            assert name == "home"
-            return pool
-
-        def butlers_with_module(self, name):
-            return ["home"] if name == "approvals" else []
+    manager = db_manager({"home": pool}, modules={"home": ["approvals"]})
 
     config = OwnerAuthConfig(ORIGIN, RP)
     app = FastAPI()
     app.state.owner_auth_service = service
     app.add_middleware(OwnerAuthMiddleware, config=config)
     app.include_router(approvals.router)
-    app.dependency_overrides[get_db] = Manager
+    app.dependency_overrides[get_db] = lambda: manager
     request = dict(
         butler="home",
         tool_name="synthetic_send",

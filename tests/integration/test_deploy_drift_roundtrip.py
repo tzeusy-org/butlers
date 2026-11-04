@@ -22,6 +22,7 @@ import pytest
 
 from butlers.jobs.deploy_drift import compute_drift_report
 from butlers.migrations import _chain_script_directory, get_chain_head
+from butlers.testing.db_manager import db_manager
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -37,18 +38,6 @@ async def switchboard_pool(db) -> asyncpg.Pool:
     return await db("core", schemas={"core": "switchboard"})
 
 
-class _FakeDatabaseManager:
-    """Stand-in for DatabaseManager exposing only the real pool as "switchboard"."""
-
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-
-    def pool(self, name: str) -> asyncpg.Pool:
-        if name != "switchboard":
-            raise KeyError(name)
-        return self._pool
-
-
 def _only_core_for_switchboard(monkeypatch) -> None:
     """Scope the comparison to a single schema/chain: this test's real DB."""
     monkeypatch.setattr(
@@ -61,7 +50,7 @@ async def test_freshly_migrated_schema_is_not_drifted(
     switchboard_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     _only_core_for_switchboard(monkeypatch)
-    db = _FakeDatabaseManager(switchboard_pool)
+    db = db_manager({"switchboard": switchboard_pool})
 
     report = await compute_drift_report(db)
 
@@ -73,7 +62,7 @@ async def test_rolled_back_alembic_version_is_detected_as_drift(
     switchboard_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     _only_core_for_switchboard(monkeypatch)
-    db = _FakeDatabaseManager(switchboard_pool)
+    db = db_manager({"switchboard": switchboard_pool})
 
     head = get_chain_head("core")
     parent = _chain_script_directory("core").get_revision(head).down_revision

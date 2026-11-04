@@ -57,6 +57,7 @@ from butlers.jobs.deploy_drift import (
     reconcile_drift_conditions,
     run_migration_drift_check,
 )
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -64,19 +65,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
-
-
-class _FakeDatabaseManager:
-    """Minimal stand-in for DatabaseManager: only .pool() is used by this module."""
-
-    def __init__(self, *, pools: dict[str, object] | None = None):
-        self._pools = pools or {}
-
-    def pool(self, name: str):
-        try:
-            return self._pools[name]
-        except KeyError:
-            raise KeyError(name) from None
 
 
 class _FakePool:
@@ -168,7 +156,7 @@ async def test_compute_drift_report_all_aligned_is_not_drifted(monkeypatch):
         },
     )
     pool = _FakePool(revisions_by_schema={"finance": ["core_005", "finance_002"]})
-    db = _FakeDatabaseManager(pools={"switchboard": pool})
+    db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
 
@@ -190,7 +178,7 @@ async def test_compute_drift_report_detects_a_dark_revision(monkeypatch):
     # DB is stuck at core_003 -- core_004/core_005 never got deployed (the
     # bu-zhfd0 shape). finance chain is fine.
     pool = _FakePool(revisions_by_schema={"finance": ["core_003", "finance_002"]})
-    db = _FakeDatabaseManager(pools={"switchboard": pool})
+    db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
 
@@ -214,7 +202,7 @@ async def test_compute_drift_report_never_applied_chain_reports_none_actual(monk
         },
     )
     pool = _FakePool(revisions_by_schema={"finance": ["core_005"]})  # finance chain never applied
-    db = _FakeDatabaseManager(pools={"switchboard": pool})
+    db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
 
@@ -224,7 +212,7 @@ async def test_compute_drift_report_never_applied_chain_reports_none_actual(monk
 
 
 async def test_compute_drift_report_is_degraded_not_clean_when_switchboard_pool_missing():
-    db = _FakeDatabaseManager(pools={})
+    db = db_manager({})
 
     report = await compute_drift_report(db)
 
@@ -241,7 +229,7 @@ async def test_compute_drift_report_is_degraded_when_a_schema_query_raises(monke
         revision_ids={"core": {"core_005"}},
     )
     pool = _FakePool(revisions_by_schema={"finance": RuntimeError("permission denied")})
-    db = _FakeDatabaseManager(pools={"switchboard": pool})
+    db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
 
@@ -527,7 +515,7 @@ async def test_run_migration_drift_check_degraded_never_raises(monkeypatch):
             return_value=DriftReport(checked_at=datetime.now(UTC), drifted=(), check_error="boom")
         ),
     )
-    result = await run_migration_drift_check(_FakeDatabaseManager())
+    result = await run_migration_drift_check(db_manager({}))
     assert result == {"available": False, "drifted": False}
 
 
@@ -541,7 +529,7 @@ async def test_run_migration_drift_check_not_drifted_still_reconciles(monkeypatc
     reconcile_mock = AsyncMock(return_value=[{"fingerprint": "fp", "transition": "resolved"}])
     monkeypatch.setattr("butlers.jobs.deploy_drift.reconcile_drift_conditions", reconcile_mock)
 
-    result = await run_migration_drift_check(_FakeDatabaseManager(pools={"switchboard": object()}))
+    result = await run_migration_drift_check(db_manager({"switchboard": object()}))
 
     assert result == {
         "available": True,
@@ -560,7 +548,7 @@ async def test_run_migration_drift_check_drifted_reconciles(monkeypatch):
         "butlers.jobs.deploy_drift.reconcile_drift_conditions",
         AsyncMock(return_value=[{"fingerprint": "fp", "transition": "opened"}]),
     )
-    result = await run_migration_drift_check(_FakeDatabaseManager(pools={"switchboard": object()}))
+    result = await run_migration_drift_check(db_manager({"switchboard": object()}))
     assert result == {
         "available": True,
         "drifted": True,

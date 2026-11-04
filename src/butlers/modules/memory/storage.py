@@ -556,7 +556,7 @@ async def _cascade_catalog_disownment(
     ``butlers.db.schema_search_path``), so ``current_schema()`` reliably
     returns the same schema ``store_fact``/``store_rule`` would have used to
     catalog the row in the first place (see the identical idiom in
-    ``core/scheduler.py::_has_table`` and
+    ``core/scheduler/`` (``_has_table``) and
     ``scheduled_jobs.py::_infer_current_schema``). If no catalog row matches
     (write-behind was off, or the row predates it), this is a harmless no-op.
     """

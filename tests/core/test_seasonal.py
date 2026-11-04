@@ -300,7 +300,7 @@ async def test_seasonal_period_crud(general_pool):
 @pytest.mark.asyncio(loop_scope="session")
 async def test_tick_seasonal_context_injection(general_pool):
     """tick() prepends seasonal context when active; leaves prompt unchanged when no seasons."""
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
     from butlers.core.seasonal import seasonal_period_create
 
     class _Dispatch:

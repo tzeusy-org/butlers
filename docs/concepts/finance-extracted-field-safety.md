@@ -159,7 +159,7 @@ Source allocation to bind at implementation dispatch:
 | `src/butlers/core/delivery_rendering.py` | REUSE helper, no new URL parser/semantic declassification; extension not assumed necessary |
 | `roster/switchboard/tools/notification/deliver.py` | REUSE canonical authenticated notify.v1/private OR; direct branch must not be incorrectly counted as protected; amend_delivery preserves authenticated target/message binding through canonical replacement rendering or refuses before raw route |
 | `src/butlers/core_tools/_routing.py` | REUSE existing Messenger final channel enforcement, preserve all recovery semantics |
-| `src/butlers/core/scheduler.py + src/butlers/background.py + src/butlers/core_tools/_notifications.py` | CONDITIONAL ONLY: if implementation routes into generic temporal queue, exact producer-store/coalescer/restored-private-mark bridge is required. Smallest existing insight path uses broker hold/retry and does not add a second queue. |
+| `src/butlers/core/scheduler/ + src/butlers/background.py + src/butlers/core_tools/_notifications.py` | CONDITIONAL ONLY: if implementation routes into generic temporal queue, exact producer-store/coalescer/restored-private-mark bridge is required. Smallest existing insight path uses broker hold/retry and does not add a second queue. |
 
 | `src/butlers/modules/telegram.py` | Conditional narrow registered telegram_edit_message_text/_edit_message_text protection propagation only if supporting successful protected edits; reuse canonical primitive and preserve current permission/identity/server controls. Otherwise upstream truthful refusal/fold prevents raw provider edit; no generic edit API widening assumed. |
 

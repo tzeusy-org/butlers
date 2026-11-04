@@ -474,7 +474,7 @@ class _ArrivalTable:
         settled = self._settled(args[0])
         return settled[-1] if settled else None
 
-    def pool(self) -> AsyncMock:
+    def as_pool(self) -> AsyncMock:
         conn = AsyncMock(spec=asyncpg.Connection)
         conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
         conn.fetchval = AsyncMock(return_value=True)
@@ -530,7 +530,7 @@ async def _project_run(
             conn = await cp.acquire().__aenter__()
             conn.fetchrow = AsyncMock(side_effect=_stored_episode_lookup(stored))
         result = await OwnTracksPointAdapter(batch_limit=batch_limit).project(
-            table.pool(), chronicler_pool=cp, since=since
+            table.as_pool(), chronicler_pool=cp, since=since
         )
     return result, projected
 
