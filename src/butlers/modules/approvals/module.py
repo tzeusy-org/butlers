@@ -69,6 +69,11 @@ from butlers.modules.approvals.executor import _approval_write_transaction, exec
 from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
 )
+from butlers.modules.approvals.goal_fence import (
+    GOAL_EFFECT_REQUIRES_BROKER,
+    goal_effect_refusal,
+    is_goal_effect,
+)
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import suggest_constraints
@@ -682,6 +687,8 @@ class ApprovalsModule(Module):
         row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
         if row is None:
             return {"error": f"Action not found: {action_id}"}
+        if is_goal_effect(row):
+            return goal_effect_refusal(action_id)
 
         action = PendingAction.from_row(row)
         # Executed actions are pure replays. Do this before checking for an
@@ -868,6 +875,8 @@ class ApprovalsModule(Module):
         row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
         if row is None:
             return {"error": f"Action not found: {action_id}"}
+        # The owner decides a goal effect here; only the broker runs it.
+        goal_effect = is_goal_effect(row)
 
         action = PendingAction.from_row(row)
 
@@ -905,7 +914,7 @@ class ApprovalsModule(Module):
         # A queue can intentionally exist without automatic gates; in that
         # case approval remains an auditable, retryable `approved` transition
         # until the normal dispatch seam can reach an owning executor.
-        if self._tool_executor is not None:
+        if self._tool_executor is not None and not goal_effect:
             # Wrap the ToolExecutor callback as a tool_fn for the executor
             _exec = self._tool_executor
             _tname = action.tool_name
@@ -1036,6 +1045,8 @@ class ApprovalsModule(Module):
         result = PendingAction.from_row(final_row).to_dict()
         if rule_dict is not None:
             result["created_rule"] = rule_dict
+        if goal_effect:
+            result["execution_code"] = GOAL_EFFECT_REQUIRES_BROKER
 
         return result
 

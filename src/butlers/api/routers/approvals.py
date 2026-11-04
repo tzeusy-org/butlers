@@ -93,6 +93,7 @@ from butlers.modules.approvals.delivery_lifecycle import (
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.executor import execute_approved_action
+from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import (
     ActionStatus,
     PendingAction,
@@ -1501,6 +1502,8 @@ async def retry_action(
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
+    if is_goal_effect(row):
+        raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
 
     status = row["status"]
     if status != "approved":
@@ -3583,9 +3586,13 @@ async def approve_owning_action(
         # The row lock makes the presented-digest check below atomic with the
         # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1 FOR UPDATE",
+            "SELECT tool_name, tool_args, goal_id FROM pending_actions WHERE id = $1 FOR UPDATE",
             parsed_id,
         )
+        if is_goal_effect(action_row) and edits:
+            # bu-m1u7zy.6: the owner decides a goal effect as parked; an edit would
+            # change the arguments the broker's effect digest commits to.
+            raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
 
         if require_displayed_call:
             preview = (
@@ -3702,7 +3709,8 @@ async def approve_owning_action(
             # must not become a failed decision because its memory sink failed.
             logger.exception("Post-commit standing-rule memory writeback failed")
 
-    if action_row is not None and not is_receipt(result):
+    # A goal effect is decided here but run only by the capability broker.
+    if action_row is not None and not is_receipt(result) and not is_goal_effect(action_row):
         tool_name = action_row["tool_name"]
         raw_args = action_row["tool_args"]
         tool_args_for_dispatch = (
@@ -3949,6 +3957,8 @@ async def retry_approval(
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
+    if is_goal_effect(row):
+        raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
 
     status = row["status"]
     if status != "approved":

@@ -153,6 +153,14 @@ separate from the producer `origin`, and `legacy` is reserved for actions
 created before the cutover. Approving an action whose lineage is exposed never
 counts toward standing-rule promotion.
 
+The owner decides a goal action on the usual surfaces (dashboard approve, the
+module `approve_action` tool, `operations.approve_action`): the decision is
+recorded and the result carries `execution_code: goal_effect_requires_broker`,
+but nothing runs it there; the capability broker reads the decision and runs
+the effect. An edit to a goal action's arguments is refused with that code.
+Every legacy run path (the shared executor, dispatch-by-id, both retry routes)
+refuses a goal action with the same typed code.
+
 All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
 
 `abandoned` is a terminal, dashboard-only recovery outcome for an action that was

@@ -2016,6 +2016,103 @@ async def test_deny_audits_action(app):
     assert deny_audits[0]["result"] == "success"
 
 
+def _goal_effect_app(app, row):
+    """One approvals pool holding ``row``; nothing else must be reached."""
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=row)
+    mock_conn.execute = AsyncMock(side_effect=AssertionError("no write for a goal effect"))
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
+    mock_conn.fetchval = AsyncMock(return_value=True)
+
+    class _Acquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_Acquire())
+    mock_pool.fetchrow = AsyncMock(return_value=row)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    mock_mcp.get_client = AsyncMock(side_effect=AssertionError("no dispatch for a goal effect"))
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+
+@pytest.mark.parametrize("path", ["/api/approvals/{id}/retry", "/api/approvals/actions/{id}/retry"])
+async def test_legacy_dispatch_routes_refuse_goal_effects(app, path):
+    """bu-m1u7zy.6: a goal-parked effect runs only through the capability broker."""
+    row = _make_pending_row(status="approved")
+    row["goal_id"] = uuid4()
+    _goal_effect_app(app, row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(path.format(id=row["id"]))
+
+    assert resp.status_code == 409, resp.text
+    assert "goal_effect_requires_broker" in resp.text
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/approvals/{id}/approve", "/api/approvals/actions/{id}/approve"]
+)
+async def test_owner_decides_a_goal_effect_but_the_dashboard_never_dispatches_it(app, path):
+    """bu-m1u7zy.6: the owner's approval is recorded; the broker runs the effect."""
+    import butlers.api.routers.audit as audit_router
+
+    row = _make_pending_row(status="pending")
+    row["goal_id"] = uuid4()
+    row["tool_name"] = "email_send_message"
+    row["tool_args"] = {"to": "user@example.com", "subject": "Hello", "body": "Welcome"}
+    _goal_effect_app(app, row)
+    approved = {
+        **row,
+        "id": str(row["id"]),
+        "status": "approved",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "execution_code": "goal_effect_requires_broker",
+    }
+    body = {
+        "displayed_call": {
+            "tool_name": row["tool_name"],
+            "args_digest": args_digest(row["tool_args"]),
+        }
+    }
+
+    async def append(*_args, **_kwargs):
+        return 1
+
+    with (
+        patch.object(audit_router, "append", append),
+        patch(
+            "butlers.modules.approvals.operations.approve_action",
+            AsyncMock(return_value=approved),
+        ) as decide,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(path.format(id=row["id"]), json=body)
+            edited = await client.post(
+                f"/api/approvals/{row['id']}/approve",
+                json={**body, "edits": {"subject": "changed"}},
+            )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == "approved"
+    assert resp.json()["data"]["dispatched"] is False
+    assert decide.await_count == 1  # The edit was refused before any decision.
+    assert edited.status_code == 409 and "goal_effect_requires_broker" in edited.text
+
+
 async def test_decision_dossier_returned_on_actions_list(app):
     """GET /api/approvals/actions includes the typed RFC 0021 dossier."""
     row = _make_pending_row()

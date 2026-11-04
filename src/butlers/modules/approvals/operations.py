@@ -37,6 +37,7 @@ from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
+from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.approvals.stepup import descriptive_savepoint, remember_rule, run_rule_write
@@ -351,6 +352,9 @@ async def _approve_action_write(
     result = PendingAction.from_row(final_row).to_dict()
     if rule_dict is not None:
         result["created_rule"] = rule_dict
+    if is_goal_effect(row):
+        # The owner's decision stands; only the capability broker runs it.
+        result["execution_code"] = GOAL_EFFECT_REQUIRES_BROKER
 
     return result
 
