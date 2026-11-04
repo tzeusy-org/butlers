@@ -297,6 +297,8 @@ class MutationsMixin:
                         return idempotency_key, changed
                     action_id = uuid.UUID(existing_result["action_id"])
                     pool = getattr(getattr(self, "_db", None), "pool", None)
+                    if pool is None:
+                        return idempotency_key, changed
                     row = await pool.fetchrow(
                         "SELECT tool_name, tool_args, status FROM pending_actions WHERE id=$1",
                         action_id,

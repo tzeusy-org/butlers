@@ -1634,3 +1634,34 @@ async def test_owner_notification_keeps_its_independent_protected_gate(mock_mcp,
     assert "non-owner communication" not in case.park.await_args.kwargs["why"]
     assert case.park.await_args.kwargs["tool_args"] == args
     case.client.post.assert_not_awaited()
+
+
+@pytest.mark.parametrize("selector", ["target", "area_id", "label_id"])
+async def test_owner_notifier_does_not_authorize_unresolved_data_targets(
+    mock_mcp, monkeypatch, selector
+):
+    from butlers.roster_imports import roster_module
+
+    actuation = roster_module("home", "modules/actuation")
+    args = {
+        "domain": "notify",
+        "service": "generic_owner_notifier",
+        "target": None,
+        "data": {"message": "Synthetic routed message", selector: ["guest-destination"]},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
+    outcome = await case.tool(**args)
+    assert outcome["communication"] == {"effect_class": "communicate", "owner_only": False}
+    assert actuation.communication_parties(
+        "notify", "generic_owner_notifier", None, args["data"]
+    ) == (True, None)
+    # This corrects classification; the pre-existing physical gate already parks.
+    assert outcome["risk"] == "protected"
+    assert outcome["status"] == "pending_approval"
+    assert "non-owner communication" in case.park.await_args.kwargs["why"]
+    assert case.park.await_args.kwargs["tool_args"] == args
+    case.client.post.assert_not_awaited()

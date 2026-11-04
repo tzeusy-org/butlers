@@ -113,7 +113,6 @@ read_only = true
 [modules.approvals]
 enabled = false
 domain_producers = ["calendar", "google_drive"]
-groups = ["actions"]
 
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
 # memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)

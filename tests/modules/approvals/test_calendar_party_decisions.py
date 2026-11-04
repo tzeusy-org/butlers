@@ -65,6 +65,8 @@ def test_every_existing_calendar_owner_has_approval_capability_without_new_rules
             continue
         found.add(path.parent.name)
         approval = parse_approval_config(modules.get("approvals"))
+        if path.parent.name == "health":
+            assert "groups" not in modules["approvals"]  # Preserve existing full discovery.
         assert approval is not None, path.parent.name
         assert approval.enabled or "calendar" in approval.domain_producers, path.parent.name
         if path.parent.name in {"general", "finance", "lifestyle", "travel", "health"}:

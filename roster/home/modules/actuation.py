@@ -367,6 +367,10 @@ def communication_parties(
         parties.append(("other", f"home_assistant:notify:{service}"))
     selectors = dict(target or {})
     payload = data or {}
+    # Generic legacy notify services may forward data.target; other HA
+    # selectors also cannot borrow a service handle's owner identity.
+    if {"target", "area_id", "label_id", "floor_id"}.intersection(payload):
+        return True, None
     for key in ("entity_id", "device_id", "media_player_entity_id"):
         if key in payload:
             if key in selectors:
