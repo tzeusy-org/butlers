@@ -24,6 +24,7 @@ from butlers.api.app import create_app
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.jobs.context_producers import run_home_presence_context_producer
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import _DomainOwnerState
 
@@ -68,7 +69,7 @@ async def test_owner_control_refuses_before_body_pool_or_audit(seams, method: st
     ]:
         status, response, received = await _raw(app, method, _ROUTE, body, headers)
         assert (status, response["error"]["code"], received) == (*expected, 0)
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
     assert seams.generic == []
 
     # Positive control: the owner credential reaches the pool seam, which is unavailable,
@@ -141,7 +142,7 @@ async def test_oversized_body_stops_at_thirty_two_kib(seams) -> None:  # noqa: F
     app = _mounted(seams.manager)
     status, response, _ = await _raw(app, "PUT", _ROUTE, b" " * 32_769, [])
     assert (status, response["error"]["code"]) == (413, "REQUEST_BODY_TOO_LARGE")
-    assert seams.manager.calls == 1
+    assert seams.manager.pool.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +180,7 @@ async def client(presence_pool, seams):  # noqa: F811
             (_STALE, "home", now - timedelta(days=90)),
         ],
     )
-    seams.manager.serving = presence_pool
+    seams.manager = db_manager({"home": presence_pool})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_mounted(seams.manager)), base_url=_ORIGIN
     ) as http:
