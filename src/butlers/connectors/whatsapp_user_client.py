@@ -71,10 +71,6 @@ from butlers.connectors.discretion import (
     classify_ignore_kind,
     record_discretion_ignore,
 )
-from butlers.connectors.discretion_dispatcher import (
-    PURPOSE_LANE_PRIVATE_CONTENT,
-    DiscretionDispatcher,
-)
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.known_contact_snapshot import (
@@ -89,6 +85,10 @@ from butlers.connectors.owner_outbound_events import (
     resolve_dedup_key,
 )
 from butlers.conversation_identity import whatsapp_conversation_id
+from butlers.core.discretion_dispatcher import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    DiscretionDispatcher,
+)
 from butlers.core.known_contact_state import not_applicable_classification
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (

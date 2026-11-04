@@ -987,7 +987,7 @@ async def test_model_attempts_returns_real_rows(app):
     """Private runtime failures stay content-blind through dispatch evidence and its API."""
     from datetime import UTC, datetime
 
-    from butlers.connectors.discretion_dispatcher import (
+    from butlers.core.discretion_dispatcher import (
         PURPOSE_LANE_PRIVATE_CONTENT,
         DiscretionDispatcher,
     )

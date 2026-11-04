@@ -60,19 +60,19 @@ from butlers.api.oauth_scope_registry import (
 from butlers.api.routers.audit import append as _audit_append
 from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
 from butlers.connectors.catalog import discovery_connectors
-from butlers.connectors.registry_roles import (
+from butlers.core.connector_registry_roles import (
     CHECKPOINT as _ROLE_CHECKPOINT,
 )
-from butlers.connectors.registry_roles import (
+from butlers.core.connector_registry_roles import (
     RUNTIME_INSTANCE as _ROLE_RUNTIME_INSTANCE,
 )
-from butlers.connectors.registry_roles import (
+from butlers.core.connector_registry_roles import (
     UNCLASSIFIED_LIVENESS as _LIVENESS_UNCLASSIFIED,
 )
-from butlers.connectors.registry_roles import (
+from butlers.core.connector_registry_roles import (
     UNKNOWN as _ROLE_UNKNOWN,
 )
-from butlers.connectors.registry_roles import (
+from butlers.core.connector_registry_roles import (
     normalize_operational_role as _normalize_role,
 )
 from butlers.core.liveness import derive_liveness as _liveness

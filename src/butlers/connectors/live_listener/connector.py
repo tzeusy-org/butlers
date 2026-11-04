@@ -61,7 +61,6 @@ from butlers.connectors.discretion import (
     DiscretionResult,
     classify_ignore_kind,
 )
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.health_socket import prometheus_metrics_response
@@ -97,6 +96,7 @@ from butlers.connectors.live_listener.vad import (
 )
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, create_system_global_credential_store_from_env
 

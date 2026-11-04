@@ -58,6 +58,7 @@ from butlers.core.model_routing import Complexity
 from butlers.core.purpose_lane import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     PURPOSE_LANE_STANDARD,
+    PurposeLane,
 )
 from butlers.core.runtimes.base import (
     RuntimeAdapter,
@@ -180,7 +181,7 @@ class DiscretionDispatcher:
         max_concurrent: int = _DEFAULT_MAX_CONCURRENT,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         complexity_tier: Complexity = Complexity.SPECIALTY,
-        purpose_lane: str = PURPOSE_LANE_STANDARD,
+        purpose_lane: PurposeLane = PURPOSE_LANE_STANDARD,
         credential_store: CredentialStore | None = None,
         codex_auth_authority: CredentialStore | None = None,
     ) -> None:
@@ -193,7 +194,7 @@ class DiscretionDispatcher:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._timeout_s = timeout_s
         self._complexity_tier = complexity_tier
-        self._purpose_lane = purpose_lane
+        self._purpose_lane: PurposeLane = purpose_lane
         self._adapters = AdapterRegistry(
             codex_authority=codex_auth_authority,
             butler_name=butler_name,
