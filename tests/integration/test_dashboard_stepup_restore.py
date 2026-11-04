@@ -54,7 +54,10 @@ def client(container, shell, password, mounts=(), **environment):
             timeout=120,
             check=False,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as timeout:
+        # Say how far the client got: no output means the container never ran.
+        timeout.add_note(f"client stdout before timeout: {timeout.stdout!r}")
+        timeout.add_note(f"client stderr before timeout: {timeout.stderr!r}")
         # Killing only the Docker CLI can leave its owned container running.
         # Cleanup cannot turn the original timeout into a successful owner.
         try:

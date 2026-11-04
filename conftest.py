@@ -630,6 +630,24 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
     )
 
 
+def _delete_session_data_volume(environ: Mapping[str, str]) -> bool:
+    """Whether session teardown should delete the container's anonymous PGDATA volume.
+
+    By the end of a shard each worker's session container holds hundreds of
+    test databases, and ``docker rm -v`` unlinks every one of their files
+    synchronously. On GitHub-hosted runners that took 25-60+ s per worker,
+    concurrently, while the shard's last test file was still running: the
+    worker-last tests inflated from 0.2-12 s to 43-67 s, the removal call hit
+    docker-py's 60 s read timeout, and the step-up restore test's own
+    ``docker run`` clients stalled past their 120 s budget (bu-pj05nc).
+
+    A hosted runner's VM is discarded after the job, so deleting the volume
+    there buys nothing. Everywhere else (developer machines, any self-hosted
+    runner) the volume is still deleted so sessions never accumulate data.
+    """
+    return environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+
+
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
@@ -648,8 +666,12 @@ def postgres_container() -> Iterator[PostgresContainer]:
     container = _configure_postgres_container(
         PostgresContainer("pgvector/pgvector:pg17"), os.environ
     )
-    with container as pg:
-        yield pg
+    # Equivalent to ``with container`` (stop also runs after a failed start),
+    # except that the volume decision is explicit rather than always-delete.
+    try:
+        yield container.start()
+    finally:
+        container.stop(delete_volume=_delete_session_data_volume(os.environ))
 
 
 @pytest.fixture
