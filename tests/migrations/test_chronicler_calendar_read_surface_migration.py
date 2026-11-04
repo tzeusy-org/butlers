@@ -135,6 +135,7 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     table without a grant.
     """
     from butlers.migrations import run_migrations
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 
     db_url = create_migrated_test_db(
         postgres_container,
@@ -156,7 +157,7 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     finally:
         engine.dispose()
 
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
+    prepare_chronicler_current_head_sync(db_url, domain_schema="chronicler")
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
 
     calendar_tables = (
@@ -244,7 +245,9 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
         engine.dispose()
 
     from butlers.migrations import run_migrations
+    from tests.chronicler._private_memory_setup import prepare_chronicler_private_memory_sync
 
+    prepare_chronicler_private_memory_sync(db_url)
     asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")

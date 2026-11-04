@@ -36,13 +36,17 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 def _before_private_grant(postgres_container):
-    return create_migrated_test_db(
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         ["core", "chronicler", "memory"],
         {"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"},
-        revisions={"memory": "mem_014"},
+        revisions={"memory": "mem_014", "chronicler": "chronicler_029"},
     )
+    from tests.chronicler._private_memory_setup import prepare_chronicler_private_core_sync
+
+    prepare_chronicler_private_core_sync(url)
+    return url
 
 
 @pytest.fixture

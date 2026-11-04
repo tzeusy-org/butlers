@@ -690,7 +690,7 @@ async def run_rollup_daily(
                 )
             timezone = raw_timezone
 
-    from butlers.chronicler.history_repair import try_lock
+    from butlers.chronicler.history_repair import _pending_retention_scopes, try_lock
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -706,6 +706,13 @@ async def run_rollup_daily(
             if ctl["replay_ack"] < ctl["replay_epoch"] or await conn.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_days "
                 "WHERE totals_pending OR outlier_pending)"
+            ):
+                return {"status": "waiting_repair", "days_processed": []}
+            today = datetime.now(UTC).astimezone(ZoneInfo(timezone)).date()
+            if await _pending_retention_scopes(
+                conn,
+                start_date=today - timedelta(days=lookback_days),
+                end_date=today - timedelta(days=1),
             ):
                 return {"status": "waiting_repair", "days_processed": []}
             # All day writes and flag reconciliation use this actual connection.

@@ -44,6 +44,12 @@ from butlers.chronicler.balance import (
     compute_daily_balance,
     is_lane_anomalous,
 )
+from butlers.chronicler.history_repair import (
+    FactWriteToken,
+    RepairAdmissionError,
+    capture_fact_write_token,
+    make_fact_write_guard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +113,8 @@ class WriteBackResult:
     insights_written: int = 0
     self_reminders_written: int = 0
     errors: int = 0
+    status: str = "complete"
+    failure_reason: str | None = None
 
 
 StoreFactFn = Callable[..., Awaitable[Any]]
@@ -291,18 +299,20 @@ async def execute_writeback(
     insights: Sequence[InsightFact],
     self_reminders: Sequence[InsightFact],
     store_fact_fn: StoreFactFn,
+    transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
 ) -> WriteBackResult:
     """Dispatch synthesized write-backs to their injected collaborators.
 
-    Best-effort per item: a single failure is logged and counted, never raised,
-    so one bad fact cannot strand the rest of the day-close write-back. This
-    function never notifies the owner — it has no channel to.
+    Ordinary storage failures are best-effort per item. A repair admission
+    failure stops the batch because every remaining fact was synthesized from
+    the same now-stale generation. This function never notifies the owner — it
+    has no channel to.
     """
     result = WriteBackResult()
 
     async def _store(fact: InsightFact) -> bool:
         try:
-            await store_fact_fn(
+            write_args = dict(
                 subject=fact.subject,
                 predicate=fact.predicate,
                 content=fact.content,
@@ -316,7 +326,16 @@ async def execute_writeback(
                     "source": SOURCE_BUTLER,
                 },
             )
+            if transaction_guard is not None:
+                write_args["transaction_guard"] = transaction_guard
+            await store_fact_fn(**write_args)
             return True
+        except RepairAdmissionError as exc:
+            logger.info("chronicler writeback paused by repair fence: %s", exc)
+            result.errors += 1
+            result.status = "waiting_repair"
+            result.failure_reason = str(exc)
+            return False
         except Exception:
             logger.exception(
                 "chronicler writeback: failed to store fact %s/%s",
@@ -327,11 +346,16 @@ async def execute_writeback(
             return False
 
     for fact in insights:
+        if result.status != "complete":
+            break
         if await _store(fact):
             result.insights_written += 1
-    for fact in self_reminders:
-        if await _store(fact):
-            result.self_reminders_written += 1
+    if result.status == "complete":
+        for fact in self_reminders:
+            if result.status != "complete":
+                break
+            if await _store(fact):
+                result.self_reminders_written += 1
 
     return result
 
@@ -381,6 +405,17 @@ async def run_day_close_writeback(
     baseline_end = day_date - timedelta(days=1)
 
     try:
+        token: FactWriteToken = await capture_fact_write_token(
+            pool,
+            day_date=day_date,
+            timezone=timezone,
+            baseline_lookback_days=baseline_lookback_days,
+        )
+    except RepairAdmissionError as exc:
+        logger.info("chronicler writeback waiting for repair of %s: %s", day_date, exc)
+        return WriteBackResult(status="waiting_repair", failure_reason=str(exc))
+
+    try:
         day_rollups = await storage.list_daily_rollups(pool, local_date=day_date)
         baseline_rollups = await storage.list_daily_rollups_range(
             pool, start_date=baseline_start, end_date=baseline_end
@@ -393,7 +428,7 @@ async def run_day_close_writeback(
         logger.exception(
             "chronicler writeback: rollup fetch failed for %s; skipping write-back", day_date
         )
-        return WriteBackResult()
+        return WriteBackResult(status="failed", failure_reason="rollup fetch failed")
 
     # Rollups deliberately zero-fill every lane for the balance API. That is
     # not evidence of a measured zero for durable behavioral claims. Preserve
@@ -468,6 +503,7 @@ async def run_day_close_writeback(
         insights=insights,
         self_reminders=self_reminders,
         store_fact_fn=store_fact_fn,
+        transaction_guard=make_fact_write_guard(token),
     )
 
 
@@ -476,13 +512,23 @@ async def run_day_close_writeback(
 # ---------------------------------------------------------------------------
 
 
-def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactFn:
-    """Bind ``memory.storage.store_fact`` to the chronicler's OWN schema.
+def build_chronicler_fact_writer(
+    pool: Any,
+    embedding_engine: Any,
+    *,
+    memory_schema: str = "chronicler_mem",
+) -> StoreFactFn:
+    """Bind ``memory.storage.store_fact`` to the chronicler's configured schema.
 
-    The returned callable only ever writes through ``pool`` (chronicler schema)
-    with ``source_butler="chronicler"`` — it structurally cannot write another
-    butler's schema.
+    The returned callable only ever writes through ``pool`` with the explicit
+    owning ``memory_schema`` provenance and ``source_butler="chronicler"``.
+    Shared-catalog publication remains disabled on this path.
     """
+    if memory_schema != "chronicler_mem":
+        raise ValueError(
+            "Chronicler fact writer must use chronicler_mem to match chronicler_030 disposition"
+        )
+
     from butlers.modules.memory import storage as memory_storage
 
     async def _write(
@@ -495,6 +541,7 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
         confidence: float,
         tags: list[str],
         metadata: dict[str, Any],
+        transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
     ) -> Any:
         return await memory_storage.store_fact(
             pool,
@@ -508,7 +555,9 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
             tags=tags,
             metadata=metadata,
             source_butler=SOURCE_BUTLER,
-            source_schema=SOURCE_BUTLER,
+            source_schema=memory_schema,
+            enable_shared_catalog=False,
+            transaction_guard=transaction_guard,
         )
 
     return _write

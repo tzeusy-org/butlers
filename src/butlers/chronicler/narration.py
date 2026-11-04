@@ -59,6 +59,11 @@ import asyncpg
 
 from butlers.chronicler.aggregations import lane_for_activity
 from butlers.chronicler.flags import FLAG_FEEDER_DARK
+from butlers.chronicler.history_repair import (
+    RepairAdmissionError,
+    capture_fact_write_token,
+    make_fact_write_guard,
+)
 from butlers.chronicler.storage import (
     list_daily_rollup_flags,
     list_daily_rollups,
@@ -361,6 +366,21 @@ async def narrate_daily_rollup(
     if not narration_enabled():
         return {"local_date": local_date.isoformat(), "status": "disabled"}
 
+    try:
+        token = await capture_fact_write_token(
+            pool,
+            day_date=local_date,
+            timezone=timezone,
+            baseline_lookback_days=28,
+        )
+    except RepairAdmissionError as exc:
+        logger.info("chronicler narration waiting for repair of %s: %s", local_date, exc)
+        return {
+            "local_date": local_date.isoformat(),
+            "status": "waiting_repair",
+            "reason": str(exc),
+        }
+
     rollup_rows = await list_daily_rollups(pool, local_date=local_date)
     flag_rows = await list_daily_rollup_flags(pool, local_date=local_date)
 
@@ -408,19 +428,33 @@ async def narrate_daily_rollup(
     day_summary, flag_labels = parsed
 
     day_summary_written = False
-    if day_summary:
-        rows_updated = await set_daily_rollup_day_narrative(
-            pool, local_date=local_date, narrative=day_summary
-        )
-        day_summary_written = rows_updated > 0
-
     flags_labeled: list[str] = []
-    for flag_type, label in flag_labels.items():
-        updated = await set_daily_rollup_flag_narrative(
-            pool, local_date=local_date, flag_type=flag_type, narrative=label
-        )
-        if updated is not None:
-            flags_labeled.append(flag_type)
+    if day_summary or flag_labels:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await make_fact_write_guard(token)(conn)
+                    if day_summary:
+                        rows_updated = await set_daily_rollup_day_narrative(
+                            conn, local_date=local_date, narrative=day_summary
+                        )
+                        day_summary_written = rows_updated > 0
+
+                    for flag_type, label in flag_labels.items():
+                        updated = await set_daily_rollup_flag_narrative(
+                            conn, local_date=local_date, flag_type=flag_type, narrative=label
+                        )
+                        if updated is not None:
+                            flags_labeled.append(flag_type)
+        except RepairAdmissionError as exc:
+            logger.info(
+                "chronicler narration discarded for changed repair state %s: %s", local_date, exc
+            )
+            return {
+                "local_date": local_date.isoformat(),
+                "status": "waiting_repair",
+                "reason": str(exc),
+            }
 
     return {
         "local_date": local_date.isoformat(),

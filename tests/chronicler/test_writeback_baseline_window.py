@@ -51,6 +51,15 @@ async def _skew_insights(monkeypatch: pytest.MonkeyPatch, offsets: list[int]) ->
     monkeypatch.setattr(storage, "list_daily_rollup_flags", no_flags)
     monkeypatch.setattr(storage, "list_daily_rollup_flags_range", no_flags_range)
 
+    async def capture_ready_token(_pool, **_kwargs):
+        return object()
+
+    async def allow_guard(_conn):
+        return None
+
+    monkeypatch.setattr(writeback, "capture_fact_write_token", capture_ready_token)
+    monkeypatch.setattr(writeback, "make_fact_write_guard", lambda _token: allow_guard)
+
     stored: list[dict] = []
 
     async def store_fact(**kwargs):

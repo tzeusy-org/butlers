@@ -13,6 +13,7 @@ import logging
 import math
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -1548,6 +1549,7 @@ async def store_fact(
     consolidation_edge_classification: str | None = None,
     content_authority: str | None = None,
     authority_entity_id: uuid.UUID | None = None,
+    transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
 ) -> dict:
     """Store a distilled fact with optional supersession.
 
@@ -1620,6 +1622,10 @@ async def store_fact(
         consolidation_edge_classification: The executor's local classification
             for a consolidation edge. A missing or mismatched classification
             is rejected before any storage work begins.
+        transaction_guard: Optional same-connection admission check. It runs
+            as the first action inside the canonical fact transaction, before
+            provenance or fact writes. Any error propagates and rolls back that
+            transaction. Expensive embedding work finishes before this check.
         confidence: Base confidence in ``[0, 1]`` for the fact (and any inverse
             edge it creates). Defaults to 1.0; deterministic writers with an
             evidence-derived confidence pass it here so decay starts from it.
@@ -1661,6 +1667,8 @@ async def store_fact(
 
     async with pool.acquire() as conn:
         async with conn.transaction():
+            if transaction_guard is not None:
+                await transaction_guard(conn)
             source_butler, source_episode_id = await _resolve_write_provenance_with_conn(
                 conn,
                 embedding_engine,

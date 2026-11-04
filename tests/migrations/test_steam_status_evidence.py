@@ -87,6 +87,9 @@ def test_daily_and_spotify_history_relayers_preserve_rows_and_other_sources(post
         schemas={"chronicler": "chronicler"},
         revisions={"chronicler": "chronicler_029"},
     )
+    from tests.chronicler._private_memory_setup import prepare_chronicler_private_memory_sync
+
+    prepare_chronicler_private_memory_sync(url)
     engine = create_engine(url)
     try:
         with engine.begin() as conn:
@@ -212,8 +215,11 @@ def test_changed_old_steam_evidence_removes_stale_counted_play(postgres_containe
         migration_db_name(),
         chains=["chronicler"],
         schemas={"chronicler": "chronicler"},
-        revisions={"chronicler": "chronicler_030"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
 
     async def scenario():
         pool = await asyncpg.create_pool(

@@ -61,8 +61,11 @@ The script is idempotent — safe to re-run on an already-provisioned database.
 
 **Note on ordering:**
 - Run `init-db.sql` **after** the database and connecting user exist.
-- Run Alembic migrations next: `butlers db migrate` (or `docker compose run
-  migrations`).
+- Before manually starting Chronicler on a fresh database, run
+  `butlers db prepare-chronicler-memory --dir roster`; it prepares the explicitly configured
+  `chronicler_mem` schema using the core and memory chains.
+- Then run Alembic migrations: `butlers db migrate` (or `docker compose run migrations`, which runs
+  the prerequisite before ordinary migrations).
 - You should not need a post-migration privileged grant pass for new objects
   created by the connecting user; re-run the bootstrap only when the managed
   schema/role surface itself changes.

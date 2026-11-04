@@ -55,11 +55,16 @@ def shared_db_url(postgres_container) -> str:
     database (RFC 0006). The Chronicler chain is migrated so its child-process
     fixture adapter writes a real projection row before it publishes.
     """
-    return create_migrated_test_db(
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         chains=["chronicler"],
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture(autouse=True)

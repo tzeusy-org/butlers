@@ -48,9 +48,12 @@ _HOME_LON = 103.80000
 @pytest.fixture
 def places_url(fresh_db) -> str:
     """Provision both the ``connectors`` (core chain) and ``chronicler``
-    schemas real migrations create, since this adapter reads the former and
-    writes the latter."""
-    return fresh_db("core", "chronicler")
+    schemas real migrations create, plus Chronicler's explicitly prepared private memory."""
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db("core", "chronicler", revisions={"chronicler": "chronicler_029"})
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture

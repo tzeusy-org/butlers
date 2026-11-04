@@ -40,7 +40,11 @@ _ENDPOINT = "owntracks:alice"
 
 @pytest.fixture
 def ssid_url(fresh_db) -> str:
-    return fresh_db("core", "chronicler")
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db("core", "chronicler", revisions={"chronicler": "chronicler_029"})
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture

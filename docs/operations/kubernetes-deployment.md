@@ -41,6 +41,11 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
 
+The dashboard-api migrations initContainer first runs `db prepare-chronicler-memory` against
+Chronicler's explicit `memory_schema`, then runs ordinary migrations. `butlers-up` already waits for
+the dashboard API health endpoint, so the private-schema prerequisite completes before daemon
+startup without changing the normal core → domain → modules order.
+
 ### Google Health target startup gate
 
 Google Health's `waitForHealthRoutes: true` adds `wait-for-health-routes` after its

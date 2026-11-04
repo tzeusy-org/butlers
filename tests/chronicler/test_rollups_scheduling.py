@@ -161,3 +161,24 @@ async def test_chronicler_module_registers_rollup_daily_default_schedule(monkeyp
     assert "chronicler_rollup_daily" in names
     rollup_call = next(c for c in calls if c["name"] == "chronicler_rollup_daily")
     assert rollup_call["job_name"] == "chronicler_rollup_daily"
+
+
+async def test_run_rollup_daily_waits_for_retention_before_materializing(monkeypatch) -> None:
+    ready = _ready_pool()
+    materialized = False
+
+    async def _fake_materialize(pool, *, timezone, lookback_days):
+        nonlocal materialized
+        materialized = True
+        return {}
+
+    async def _pending_scopes(conn, *, start_date, end_date):
+        assert start_date < end_date
+        return (("00000000-0000-0000-0000-000000000001", start_date, start_date),)
+
+    monkeypatch.setattr("butlers.chronicler.rollups.materialize_daily_rollups", _fake_materialize)
+    monkeypatch.setattr("butlers.chronicler.history_repair._pending_retention_scopes", _pending_scopes, raising=False)
+    result = await run_rollup_daily(ready, job_args=None)
+
+    assert result == {"status": "waiting_repair", "days_processed": []}
+    assert materialized is False
