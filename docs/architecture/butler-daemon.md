@@ -224,6 +224,11 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
   `src/butlers/cli.py::_record_deployment_boot`), never in per-butler startup. Its
   `migration_head` is one schema's snapshot, not a drift proof. `GIT_SHA` is a Docker build arg
   baked into the image.
+- After all daemon registrations, the trusted cohost launcher conditionally installs RFC 0023
+  approval recovery for active, worker-enabled sources. It stops those workers and closes
+  their authority listeners before daemon modules and pools shut down, including on cancellation.
+  Default-off and missing-peer hosts create no recovery runtime; split-process deployments
+  remain unavailable. See [approval delivery authority](../runtime/approval-delivery-authority.md).
 - Diagnose tool drift through the daemon status snapshot and the Butler Management three-way diff
   (declared, effective, registered), not the `runtime_config` row alone. Exposing a mixed group's
   reads must never activate its writes as a side effect.
