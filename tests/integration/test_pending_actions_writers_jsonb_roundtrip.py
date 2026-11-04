@@ -147,7 +147,18 @@ class TestDaemonCalendarOverlapEnqueuer:
         )
         daemon.db = SimpleNamespace(pool=pool)
         fake_cal = _FakeCalendarModule()
-        daemon._modules = [fake_cal]
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+        from butlers.modules.approvals.module import ApprovalsModule
+
+        approvals = ApprovalsModule()
+
+        async def approved_transport(tool_name, tool_args):
+            if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is None:
+                raise PermissionError("Exact approved executor context required")
+            raise AssertionError("This roundtrip test parks only; it must never execute a tool")
+
+        approvals.set_tool_executor(approved_transport)
+        daemon._modules = [fake_cal, approvals]
         daemon._module_statuses = {}
         # __new__ bypasses __init__, so the cached park -> push runtime
         # (bu-mda0r) must be set explicitly like every other instance attr.

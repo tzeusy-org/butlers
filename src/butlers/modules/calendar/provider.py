@@ -93,9 +93,11 @@ class CalendarProvider(abc.ABC):
         calendar_id: str,
         event_id: str,
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> None:
         """Delete (or cancel) an event.
 
+        ``etag`` conditionally deletes the exact fetched resource version.
         ``send_updates`` controls attendee notification:
         - ``"none"`` — explicitly suppress notifications.
         - ``None`` — provider default; no silence guarantee is assumed.
@@ -203,8 +205,9 @@ class CalendarProvider(abc.ABC):
         event_id: str,
         recurrence: list[str],
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> CalendarEvent:
-        """Replace the master event's recurrence array and return the updated event."""
+        """Replace recurrence, conditionally on ``etag`` when supplied."""
         raise NotImplementedError("provider does not support occurrence-scoped recurrence editing")
 
     @abc.abstractmethod

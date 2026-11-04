@@ -535,6 +535,7 @@ def register_event_tools(
             action_payload=action_payload,
             source_id=source_id,
             origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
         )
         if party_gate is not None:
             return party_gate
@@ -934,6 +935,7 @@ def register_event_tools(
             action_payload=action_payload,
             source_id=source_id,
             origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
         )
         if party_gate is not None:
             return party_gate
@@ -971,6 +973,7 @@ def register_event_tools(
                 calendar_id=resolved_calendar_id,
                 event_id=normalized_event_id,
                 send_updates=send_updates,
+                **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
             )
         except CalendarAuthError as exc:
             await module._emit_calendar_audit(

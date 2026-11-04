@@ -137,8 +137,11 @@ async def test_calendar_owning_decision_locks_exact_call_and_excludes_history(
     )
 
 
-async def test_producer_only_queue_decision_and_exact_executor(approval_databases, monkeypatch):
-    """Real SQL queue/decision/executor; provider and projection are collaborators."""
+@pytest.mark.parametrize("request_identifier", [None, "native-party"])
+async def test_producer_only_queue_decision_and_exact_executor(
+    approval_databases, monkeypatch, request_identifier
+):
+    """Real SQL projection/queue/decision/executor; provider effect is synthetic."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -169,11 +172,9 @@ async def test_producer_only_queue_decision_and_exact_executor(approval_database
         SimpleNamespace(pool=owner),
         "general",
     )
-    # This case owns queue/decision/executor SQL, not calendar projection or
-    # request-id storage; those existing owners have their own controls.
-    module._prepare_workspace_mutation = AsyncMock(return_value=("native-party", None))
+    # Use real migrated projection receipts as well as queue/decision/executor SQL:
+    # approved replay must recover its owning key even without a request ID.
     module._resolve_action_source_id = AsyncMock(return_value=None)
-    module._finalize_workspace_mutation = AsyncMock()
     module._project_provider_mutation = AsyncMock()
     module._emit_calendar_audit = AsyncMock()
     tool = (await registered_tools(mcp))["calendar_create_event"]
@@ -200,7 +201,7 @@ async def test_producer_only_queue_decision_and_exact_executor(approval_database
         start_at=now,
         end_at=now + timedelta(hours=1),
         attendees=["guest@example.test"],
-        request_id="native-party",
+        request_id=request_identifier,
     )
     assert pending["status"] == "approval_required"
     assert provider.create_calls == []
@@ -212,6 +213,13 @@ async def test_producer_only_queue_decision_and_exact_executor(approval_database
     assert isinstance(parked["tool_args"], dict)
     assert parked["tool_args"]["calendar_id"] == "synthetic-calendar"
     assert parked["tool_args"]["attendees"] == ["guest@example.test"]
+    receipt = await observer.fetchrow(
+        "SELECT idempotency_key,action_result FROM calendar_action_log "
+        "WHERE action_result->>'action_id'=$1",
+        str(action_id),
+    )
+    assert receipt is not None
+    assert receipt["action_result"]["party_audience_digest"]
 
     async def dispatch(_mgr, _db, pool, identifier, name, arguments, butler):
         assert pool is owner and butler == "general"
@@ -244,6 +252,13 @@ async def test_producer_only_queue_decision_and_exact_executor(approval_database
     )
     assert decision.data.status == "executed"
     assert decision.data.dispatched is True
+    assert (
+        await observer.fetchval(
+            "SELECT action_status FROM calendar_action_log WHERE idempotency_key=$1",
+            receipt["idempotency_key"],
+        )
+        == "applied"
+    )
     assert len(provider.create_calls) == 1
     assert (
         await observer.fetchval("SELECT status FROM pending_actions WHERE id=$1", action_id)
@@ -254,4 +269,22 @@ async def test_producer_only_queue_decision_and_exact_executor(approval_database
             "SELECT count(*) FROM autonomy_approval_history WHERE action_id=$1", action_id
         )
         == 0
+    )
+
+    repeated = await execute_approved_action(
+        pool=owner,
+        action_id=action_id,
+        tool_name="calendar_create_event",
+        tool_args=parked["tool_args"],
+        tool_fn=lambda **kw: transport("calendar_create_event", kw),
+        origin_butler="general",
+    )
+    assert repeated.success
+    assert len(provider.create_calls) == 1
+    assert (
+        await observer.fetchval(
+            "SELECT action_status FROM calendar_action_log WHERE idempotency_key=$1",
+            receipt["idempotency_key"],
+        )
+        == "applied"
     )

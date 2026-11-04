@@ -411,3 +411,18 @@ reuses its pending receipt only when these still match; changed invitations or
 default destinations refuse. Rejected, expired and executed decisions are never
 reactivated. This checks current module/account binding; it does not add a
 cross-restart credential-generation fence or an atomic provider ACL/write CAS.
+
+Approved party execution resolves its unique durable projection receipt by the
+executor's action ID, including when the caller omitted `request_id`. The
+receipt binds the fetched effective attendee set as well as the current owning
+provider/account/calendar; any drift, missing or ambiguous receipt refuses
+before mutation, including before an owner-only shortcut. Inherited
+`attendees=None` remains unchanged in the stored call. Existing-event approved
+non-owner mutations also require the fetched event version. Google update,
+delete and recurrence writes carry that same snapshot ETag as `If-Match`;
+concurrent changes return HTTP412 without silently refetching and retrying the
+approved effect. A missing version refuses before effect. This protects that
+event resource, not external calendar ACL changes or a multi-write transaction.
+Owner-only legacy overlap/series approvals retain their original authority;
+a generic overlap approval never authorizes a non-owner audience without the
+owning party receipt.

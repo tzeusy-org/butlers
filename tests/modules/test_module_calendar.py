@@ -4125,6 +4125,9 @@ class TestCalendarApprovalAuthority:
             assert parked["impact"]["occurrences_touched"] == 12
             assert provider.set_recurrence_calls == provider.created_payloads == []
             stored = pool.row["tool_args"]
+            # The owning module reads the same queue used by this local executor.
+            mod._db = SimpleNamespace(pool=pool)
+            mod._load_party_approval_receipt = AsyncMock(return_value=None)
             assert stored["instance_start_at"] == event.start_at.isoformat()
             assert stored["description"] == call["description"]
             assert stored["body"] == call["body"]
@@ -4299,6 +4302,9 @@ class TestCalendarApprovalAuthority:
         parked = await tool(**call)
         assert parked["status"] == "approval_required"
         stored = pool.row["tool_args"]
+        # The owning module reads the same queue used by this local executor.
+        mod._db = SimpleNamespace(pool=pool)
+        mod._load_party_approval_receipt = AsyncMock(return_value=None)
         mod._load_projection_action.return_value = ("pending", parked, None)
 
         # A context approving different arguments must not open this gate.
@@ -5504,6 +5510,9 @@ class TestCalendarImpactAdmission:
         assert parked["status"] == "approval_required"
         assert provider.update_calls == provider.delete_calls == []
         stored = pool.row["tool_args"]
+        # The owning module reads the same queue used by this local executor.
+        mod._db = SimpleNamespace(pool=pool)
+        mod._load_party_approval_receipt = AsyncMock(return_value=None)
         assert stored["calendar_id"] == "cal-seen"
         assert stored["recurrence_scope"] == "series"
         mod._default_target_calendar_id = "cal-new"
@@ -5892,3 +5901,434 @@ async def test_unverified_calendar_party_account_finalizes_no_effect_refusal(mon
     module._finalize_workspace_mutation.assert_awaited_once()
     assert module._finalize_workspace_mutation.await_args.kwargs["action_status"] == "noop"
     assert module._finalize_workspace_mutation.await_args.kwargs["action_result"] == result
+
+
+@pytest.mark.parametrize("request_identifier", [None, "stable-party-request_identifier"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "none",
+        "audience",
+        "account",
+        "provider",
+        "calendar",
+        "missing",
+        "ambiguous",
+        "owner_audience",
+        "missing_owner",
+    ],
+)
+async def test_party_executor_owns_receipt_and_fetched_audience(
+    request_identifier, change, monkeypatch
+):
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+    from butlers.modules.calendar.party import gate_calendar_party_mutation
+
+    module = CalendarModule()
+    module._provider = SimpleNamespace(name="google")
+    module._butler_name = "general"
+    account = {"entity_id": str(uuid.UUID(int=9))}
+    module._verified_response_account = AsyncMock(side_effect=lambda: dict(account))
+    action_id = uuid.UUID(int=20)
+    stored = {}
+    projection = {}
+
+    async def enqueue(name, args, reason):
+        stored.update(name=name, args=args)
+        return str(action_id)
+
+    async def record(**values):
+        projection[values["idempotency_key"]] = (
+            values["action_status"],
+            values.get("action_result"),
+            None,
+        )
+
+    async def load(key):
+        return projection.get(key)
+
+    async def fetch(*arguments):
+        rows = [
+            {
+                "idempotency_key": key,
+                "action_status": status,
+                "action_result": result,
+                "error": error,
+            }
+            for key, (status, result, error) in projection.items()
+            if isinstance(result, dict) and result.get("action_id") == str(action_id)
+        ]
+        return (
+            []
+            if change in {"missing", "missing_owner"}
+            else rows * (2 if change == "ambiguous" else 1)
+        )
+
+    module._db = SimpleNamespace(
+        pool=SimpleNamespace(
+            fetch=AsyncMock(side_effect=fetch),
+            fetchrow=AsyncMock(
+                side_effect=lambda *a: {
+                    "tool_name": stored["name"],
+                    "tool_args": stored["args"],
+                    "status": "approved",
+                    "agent_summary": "Communication with a non-owner requires owner approval.",
+                }
+            ),
+        )
+    )
+    module._projection_tables_available = AsyncMock(return_value=True)
+    module._load_projection_action = load
+    module._record_projection_action = record
+    module._approval_enqueuer = enqueue
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=None),
+    )
+    args = {
+        "title": "Reviewed invitation",
+        "attendees": ["guest-a@example.test"],
+        "calendar_id": "primary",
+        "request_id": request_identifier,
+    }
+
+    async def prepare():
+        return await module._prepare_workspace_mutation(
+            action_type="workspace_user_create",
+            request_id=request_identifier,
+            action_payload={},
+            tool_name="calendar_create_event",
+            tool_args=args,
+        )
+
+    async def gate(key, audience):
+        return await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_create_event",
+            tool_args=args,
+            attendees=audience,
+            calendar_id=args["calendar_id"],
+            action_type="workspace_user_create",
+            request_id=request_identifier,
+            idempotency_key=key,
+            action_payload={},
+            source_id=None,
+            origin_ref=None,
+        )
+
+    key, replay = await prepare()
+    assert replay is None
+    first = await gate(key, ["guest-a@example.test"])
+    assert first["status"] == "approval_required"
+    audience = ["guest-b@example.test"] if change == "audience" else ["guest-a@example.test"]
+    if change == "account":
+        account["entity_id"] = str(uuid.UUID(int=10))
+    elif change == "provider":
+        module._provider.name = "other-provider"
+    elif change == "calendar":
+        args["calendar_id"] = "changed-calendar"
+    if change in {"owner_audience", "missing_owner"}:
+        audience = ["owner@example.test"]
+        monkeypatch.setattr(
+            "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+            AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+        )
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=action_id,
+            session_id=None,
+            actor="owner:test",
+            tool_name="calendar_create_event",
+            tool_args_digest=approval_tool_args_digest(stored["args"]),
+            authorized_task=asyncio.current_task(),
+        )
+    )
+    try:
+        next_key, replay = await prepare()
+        result = await gate(next_key, audience) if replay is None else replay
+    finally:
+        reset_approval_execution_context(token)
+    if change == "none":
+        assert result is None
+        assert next_key == key
+    else:
+        assert result is not None, "changed or missing owning party receipt must refuse"
+        assert result["status"] == (
+            "approval_required"
+            if change == "calendar" and request_identifier is None
+            else "request_changed"
+        )
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "calendar_update_event",
+        "calendar_delete_event",
+        "calendar_update_event_instance",
+        "calendar_delete_event_instance",
+    ],
+)
+@pytest.mark.parametrize("changed", [False, True, "missing_version"])
+async def test_party_replay_refetches_inherited_guests_before_provider_effect(
+    tool_name, changed, monkeypatch
+):
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+
+    provider = _ProviderDouble(
+        event=_make_event(
+            attendees=[AttendeeInfo(email="guest-a@example.test")],
+            recurrence_rule="FREQ=DAILY;COUNT=2",
+            etag="snapshot-a",
+        )
+    )
+
+    async def notifying_delete(**arguments):
+        provider.delete_calls.append(arguments)
+
+    provider.delete_event = AsyncMock(side_effect=notifying_delete)
+    provider.get_recurrence = AsyncMock(return_value=["RRULE:FREQ=DAILY;COUNT=2"])
+    provider.set_recurrence = AsyncMock(return_value=provider._event)
+    module = CalendarModule()
+    module._provider = provider
+    module._resolved_calendar_id = "primary"
+    module._verified_response_account = AsyncMock(return_value={"entity_id": str(uuid.UUID(int=9))})
+    mcp = FastMCP("party-replay-inherited")
+    await module.register_tools(
+        mcp, {"provider": "google", "calendar_id": "primary"}, None, "general"
+    )
+    module._prepare_workspace_mutation = AsyncMock(return_value=("party-replay", None))
+    module._resolve_action_source_id = AsyncMock(return_value=None)
+    module._refresh_user_projection = AsyncMock(return_value={})
+    module._project_provider_mutation = AsyncMock()
+    module._mark_instances_exception = AsyncMock()
+    module._emit_calendar_audit = AsyncMock()
+    receipt = {}
+    stored = {}
+    action_id = uuid.UUID(int=30)
+
+    async def enqueue(name, args, summary):
+        stored.update(name=name, args=args, summary=summary)
+        return str(action_id)
+
+    async def finalize(**values):
+        if values.get("action_result", {}).get("status") == "approval_required":
+            receipt.update(values["action_result"])
+
+    module._approval_enqueuer = enqueue
+    module._finalize_workspace_mutation = AsyncMock(side_effect=finalize)
+    module._load_party_approval_receipt = AsyncMock(
+        side_effect=lambda action: ("party-replay", "pending", dict(receipt), None)
+    )
+    module._db = SimpleNamespace(
+        pool=SimpleNamespace(
+            fetchrow=AsyncMock(
+                side_effect=lambda *a: {
+                    "tool_name": stored["name"],
+                    "tool_args": stored["args"],
+                    "status": "approved",
+                    "agent_summary": stored["summary"],
+                }
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=None),
+    )
+    args = {"event_id": "evt-1", "calendar_id": "primary"}
+    if "instance" in tool_name:
+        args["instance_start_at"] = datetime(2026, 2, 20, 14, tzinfo=UTC)
+    if "delete" in tool_name:
+        args["send_updates"] = "all"
+    else:
+        args["title"] = "Reviewed title"
+    handler = await tool_fn(mcp, tool_name)
+    first = await handler(**args)
+    assert first["status"] == "approval_required"
+    assert provider.create_calls == provider.update_calls == provider.delete_calls == []
+    provider.set_recurrence.assert_not_awaited()
+    if "attendees" in stored["args"]:
+        assert stored["args"]["attendees"] is None
+    if changed is True:
+        provider._event = provider._event.model_copy(
+            update={"attendees": [AttendeeInfo(email="guest-b@example.test")]}
+        )
+    if changed == "missing_version":
+        provider._event = provider._event.model_copy(update={"etag": None})
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=action_id,
+            session_id=None,
+            actor="owner:test",
+            tool_name=tool_name,
+            tool_args_digest=approval_tool_args_digest(stored["args"]),
+            authorized_task=asyncio.current_task(),
+        )
+    )
+    try:
+        replay = await handler(**stored["args"])
+    finally:
+        reset_approval_execution_context(token)
+    if changed:
+        assert replay["status"] == "request_changed"
+        assert provider.create_calls == provider.update_calls == provider.delete_calls == []
+        provider.set_recurrence.assert_not_awaited()
+    else:
+        assert replay["status"] == ("deleted" if "delete" in tool_name else "updated")
+        assert (
+            len(provider.create_calls)
+            + len(provider.update_calls)
+            + len(provider.delete_calls)
+            + provider.set_recurrence.await_count
+            > 0
+        )
+        if "instance" in tool_name:
+            assert provider.set_recurrence.await_args.kwargs.get("etag") == "snapshot-a"
+        elif "delete" in tool_name:
+            assert provider.delete_event.await_args.kwargs.get("etag") == "snapshot-a"
+        else:
+            assert provider.update_calls[0]["patch"].etag == "snapshot-a"
+    assert len(provider.get_calls) == 2
+
+
+@pytest.mark.parametrize("owner_only", [False, True])
+@pytest.mark.parametrize("purpose", ["overlap", "series"])
+async def test_legacy_calendar_approval_never_authorizes_nonowner_party(
+    owner_only, purpose, monkeypatch
+):
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+    from butlers.modules.calendar.party import gate_calendar_party_mutation
+    from butlers.modules.calendar_approval import calendar_approval_args
+
+    tool_name = "calendar_update_event"
+    args = calendar_approval_args(
+        tool_name, event_id="event", title="Reviewed", calendar_id="primary"
+    )
+    action_id = uuid.UUID(int=40)
+    module = CalendarModule()
+    module._load_party_approval_receipt = AsyncMock(return_value=None)
+    module._finalize_workspace_mutation = AsyncMock()
+    module._approval_enqueuer = AsyncMock()
+    module._db = SimpleNamespace(
+        pool=SimpleNamespace(
+            fetchrow=AsyncMock(
+                return_value={
+                    "tool_name": tool_name,
+                    "tool_args": args,
+                    "status": "approved",
+                    "agent_summary": f"Reviewed {purpose} calendar action",
+                }
+            )
+        )
+    )
+    monkeypatch.setattr(
+        "butlers.modules.calendar.party.parties_are_owner", AsyncMock(return_value=owner_only)
+    )
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=action_id,
+            session_id=None,
+            actor="owner:test",
+            tool_name=tool_name,
+            tool_args_digest=approval_tool_args_digest(args),
+            authorized_task=asyncio.current_task(),
+        )
+    )
+    try:
+        result = await gate_calendar_party_mutation(
+            module,
+            tool_name=tool_name,
+            tool_args=args,
+            attendees=["owner@example.test" if owner_only else "guest@example.test"],
+            calendar_id="primary",
+            action_type="workspace_user_update",
+            request_id=None,
+            idempotency_key="legacy",
+            action_payload={},
+            source_id=None,
+            origin_ref="event",
+        )
+    finally:
+        reset_approval_execution_context(token)
+    module._approval_enqueuer.assert_not_awaited()
+    if owner_only:
+        assert result is None
+        module._finalize_workspace_mutation.assert_not_awaited()
+    else:
+        assert result["status"] == "request_changed"
+        module._finalize_workspace_mutation.assert_awaited_once()
+        assert module._finalize_workspace_mutation.await_args.kwargs["action_status"] == "noop"
+
+
+@pytest.mark.parametrize("operation", ["delete", "recurrence"])
+@pytest.mark.parametrize("changed_after_fetch", [False, True])
+async def test_google_calendar_snapshot_precondition_refuses_concurrent_change(
+    operation, changed_after_fetch
+):
+    provider = _google_provider()
+    writes = []
+
+    async def request(**arguments):
+        headers = arguments.get("extra_headers") or {}
+        current_etag = '"snapshot-b"' if changed_after_fetch else '"snapshot-a"'
+        if "If-Match" in headers and headers["If-Match"] != current_etag:
+            return httpx.Response(412, json={"error": {"message": "Precondition failed"}})
+        writes.append(arguments["method"])
+        return httpx.Response(
+            200,
+            json={
+                "id": "event",
+                "summary": "Reviewed",
+                "etag": '"snapshot-b"',
+                "start": {"dateTime": "2026-02-20T14:00:00Z"},
+                "end": {"dateTime": "2026-02-20T15:00:00Z"},
+            },
+        )
+
+    provider._request_with_bearer = AsyncMock(side_effect=request)
+
+    async def mutate():
+        if operation == "delete":
+            await provider.delete_event(
+                calendar_id="primary", event_id="event", send_updates="all", etag='"snapshot-a"'
+            )
+        else:
+            await provider.set_recurrence(
+                calendar_id="primary",
+                event_id="event",
+                recurrence=["RRULE:FREQ=DAILY"],
+                send_updates="all",
+                etag='"snapshot-a"',
+            )
+
+    try:
+        if changed_after_fetch:
+            with pytest.raises(CalendarRequestError) as error:
+                await mutate()
+            assert error.value.status_code == 412
+            assert writes == []
+        else:
+            await mutate()
+            assert writes == ["DELETE" if operation == "delete" else "PATCH"]
+        assert provider._request_with_bearer.await_args.kwargs["extra_headers"] == {
+            "If-Match": '"snapshot-a"'
+        }
+        assert provider._request_with_bearer.await_args.kwargs["params"] == {"sendUpdates": "all"}
+    finally:
+        await provider.shutdown()

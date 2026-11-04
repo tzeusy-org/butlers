@@ -277,6 +277,7 @@ class RecurrenceMixin:
             action_payload=action_payload,
             source_id=source_id,
             origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
         )
         if party_gate is not None:
             return party_gate
@@ -288,6 +289,7 @@ class RecurrenceMixin:
                 calendar_id=resolved_calendar_id,
                 event_id=normalized_event_id,
                 send_updates=send_updates,
+                **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
             )
             await self._project_provider_mutation(
                 source_id=source_id,
@@ -353,6 +355,7 @@ class RecurrenceMixin:
             event_id=normalized_event_id,
             recurrence=new_recurrence,
             send_updates=send_updates,
+            **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
         )
         await self._emit_calendar_audit("delete", existing_event.title, resolved_calendar_id)
         await self._project_provider_mutation(
@@ -504,6 +507,7 @@ class RecurrenceMixin:
             action_payload=action_payload,
             source_id=source_id,
             origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
         )
         if party_gate is not None:
             return party_gate
@@ -574,6 +578,7 @@ class RecurrenceMixin:
             calendar_id=resolved_calendar_id,
             event_id=normalized_event_id,
             recurrence=new_recurrence,
+            **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
         )
         detached_event = await provider.create_event(
             calendar_id=resolved_calendar_id, payload=detached_payload

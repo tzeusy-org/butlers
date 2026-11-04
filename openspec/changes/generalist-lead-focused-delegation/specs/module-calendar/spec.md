@@ -117,6 +117,9 @@ Scope: v1-mandatory
 - **WHEN** a create call contains an owner and another or unresolved attendee
 - **THEN** it SHALL park the complete concrete-calendar call before creation
 - **AND** one owner address SHALL NOT authorize the other attendees
+- **AND** approved update/delete and occurrence calls SHALL bind their fetched effective audience to the exact owning action receipt before effect, preserving inherited `attendees=None`
+- **AND** action identity SHALL recover that receipt even without a caller request ID; missing, ambiguous or changed audience/account/provider/calendar bindings SHALL refuse before an owner shortcut or mutation
+- **AND** approved non-owner existing-event mutations SHALL require a fetched resource version and condition their Google update/delete/recurrence write on that same version; concurrent changes SHALL refuse without automatically retrying the approved effect
 
 #### Scenario: Authenticated dashboard guest create
 - **WHEN** the owner submits a guest create on the surviving dashboard surface

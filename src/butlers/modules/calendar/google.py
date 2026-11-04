@@ -618,6 +618,7 @@ class _GoogleProvider(CalendarProvider):
         calendar_id: str,
         event_id: str,
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> None:
         """Delete a Google Calendar event.
 
@@ -647,6 +648,7 @@ class _GoogleProvider(CalendarProvider):
             method="DELETE",
             path=f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             params=params,
+            extra_headers={"If-Match": etag} if etag is not None else None,
         )
 
         # 404 means the event was already deleted — treat as success.
@@ -685,6 +687,7 @@ class _GoogleProvider(CalendarProvider):
         event_id: str,
         recurrence: list[str],
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> CalendarEvent:
         normalized_event_id = event_id.strip()
         if not normalized_event_id:
@@ -699,6 +702,7 @@ class _GoogleProvider(CalendarProvider):
             f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             params=params,
             json_body={"recurrence": list(recurrence)},
+            extra_headers={"If-Match": etag} if etag is not None else None,
         )
         event = _google_event_to_calendar_event(
             response_payload,
