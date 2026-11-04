@@ -78,6 +78,14 @@ exactly pins every supplied argument (at least one); typed-slot templates are
 not yet recognised and so park. A matching rule approves at once and the broker
 runs the stored call.
 
+`Broker.execute_approved` first commits the owner's approval on its own
+(`parked -> approved`, D11), so the decision survives a refused or interrupted
+dispatch; it then begins dispatch in a second transaction. The settled outcome
+is written back onto the domain action (`executed` with the receipt, or
+`approved` with a failed `execution_result`), and `Broker.sync_parked` ends a
+parked effect whose domain action was rejected, expired or cancelled. Migration
+`approvals_021` marks pre-cutover actions `goal_origin = 'legacy'`.
+
 `Broker.execute_approved` is the trusted owner-decision entry: it re-checks that
 the goal has not ended, the grant and the catalog, then dispatches the stored
 call, or the owner's edit. An edit cannot change the immutable effect digest, so

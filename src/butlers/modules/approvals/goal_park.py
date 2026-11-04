@@ -179,6 +179,79 @@ async def park_goal_effect(
     return GoalParkOutcome(lineage.effect_id)
 
 
+async def record_goal_outcome(
+    pool: Any,
+    goal_id: uuid.UUID,
+    action_id: uuid.UUID,
+    *,
+    status: str,
+    receipt_ref: str | None,
+) -> bool:
+    """Write the broker's settled outcome back onto the approved domain action.
+
+    ``committed`` makes the action ``executed``; any other outcome leaves it
+    ``approved`` with a non-null ``execution_result``, which already excludes
+    it from legacy dispatch recovery and shows it stalled. Only an approved,
+    not-yet-recorded goal action is written; anything else is left alone.
+    """
+    result = {
+        "success": status == "committed",
+        "status": status,
+        "receipt_ref": receipt_ref,
+        "source": "capability_broker",
+    }
+    succeeded = status == "committed"
+    async with pool.acquire() as connection, connection.transaction():
+        if succeeded:
+            row = await connection.fetchrow(
+                "UPDATE pending_actions SET status = $1, execution_result = $2, "
+                "decided_at = coalesce(decided_at, clock_timestamp()) "
+                "WHERE id = $3 AND goal_id = $4 AND status = $5 "
+                "AND execution_result IS NULL RETURNING id",
+                ActionStatus.EXECUTED.value,
+                result,
+                action_id,
+                goal_id,
+                ActionStatus.APPROVED.value,
+            )
+        else:
+            row = await connection.fetchrow(
+                "UPDATE pending_actions SET execution_result = $1 "
+                "WHERE id = $2 AND goal_id = $3 AND status = 'approved' "
+                "AND execution_result IS NULL RETURNING id",
+                result,
+                action_id,
+                goal_id,
+            )
+        if row is None:
+            return False
+        await record_approval_event(
+            connection,
+            ApprovalEventType.ACTION_EXECUTION_SUCCEEDED
+            if succeeded
+            else ApprovalEventType.ACTION_EXECUTION_FAILED,
+            actor="system:capability_broker",
+            action_id=action_id,
+            reason=f"goal effect {status}",
+            metadata={"goal_id": str(goal_id), "status": status},
+        )
+    return True
+
+
+async def goal_action_states(
+    pool: Any, goal_id: uuid.UUID, action_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, str]:
+    """Current status of each named action of the goal (absent ids are omitted)."""
+    if not action_ids:
+        return {}
+    rows = await pool.fetch(
+        "SELECT id, status FROM pending_actions WHERE goal_id = $1 AND id = ANY($2::uuid[])",
+        goal_id,
+        action_ids,
+    )
+    return {row["id"]: row["status"] for row in rows}
+
+
 async def _abandon_unexecuted(connection, action_id: uuid.UUID, goal_id: uuid.UUID) -> bool:
     """An approved goal action that never executed is abandoned by the Stop."""
     row = await connection.fetchrow(

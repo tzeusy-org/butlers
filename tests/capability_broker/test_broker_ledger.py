@@ -355,6 +355,10 @@ async def test_owner_created_rule_approves_at_park_and_the_stored_call_runs(brok
         assert sent == args
         assert w.verify(assertion, "notify", args)["approval_ref"] == str(result.effect_id)
         assert (await w.effect(result.effect_id))["status"] == "committed"
+        # bu-m1u7zy.7: the settled outcome is written back onto the domain action.
+        action = await w.action(result.effect_id)
+        assert action["status"] == "executed"
+        assert action["execution_result"]["receipt_ref"] == "receipt-1"
 
 
 async def test_exposed_invocation_cannot_use_a_free_text_rule(broker_db_url):
@@ -450,6 +454,71 @@ async def test_approved_execution_runs_the_stored_or_edited_call(broker_db_url):
         assert executed["approval_ref"] == parked.approval_ref
 
 
+async def test_approval_is_recorded_before_dispatch_and_survives_a_refused_dispatch(
+    broker_db_url,
+):
+    """bu-m1u7zy.7: D11 parked -> approved commits on its own, then -> dispatched."""
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(NOTIFY))
+        _, token = await w.invocation(goal, _grant(NOTIFY))
+        stored = {"entity_id": str(uuid4()), "message": "Draft", "channel": "telegram"}
+        parked = await w.broker.call(goal, token, NOTIFY.identity, stored)
+        w.broker.catalog = StaticCatalog(Catalog("catalog-v2", CATALOG.capabilities))
+        refused = await _refused(
+            w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, stored)
+        )
+        assert refused.reason is Reason.CATALOG and w.forwarder.calls == []
+        assert (await w.effect(parked.effect_id))["status"] == "approved"
+        w.broker.catalog = StaticCatalog()
+        done = await w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, stored)
+        assert done.status == "committed"
+
+
+async def test_domain_decisions_and_failures_sync_with_the_effect_ledger(broker_db_url):
+    """bu-m1u7zy.7: expiry/rejection end parked effects; a failure is written back."""
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(NOTIFY))
+        _, token = await w.invocation(goal, _grant(NOTIFY))
+        calls = [
+            await w.broker.call(
+                goal,
+                token,
+                NOTIFY.identity,
+                {"entity_id": str(uuid4()), "message": text, "channel": "telegram"},
+            )
+            for text in ("expires", "rejected", "waits")
+        ]
+        for result, status in zip(calls[:2], ("expired", "rejected"), strict=True):
+            await w.domain.execute(
+                "UPDATE pending_actions SET status = $2 WHERE id = $1", result.effect_id, status
+            )
+        assert await w.broker.sync_parked(goal) == 2
+        assert [(await w.effect(r.effect_id))["status"] for r in calls] == [
+            "expired",
+            "rejected",
+            "parked",
+        ]
+
+        waiting = calls[2]
+        await w.domain.execute(
+            "UPDATE pending_actions SET status = 'approved' WHERE id = $1", waiting.effect_id
+        )
+        w.forwarder.receipt = DomainReceipt("failed", "receipt-2")
+        args = (await w.action(waiting.effect_id))["tool_args"]
+        failed = await w.broker.execute_approved(
+            goal, waiting.effect_id, waiting.approval_ref, args
+        )
+        assert failed.status == "failed"
+        action = await w.action(waiting.effect_id)
+        assert action["status"] == "approved"
+        assert action["execution_result"] == {
+            "success": False,
+            "status": "failed",
+            "receipt_ref": "receipt-2",
+            "source": "capability_broker",
+        }
+
+
 async def test_stop_cancels_parked_effects_and_a_late_approval_never_dispatches(broker_db_url):
     async with world(broker_db_url) as w:
         goal = await w.goal(_grant(NOTIFY))
@@ -486,7 +555,8 @@ async def test_stop_cancels_parked_effects_and_a_late_approval_never_dispatches(
             [first.effect_id, second.effect_id],
         )
         assert events == 2
-        assert (await w.action(committed.effect_id))["status"] == "approved"
+        # Its committed outcome was written back (D11) and Stop left it alone.
+        assert (await w.action(committed.effect_id))["status"] == "executed"
         assert (await w.effect(committed.effect_id))["status"] == "committed"
         refused = await _refused(w.broker.call(goal, token, NOTIFY.identity, args))
         assert refused.reason is Reason.GOAL

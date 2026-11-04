@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 ActuationRiskMap = Callable[[Capability, dict[str, Any]], ActuationRisk]
 
+# A domain action's terminal decision and the parked effect state it ends in.
+_PARKED_END = {"rejected": "rejected", "expired": "expired", "cancelled": "cancelled"}
+
 
 def _unknown_risk(capability: Capability, args: dict[str, Any]) -> ActuationRisk:
     return "unknown"
@@ -302,6 +305,8 @@ class Broker:
             trust == "untrusted" or (trust == "stamped" and not receipt.stamped_owner_untainted)
         )
         await self._settle(reserved, status, receipt_ref=receipt.receipt_ref, expose=expose)
+        if approval_ref is not None:
+            await self._write_back(reserved, approval_ref, status, receipt.receipt_ref)
         if status != "committed":
             return BrokerResult(status, reserved.effect_id)
         return BrokerResult(
@@ -323,14 +328,22 @@ class Broker:
         """
         self._require_available()
         args = parse_json_object(canonical_bytes(arguments))
+        digest = arguments_digest(args)
+        # D11: the approval commits on its own (parked -> approved) before dispatch.
         async with self._transaction() as ledger:
             effect = await ledger.effect_capability(goal_id, effect_id)
+            refused = await ledger.approve_parked(goal_id, effect_id, approval_ref, digest)
+        if refused is not None:
+            if effect is not None:
+                await self._live_domains.cancel(effect.split("__", 1)[0], goal_id, [approval_ref])
+            raise refused
+        async with self._transaction() as ledger:
             catalog = await self._live_catalog.load(ledger.connection)
             reserved = await ledger.begin_approved(
                 goal_id,
                 effect_id,
                 approval_ref,
-                arguments_digest(args),
+                digest,
                 catalog.get(effect) if effect else None,
                 catalog.digest,
             )
@@ -340,6 +353,51 @@ class Broker:
                 await self._live_domains.cancel(effect.split("__", 1)[0], goal_id, [approval_ref])
             raise reserved
         return await self._forward(reserved, args, approval_ref)
+
+    async def _write_back(
+        self, reserved: Reservation, approval_ref: str, status: str, receipt_ref: str | None
+    ) -> None:
+        """Best effort: the effect ledger is authoritative; the domain row mirrors it."""
+        try:
+            await self._live_domains.record_outcome(
+                reserved.capability.domain,
+                reserved.principal.goal_id,
+                approval_ref,
+                status,
+                receipt_ref,
+            )
+        except Exception:
+            logger.warning(
+                "broker write-back failed goal=%s effect=%s",
+                reserved.principal.goal_id,
+                reserved.effect_id,
+            )
+
+    async def sync_parked(self, goal_id: UUID) -> int:
+        """Mirror the domain's terminal decisions onto parked effects (D11).
+
+        A parked effect whose domain action was rejected, expired or cancelled
+        leaves ``parked``; an approval is never inferred here (it runs through
+        ``execute_approved``). Returns the number of effects ended.
+        """
+        self._require_available()
+        async with self._transaction() as ledger:
+            parked = await ledger.parked_refs(goal_id)
+        ended = 0
+        for domain in sorted({capability.split("__", 1)[0] for _, capability, _ in parked}):
+            mine = [
+                (e, ref) for e, capability, ref in parked if capability.startswith(domain + "__")
+            ]
+            states = await self._live_domains.action_states(
+                domain, goal_id, [ref for _, ref in mine]
+            )
+            for effect_id, ref in mine:
+                status = _PARKED_END.get(states.get(ref, ""))
+                if status is None:
+                    continue
+                async with self._transaction() as ledger:
+                    ended += await ledger.end_parked(goal_id, effect_id, status)
+        return ended
 
     async def cancel_parked(self, goal_id: UUID) -> int:
         """After Stop commits: cancel parked effects here and in their domains."""

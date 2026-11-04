@@ -448,6 +448,69 @@ class TestApprovalsMigration:
                 )
         engine.dispose()
 
+    def test_legacy_goal_origin_backfill_marks_only_pre_cutover_rows(self, postgres_container):
+        """bu-m1u7zy.7: approvals_021 marks existing non-goal rows ``legacy``, additively."""
+        from sqlalchemy import create_engine, text
+
+        from alembic import command
+        from butlers.migrations import _build_alembic_config
+
+        db_url = _create_db(postgres_container, _unique_db_name())
+        config = _build_alembic_config(db_url, chains=["approvals"])
+        command.upgrade(config, "approvals@approvals_020")
+        legacy, goal = uuid.uuid4(), uuid.uuid4()
+        engine = create_engine(db_url)
+        insert = (
+            "INSERT INTO pending_actions (id, tool_name, tool_args, status, goal_id, "
+            "goal_invocation_id, goal_depth, goal_exposed, goal_origin) VALUES "
+            "(:id, 'notify', CAST('{}' AS jsonb), 'pending', :goal, :invocation, :depth, "
+            ":exposed, :origin)"
+        )
+        with engine.begin() as conn:
+            conn.execute(
+                text(insert),
+                {
+                    "id": str(legacy),
+                    "goal": None,
+                    "invocation": None,
+                    "depth": None,
+                    "exposed": None,
+                    "origin": None,
+                },
+            )
+            conn.execute(
+                text(insert),
+                {
+                    "id": str(goal),
+                    "goal": str(uuid.uuid4()),
+                    "invocation": str(uuid.uuid4()),
+                    "depth": 0,
+                    "exposed": False,
+                    "origin": "owner",
+                },
+            )
+
+        command.upgrade(config, "approvals@head")
+        later = uuid.uuid4()
+        with engine.begin() as conn:
+            conn.execute(
+                text(insert),
+                {
+                    "id": str(later),
+                    "goal": None,
+                    "invocation": None,
+                    "depth": None,
+                    "exposed": None,
+                    "origin": None,
+                },
+            )
+            origins = dict(
+                conn.execute(text("SELECT id::text, goal_origin FROM pending_actions")).all()
+            )
+        engine.dispose()
+
+        assert origins == {str(legacy): "legacy", str(goal): "owner", str(later): None}
+
     def test_migration_updates_existing_approvals_001_pending_actions(self, postgres_container):
         """Existing approvals_001 tables receive dossier columns on upgrade."""
         import asyncio

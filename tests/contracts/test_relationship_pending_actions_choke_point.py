@@ -210,6 +210,7 @@ _PENDING_ACTION_STATUS_WRITERS: dict[tuple[str, str], int] = {
     ("src/butlers/modules/approvals/operations.py", "mark_executed"): 1,
     ("src/butlers/modules/approvals/operations.py", "abandon_approved_action"): 1,
     ("src/butlers/modules/approvals/goal_park.py", "_abandon_unexecuted"): 1,
+    ("src/butlers/modules/approvals/goal_park.py", "record_goal_outcome"): 1,
 }
 
 

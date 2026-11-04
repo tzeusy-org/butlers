@@ -18,7 +18,9 @@ from uuid import UUID
 from butlers.modules.approvals.goal_park import (
     GoalLineage,
     cancel_goal_effects,
+    goal_action_states,
     park_goal_effect,
+    record_goal_outcome,
 )
 
 from .contracts import BrokerRefused, Reason, Reservation
@@ -59,6 +61,33 @@ class Domains(Protocol):
     ) -> ParkReceipt: ...
 
     async def cancel(self, domain: str, goal_id: UUID, approval_refs: list[str]) -> None: ...
+
+    async def record_outcome(
+        self,
+        domain: str,
+        goal_id: UUID,
+        approval_ref: str,
+        status: str,
+        receipt_ref: str | None,
+    ) -> None:
+        """Write a settled approved effect back to its domain action."""
+        ...
+
+    async def action_states(
+        self, domain: str, goal_id: UUID, approval_refs: list[str]
+    ) -> dict[str, str]:
+        """The domain's current decision state for each named approval."""
+        ...
+
+
+def _action_ids(approval_refs: list[str]) -> list[UUID]:
+    action_ids = []
+    for ref in approval_refs:
+        try:
+            action_ids.append(UUID(ref))
+        except (TypeError, ValueError):
+            continue  # Not an action the approvals module issued.
+    return action_ids
 
 
 class ApprovalsParking:
@@ -110,10 +139,14 @@ class ApprovalsParking:
     async def cancel(self, domain: str, goal_id: UUID, approval_refs: list[str]) -> None:
         # Exactly the refs whose effects the broker cancelled: an action whose
         # effect was dispatched or settled is never ended here (D14).
-        action_ids = []
-        for ref in approval_refs:
-            try:
-                action_ids.append(UUID(ref))
-            except (TypeError, ValueError):
-                continue  # Not an action this module issued.
-        await cancel_goal_effects(self._pool(domain), goal_id, action_ids)
+        await cancel_goal_effects(self._pool(domain), goal_id, _action_ids(approval_refs))
+
+    async def record_outcome(self, domain, goal_id, approval_ref, status, receipt_ref) -> None:
+        for action_id in _action_ids([approval_ref]):
+            await record_goal_outcome(
+                self._pool(domain), goal_id, action_id, status=status, receipt_ref=receipt_ref
+            )
+
+    async def action_states(self, domain, goal_id, approval_refs) -> dict[str, str]:
+        states = await goal_action_states(self._pool(domain), goal_id, _action_ids(approval_refs))
+        return {str(action_id): status for action_id, status in states.items()}

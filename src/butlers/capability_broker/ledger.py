@@ -315,6 +315,9 @@ class BrokerLedger:
             raise BrokerRefused(Reason.CATALOG)
         dispatch_id = effect_id
         if args_digest == effect["args_digest"]:
+            if effect["status"] != "approved":
+                # D11: the owner's approval is committed (approve_parked) first.
+                raise BrokerRefused(Reason.POLICY)
             await self.connection.execute(
                 "UPDATE switchboard.effects SET status = 'dispatched', updated_at = now() "
                 "WHERE goal_id = $1 AND id = $2",
@@ -343,6 +346,73 @@ class BrokerLedger:
         return Reservation(
             principal, catalog_capability, decision, uuid4(), dispatch_id, args_digest
         )
+
+    async def approve_parked(
+        self, goal_id: UUID, effect_id: UUID, approval_ref: str, args_digest: str
+    ) -> BrokerRefused | None:
+        """D11 ``parked -> approved``: the owner approved the stored call.
+
+        Committed on its own before dispatch begins, so the decision survives a
+        failed or interrupted dispatch. An edit (a different digest) never
+        approves the stored call; ``begin_approved`` records it ``rejected``.
+        A stopped goal's effect is cancelled and the refusal *returned*.
+        """
+        goal = await self._lock_goal(goal_id)
+        if goal is None:
+            raise BrokerRefused(Reason.GOAL)
+        effect = await self.connection.fetchrow(
+            "SELECT status, approval_ref, args_digest FROM switchboard.effects "
+            "WHERE goal_id = $1 AND id = $2 FOR UPDATE",
+            goal_id,
+            effect_id,
+        )
+        if (
+            effect is None
+            or effect["status"] not in ("parked", "approved")
+            or effect["approval_ref"] != approval_ref
+        ):
+            raise BrokerRefused(Reason.POLICY)
+        if goal["status"] not in ("running", "awaiting_approval", "settling"):
+            await self.connection.execute(
+                "UPDATE switchboard.effects SET status = 'cancelled', updated_at = now() "
+                "WHERE goal_id = $1 AND id = $2",
+                goal_id,
+                effect_id,
+            )
+            return BrokerRefused(Reason.GOAL)
+        if effect["status"] == "parked" and effect["args_digest"] == args_digest:
+            await self.connection.execute(
+                "UPDATE switchboard.effects SET status = 'approved', updated_at = now() "
+                "WHERE goal_id = $1 AND id = $2",
+                goal_id,
+                effect_id,
+            )
+        return None
+
+    async def parked_refs(self, goal_id: UUID) -> list[tuple[UUID, str, str]]:
+        """``(effect_id, capability, approval_ref)`` of every parked effect."""
+        if await self._lock_goal(goal_id) is None:
+            raise BrokerRefused(Reason.GOAL)
+        rows = await self.connection.fetch(
+            "SELECT id, capability, approval_ref FROM switchboard.effects "
+            "WHERE goal_id = $1 AND status = 'parked' AND approval_ref IS NOT NULL",
+            goal_id,
+        )
+        return [(r["id"], r["capability"], r["approval_ref"]) for r in rows]
+
+    async def end_parked(self, goal_id: UUID, effect_id: UUID, status: str) -> bool:
+        """D11 ``parked -> rejected | expired | cancelled`` from the domain's decision."""
+        if status not in ("rejected", "expired", "cancelled"):
+            raise ValueError("parked_end_status")
+        await self._lock_goal(goal_id)
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.effects SET status = $3, updated_at = now() "
+            "WHERE goal_id = $1 AND id = $2 AND status = 'parked' RETURNING id",
+            goal_id,
+            effect_id,
+            status,
+        )
+        return row is not None
 
     async def cancel_parked(self, goal_id: UUID) -> list[tuple[str, str]]:
         """D14: a stopped goal cancels every effect that has not reached a domain.
