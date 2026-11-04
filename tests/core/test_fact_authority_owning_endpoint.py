@@ -35,7 +35,7 @@ def resolvers(monkeypatch):
         calls.append(f"legacy:{target}")
         return {"endpoint_url": _LEGACY_URL}, None
 
-    monkeypatch.setattr(route_mod, "resolve_receiver_route_target", receiver)
+    monkeypatch.setattr(route_mod, "_resolve_receiver_route_target", receiver)
     monkeypatch.setattr(registry_mod, "resolve_routing_target", legacy)
     return calls
 
@@ -54,7 +54,7 @@ async def test_cutover_refusal_is_unavailable_not_legacy_fallback(monkeypatch, r
         resolvers.append(f"receiver:{target}")
         return None, "target_unavailable", True
 
-    monkeypatch.setattr(route_mod, "resolve_receiver_route_target", refused)
+    monkeypatch.setattr(route_mod, "_resolve_receiver_route_target", refused)
     assert await fact_authority._owning_endpoint(MagicMock(), "relationship") is None
     assert resolvers == ["receiver:relationship"]
 

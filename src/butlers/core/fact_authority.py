@@ -53,7 +53,7 @@ async def _owning_endpoint(pool: Any, target: str) -> str | None:
         # The routing package re-exports a route() function under the module's
         # name, so import the module itself explicitly.
         route = importlib.import_module("butlers.tools.switchboard.routing.route")
-        decision, _, _ = await route.resolve_receiver_route_target(
+        decision, _, _ = await route._resolve_receiver_route_target(
             pool,
             target,
             required_capability=None,
@@ -63,9 +63,9 @@ async def _owning_endpoint(pool: Any, target: str) -> str | None:
             return None
         return decision.endpoint_url
 
-    from butlers.tools.switchboard.registry import registry
+    from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
-    row, _ = await registry.resolve_routing_target(pool, target)
+    row, _ = await resolve_routing_target(pool, target)
     return None if row is None else row["endpoint_url"]
 
 
