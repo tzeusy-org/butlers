@@ -8,6 +8,7 @@ Private render, API payloads and tool errors never enter the public receipt.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from typing import Any
@@ -103,8 +104,17 @@ def _observed(deployment: dict[str, Any]) -> bool:
 
 
 def check(namespace: str, release: str, helm_args: list[str]) -> str:
+    # Helm-only context/credential overrides would make its target differ
+    # from kubectl's inherited context. Inspect key names, never their values.
+    _require(
+        not any(key.startswith("HELM_KUBE") for key in os.environ), "helm-target-env-unsupported"
+    )
     # Include the namespace explicitly; reject a caller override to another DB host's fleet.
     for index, argument in enumerate(helm_args):
+        _require(
+            not argument.startswith(("--kube-", "--kubeconfig")),
+            "helm-target-args-unsupported",
+        )
         if argument in ("-n", "--namespace"):
             _require(
                 index + 1 < len(helm_args) and helm_args[index + 1] == namespace,
@@ -112,6 +122,8 @@ def check(namespace: str, release: str, helm_args: list[str]) -> str:
             )
         elif argument.startswith("--namespace="):
             _require(argument == "--namespace=" + namespace, "namespace-mismatch")
+        elif argument.startswith("-n"):
+            _require(argument[2:].removeprefix("=") == namespace, "namespace-mismatch")
     rendered = list(
         yaml.safe_load_all(
             _read(

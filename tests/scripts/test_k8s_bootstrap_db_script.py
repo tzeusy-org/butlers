@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -263,6 +264,7 @@ def test_deploy_target_bootstraps_the_deployed_tag_before_helm(fake_repo: Path) 
     tools = {
         "helm": 'if [ "$1" = template ]; then '
         '[ "$CASE" != render-error ] || { echo private-error-sentinel >&2; exit 1; }; '
+        'if [[ "$CASE" = target-* ]]; then cd "$REAL_CHART"; exec "$REAL_HELM" "$@"; fi; '
         'cat "$DESIRED_RENDER"; '
         'else echo HELM_UPGRADE >> "$CALL_LOG"; fi',
         "kubectl": """case "$*" in
@@ -314,6 +316,124 @@ esac""",
         assert ("HELM_UPGRADE" in calls) is allowed, case
         assert "private-error-sentinel" not in run.stdout + run.stderr
         assert " scale " not in calls and " delete " not in calls
+
+    # These are actual Helm parser forms, using a synthetic inherited context.
+    # Helm-only cluster overrides must never diverge from kubectl's target.
+    kubeconfig = fake_repo / "kubeconfig-fixture"
+    kubeconfig.write_text(
+        json.dumps(
+            {
+                "apiVersion": "v1",
+                "kind": "Config",
+                "clusters": [{"name": "fixture", "cluster": {"server": "https://192.0.2.1"}}],
+                "contexts": [
+                    {"name": "fixture", "context": {"cluster": "fixture", "user": "fixture"}}
+                ],
+                "current-context": "fixture",
+                "users": [{"name": "fixture", "user": {}}],
+            }
+        )
+    )
+    kubeconfig.chmod(0o600)
+    target_cases = [
+        ("short-attached-same", ["-nbutlers-dev"], {}, None),
+        ("short-equals-same", ["-n=butlers-dev"], {}, None),
+        ("short-separated-same", ["-n", "butlers-dev"], {}, None),
+        ("long-equals-same", ["--namespace=butlers-dev"], {}, None),
+        ("short-attached-other", ["-nbutlers-other"], {}, "namespace-mismatch"),
+        ("short-equals-other", ["-n=butlers-other"], {}, "namespace-mismatch"),
+        ("kube-context", ["--kube-context", "fixture"], {}, "helm-target-args-unsupported"),
+        ("kube-context-equals", ["--kube-context=fixture"], {}, "helm-target-args-unsupported"),
+        ("kubeconfig", ["--kubeconfig", str(kubeconfig)], {}, "helm-target-args-unsupported"),
+        (
+            "kubeconfig-equals",
+            ["--kubeconfig=" + str(kubeconfig)],
+            {},
+            "helm-target-args-unsupported",
+        ),
+        (
+            "kube-apiserver",
+            ["--kube-apiserver=https://192.0.2.2"],
+            {},
+            "helm-target-args-unsupported",
+        ),
+        (
+            "kube-token",
+            ["--kube-token=private-target-sentinel"],
+            {},
+            "helm-target-args-unsupported",
+        ),
+        ("env-context", [], {"HELM_KUBECONTEXT": "fixture"}, "helm-target-env-unsupported"),
+        (
+            "env-apiserver",
+            [],
+            {"HELM_KUBEAPISERVER": "https://192.0.2.2"},
+            "helm-target-env-unsupported",
+        ),
+        (
+            "env-token",
+            [],
+            {"HELM_KUBETOKEN": "private-target-sentinel"},
+            "helm-target-env-unsupported",
+        ),
+        ("env-empty", [], {"HELM_KUBEAPISERVER": ""}, "helm-target-env-unsupported"),
+    ]
+    failures = []
+    (state / "up").write_text("")
+    (state / "control").write_text("")
+    (state / "pods").write_text(json.dumps({"kind": "List", "items": []}))
+    normal_environment = {
+        key: value for key, value in environment.items() if not key.startswith("HELM_KUBE")
+    }
+    for case, flags, overrides, refusal in target_cases:
+        log.write_text("")
+        arguments = [
+            *flags,
+            "-f",
+            "values.yaml",
+            "-f",
+            "values.dev.yaml",
+            "--set",
+            "database.host=db.invalid",
+            "--set",
+            "trackerEgress.enabled=false",
+            "--set",
+            "image.tag=fixture",
+            "--set",
+            "frontendImage.tag=fixture-dev",
+        ]
+        target_environment = {
+            **normal_environment,
+            **overrides,
+            "CASE": "target-" + case,
+            "KUBECONFIG": str(kubeconfig),
+            "REAL_HELM": helm,
+            "REAL_CHART": str(_REPO_ROOT / "deploy/helm/butlers"),
+        }
+        run = subprocess.run(
+            ["make", "deploy-dev", "TAG=fixture", "helm_args=" + shlex.join(arguments)],
+            cwd=chart,
+            env=target_environment,
+            capture_output=True,
+            text=True,
+        )
+        calls = log.read_text()
+        allowed = refusal is None
+        evidence = {
+            "case": case,
+            "admitted": run.returncode == 0,
+            "bootstrap": "BOOTSTRAP" in calls,
+            "helm_upgrade": "HELM_UPGRADE" in calls,
+            "fixed_refusal": refusal is None or refusal in run.stderr,
+            "private_output": "private-target-sentinel" in run.stdout + run.stderr,
+        }
+        if (
+            any(evidence[key] is not allowed for key in ("admitted", "bootstrap", "helm_upgrade"))
+            or not evidence["fixed_refusal"]
+            or evidence["private_output"]
+        ):
+            failures.append(evidence)
+    assert not failures, failures
 
     # A direct record wrapper must recheck the same gate after bootstrap too.
     log.write_text("")

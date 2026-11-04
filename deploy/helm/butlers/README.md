@@ -16,6 +16,11 @@ terminating pods. The guard never scales or deletes anything, and competing auto
 remain held because these reads are not an atomic ownership lock. Online migrations only check
 that privileged bootstrap; they never create it. Production deployment behavior is unchanged.
 
+Dev Helm and kubectl must use the same inherited context/`KUBECONFIG`. All supported namespace
+forms, including `-nVALUE` and `-n=VALUE`, must select `butlers-dev`. Helm-only `--kube-*` /
+`--kubeconfig` flags and any `HELM_KUBE*` environment key are refused before render/query;
+their values are never reported. Use the shared inherited context rather than Helm-only overrides.
+
 `localSecrets.source` (chart default `local`, dev `bws`) chooses whether `make secrets-*` or
 External Secrets owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator
 guide.

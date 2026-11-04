@@ -30,6 +30,11 @@ counter with an empty later pod read. A stopped leftover control object is harml
 same-cohost release. The guard never writes, scales or deletes anything and does not replace
 the operator's automation hold: its API observations are not an atomic lock. Prepare the pinned
 checkout's real virtualenv with `uv sync --dev`; guard execution uses `uv run --no-sync`.
+Helm and kubectl must share the normal inherited context/`KUBECONFIG`. Namespace arguments in
+separated, equals or attached short forms must all select `butlers-dev`. The dev guard refuses
+Helm-only `--kube-*` / `--kubeconfig` flags and any `HELM_KUBE*` environment key before
+render/query, checking key names without reading or printing their credential values. It does
+not introduce a separate context/credential plumbing path. Production behavior is unchanged.
 
 ## 2. Exclusive topology replacement; flags remain unchanged
 
