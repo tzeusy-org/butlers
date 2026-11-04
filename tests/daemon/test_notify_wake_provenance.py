@@ -6,12 +6,12 @@ as the row; explicit-target, priority, retry, context-only and unprovable holds 
 park exactly as before.
 """
 
-# ruff: noqa: F811  (butler_dir is the shared fixture imported from the ledger tests)
-
 from __future__ import annotations
 
 import hashlib
 import json
+import uuid
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,20 +21,282 @@ import pytest
 
 from butlers.core.temporal.delivery_db import WAKE_HOLD_KIND_OWNER_QUIET_HOURS, envelope_digest
 from butlers.core_tools._notifications import _wake_hold_provenance
-from tests.daemon.test_notify_attention_ledger import (  # noqa: F401
-    _IN_WINDOW_QUIET_POLICY,
-    _NO_QUIET_POLICY,
-    _configured_owner_default_recipient,
-    _deferred_notification_insert_calls,
-    _make_mock_client,
-    _make_mock_pool,
-    _patch_infra,
-    _registered_approval_hooks,
-    _start_daemon_with_notify,
-    butler_dir,
-)
+from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
+
+# Mocked-daemon harness, kept here verbatim from the pre-S7c ledger tests until this
+# file moves onto booted_daemon too (bu-rvgzmf.14).
+
+
+@contextmanager
+def _registered_approval_hooks(pool: Any):
+    """Install the real approvals runtime for exactly one test pool."""
+    import butlers.core.approvals_hooks as approval_hooks
+    from butlers.modules.approvals.email_guard import (
+        check_email_recipient,
+        check_recipient,
+    )
+    from butlers.modules.approvals.park import park_pending_action
+
+    runtime = approval_hooks.register_approval_hooks(
+        pool,
+        email_guard=check_email_recipient,
+        recipient_guard=check_recipient,
+        park_pending_action=park_pending_action,
+    )
+    try:
+        yield
+    finally:
+        approval_hooks.unregister_approval_hooks(pool, runtime)
+
+
+@pytest.fixture
+def butler_dir(tmp_path: Path) -> Path:
+    """Create a minimal butler directory for testing."""
+    butler_path = tmp_path / "test-butler"
+    butler_path.mkdir()
+    (butler_path / "butler.toml").write_text(
+        """
+[butler]
+name = "test-butler"
+port = 9100
+description = "Test butler"
+
+[butler.db]
+name = "butlers"
+schema = "test_butler"
+
+[[butler.schedule]]
+name = "daily-check"
+cron = "0 9 * * *"
+prompt = "Do the daily check"
+"""
+    )
+    (butler_path / "MANIFESTO.md").write_text("# Test Butler")
+    (butler_path / "CLAUDE.md").write_text("Test butler instructions.")
+    return butler_path
+
+
+def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
+    return {
+        "butler_name": butler_name,
+        "core_groups": None,
+        "catalog_read_sensitivity": "normal",
+        "max_concurrent": 3,
+        "max_queued": 10,
+        "seeded_at": None,
+        "updated_at": None,
+    }
+
+
+def _make_fetchrow_side_effect(*, approvals_policy_row: dict | None):
+    """Build an async side_effect for pool.fetchrow.
+
+    - ``runtime_config`` queries → a valid runtime_config row (daemon boot).
+    - ``contact_info`` + ``is_primary`` queries → is_primary=True (email guard).
+    - ``approvals_policy`` queries → *approvals_policy_row* (the owner-default gate).
+    - ``delivery_preferences`` queries → None (per-butler defer path not configured;
+      this test suite targets the owner-level approvals_policy + context-bus gate).
+    - everything else → None.
+    """
+
+    async def _fetchrow(query: str, *args, **kwargs):
+        if "runtime_config" in query:
+            return _make_runtime_config_row()
+        if "contact_info" in query and "is_primary" in query:
+            return {"is_primary": True}
+        if "approvals_policy" in query:
+            return approvals_policy_row
+        return None
+
+    return _fetchrow
+
+
+def _patch_infra(mock_pool: Any) -> dict[str, Any]:
+    """Patch infrastructure dependencies for daemon tests (mirrors test_notify_entity_id.py)."""
+    mock_db = MagicMock()
+    mock_db.provision = AsyncMock()
+    mock_db.connect = AsyncMock(return_value=mock_pool)
+    mock_db.close = AsyncMock()
+    mock_db.pool = mock_pool
+    mock_db.user = "postgres"
+    mock_db.password = "postgres"
+    mock_db.host = "localhost"
+    mock_db.port = 5432
+    mock_db.db_name = "butlers"
+
+    mock_spawner = MagicMock()
+    mock_spawner.stop_accepting = MagicMock()
+    mock_spawner.drain = AsyncMock()
+
+    mock_adapter = MagicMock()
+    mock_adapter.binary_name = "claude"
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
+
+    mock_credential_store = AsyncMock()
+    mock_credential_store.resolve = AsyncMock(return_value=None)
+
+    return {
+        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
+        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
+        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
+        "validate_module_credentials": patch(
+            "butlers.lifecycle.validate_module_credentials_async",
+            new_callable=AsyncMock,
+            return_value={},
+        ),
+        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
+        "configure_logging": patch("butlers.core.logging.configure_logging"),
+        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
+        "FastMCP": patch("butlers.lifecycle.FastMCP"),
+        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
+        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
+        "connect_switchboard": patch.object(
+            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
+        ),
+        "create_audit_pool": patch.object(
+            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
+        ),
+        "recover_route_inbox": patch.object(
+            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
+        ),
+        "build_credential_store": patch.object(
+            ButlerDaemon,
+            "_build_credential_store",
+            new_callable=AsyncMock,
+            return_value=mock_credential_store,
+        ),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
+        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
+    }
+
+
+async def _start_daemon_with_notify(
+    butler_dir: Path, patches: dict[str, Any]
+) -> tuple[ButlerDaemon, Any]:
+    notify_fn = None
+    mock_mcp = MagicMock()
+
+    def tool_decorator(*_decorator_args, **_decorator_kwargs):
+        def decorator(fn):
+            nonlocal notify_fn
+            if fn.__name__ == "notify":
+                notify_fn = fn
+            return fn
+
+        return decorator
+
+    mock_mcp.tool = tool_decorator
+
+    with (
+        patches["db_from_env"],
+        patches["run_migrations"],
+        patches["validate_credentials"],
+        patches["validate_module_credentials"],
+        patches["init_telemetry"],
+        patches["configure_logging"],
+        patches["sync_schedules"],
+        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
+        patches["Spawner"],
+        patches["start_mcp_server"],
+        patches["connect_switchboard"],
+        patches["create_audit_pool"],
+        patches["recover_route_inbox"],
+        patches["build_credential_store"],
+        patches["build_runtime_adapter"],
+        patches["shutil_which"],
+    ):
+        daemon = ButlerDaemon(butler_dir)
+        await daemon.start()
+        return daemon, notify_fn
+
+
+def _make_mock_pool(*, approvals_policy_row: dict | None) -> AsyncMock:
+    mock_conn = AsyncMock()
+    mock_conn.execute = AsyncMock(return_value=None)
+    # Git defaults and the runtime row agree: no conditional update or audit append.
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+
+    transaction_depth = 0
+
+    async def enter_transaction() -> None:
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc: object) -> bool:
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = mock_acquire
+    mock_pool.fetchval = AsyncMock(return_value=str(uuid.uuid4()))
+    mock_pool.execute = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(
+        side_effect=_make_fetchrow_side_effect(approvals_policy_row=approvals_policy_row)
+    )
+    mock_pool.fetch = AsyncMock(return_value=[])
+    return mock_pool
+
+
+def _make_mock_client() -> Any:
+    mock_call_result = MagicMock()
+    mock_call_result.is_error = False
+    mock_call_result.data = {"status": "ok", "notification_id": "notif-123"}
+    mock_call_result.content = [MagicMock(text='{"status":"ok"}')]
+
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(return_value=mock_call_result)
+    return mock_client
+
+
+@contextmanager
+def _configured_owner_default_recipient(daemon: ButlerDaemon):
+    """Model a configured owner channel for default-recipient notify tests."""
+    owner_contact = MagicMock(roles=["owner"])
+    with (
+        patch.object(
+            daemon,
+            "_resolve_default_notify_recipient",
+            new=AsyncMock(return_value="123456789"),
+        ),
+        patch(
+            "butlers.identity.resolve_contact_by_channel",
+            new=AsyncMock(return_value=owner_contact),
+        ),
+    ):
+        yield
+
+
+def _deferred_notification_insert_calls(mock_pool: AsyncMock) -> list[tuple[Any, ...]]:
+    """Return fetchval call args whose query persists deferred notifications."""
+    return [
+        call.args
+        for call in mock_pool.fetchval.await_args_list
+        if call.args and "INSERT INTO deferred_notifications" in call.args[0]
+    ]
+
+
+_IN_WINDOW_QUIET_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
+
+
+_NO_QUIET_POLICY = {"quiet_start_hour": None, "quiet_end_hour": None, "timezone": "UTC"}
+
 
 _OWNER_CHAT = "123456789"
 _NOW = datetime(2026, 10, 19, 23, 30, tzinfo=UTC)

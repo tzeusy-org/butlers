@@ -78,3 +78,26 @@ async def test_a_refused_boot_is_replaced_not_reused(shared_booted_daemon) -> No
     assert booted.daemon is not _seen["retired"]
     count = await booted.daemon.db.pool.fetchval("SELECT count(*) FROM route_inbox")
     assert count == 0
+
+
+async def test_an_attention_ledger_row_is_refused(shared_booted_daemon) -> None:
+    from butlers.core.attention_ledger import record_attention_event
+
+    booted = await shared_booted_daemon()
+    row_id = await record_attention_event(
+        booted.daemon.db.pool, origin_butler="general", source="notify", outcome="delivered"
+    )
+    assert row_id is not None
+
+    with pytest.raises(SharedDaemonMutated, match="attention_ledger"):
+        await shared_booted_daemon.verify()
+
+
+async def test_a_scheduled_task_is_refused(shared_booted_daemon) -> None:
+    from butlers.core.scheduler.crud import schedule_create
+
+    booted = await shared_booted_daemon()
+    await schedule_create(booted.daemon.db.pool, "one-off", "0 9 * * *", "Check in")
+
+    with pytest.raises(SharedDaemonMutated, match="scheduled_tasks"):
+        await shared_booted_daemon.verify()
