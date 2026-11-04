@@ -101,11 +101,19 @@ class ApprovalsParking:
             tool_args=args,
             allow_standing_rule=reservation.decision.allow_standing_rule,
             recipient_is_owner=reservation.recipient == "owner",
+            recipient_args=capability.recipient_params.argument_names,
             safety_args=capability.safety_args,
             origin_butler=capability.domain,
         )
         return ParkReceipt(str(outcome.action_id), outcome.rule_id is not None)
 
     async def cancel(self, domain: str, goal_id: UUID, approval_refs: list[str]) -> None:
-        # Only an ended goal cancels, so every open action of it in the domain goes.
-        await cancel_goal_effects(self._pool(domain), goal_id)
+        # Exactly the refs whose effects the broker cancelled: an action whose
+        # effect was dispatched or settled is never ended here (D14).
+        action_ids = []
+        for ref in approval_refs:
+            try:
+                action_ids.append(UUID(ref))
+            except (TypeError, ValueError):
+                continue  # Not an action this module issued.
+        await cancel_goal_effects(self._pool(domain), goal_id, action_ids)

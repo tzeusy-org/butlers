@@ -458,6 +458,16 @@ async def test_stop_cancels_parked_effects_and_a_late_approval_never_dispatches(
         first = await w.broker.call(goal, token, NOTIFY.identity, args)
         second_args = {**args, "message": "Hello again"}
         second = await w.broker.call(goal, token, NOTIFY.identity, second_args)
+        # A rule-approved effect that already committed is never ended by Stop (D14).
+        ruled = {"entity_id": str(uuid4()), "message": "Done", "channel": "telegram"}
+        await w.domain.execute(
+            "INSERT INTO approval_rules (id, tool_name, arg_constraints, description) "
+            "VALUES ($1, 'notify', $2::jsonb, 'owner rule')",
+            uuid4(),
+            {"entity_id": {"type": "exact", "value": ruled["entity_id"]}},
+        )
+        committed = await w.broker.call(goal, token, NOTIFY.identity, ruled)
+        assert committed.status == "committed"
         await w.owner.execute("UPDATE switchboard.goals SET status = 'stopped' WHERE id = $1", goal)
         # An approval that arrives after Stop, before cancellation ran, is not dispatched.
         late = await _refused(
@@ -475,6 +485,8 @@ async def test_stop_cancels_parked_effects_and_a_late_approval_never_dispatches(
             [first.effect_id, second.effect_id],
         )
         assert events == 2
+        assert (await w.action(committed.effect_id))["status"] == "approved"
+        assert (await w.effect(committed.effect_id))["status"] == "committed"
         refused = await _refused(w.broker.call(goal, token, NOTIFY.identity, args))
         assert refused.reason is Reason.GOAL
 

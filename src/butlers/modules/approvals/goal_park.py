@@ -6,12 +6,19 @@ the broker's effect id, so a repeated park resolves to the same action.
 
 Standing rules are matched at park time only when the broker allows it (never
 for park-only grants, ``always_per_event`` tools, administer or risky
-actuation). For an exposed lineage only two kinds of rule apply
-(REQ-capability-authorization-006): one whose recipient is the owner, or one
-that is template-pinned. This module recognises template pins conservatively:
-every supplied argument must carry an ``exact`` constraint. Typed-slot
-templates are not yet recognised and so park. Every declared safety argument
-must be pinned by any matching rule.
+actuation), through the approval gate's own admission
+(``gate.admit_standing_rule``): owner-permission admission for fact rules and
+every safety argument pinned. A tool whose rule approval must freeze its
+arguments (``gate.RULE_PREPARED_TOOLS``) always parks here: the freeze would
+rewrite the arguments the broker's effect digest commits to.
+
+For an exposed lineage only two kinds of rule apply
+(REQ-capability-authorization-006), judged on the rule itself, never on the
+call: one whose own recipient is the owner (it exactly pins every recipient
+argument the call supplies, and the call's recipient is the owner), or one that
+is template-pinned. Template pins are recognised conservatively: the call
+supplies at least one argument and the rule pins every one exactly. Typed-slot
+templates are not yet recognised and so park.
 """
 
 from __future__ import annotations
@@ -23,14 +30,10 @@ from typing import Any
 
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+from butlers.modules.approvals.gate import RULE_PREPARED_TOOLS, admit_standing_rule
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.park import park_pending_action
-from butlers.modules.approvals.rules import (
-    claim_rule_use_sql,
-    constraint_pins_value,
-    match_rules_from_list,
-    parse_constraints,
-)
+from butlers.modules.approvals.rules import claim_rule_use_sql, parse_constraints
 
 _PARK_LIFETIME = timedelta(hours=48)
 
@@ -57,21 +60,25 @@ def _exact(constraint: Any) -> bool:
     return constraint != "*"  # A bare legacy value is an exact pin.
 
 
-def _eligible(
-    rule: Any,
+def _exposed_eligible(
+    rule: dict[str, Any],
     args: dict[str, Any],
-    lineage: GoalLineage,
+    recipient_args: tuple[str, ...],
     recipient_is_owner: bool,
-    safety_args: tuple[str, ...],
 ) -> bool:
-    constraints = parse_constraints(rule["arg_constraints"])
-    if any(
-        not constraint_pins_value(constraints.get(name)) for name in safety_args if name in args
-    ):
+    """An owner-recipient or template-pinned rule (REQ-capability-authorization-006)."""
+    try:
+        constraints = parse_constraints(rule.get("arg_constraints", {}))
+    except Exception:  # noqa: BLE001 - a malformed rule never approves
         return False
-    if not lineage.exposed or recipient_is_owner:
-        return True
-    return all(_exact(constraints.get(name, "*")) for name in args)
+    if not isinstance(constraints, dict):
+        return False
+
+    def pinned(names) -> bool:
+        return bool(names) and all(_exact(constraints.get(name, "*")) for name in names)
+
+    named = [name for name in recipient_args if name in args]
+    return (recipient_is_owner and pinned(named)) or pinned(list(args))
 
 
 async def _set_lineage(connection, lineage: GoalLineage) -> None:
@@ -95,6 +102,7 @@ async def park_goal_effect(
     tool_args: dict[str, Any],
     allow_standing_rule: bool,
     recipient_is_owner: bool,
+    recipient_args: tuple[str, ...] = (),
     safety_args: tuple[str, ...] = (),
     origin_butler: str,
 ) -> GoalParkOutcome:
@@ -106,19 +114,24 @@ async def park_goal_effect(
         )
         if existing is not None:
             return GoalParkOutcome(existing["id"], existing["approval_rule_id"])
-        if allow_standing_rule:
-            rows = await connection.fetch(
-                "SELECT * FROM approval_rules WHERE tool_name = $1 AND active = true "
-                "ORDER BY created_at DESC, id ASC",
+        if allow_standing_rule and tool_name not in RULE_PREPARED_TOOLS:
+            admission = await admit_standing_rule(
+                connection,
                 tool_name,
+                tool_args,
+                frozenset(safety_args),
+                eligible=(
+                    (
+                        lambda rule: _exposed_eligible(
+                            rule, tool_args, recipient_args, recipient_is_owner
+                        )
+                    )
+                    if lineage.exposed
+                    else None
+                ),
             )
-            eligible = [
-                row
-                for row in rows
-                if _eligible(row, tool_args, lineage, recipient_is_owner, safety_args)
-            ]
-            rule = match_rules_from_list(tool_name, tool_args, eligible)
-            if rule is not None:
+            rule_id = admission.rule["id"] if admission.rule is not None else None
+            if rule_id is not None:
                 claimed = await connection.fetchrow(
                     "WITH claimed AS (" + claim_rule_use_sql(rule_param=3, now_param=4) + ") "
                     "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, "
@@ -130,7 +143,7 @@ async def park_goal_effect(
                     "$7::uuid, $8::smallint, $9::boolean, $10::text FROM claimed RETURNING id",
                     lineage.effect_id,
                     tool_name,
-                    rule.id,
+                    rule_id,
                     now,
                     tool_args,
                     lineage.goal_id,
@@ -145,12 +158,12 @@ async def park_goal_effect(
                         ApprovalEventType.ACTION_AUTO_APPROVED,
                         actor="system:capability_broker",
                         action_id=lineage.effect_id,
-                        rule_id=rule.id,
+                        rule_id=rule_id,
                         reason="standing rule matched at goal park",
                         metadata={"tool_name": tool_name, "goal_id": str(lineage.goal_id)},
                         occurred_at=now,
                     )
-                    return GoalParkOutcome(lineage.effect_id, rule.id)
+                    return GoalParkOutcome(lineage.effect_id, rule_id)
         await park_pending_action(
             connection,
             action_id=lineage.effect_id,
@@ -189,19 +202,26 @@ async def _abandon_unexecuted(connection, action_id: uuid.UUID, goal_id: uuid.UU
     return True
 
 
-async def cancel_goal_effects(pool: Any, goal_id: uuid.UUID) -> list[uuid.UUID]:
-    """End a stopped goal's open actions in one transaction.
+async def cancel_goal_effects(
+    pool: Any, goal_id: uuid.UUID, action_ids: list[uuid.UUID]
+) -> list[uuid.UUID]:
+    """End the named open actions of a stopped goal in one transaction.
 
-    Pending actions are ``cancelled`` through the canonical transition, which
-    also fences their owner prompts; approved actions that never executed are
-    ``abandoned``.
+    ``action_ids`` are exactly the effects the broker cancelled (never one it
+    dispatched or settled, D14), so an approved action whose effect already
+    ran is never touched. Pending actions are ``cancelled`` through the
+    canonical transition, which also fences their owner prompts; approved
+    actions that never executed are ``abandoned``.
     """
     ended: list[uuid.UUID] = []
+    if not action_ids:
+        return ended
     async with pool.acquire() as connection, connection.transaction():
         rows = await connection.fetch(
-            "SELECT id, status FROM pending_actions "
-            "WHERE goal_id = $1 AND status IN ('pending', 'approved') ORDER BY id",
+            "SELECT id, status FROM pending_actions WHERE goal_id = $1 "
+            "AND id = ANY($2::uuid[]) AND status IN ('pending', 'approved') ORDER BY id",
             goal_id,
+            action_ids,
         )
         for row in rows:
             if row["status"] == ActionStatus.PENDING.value:

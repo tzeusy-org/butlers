@@ -140,7 +140,8 @@ rejected, expired, executed, abandoned, cancelled -> (terminal)
 ```
 
 `cancelled` applies only to actions with RFC 0038 goal lineage: when a goal is
-stopped, `goal_park.cancel_goal_effects` cancels its pending actions through
+stopped, `goal_park.cancel_goal_effects` takes exactly the actions whose broker
+effects were cancelled (never one already dispatched) and cancels the pending ones through
 `transition_pending_action` (an `action_cancelled` event; owner prompts are
 fenced with the `action_rejected` delivery reason code) and abandons its
 approved, never-executed actions (`action_abandoned`). The dashboard's decided-history

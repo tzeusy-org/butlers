@@ -68,10 +68,15 @@ Parking goes through the owning domain's approvals module
 is the effect id; it records the exact arguments and the goal lineage (goal,
 invocation, depth, exposure, goal origin). The broker passes whether a standing
 rule may apply: never for park-only grants, `always_per_event` tools,
-`administer`, or non-safe actuation. For an exposed lineage the module admits
-only a rule whose recipient is the owner or one pinning every supplied argument
-exactly; typed-slot templates are not yet recognised and so park. A matching
-rule approves at once and the broker runs the stored call.
+`administer`, or non-safe actuation. Rules are admitted by the approval gate's
+own path (`gate.admit_standing_rule`: owner-permission admission for fact rules,
+every safety argument pinned). A tool whose rule approval must freeze its
+arguments (`relationship_assert_fact`) always parks, because the freeze would
+rewrite the digested arguments. For an exposed lineage the rule itself must
+qualify: it exactly pins every recipient argument of a call to the owner, or it
+exactly pins every supplied argument (at least one); typed-slot templates are
+not yet recognised and so park. A matching rule approves at once and the broker
+runs the stored call.
 
 `Broker.execute_approved` is the trusted owner-decision entry: it re-checks that
 the goal has not ended, the grant and the catalog, then dispatches the stored
@@ -81,9 +86,10 @@ row under the same approval reference. An approval for an ended goal cancels
 the effect and its pending action instead.
 
 After Stop commits, `Broker.cancel_parked` cancels every effect that has not
-reached a domain, and ends the goal's open domain actions: pending ones become
-`cancelled` (an `action_cancelled` event, owner prompts fenced) and approved,
-never-executed ones become `abandoned`.
+reached a domain, and ends exactly those effects' domain actions: pending ones
+become `cancelled` (an `action_cancelled` event, owner prompts fenced) and
+approved, never-executed ones become `abandoned`. An action whose effect was
+dispatched or settled is never touched (D14).
 
 ## Fail closed
 
