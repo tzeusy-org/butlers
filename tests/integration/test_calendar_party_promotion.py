@@ -1,7 +1,8 @@
 """REQ-module-calendar-030: owner self-submissions cannot teach delegated autonomy.
 
 Migrated PostgreSQL approval/history writes with a separate committed observer;
-no provider execution or transport is claimed by this database control.
+the final case also exercises the real executor with a synthetic provider.
+No live OAuth or external provider execution is claimed.
 """
 
 import asyncio

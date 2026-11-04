@@ -366,11 +366,12 @@ def communication_parties(
     if domain == "notify":
         parties.append(("other", f"home_assistant:notify:{service}"))
     selectors = dict(target or {})
+    payload = data or {}
     for key in ("entity_id", "device_id", "media_player_entity_id"):
-        if key in (data or {}):
+        if key in payload:
             if key in selectors:
                 return True, None
-            selectors[key] = data[key]
+            selectors[key] = payload[key]
     for key, values in selectors.items():
         if key not in {"entity_id", "device_id", "media_player_entity_id"}:
             return True, None

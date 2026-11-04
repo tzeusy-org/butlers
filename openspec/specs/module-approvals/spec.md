@@ -522,7 +522,18 @@ Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 #### Scenario: Missing or disabled config
 
 - **WHEN** `[modules.approvals]` is absent or `enabled = false`
-- **THEN** the module does not wrap any tools and no approval gates are active
+- **THEN** the module does not install generic tool wrappers
+- **AND** a missing configuration declares no domain producers
+
+#### Scenario: Explicit domain producer capability
+
+- **WHEN** configuration declares `domain_producers`
+- **THEN** it MUST be a unique typed list containing only `calendar` and/or `google_drive`, defaulting to empty
+- **AND** only those owning domain enqueuers MAY be wired when generic `enabled` is false
+- **AND** wiring MUST require the actual active owning approvals module, callable executor and owning pool
+- **AND** this declaration MUST NOT grant approval authority, create a standing rule or bypass any domain gate
+- **AND** generic `enabled = true` MUST retain its full existing gated-tool completeness validation
+- **AND** unrelated tools MUST retain their existing gating behavior
 
 #### Scenario: Gated tools completeness for outbound butlers
 

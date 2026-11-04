@@ -293,8 +293,11 @@ class MutationsMixin:
                     "message": "The queued invitation no longer matches this request.",
                 }
                 try:
+                    if not isinstance(tool_args, dict):
+                        return idempotency_key, changed
                     action_id = uuid.UUID(existing_result["action_id"])
-                    row = await self._db.pool.fetchrow(
+                    pool = getattr(getattr(self, "_db", None), "pool", None)
+                    row = await pool.fetchrow(
                         "SELECT tool_name, tool_args, status FROM pending_actions WHERE id=$1",
                         action_id,
                     )

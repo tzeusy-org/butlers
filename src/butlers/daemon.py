@@ -2153,7 +2153,8 @@ class ButlerDaemon:
             return str(action_id)
 
         for set_enqueuer in setters:
-            set_enqueuer(_enqueue_overlap_action)
+            if callable(set_enqueuer):
+                set_enqueuer(_enqueue_overlap_action)
         logger.info("Wired calendar overlap-approval enqueuer via approvals module")
 
     def _wire_module_runtime(self) -> None:

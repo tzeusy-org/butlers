@@ -56,20 +56,22 @@ async def gate_calendar_party_mutation(
     if await parties_are_owner(pool, parties):
         return None
     binding = None
+    result: dict[str, Any] | None = None
     if getattr(module, "_approval_enqueuer", None) is not None:
         try:
             binding = await calendar_party_binding(module, calendar_id)
         except Exception:
-            return {
+            result = {
                 "status": "approval_unavailable",
                 "message": "The owning calendar account could not be verified.",
             }
-    result = await gate_party_call(
-        module,
-        tool_name=tool_name,
-        arguments=arguments,
-        parties=parties,
-    )
+    if result is None:
+        result = await gate_party_call(
+            module,
+            tool_name=tool_name,
+            arguments=arguments,
+            parties=parties,
+        )
     if result is not None and result["status"] == "approval_required":
         result.update(tool_name=tool_name, action_type=action_type, party_binding=binding)
     if result is not None:

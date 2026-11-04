@@ -5856,3 +5856,39 @@ async def test_party_pending_retry_is_bound_and_never_reactivates(change):
         assert replay["status"] == "request_changed"
     module._record_projection_action.assert_not_awaited()
     assert module._provider.create_calls == []
+
+
+async def test_unverified_calendar_party_account_finalizes_no_effect_refusal(monkeypatch):
+    from butlers.modules.calendar.party import gate_calendar_party_mutation
+
+    monkeypatch.setattr(
+        "butlers.modules.calendar.party.parties_are_owner", AsyncMock(return_value=False)
+    )
+    provider = SimpleNamespace(name="google", create_event=AsyncMock())
+    module = SimpleNamespace(
+        _db=SimpleNamespace(pool=object()),
+        _provider=provider,
+        _butler_name="general",
+        _approval_enqueuer=AsyncMock(),
+        _verified_response_account=AsyncMock(side_effect=RuntimeError("unverified")),
+        _finalize_workspace_mutation=AsyncMock(),
+    )
+    result = await gate_calendar_party_mutation(
+        module,
+        tool_name="calendar_create_event",
+        tool_args={"calendar_id": "concrete-calendar"},
+        attendees=["guest@example.test"],
+        calendar_id="concrete-calendar",
+        action_type="workspace_user_create",
+        request_id="account-refusal",
+        idempotency_key="account-refusal",
+        action_payload={},
+        source_id=None,
+        origin_ref=None,
+    )
+    assert result["status"] == "approval_unavailable"
+    module._approval_enqueuer.assert_not_awaited()
+    provider.create_event.assert_not_awaited()
+    module._finalize_workspace_mutation.assert_awaited_once()
+    assert module._finalize_workspace_mutation.await_args.kwargs["action_status"] == "noop"
+    assert module._finalize_workspace_mutation.await_args.kwargs["action_result"] == result
