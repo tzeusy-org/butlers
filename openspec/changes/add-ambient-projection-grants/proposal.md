@@ -32,10 +32,11 @@ decision bu-kf3n4i (option A) and stays removed.
 
 ## Deferred
 
-- Settings > Projections UI with the last-fetch column and revoke verb (grants slice S3).
+None remaining in this change: Settings > Projections UI (`/settings/projections`, last-fetch
+column, revoke, confirm-gated rotate) and one-verb rotate shipped with grants slice S3.
+
 - Text and 1-bit PNG formats, the per-grant response cache, and the Home Assistant package
   example under `docs/` (glance slices S2 and S3).
-- Grant rotation as one verb; today the owner mints a new grant and revokes the old one.
 
 ## Impact
 

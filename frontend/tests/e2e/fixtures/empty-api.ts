@@ -26,7 +26,7 @@ export function boardRow(name: string): ResponseOf<"getButlersBoard">["data"]["r
     cell_tone: "neutral", eligibility: "active", quarantine_reason: null, quarantined_at: null,
     sessions_24h: 0, cost_today: 0, load_pct: null, max_concurrent: null, active_session_count: 0,
     last_session_at: null, last_heartbeat_at: null, heartbeat_age_seconds: null,
-    heartbeat_unavailable: false, schema_unreachable: false, hourly_stripe: [], hourly_total: 0,
+    heartbeat_unavailable: false, schema_unreachable: false, hourly_buckets: [], hourly_total: 0,
     cadence_seconds: null, cadence_label: null, silence_seconds: null, cadence_status: "unknown" };
 }
 

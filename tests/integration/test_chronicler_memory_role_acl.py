@@ -372,8 +372,11 @@ async def test_downgrade_refuses_lossy_revoke_and_preserves_preexisting_grants(
                 text("GRANT SELECT, REFERENCES ON chronicler_mem.facts TO butler_chronicler_rw")
             )
         await run_migrations(url, chain="memory", schema="chronicler_mem")
-        before = await _catalog(url)
         config = _build_alembic_config(url, ["memory"], target_schema="chronicler_mem")
+        # Step back to mem_015 (later revisions are lossless) so the refusal under
+        # test is mem_015's own downgrade.
+        await asyncio.to_thread(command.downgrade, config, "mem_015")
+        before = await _catalog(url)
         with pytest.raises(DBAPIError) as error:
             await asyncio.to_thread(command.downgrade, config, "mem_014")
         assert getattr(error.value.orig, "pgcode", None) == "55000"

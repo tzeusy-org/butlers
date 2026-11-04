@@ -26,6 +26,18 @@ export function hourlySlotStarts(nowMs: number, count = 24): number[] {
   return Array.from({ length: count }, (_, i) => last - (count - 1 - i) * HOUR_MS);
 }
 
+export const DAY_MS = 86_400_000;
+
+/**
+ * Start instants (epoch ms) of `count` consecutive UTC-day slots, oldest
+ * first, the last one being the UTC day that contains `nowMs`. A backend
+ * `YYYY-MM-DD` day key parses (Date.parse) to exactly one of these instants.
+ */
+export function dailySlotStarts(nowMs: number, count: number): number[] {
+  const last = Math.floor(nowMs / DAY_MS) * DAY_MS;
+  return Array.from({ length: count }, (_, i) => last - (count - 1 - i) * DAY_MS);
+}
+
 /**
  * Place `rows` into `slotStarts` by their bucket-start timestamp.
  *
@@ -33,16 +45,42 @@ export function hourlySlotStarts(nowMs: number, count = 24): number[] {
  * timestamp, are dropped. A slot no row matches is `null`, so a caller can draw
  * "not reported" distinctly from a measured zero.
  */
-export function buildBucketSeries<T>(
+export function buildBucketSeries<T, V = number>(
   rows: readonly T[],
   bucketStart: (row: T) => string,
-  value: (row: T) => number,
+  value: (row: T) => V,
   slotStarts: readonly number[],
-): (number | null)[] {
-  const byStart = new Map<number, number>();
+): (V | null)[] {
+  const byStart = new Map<number, V>();
   for (const row of rows) {
     const ms = Date.parse(bucketStart(row));
     if (!Number.isNaN(ms)) byStart.set(ms, value(row));
   }
   return slotStarts.map((start) => byStart.get(start) ?? null);
+}
+
+/**
+ * Re-key a series the server aligned to `seriesStarts` (ISO bucket starts,
+ * one per element) onto the viewer's `slotStarts` (bu-s11n0s.5.1), so a slot
+ * lands at its own hour even when the two windows end at different hours.
+ * An empty series stays empty (unreported). A response without starts (older
+ * cache) is returned as-is: it was always aligned to the current window.
+ */
+export function rekeySeries<V>(
+  series: readonly V[] | undefined,
+  seriesStarts: readonly string[] | undefined,
+  slotStarts: readonly number[],
+): (V | null)[] | undefined {
+  if (!series?.length || !seriesStarts || seriesStarts.length !== series.length) return series?.slice();
+  return buildBucketSeries(series.map((_, i) => i), (i) => seriesStarts[i], (i) => series[i], slotStarts);
+}
+
+/**
+ * Accessible summary of a strip's listening states (bu-s11n0s.5): the number
+ * of deaf hourly slots as "not listening Nh", or "" when none are deaf. Only
+ * `deaf` counts: `unknown` and unreported slots make no liveness claim.
+ */
+export function describeNotListening(listening: readonly (string | null)[] | undefined): string {
+  const deaf = listening?.filter((state) => state === "deaf").length ?? 0;
+  return deaf > 0 ? `not listening ${deaf}h` : "";
 }

@@ -131,6 +131,22 @@ Lifecycle reactions on inbound messages (in progress, success, failure) are set 
 Switchboard through the module's `react_for_ingest()`; the emoji constants live in
 `src/butlers/core/channel_reactions.py`. A rejected reaction is logged and never blocks processing.
 
+## Dashboard links in Telegram messages
+
+Every dashboard link the bot puts in a message is built from `DASHBOARD_URL` by one helper,
+`butlers.core.dashboard_links` (`dashboard_base_url()`, `dashboard_link()`). With `DASHBOARD_URL`
+unset the message is sent **without** a link and one warning is logged: a `localhost` URL is dead on
+a phone. Approval buttons are resolved separately by
+`roster/switchboard/tools/notification/self_links.py`, which is https-only.
+
+The routes a message may link to are listed in `frontend/tests/e2e/telegram-minted-routes.json`
+(approvals queue and dossier, secrets passport, `/system`, the two `/spend` doors, and
+`/settings/models?highlight=`). Rule: **a new Telegram link needs a registry entry** naming the
+payload that must be visible first. `tests/core/test_dashboard_links.py` fails when a seeded door,
+an approval self route or a secrets link is not registered, and when code outside the helper reads
+`DASHBOARD_URL` (non-Telegram redirect builders are on a frozen allowlist in that test). Entries with
+`phone_walk: "pending"` still need a Playwright phone walk in `phone-entry-routes.ts`.
+
 ## Environment Variables
 
 The canonical descriptor supplies provider `telegram` and channel `telegram_bot`;

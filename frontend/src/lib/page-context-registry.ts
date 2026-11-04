@@ -76,6 +76,7 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   // Grants/permissions and model-routing config are sensitive-adjacent: the
   // route alone is useful grounding, but query params/resource detail are not.
   "/settings/permissions": { policy: "none", summary: "Permissions" },
+  "/settings/projections": { policy: "none", summary: "Projections" },
   "/settings/models": { policy: "ref-only", summary: "Models" },
 
   "/entities/index": SNAPSHOT("Entities index"),
