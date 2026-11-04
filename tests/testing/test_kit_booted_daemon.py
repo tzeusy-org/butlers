@@ -98,6 +98,30 @@ async def test_admin_url_reaches_the_daemons_clone_as_its_owner(booted_daemon, t
 
 
 @session_loop
+async def test_other_butlers_chains_migrate_into_their_own_schemas(
+    booted_daemon, tmp_path
+) -> None:
+    # Cross-butler reads (notify resolving an entity's handle from
+    # relationship.entity_facts) need the owning butler's chain in its own schema,
+    # with the booted butler's role kept to production grants.
+    from butlers.testing.db import open_pool
+
+    booted = await booted_daemon(
+        write_butler_config(tmp_path, "general"),
+        chain_schemas={"relationship": "relationship"},
+    )
+
+    pool = await open_pool(booted.admin_url)
+    try:
+        facts = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')::text")
+        in_butler_schema = await pool.fetchval("SELECT to_regclass('general.entity_facts')")
+    finally:
+        await pool.close()
+    assert facts == "relationship.entity_facts"
+    assert in_butler_schema is None
+
+
+@session_loop
 async def test_seeded_credentials_let_credentialed_modules_start(booted_daemon, tmp_path) -> None:
     # Module credentials resolve from the butler's secret store only (no env
     # fallback), so they are seeded on the clone before the daemon starts.

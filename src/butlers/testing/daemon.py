@@ -374,6 +374,7 @@ class DaemonBooter:
         registry: Any = None,
         registered: bool = False,
         credentials: dict[str, str] | None = None,
+        chain_schemas: dict[str, str] | None = None,
     ) -> BootedDaemon:
         """Start the butler in *config_dir* on a fresh clone of *chains* (default ``core``).
 
@@ -385,6 +386,10 @@ class DaemonBooter:
         *credentials* are stored in the butler's secret store before start, where
         module credential checks read them (they never fall back to the environment).
         Pass synthetic values only.
+
+        *chain_schemas* migrates other butlers' chains into their own schemas, for
+        cross-butler reads: ``{"relationship": "relationship"}`` gives the clone
+        ``relationship.entity_facts`` under production grants.
         """
         from butlers.config import load_config
         from butlers.daemon import ButlerDaemon
@@ -402,6 +407,7 @@ class DaemonBooter:
         schemas = dict.fromkeys(chains, schema)
         if registered:
             schemas["switchboard"] = "switchboard"
+        schemas.update(chain_schemas or {})
         # A clean context: an earlier boot left its butler context on this task, and a
         # worker thread inheriting it would route the template build's migration logs
         # into that daemon's DB log handler, on the wrong loop (bu-rvgzmf.12).
@@ -534,6 +540,7 @@ class SharedDaemons:
         extra_toml: str = "",
         registered: bool = False,
         credentials: dict[str, str] | None = None,
+        chain_schemas: dict[str, str] | None = None,
     ) -> BootedDaemon:
         schema = schema or name
         key = (
@@ -543,6 +550,7 @@ class SharedDaemons:
             extra_toml,
             registered,
             tuple(sorted((credentials or {}).items())),
+            tuple(sorted((chain_schemas or {}).items())),
         )
         booted = self._boots.get(key)
         if booted is None:
@@ -553,7 +561,11 @@ class SharedDaemons:
                 extra_toml=extra_toml,
             )
             booted = await self._booter.boot(
-                config_dir, *chains, registered=registered, credentials=credentials
+                config_dir,
+                *chains,
+                registered=registered,
+                credentials=credentials,
+                chain_schemas=chain_schemas,
             )
             self._boots[key] = booted
         _reset_runtime(booted.runtime)

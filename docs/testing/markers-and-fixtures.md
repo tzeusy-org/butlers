@@ -109,10 +109,14 @@ await booted.shutdown()                           # optional; teardown shuts dow
 - `booted_daemon(config_dir, credentials={...})` stores synthetic module
   credentials in the butler's secret store before start; module credential checks
   read only that store, never the environment.
+- `booted_daemon(config_dir, chain_schemas={"relationship": "relationship"})`
+  migrates other butlers' chains into their own schemas, for cross-butler reads
+  under production grants (for example `relationship.entity_facts`).
 - `shared_booted_daemon` shares one boot per module and configuration among tests
   that only read daemon state (rejections, tool listings, status):
   `booted = await shared_booted_daemon("general", registered=True)` takes the same
-  name, chains, `schema=`, `extra_toml=` and `credentials=` as a boot. The fake
+  name, chains, `schema=`, `extra_toml=`, `credentials=` and `chain_schemas=` as a
+  boot. The fake
   runtime is reset before each test. After each test the kit compares row counts in
   `route_inbox`, `sessions`, `public.attention_ledger` and `scheduled_tasks`, and
   the loaded config, with what the test was handed; any change fails the test with
