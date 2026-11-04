@@ -52,6 +52,7 @@ const RuleDetailPage = shellPage('/memory/rules/:ruleId')
 const EpisodeDetailPage = shellPage('/memory/episodes/:episodeId')
 const SettingsConsolePage = shellPage('/settings')
 const SettingsPermissionsPage = shellPage('/settings/permissions')
+const SettingsProjectionsPage = shellPage('/settings/projections')
 const SettingsModelsPage = shellPage('/settings/models')
 const AuditLogPage = shellPage('/audit-log')
 const HealthOverviewPage = shellPage('/health')
@@ -149,6 +150,7 @@ export const routes: RouteObject[] = [
         { path: '/settings', element: routeElement(<SettingsConsolePage />) },
         { path: '/settings/spend', element: <Navigate to="/spend" replace /> },
         { path: '/settings/permissions', element: routeElement(<SettingsPermissionsPage />) },
+        { path: '/settings/projections', element: routeElement(<SettingsProjectionsPage />) },
         { path: '/settings/models', element: routeElement(<SettingsModelsPage />) },
         { path: '/secrets', element: routeElement(<SecretsPage />) },
         { path: '/education', element: routeElement(<EducationPage />) },

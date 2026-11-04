@@ -4032,7 +4032,8 @@ class TestCalendarApprovalAuthority:
                 if "default" in declaration:
                     assert complete[name] == declaration["default"]
 
-    async def test_real_mcp_caller_bypass_cannot_delete_or_toggle(self):
+    @pytest.mark.parametrize("approvals_available", [True, False])
+    async def test_real_mcp_caller_bypass_cannot_delete_or_toggle(self, approvals_available):
         from fastmcp.exceptions import ToolError
 
         mcp = FastMCP("calendar-approval-attack")
@@ -4053,19 +4054,21 @@ class TestCalendarApprovalAuthority:
         module._delete_native_reminder_event = AsyncMock(return_value=True)
         module._toggle_native_reminder_event = AsyncMock(return_value={"id": target})
         module._refresh_butler_projection = AsyncMock(return_value={})
-        module.set_approval_enqueuer(AsyncMock(return_value="pending-action"))
+        if approvals_available:
+            module.set_approval_enqueuer(AsyncMock(return_value="pending-action"))
+        expected_status = "approval_required" if approvals_available else "approval_unavailable"
         for name, args in (
             ("calendar_delete_butler_event", {"event_id": str(target), "scope": "series"}),
             ("calendar_toggle_butler_event", {"event_id": str(target), "enabled": False}),
         ):
             ordinary = await mcp.call_tool(name, args)
-            assert ordinary.structured_content["status"] == "approval_required"
+            assert ordinary.structured_content["status"] == expected_status
             try:
                 attempted = await mcp.call_tool(name, {**args, "_approval_bypass": True})
             except (ToolError, ValidationError):
                 pass
             else:
-                assert attempted.structured_content["status"] == "approval_required"
+                assert attempted.structured_content["status"] == expected_status
         module._delete_native_reminder_event.assert_not_awaited()
         module._toggle_native_reminder_event.assert_not_awaited()
         assert provider.delete_calls == provider.update_calls == provider.create_calls == []
@@ -4466,9 +4469,15 @@ class TestRecurrenceScopedMutation:
         assert mark.await_args.kwargs["cancel"] is True
 
     async def test_delete_following_bounds_until(self) -> None:
-        provider = _RecurringProviderDouble(
-            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        # This fixture leaves nine occurrences after the March boundary.
+        event = self._recurring_event()
+        event = event.model_copy(
+            update={
+                "start_at": event.start_at - timedelta(days=14),
+                "end_at": event.end_at - timedelta(days=14),
+            }
         )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"])
         mod, mcp = await self._make_module(provider)
         with (
             patch(
@@ -4494,8 +4503,11 @@ class TestRecurrenceScopedMutation:
     async def test_delete_series_uses_whole_event_path(self) -> None:
         # recurrence_scope defaults to series → existing whole-series delete path,
         # which calls provider.delete_event, not set_recurrence.
+        event = self._recurring_event().model_copy(
+            update={"recurrence_rule": "FREQ=WEEKLY;BYDAY=TU;COUNT=9"}
+        )
         provider = _RecurringProviderDouble(
-            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+            event=event, recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=9"]
         )
         mod, mcp = await self._make_module(provider)
         with (
@@ -4579,9 +4591,15 @@ class TestRecurrenceScopedMutation:
 
     async def test_update_following_forwards_explicit_entity_clear_to_projection(self) -> None:
         """A remainder event receives the clear while the original series keeps links."""
-        provider = _RecurringProviderDouble(
-            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        # This fixture leaves nine occurrences after the March boundary.
+        event = self._recurring_event()
+        event = event.model_copy(
+            update={
+                "start_at": event.start_at - timedelta(days=21),
+                "end_at": event.end_at - timedelta(days=21),
+            }
         )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"])
         mod, mcp = await self._make_module(provider)
         with (
             patch(
@@ -4610,9 +4628,15 @@ class TestRecurrenceScopedMutation:
         assert remainder_projection.kwargs["clear_entity_ids"] is True
 
     async def test_update_following_carries_recurrence(self) -> None:
-        provider = _RecurringProviderDouble(
-            event=self._recurring_event(), recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"]
+        # This fixture leaves nine occurrences after the March boundary.
+        event = self._recurring_event()
+        event = event.model_copy(
+            update={
+                "start_at": event.start_at - timedelta(days=14),
+                "end_at": event.end_at - timedelta(days=14),
+            }
         )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=WEEKLY;BYDAY=TU"])
         mod, mcp = await self._make_module(provider)
         with (
             patch(
@@ -5386,3 +5410,197 @@ class TestSourceSyncEnabled:
         mod._sync_states["c1"] = CalendarSyncState()
         # full=False (background loop): a disabled source is skipped → returns False.
         assert await mod._sync_calendar("c1", full=False) is False
+
+
+class TestCalendarImpactAdmission:
+    @pytest.mark.parametrize("operation", ["update", "delete"])
+    @pytest.mark.parametrize("scope", ["series", "following"])
+    @pytest.mark.parametrize("approvals_available", [True, False])
+    async def test_large_recurrence_stops_before_provider_write(
+        self, operation, scope, approvals_available
+    ):
+        event = _make_event(
+            start_at=datetime(2026, 3, 3, 14, tzinfo=UTC),
+            end_at=datetime(2026, 3, 3, 15, tzinfo=UTC),
+            recurrence_rule="FREQ=DAILY;COUNT=12",
+        )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=DAILY;COUNT=12"])
+        mod, mcp = await TestRecurrenceScopedMutation()._make_module(provider)
+        mod._prepare_workspace_mutation = AsyncMock(return_value=("impact-key", None))
+        mod._resolve_action_source_id = AsyncMock(return_value=None)
+        mod._finalize_workspace_mutation = AsyncMock()
+        enqueue = AsyncMock(return_value="impact-approval")
+        if approvals_available:
+            mod.set_approval_enqueuer(enqueue)
+        args = {"event_id": event.event_id, "recurrence_scope": scope}
+        if scope == "following":
+            args["instance_start_at"] = event.start_at
+        if operation == "update":
+            args["title"] = "Approved change"
+        with patch("butlers.modules.calendar.mutations.require_permission", new_callable=AsyncMock):
+            result = await (await tool_fn(mcp, f"calendar_{operation}_event"))(**args)
+        assert result["status"] == (
+            "approval_required" if approvals_available else "approval_unavailable"
+        )
+        assert result["impact"] == {"occurrences_touched": 12, "scope": scope}
+        assert provider.update_calls == provider.delete_calls == provider.created_payloads == []
+        assert provider.set_recurrence_calls == []
+        if approvals_available:
+            enqueue.assert_awaited_once()
+            assert enqueue.await_args.args[1]["calendar_id"] == "primary"
+        else:
+            enqueue.assert_not_awaited()
+
+    @pytest.mark.parametrize("action_type", ["workspace_butler_delete", "workspace_butler_toggle"])
+    async def test_workspace_high_impact_without_approvals_refuses(self, action_type):
+        mod = CalendarModule()
+        mod._resolve_action_source_id = AsyncMock(return_value=None)
+        mod._finalize_workspace_mutation = AsyncMock()
+        result = await mod._gate_high_impact_mutation(
+            action_type=action_type,
+            tool_name="calendar_delete_butler_event",
+            tool_args={"event_id": "synthetic"},
+            request_id=None,
+            idempotency_key="impact-key",
+            action_payload={},
+            source_kind="internal",
+        )
+        assert result is not None
+        assert result["status"] == "approval_unavailable"
+
+    @pytest.mark.parametrize("operation", ["update", "delete"])
+    async def test_approved_series_replays_once_on_bound_calendar(self, operation):
+        from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+        from butlers.modules.approvals.executor import execute_approved_action
+        from butlers.modules.approvals.models import ActionStatus
+
+        event = _make_event(
+            start_at=datetime(2026, 3, 3, 14, tzinfo=UTC),
+            end_at=datetime(2026, 3, 3, 15, tzinfo=UTC),
+            recurrence_rule="FREQ=DAILY;COUNT=12",
+        )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=DAILY;COUNT=12"])
+        mod, mcp = await TestRecurrenceScopedMutation()._make_module(provider)
+        mod._resolved_calendar_id = None
+        mod._default_target_calendar_id = "cal-seen"
+        mod._load_projection_action = AsyncMock(return_value=None)
+        mod._record_projection_action = AsyncMock()
+        mod._resolve_action_source_id = AsyncMock(return_value=None)
+        mod._refresh_user_projection = AsyncMock(return_value={})
+        mod._project_provider_mutation = AsyncMock()
+        pool = _CalendarApprovalRow()
+
+        async def enqueue(tool_name, tool_args, summary):
+            pool.park(tool_name, tool_args)
+            return str(pool.row["id"])
+
+        mod.set_approval_enqueuer(enqueue)
+        name = f"calendar_{operation}_event"
+        handler = await tool_fn(mcp, name)
+        args = {"event_id": event.event_id, "request_id": "series-approved"}
+        if operation == "update":
+            args["title"] = "Approved series"
+        parked = await handler(**args)
+        assert parked["status"] == "approval_required"
+        assert provider.update_calls == provider.delete_calls == []
+        stored = pool.row["tool_args"]
+        assert stored["calendar_id"] == "cal-seen"
+        assert stored["recurrence_scope"] == "series"
+        mod._default_target_calendar_id = "cal-new"
+        mod._load_projection_action.return_value = ("pending", parked, None)
+        repeated = await handler(**args)
+        assert repeated["status"] == "pending"
+        assert provider.update_calls == provider.delete_calls == []
+        decision = await transition_pending_action(
+            pool,
+            action_id=pool.row["id"],
+            target_status=ActionStatus.APPROVED,
+            decided_by="owner",
+            event_actor="owner",
+            event_reason="approve exact series",
+        )
+        assert decision.changed
+        tampered = await execute_approved_action(
+            pool, pool.row["id"], name, {**stored, "calendar_id": "other"}, handler
+        )
+        assert not tampered.success
+        assert provider.update_calls == provider.delete_calls == []
+        outcomes = [
+            await execute_approved_action(pool, pool.row["id"], name, stored, handler)
+            for _ in range(2)
+        ]
+        assert outcomes[0].success
+        assert outcomes[1].to_dict() == outcomes[0].to_dict()
+        effects = provider.update_calls if operation == "update" else provider.delete_calls
+        assert len(effects) == 1
+        assert effects[0]["calendar_id"] == "cal-seen"
+        assert provider.set_recurrence_calls == provider.created_payloads == []
+
+    @pytest.mark.parametrize("operation", ["update", "delete"])
+    @pytest.mark.parametrize("scope", ["this", "following", "series"])
+    async def test_no_approvals_low_impact_still_writes(self, operation, scope):
+        count = 12 if scope == "this" else 9
+        event = _make_event(
+            start_at=datetime(2026, 3, 3, 14, tzinfo=UTC),
+            end_at=datetime(2026, 3, 3, 15, tzinfo=UTC),
+            recurrence_rule=f"FREQ=DAILY;COUNT={count}",
+        )
+        provider = _RecurringProviderDouble(
+            event=event, recurrence=[f"RRULE:FREQ=DAILY;COUNT={count}"]
+        )
+        mod, mcp = await TestRecurrenceScopedMutation()._make_module(provider)
+        mod._resolve_action_source_id = AsyncMock(return_value=None)
+        mod._finalize_workspace_mutation = AsyncMock()
+        mod._refresh_user_projection = AsyncMock(return_value={})
+        mod._project_provider_mutation = AsyncMock()
+        mod._mark_instances_exception = AsyncMock()
+        args = {"event_id": event.event_id, "recurrence_scope": scope}
+        if scope != "series":
+            args["instance_start_at"] = event.start_at
+        if operation == "update":
+            args["title"] = "Low impact"
+        result = await (await tool_fn(mcp, f"calendar_{operation}_event"))(**args)
+        assert result["status"] == ("updated" if operation == "update" else "deleted")
+        if scope == "series":
+            effects = provider.update_calls if operation == "update" else provider.delete_calls
+            assert len(effects) == 1
+        else:
+            assert len(provider.set_recurrence_calls) == 1
+            assert len(provider.created_payloads) == (1 if operation == "update" else 0)
+
+    async def test_refusal_replays_without_phantom_pending_and_new_request_can_park(self):
+        event = _make_event(
+            start_at=datetime(2026, 3, 3, 14, tzinfo=UTC),
+            end_at=datetime(2026, 3, 3, 15, tzinfo=UTC),
+            recurrence_rule="FREQ=DAILY;COUNT=10",
+        )
+        provider = _RecurringProviderDouble(event=event, recurrence=["RRULE:FREQ=DAILY;COUNT=10"])
+        mod, mcp = await TestRecurrenceScopedMutation()._make_module(provider)
+        rows = {}
+
+        async def record(**row):
+            rows[row["idempotency_key"]] = (
+                row["action_status"],
+                row.get("action_result"),
+                row.get("error"),
+            )
+
+        async def load(key):
+            return rows.get(key)
+
+        mod._record_projection_action = record
+        mod._load_projection_action = load
+        mod._resolve_action_source_id = AsyncMock(return_value=None)
+        handler = await tool_fn(mcp, "calendar_delete_event")
+        refused = await handler(event_id=event.event_id, request_id="refused")
+        assert refused["status"] == "approval_unavailable"
+        assert list(rows.values())[0][0] == "noop"
+        enqueue = AsyncMock(return_value="now-available")
+        mod.set_approval_enqueuer(enqueue)
+        repeated = await handler(event_id=event.event_id, request_id="refused")
+        assert repeated == {**refused, "idempotent_replay": True}
+        enqueue.assert_not_awaited()
+        fresh = await handler(event_id=event.event_id, request_id="fresh")
+        assert fresh["status"] == "approval_required"
+        enqueue.assert_awaited_once()
+        assert provider.delete_calls == []

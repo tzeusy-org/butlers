@@ -541,6 +541,22 @@ function PermissionsPanel({
   );
 }
 
+// Projections panel — static summary
+function ProjectionsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
+  return (
+    <PanelShell
+      title="Projections"
+      description="Glance surfaces, their last fetch, rotate and revoke."
+      href="/settings/projections"
+      onNavigate={onNavigate}
+    >
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        See which wall displays, e-ink panels, and sensors read a glance, and cut one off.
+      </p>
+    </PanelShell>
+  );
+}
+
 // Secrets panel — static summary
 function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
   return (
@@ -683,6 +699,9 @@ export default function SettingsConsolePage() {
 
         {/* Secrets — static panel (Google OAuth app credentials now live here) */}
         <SecretsPanel onNavigate={handleNavigate} />
+
+        {/* Projections — static panel (navigates to sub-route) */}
+        <ProjectionsPanel onNavigate={handleNavigate} />
       </div>
 
       {/* ------------------------------------------------------------------ */}

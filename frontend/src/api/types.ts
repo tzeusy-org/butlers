@@ -138,9 +138,15 @@ export interface BoardRow {
   heartbeat_age_seconds: number | null;
   heartbeat_unavailable: boolean;
   schema_unreachable: boolean;
-  hourly_stripe: number[];
-  hourly_total: number;
-  /** True when this row's hourly-activity query failed -- hourly_stripe/hourly_total are a fabricated zero-fill in that case. */
+  /**
+   * Session counts for the last 24 UTC hours, keyed by bucket start
+   * (bu-s11n0s.5.1). Dense on success (a measured zero is a row); empty when
+   * the hourly query failed, so no hour is ever drawn as a fabricated zero.
+   */
+  hourly_buckets: { hour_start: string; sessions_count: number }[];
+  /** Sum of hourly_buckets; null when the hourly query failed. */
+  hourly_total: number | null;
+  /** True when this row's hourly-activity query failed -- hourly_buckets is empty and hourly_total null. */
   stripe_source_error?: boolean;
   cadence_seconds: number | null;
   cadence_label: "hourly" | "daily" | "weekly" | "custom" | null;
@@ -3056,6 +3062,20 @@ export interface Fact {
   last_confirmed_at: string | null;
   tags: string[];
   metadata: Record<string, unknown>;
+  /** Owner vouch (bu-jv1moa.14): when the owner stood behind a reported fact. */
+  endorsed_at?: string | null;
+  endorsed_by?: string | null;
+  /** True while a live fact is a non-owner report the owner has not vouched for. */
+  held?: boolean;
+}
+
+/** Receipt for an owner vouch of a held fact (idempotent). */
+export interface FactVouch {
+  fact_id: string;
+  content_authority: string | null;
+  endorsed_at: string | null;
+  endorsed_by: string | null;
+  changed: boolean;
 }
 
 /** A behavioral rule from the long-term memory tier. */
@@ -3318,6 +3338,8 @@ export interface FactParams {
    * to list the facts derived from that episode (the reverse provenance link).
    */
   source_episode_id?: string;
+  /** true: only held facts (reported, not vouched for); false: everything else. */
+  held?: boolean;
   offset?: number;
   limit?: number;
 }
@@ -4080,7 +4102,8 @@ export type IngestionPeriod = "24h" | "7d" | "30d";
 
 /** Today's ingestion summary attached to a connector list entry. */
 export interface ConnectorDaySummary {
-  messages_ingested: number;
+  /** Last-24h ingested total; null when the hourly count read failed (bu-s11n0s.5.1). */
+  messages_ingested: number | null;
   messages_failed: number;
   uptime_pct: number | null;
 }
@@ -4127,6 +4150,14 @@ export interface ConnectorCheckpointRecord {
 }
 
 /** A connector with current liveness and today's stats (GET /api/ingestion/connectors/summaries). */
+/**
+ * Per-bucket listening state, derived from the endpoint's own heartbeat
+ * history (bu-s11n0s.5). `live`: a heartbeat was recorded in the bucket.
+ * `deaf`: none was, in a closed bucket after recording began and with no
+ * traffic; rendered "not listening". `unknown`: the history cannot say.
+ */
+export type ListeningState = "live" | "deaf" | "unknown";
+
 export interface ConnectorSummary {
   connector_type: string;
   endpoint_identity: string;
@@ -4146,8 +4177,9 @@ export interface ConnectorSummary {
   today: ConnectorDaySummary | null;
   /**
    * 24-bucket hourly event counts for the last 24 hours (oldest hour first,
-   * newest last). Sourced from ingestion_events — always present, never null.
-   * Zero-filled for hours with no events.
+   * newest last). Sourced from ingestion_events; a measured zero is a 0.
+   * Empty when the payload carried no counts (bu-s11n0s.5.1): consumers draw
+   * that as unreported, never as 24 zeros.
    */
   hourly_events: number[];
   /**
@@ -4160,6 +4192,12 @@ export interface ConnectorSummary {
    * responses — treat as all-zero when missing.
    */
   hourly_filtered_events?: number[];
+  /**
+   * Listening state per slot of `hourly_events`, same window and order
+   * (bu-s11n0s.5). Optional/additive: absent on older responses, which draw
+   * no listening marks.
+   */
+  hourly_listening?: ListeningState[];
   /**
    * Per-device liveness rows, most-recent-device first. Null for single-device
    * connector_types (the roster row's own liveness already covers them); present
@@ -4289,9 +4327,8 @@ export interface ConnectorStatsBucket {
    * on the detail histogram. 0 when the connector self-persists no skips.
    */
   messages_filtered: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+  /** Whether the endpoint was heard in this bucket (see `ListeningState`). */
+  listening: ListeningState;
 }
 
 export interface ConnectorStatsSummary {
@@ -4317,6 +4354,11 @@ export interface ConnectorStats {
    * honest quiet window. Absent/`true` means the series is trustworthy.
    */
   hourly_events_available: boolean;
+  /**
+   * From `meta.listening_available`: `false` only when the heartbeat-history
+   * read failed, leaving every bucket's `listening` as `unknown`.
+   */
+  listening_available: boolean;
 }
 
 /**
@@ -4412,6 +4454,17 @@ export interface ConnectorSummariesResponse {
    * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
    */
   hourly_events_available?: boolean;
+  /**
+   * UTC hour starts (oldest first) that every connector's hourly series is
+   * keyed to (bu-s11n0s.5.1). Clients place each slot by this instant, never
+   * by array position. Optional/additive: absent on older responses.
+   */
+  hourly_bucket_starts?: string[];
+  /**
+   * False only if the heartbeat-history read failed (bu-s11n0s.5); every
+   * `hourly_listening` slot is then `unknown`. Optional/additive.
+   */
+  listening_available?: boolean;
   /**
    * False only if the OwnTracks durable-point cadence query itself failed.
    * Optional/additive; absent on older cached responses is treated as available.

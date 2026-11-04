@@ -122,10 +122,6 @@ describe("getConnectorStats timeseries transformation", () => {
           hour: "2026-02-23T10:00:00Z",
           messages_ingested: 60,
           messages_failed: 3,
-          heartbeat_count: 12,
-          healthy_count: 10,
-          degraded_count: 2,
-          error_count: 0,
         },
         {
           connector_type: "gmail",
@@ -133,10 +129,6 @@ describe("getConnectorStats timeseries transformation", () => {
           hour: "2026-02-23T11:00:00Z",
           messages_ingested: 40,
           messages_failed: 1,
-          heartbeat_count: 12,
-          healthy_count: 12,
-          degraded_count: 0,
-          error_count: 0,
         },
       ],
     });
@@ -175,10 +167,6 @@ describe("getConnectorStats timeseries transformation", () => {
           messages_ingested: 0,
           messages_failed: 0,
           messages_filtered: 7,
-          heartbeat_count: 0,
-          healthy_count: 0,
-          degraded_count: 0,
-          error_count: 0,
         },
       ],
     });
@@ -198,15 +186,41 @@ describe("getConnectorStats timeseries transformation", () => {
           hour: "2026-02-23T10:00:00Z",
           messages_ingested: 5,
           messages_failed: 0,
-          heartbeat_count: 0,
-          healthy_count: 0,
-          degraded_count: 0,
-          error_count: 0,
         },
       ],
     });
     const resp = await getConnectorStats("gmail", "u@x.com", "24h");
     expect(resp.data.timeseries[0].messages_filtered).toBe(0);
+  });
+
+  it("maps per-bucket listening and listening_available (bu-s11n0s.5)", async () => {
+    mockResponse({
+      data: [
+        {
+          connector_type: "gmail",
+          endpoint_identity: "u@x.com",
+          hour: "2026-02-23T10:00:00Z",
+          messages_ingested: 0,
+          messages_failed: 0,
+          messages_filtered: 0,
+          listening: "deaf",
+        },
+        // An older backend row without the field is "unknown", never "live".
+        {
+          connector_type: "gmail",
+          endpoint_identity: "u@x.com",
+          hour: "2026-02-23T11:00:00Z",
+          messages_ingested: 1,
+          messages_failed: 0,
+          messages_filtered: 0,
+        },
+      ],
+      meta: { listening_available: false },
+    });
+    const resp = await getConnectorStats("gmail", "u@x.com", "24h");
+    expect(resp.data.timeseries.map((b) => b.listening)).toEqual(["deaf", "unknown"]);
+    expect(resp.data.listening_available).toBe(false);
+    expect(resp.data.timeseries[0]).not.toHaveProperty("healthy_count");
   });
 
   it("threads hourly_events_available from response meta", async () => {
