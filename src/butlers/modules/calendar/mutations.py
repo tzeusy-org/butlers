@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -261,7 +262,10 @@ class MutationsMixin:
         """Find one owning projection by trusted action identity, never request_id."""
         pool = getattr(getattr(self, "_db", None), "pool", None)
         projection_available = getattr(self, "_projection_tables_available", None)
-        if pool is None or not callable(projection_available) or not await projection_available():
+        if pool is None or not callable(projection_available):
+            return None
+        availability = projection_available()
+        if not inspect.isawaitable(availability) or not await availability:
             return None
         rows = await pool.fetch(
             """
