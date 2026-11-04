@@ -7,7 +7,9 @@ clones a template migrated by the real Alembic chains. Two older patterns drift
 from the real schema and repeat setup in every file, so this guard refuses new
 instances of either:
 
-* a per-file fixture named ``pool`` or ``migrated_db_url``;
+* any function, method or fixture named ``pool`` or ``migrated_db_url`` in a
+  test file: a per-file DB fixture, or a hand-written fake ``DatabaseManager``
+  lookup (use ``butlers.testing.db_manager.db_manager`` instead);
 * hand-written ``CREATE TABLE`` DDL in a string literal of a test file
   (``tests/**``, ``roster/*/tests/**`` or a ``conftest.py``).
 
@@ -45,20 +47,13 @@ def is_test_file(path: str) -> bool:
     return parts[0] == "tests" or (parts[0] == "roster" and "tests" in parts[1:-1])
 
 
-def _is_fixture(decorator: ast.expr) -> bool:
-    target = decorator.func if isinstance(decorator, ast.Call) else decorator
-    if isinstance(target, ast.Attribute):
-        return target.attr == "fixture"
-    return isinstance(target, ast.Name) and target.id == "fixture"
-
-
 def scan_source(source: str) -> dict[str, int]:
-    """Count banned fixtures and ``CREATE TABLE`` string literals in one file."""
+    """Count banned ``pool``/``migrated_db_url`` defs and ``CREATE TABLE`` literals."""
     tree = ast.parse(source)
     counts: dict[str, int] = dict.fromkeys(KINDS, 0)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            if node.name in FIXTURE_NAMES and any(map(_is_fixture, node.decorator_list)):
+            if node.name in FIXTURE_NAMES:
                 counts["fixtures"] += 1
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             counts["create_table"] += len(CREATE_TABLE.findall(node.value))
@@ -132,7 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Wrote {len(new)} file entr(ies) to {args.baseline}")
     if violations:
         print("New hand-built test databases. Use the `db`, `db_pool` or `fresh_db` fixtures")
-        print("(butlers.testing.db) instead of a per-file pool/migrated_db_url fixture or DDL:")
+        print("(butlers.testing.db), or butlers.testing.db_manager for a dashboard manager,")
+        print("instead of a per-file pool/migrated_db_url fixture, fake manager or DDL:")
         for line in violations:
             print(f"  {line}")
         return 1

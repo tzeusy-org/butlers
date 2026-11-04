@@ -37,7 +37,9 @@ The Model Context Protocol governs three relationships in Butlers:
 2. **Butler-to-butler:** Deterministic service calls between butlers go through
    the Switchboard. Domain butlers never call each other directly.
 3. **Client-to-butler:** The dashboard, connectors, and any future clients
-   interact with butlers through their MCP endpoints.
+   interact with butlers through their MCP endpoints. The public read surface
+   (RFC 0039) is the one exception: it serves the owner's outside AI clients
+   from a replicated projection database and calls no butler endpoint.
 
 **Why a single protocol for all three:**
 
@@ -61,10 +63,16 @@ would require multiple LLM sessions for work that involves zero LLM reasoning
 cross-schema SQL view may be used instead, subject to RFC-documented guardrails
 (RFC 0010). Each exception must be read-only at the database level, batch-
 oriented, auditable via migration history, and cost-justified. Write operations
-and interactive queries must always go through the Switchboard. The two named
-on-demand carve-outs in vision.md (the QA scheduler's policy projection and the
+and interactive queries must always go through the Switchboard. Two of the three
+named on-demand carve-outs in vision.md (the QA scheduler's policy projection and the
 Concierge's system-plane views, RFC 0030) satisfy this through Switchboard-routed
 tool calls or a fixed no-argument projection over fixed views, not ad hoc reads.
+The third, the public read surface (RFC 0039), is a recorded departure from the
+batch criterion. Its reads are interactive but hit a one-way replicated copy of
+manifest-listed columns, never a live schema. Its one write is an inbox
+proposal that changes Butlers state only through the owner's per-event
+approval. Logical replication is the database mechanism that fills the copy,
+not a peer protocol between services, and the departure does not generalize.
 
 ## Domain Responsibilities and Generalist Reasoning
 
@@ -417,7 +425,9 @@ Two cross-cutting pipelines augment the core loop without modifying it:
 ## Anti-Patterns
 
 - Running multiple PostgreSQL instances for isolation that schema separation
-  already provides.
+  already provides. Schema separation does not contain a compromised
+  internet-facing process, so the public read surface's projection lives
+  outside the primary database (RFC 0039 D3).
 - Adding "smart" logic to the daemon that should live in LLM sessions.
 - Creating modules that modify core infrastructure instead of extending it.
 - Building connectors that classify or route messages instead of just

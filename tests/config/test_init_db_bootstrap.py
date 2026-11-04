@@ -131,7 +131,7 @@ def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_c
     engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            # schema-standin-exempt: a two-column GRANT target, not a query
+            # Hand DDL on purpose: a two-column GRANT target, not a query
             # stand-in. This fixture runs before any migration, on purpose:
             # it tests init-db.sql's privilege boundary, and the registry's
             # real column list is irrelevant to that.
@@ -1372,7 +1372,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # general.calendar_event_instances — approved evidence surface
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_instances ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
@@ -1392,7 +1392,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # companions; each is an approved Chronicler read surface.
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_sources ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
@@ -1401,7 +1401,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             )
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_events ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
@@ -1410,7 +1410,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             )
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_entities ("
                     "  event_id UUID NOT NULL,"

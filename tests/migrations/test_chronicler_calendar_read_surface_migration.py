@@ -232,7 +232,7 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            # schema-standin-exempt: privilege-only grant targets; column shape
+            # Hand DDL on purpose: privilege-only grant targets; column shape
             # is irrelevant to this effective-role ACL test.
             for table in (*calendar_tables, "calendar_sync_cursors"):
                 conn.exec_driver_sql(f'CREATE TABLE general."{table}" (id INTEGER)')

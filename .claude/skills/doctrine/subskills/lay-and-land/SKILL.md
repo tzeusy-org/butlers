@@ -42,6 +42,7 @@ These are the major architectural boundaries to be aware of (detailed in the map
 - **Connectors** (standalone processes): gmail, telegram-bot, telegram-user-client, discord, heartbeat, live-listener -- bridge external transports to the ingestion pipeline
 - **Dashboard** (FastAPI + Vite): single web process serving API and frontend
 - **PostgreSQL** (single instance): shared database with per-butler schemas + `public` schema
+- **Public MCP server** (planned, RFC 0039): the one internet-reachable Butlers workload, behind the owner's gateway; reads only `butlers_public`, a logical-replication projection of the primary (placement pending the owner), never the primary itself
 
 ### Schema Boundaries
 
