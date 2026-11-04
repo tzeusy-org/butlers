@@ -424,7 +424,8 @@ BEGIN
                    OR fact.metadata->>'flag_type' NOT IN ('feeder_dark', 'sleep_missing')
                    OR fact.metadata->>'severity' IS NULL
                    OR fact.subject IS DISTINCT FROM (
-                       fact.metadata->>'local_date' || ' ' || fact.metadata->>'flag_type'
+                       (fact.metadata->>'local_date')
+                       || ' ' || (fact.metadata->>'flag_type')
                    )
                    OR jsonb_typeof(fact.metadata->'detail') IS DISTINCT FROM 'object'
                    OR NOT fact.tags @> jsonb_build_array(
@@ -714,7 +715,8 @@ $$;
                            OR fact.metadata->>'flag_type' NOT IN ('feeder_dark', 'sleep_missing')
                            OR fact.metadata->>'severity' IS NULL
                            OR fact.subject IS DISTINCT FROM (
-                               fact.metadata->>'local_date' || ' ' || fact.metadata->>'flag_type'
+                               (fact.metadata->>'local_date')
+                               || ' ' || (fact.metadata->>'flag_type')
                            )
                            OR jsonb_typeof(fact.metadata->'detail') IS DISTINCT FROM 'object'
                            OR NOT fact.tags @> jsonb_build_array(
