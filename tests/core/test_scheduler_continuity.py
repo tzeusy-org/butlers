@@ -24,7 +24,7 @@ import asyncpg
 import pytest
 
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, build_day_close_prompt_hooks
-from butlers.core.scheduler import _prepare_scheduled_prompt, _prepend_seasonal_context
+from butlers.core.scheduler.prompt import _prepare_scheduled_prompt, _prepend_seasonal_context
 from butlers.core.task_continuity import record_carry_forward
 
 docker_available = shutil.which("docker") is not None
@@ -61,7 +61,7 @@ def _past(minutes: int = 5) -> datetime:
 
 
 async def _create_continuity_task(pool: asyncpg.Pool, name: str, prompt: str) -> uuid.UUID:
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     task_id = await schedule_create(pool, name, "*/1 * * * *", prompt)
     await pool.execute(
@@ -78,7 +78,7 @@ async def test_second_run_carries_first_runs_carry_forward_with_age(general_pool
     await _create_continuity_task(general_pool, task_name, "Do the thing")
 
     dispatch1 = _Dispatch(butler_name="health")
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     count = await tick(general_pool, dispatch1, butler_name="health")
     assert count == 1
@@ -115,7 +115,7 @@ async def test_gap_is_named_when_a_run_never_called_carry_forward(general_pool) 
     task_name = "continuity-gap-task"
     await _create_continuity_task(general_pool, task_name, "Check something")
 
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     dispatch = _Dispatch(butler_name="health")
     count = await tick(general_pool, dispatch, butler_name="health")
@@ -133,7 +133,7 @@ async def test_two_concurrent_ticks_dispatch_at_most_once_and_carry_forward_stay
     task_name = "continuity-race-task"
     await _create_continuity_task(general_pool, task_name, "Race me")
 
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     async def dispatch_and_record(kwargs: dict[str, Any]) -> None:
         await record_carry_forward(
@@ -173,7 +173,8 @@ async def test_chronicler_day_close_prompt_unaffected_when_not_opted_in(general_
     strict no-op for a task that has not opted in, which is what makes that
     future migration safe to attempt later.
     """
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     task_id = await schedule_create(
         general_pool, DAY_CLOSE_TASK_NAME, "5 1 * * *", "Chronicle the day"

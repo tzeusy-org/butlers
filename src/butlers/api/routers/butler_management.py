@@ -38,6 +38,7 @@ from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.models.session import PromptProvenance
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.skills import read_system_prompt_with_sources
 from butlers.core.spawner_context import compose_effective_system_prompt_receipt
 
@@ -389,7 +390,7 @@ async def update_butler_prompt(
     # un-audited prompt change. AuditTableNotAvailableError is intentionally
     # NOT caught here — it propagates to the app-level handler, which returns
     # 503 {"error": "audit_unavailable"} (dashboard-audit-log spec).
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         row = await conn.fetchrow(
             """
             INSERT INTO public.system_prompt_history (butler_name, prompt, version, updated_by)

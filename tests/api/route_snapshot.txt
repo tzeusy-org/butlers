@@ -68,7 +68,7 @@ OP GET /api/butlers 44b4d9ade975
 OP GET /api/butlers/board 8c402d0a3b7a
 OP GET /api/butlers/{name} cf932cf97998
 OP GET /api/butlers/{name}/activity-feed 39ecf7362f78
-OP GET /api/butlers/{name}/analytics/daily-activity 1e21b85fd80b
+OP GET /api/butlers/{name}/analytics/daily-activity 06c5571e78b9
 OP GET /api/butlers/{name}/analytics/friction 29fb734afef3
 OP GET /api/butlers/{name}/analytics/hourly-activity 44bbaee72ddd
 OP GET /api/butlers/{name}/analytics/latency-stats cc2b77dddd67
@@ -78,6 +78,7 @@ OP GET /api/butlers/{name}/conversations f9d19efb7f91
 OP GET /api/butlers/{name}/conversations/search 160c5efe201e
 OP GET /api/butlers/{name}/conversations/summary cfd3b2f5e18d
 OP GET /api/butlers/{name}/conversations/{conversation_id}/messages 8ec671125858
+OP GET /api/butlers/{name}/deadlines/{deadline_id} fe4e1739c8fc
 OP GET /api/butlers/{name}/logs c5dd6469c6cc
 OP GET /api/butlers/{name}/mcp/tools c8f25aef6daf
 OP GET /api/butlers/{name}/memory-access 38d295cb08cb
@@ -113,7 +114,7 @@ OP GET /api/chronicler/aggregate/by-category a08f9256d19f
 OP GET /api/chronicler/aggregate/by-day 943df6cf0a35
 OP GET /api/chronicler/aggregate/day-close 646f4656096a
 OP GET /api/chronicler/attention 9f542f160fbf
-OP GET /api/chronicler/balance ac755fc78eed
+OP GET /api/chronicler/balance 12cdd2ca33d4
 OP GET /api/chronicler/briefing 4863eab12c12
 OP GET /api/chronicler/correction-prompts 7314d783c110
 OP GET /api/chronicler/episodes bbd5e00b6bfe
@@ -129,7 +130,7 @@ OP GET /api/chronicler/projection-health aa27f1b9d533
 OP GET /api/chronicler/rollups a2a9b852b1e5
 OP GET /api/chronicler/routines d8b35d168e32
 OP GET /api/chronicler/source-state d2a0273030a8
-OP GET /api/chronicler/trends c9cefde62cb1
+OP GET /api/chronicler/trends ff0d0ba1450c
 OP GET /api/chronicler/who-you-were-with f14729ff2dd8
 OP GET /api/cli-auth/providers e17dfd583699
 OP GET /api/cli-auth/sessions/{session_id} dfd89bfb108b
@@ -180,8 +181,12 @@ OP GET /api/finance/spending-summary 00f7e3b0f47c
 OP GET /api/finance/subscriptions a8282d43adf5
 OP GET /api/finance/transactions 61b377a24d24
 OP GET /api/finance/upcoming-bills 509acf3c9c39
+OP GET /api/general/capture-intake-context ac817128922d
+OP GET /api/general/captures 0cca53da94d1
+OP GET /api/general/captures/{capture_id} ca5f3e3c7e4f
 OP GET /api/general/collections a6f8143636c6
 OP GET /api/general/collections/{collection_id}/entities f250cc4078a5
+OP GET /api/general/drive-files/{file_id} a95523e35b30
 OP GET /api/general/entities 7b0f06922bfd
 OP GET /api/general/entities/{entity_id} 9889d2803a32
 OP GET /api/general/projects 49de71e1875b
@@ -205,7 +210,7 @@ OP GET /api/health/measurements/trend c8a707ec81ee
 OP GET /api/health/measurements/types 4fb84a3a5b80
 OP GET /api/health/medications 2b9fad9f1d74
 OP GET /api/health/medications/{medication_id}/adherence c9285791c3af
-OP GET /api/health/medications/{medication_id}/doses 56b14006004b
+OP GET /api/health/medications/{medication_id}/doses a2510c7949cf
 OP GET /api/health/nutrition/summary e8a2931b4914
 OP GET /api/health/research 10c8d0cf0aa3
 OP GET /api/health/symptoms 144289f6883f
@@ -220,6 +225,7 @@ OP GET /api/home/entities/{entity_id} 201db69dbe1b
 OP GET /api/home/maintenance 0b6e56c40750
 OP GET /api/home/places 3121184e9d2b
 OP GET /api/home/safety-watch 022eebc6c393
+OP GET /api/home/settings/presence/owner-entities 1ed414543f3d
 OP GET /api/home/settings/thresholds 70f7d9fbd4d2
 OP GET /api/home/snapshot-status af4687a47b48
 OP GET /api/identity/email-match-rate 5d9b9db172d7
@@ -257,7 +263,7 @@ OP GET /api/memory/entities 9403922a2880
 OP GET /api/memory/entities/{entity_id} 1eba6514ce06
 OP GET /api/memory/episodes 618d9e6432e8
 OP GET /api/memory/episodes/{episode_id} 31bbecd98062
-OP GET /api/memory/facts a53a5b7e85d1
+OP GET /api/memory/facts 1f433a6b635d
 OP GET /api/memory/facts/{fact_id} e5c38b50a85f
 OP GET /api/memory/gaps f457cbbc6276
 OP GET /api/memory/gaps/demand 7b86976af5d7
@@ -391,11 +397,11 @@ OP GET /api/switchboard/thread-affinity/settings a502cd777b0f
 OP GET /api/system/background-jobs 5ead18695502
 OP GET /api/system/backups 9ca247283096
 OP GET /api/system/butlers/heartbeat f03c7e358d2e
-OP GET /api/system/conditions 65afb5385a39
+OP GET /api/system/conditions b42c6a7efac7
 OP GET /api/system/database 76fb3119fccf
 OP GET /api/system/deployments 19a8f6234b25
 OP GET /api/system/drift f18f731504fd
-OP GET /api/system/egress d86eb9f15769
+OP GET /api/system/egress 56bbe0ca86ba
 OP GET /api/system/insights/delivery-state 81d3cf7d3f71
 OP GET /api/system/instance a8bf5a3586a2
 OP GET /api/system/stored-functions 30506f91fceb
@@ -496,7 +502,9 @@ OP POST /api/connectors/whatsapp/pair/start b67b234f192b
 OP POST /api/data/export ef7048daaa86
 OP POST /api/domain-events/deliveries/{delivery_id}/replay b5bac8bd9638
 OP POST /api/education/curriculum-requests 74c92c7ab429
-OP POST /api/finance/transactions/bulk 4675ebc67a2d
+OP POST /api/finance/transactions/bulk 2ff008c7eb69
+OP POST /api/general/capture-chat eea4bae71469
+OP POST /api/general/captures 28d95ab17c3a
 OP POST /api/general/projects df7acf3ceebc
 OP POST /api/general/projects/{project_id}/close 381059e537c3
 OP POST /api/general/projects/{project_id}/links 9667bae5c5d3
@@ -529,6 +537,7 @@ OP POST /api/memory/entities/{entity_id}/unarchive c077d38be582
 OP POST /api/memory/episodes/{episode_id}/requeue d06201d9a6d8
 OP POST /api/memory/facts/{fact_id}/confirm 69cc3f2d9687
 OP POST /api/memory/facts/{fact_id}/retract 5ae242e0fe9d
+OP POST /api/memory/facts/{fact_id}/vouch 1a6c55b8af49
 OP POST /api/memory/gaps/{gap_id}/dismiss 550159b8f877
 OP POST /api/memory/reembed 7836b979383e
 OP POST /api/memory/rules/{rule_id}/endorse 9d85f99576fc
@@ -536,6 +545,7 @@ OP POST /api/notifications/ack-failed 5338c3b3047a
 OP POST /api/notifications/{notification_id}/escalate 968f63b9f6db
 OP POST /api/notifications/{notification_id}/retry 8b66dd930f06
 OP POST /api/projections 58c43352cca6
+OP POST /api/projections/{projection_id}/rotate 3a12d90d65bb
 OP POST /api/qa/circuit-breaker/reset 5fb5e25e6746
 OP POST /api/qa/dev/synthetic-findings 7c3867151090
 OP POST /api/qa/force-patrol e061d785d64e
@@ -617,6 +627,7 @@ OP PUT /api/health/research/{research_id} 7dda678096a4
 OP PUT /api/health/symptoms/{symptom_id} c75b6bc0bd80
 OP PUT /api/home/places/{place_id} ef4960199b00
 OP PUT /api/home/safety-watch 38d220541c78
+OP PUT /api/home/settings/presence/owner-entities 18b47fa2054e
 OP PUT /api/memory/retention-policies dcb89fe73a05
 OP PUT /api/oauth/google/accounts/{account_id}/primary 64d2cf46701d
 OP PUT /api/oauth/google/credentials 0b20bb692316
@@ -715,6 +726,7 @@ ROUTE APIRoute GET '/api/butlers/{name}/conversations' name=list_conversations o
 ROUTE APIRoute GET '/api/butlers/{name}/conversations/search' name=search_conversations op=search_conversations_api_butlers__name__conversations_search_get tags=conversations schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/conversations/summary' name=get_conversation_summary op=get_conversation_summary_api_butlers__name__conversations_summary_get tags=conversations schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/conversations/{conversation_id}/messages' name=list_messages op=list_messages_api_butlers__name__conversations__conversation_id__messages_get tags=conversations schema=True
+ROUTE APIRoute GET '/api/butlers/{name}/deadlines/{deadline_id}' name=get_deadline op=get_deadline_api_butlers__name__deadlines__deadline_id__get tags=butlers,schedules schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/logs' name=list_butler_logs op=list_butler_logs_api_butlers__name__logs_get tags=butlers,logs schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/mcp/tools' name=list_butler_mcp_tools op=list_butler_mcp_tools_api_butlers__name__mcp_tools_get tags=butlers schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/memory-access' name=get_butler_memory_access op=get_butler_memory_access_api_butlers__name__memory_access_get tags=butler-management schema=True
@@ -819,6 +831,7 @@ ROUTE APIRoute GET '/api/finance/transactions' name=list_transactions op=list_tr
 ROUTE APIRoute GET '/api/finance/upcoming-bills' name=get_upcoming_bills op=get_upcoming_bills_api_finance_upcoming_bills_get tags=finance schema=True
 ROUTE APIRoute GET '/api/general/collections' name=list_collections op=list_collections_api_general_collections_get tags=general schema=True
 ROUTE APIRoute GET '/api/general/collections/{collection_id}/entities' name=list_collection_entities op=list_collection_entities_api_general_collections__collection_id__entities_get tags=general schema=True
+ROUTE APIRoute GET '/api/general/drive-files/{file_id}' name=get_drive_file op=get_drive_file_api_general_drive_files__file_id__get tags=general schema=True
 ROUTE APIRoute GET '/api/general/entities' name=list_entities op=list_entities_api_general_entities_get tags=general schema=True
 ROUTE APIRoute GET '/api/general/entities/{entity_id}' name=get_entity op=get_entity_api_general_entities__entity_id__get tags=general schema=True
 ROUTE APIRoute GET '/api/general/projects' name=list_projects op=list_projects_api_general_projects_get tags=general schema=True
@@ -857,6 +870,7 @@ ROUTE APIRoute GET '/api/home/entities/{entity_id:path}' name=get_entity op=get_
 ROUTE APIRoute GET '/api/home/maintenance' name=list_maintenance op=list_maintenance_api_home_maintenance_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/places' name=list_owner_places op=list_owner_places_api_home_places_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/safety-watch' name=list_safety_watch op=list_safety_watch_api_home_safety_watch_get tags=home schema=True
+ROUTE APIRoute GET '/api/home/settings/presence/owner-entities' name=get_presence_owner_entities op=get_presence_owner_entities_api_home_settings_presence_owner_entities_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/settings/thresholds' name=get_thresholds op=get_thresholds_api_home_settings_thresholds_get tags=home schema=True
 ROUTE APIRoute GET '/api/home/snapshot-status' name=get_snapshot_status op=get_snapshot_status_api_home_snapshot_status_get tags=home schema=True
 ROUTE APIRoute GET '/api/identity/email-match-rate' name=get_email_match_rate op=get_email_match_rate_api_identity_email_match_rate_get tags=identity schema=True
@@ -1156,6 +1170,7 @@ ROUTE APIRoute POST '/api/memory/entities/{entity_id}/unarchive' name=unarchive_
 ROUTE APIRoute POST '/api/memory/episodes/{episode_id}/requeue' name=requeue_episode op=requeue_episode_api_memory_episodes__episode_id__requeue_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/facts/{fact_id}/confirm' name=confirm_fact op=confirm_fact_api_memory_facts__fact_id__confirm_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/facts/{fact_id}/retract' name=retract_fact op=retract_fact_api_memory_facts__fact_id__retract_post tags=memory schema=True
+ROUTE APIRoute POST '/api/memory/facts/{fact_id}/vouch' name=vouch_held_fact op=vouch_held_fact_api_memory_facts__fact_id__vouch_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/gaps/{gap_id}/dismiss' name=dismiss_memory_gap op=dismiss_memory_gap_api_memory_gaps__gap_id__dismiss_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/reembed' name=run_reembed op=run_reembed_api_memory_reembed_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/rules/{rule_id}/endorse' name=endorse_held_rule op=endorse_held_rule_api_memory_rules__rule_id__endorse_post tags=memory schema=True
@@ -1163,6 +1178,7 @@ ROUTE APIRoute POST '/api/notifications/ack-failed' name=ack_failed_notification
 ROUTE APIRoute POST '/api/notifications/{notification_id}/escalate' name=escalate_notification op=escalate_notification_api_notifications__notification_id__escalate_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/notifications/{notification_id}/retry' name=retry_notification op=retry_notification_api_notifications__notification_id__retry_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/projections' name=mint_projection op=mint_projection_api_projections_post tags=projections schema=True
+ROUTE APIRoute POST '/api/projections/{projection_id}/rotate' name=rotate_projection op=rotate_projection_api_projections__projection_id__rotate_post tags=projections schema=True
 ROUTE APIRoute POST '/api/qa/circuit-breaker/reset' name=reset_circuit_breaker op=reset_circuit_breaker_api_qa_circuit_breaker_reset_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/dev/synthetic-findings' name=create_synthetic_finding op=create_synthetic_finding_api_qa_dev_synthetic_findings_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/force-patrol' name=force_patrol op=force_patrol_api_qa_force_patrol_post tags=qa schema=True
@@ -1244,6 +1260,7 @@ ROUTE APIRoute PUT '/api/health/research/{research_id}' name=update_research op=
 ROUTE APIRoute PUT '/api/health/symptoms/{symptom_id}' name=update_symptom op=update_symptom_api_health_symptoms__symptom_id__put tags=health schema=True
 ROUTE APIRoute PUT '/api/home/places/{place_id}' name=update_owner_place op=update_owner_place_api_home_places__place_id__put tags=home schema=True
 ROUTE APIRoute PUT '/api/home/safety-watch' name=upsert_safety_watch op=upsert_safety_watch_api_home_safety_watch_put tags=home schema=True
+ROUTE APIRoute PUT '/api/home/settings/presence/owner-entities' name=put_presence_owner_entities op=put_presence_owner_entities_api_home_settings_presence_owner_entities_put tags=home schema=True
 ROUTE APIRoute PUT '/api/memory/retention-policies' name=update_retention_policies op=update_retention_policies_api_memory_retention_policies_put tags=memory schema=True
 ROUTE APIRoute PUT '/api/oauth/google/accounts/{account_id}/primary' name=set_primary_google_account op=set_primary_google_account_api_oauth_google_accounts__account_id__primary_put tags=oauth schema=True
 ROUTE APIRoute PUT '/api/oauth/google/credentials' name=upsert_google_credentials op=upsert_google_credentials_api_oauth_google_credentials_put tags=oauth schema=True
@@ -1263,6 +1280,11 @@ ROUTE APIRoute PUT '/api/steam/accounts/{account_id}/primary' name=set_primary_s
 ROUTE APIRoute PUT '/api/switchboard/thread-affinity/overrides/{thread_id}' name=upsert_thread_affinity_override op=upsert_thread_affinity_override_api_switchboard_thread_affinity_overrides__thread_id__put tags=switchboard schema=True
 ROUTE APIRoute PUT '/api/webhooks/{webhook_id}' name=update_webhook op=update_webhook_api_webhooks__webhook_id__put tags=webhooks schema=True
 ROUTE APIWebSocketRoute  '/api/events/stream' name=events_stream op=- tags=- schema=-
+ROUTE CaptureRoute GET '/api/general/capture-intake-context' name=get_capture_intake_context op=get_capture_intake_context_api_general_capture_intake_context_get tags=general-capture schema=True
+ROUTE CaptureRoute GET '/api/general/captures' name=list_captures op=list_captures_api_general_captures_get tags=general-capture schema=True
+ROUTE CaptureRoute GET '/api/general/captures/{capture_id}' name=get_capture op=get_capture_api_general_captures__capture_id__get tags=general-capture schema=True
+ROUTE CaptureRoute POST '/api/general/capture-chat' name=admit_chat_capture op=admit_chat_capture_api_general_capture_chat_post tags=general-capture schema=True
+ROUTE CaptureRoute POST '/api/general/captures' name=admit_capture op=admit_capture_api_general_captures_post tags=general-capture schema=True
 ROUTE IngestionReadBudgetRoute GET '/api/ingestion/events' name=list_ingestion_events op=list_ingestion_events_api_ingestion_events_get tags=ingestion schema=True
 ROUTE IngestionReadBudgetRoute GET '/api/ingestion/events/dropped-known' name=get_ingestion_dropped_known op=get_ingestion_dropped_known_api_ingestion_events_dropped_known_get tags=ingestion schema=True
 ROUTE IngestionReadBudgetRoute GET '/api/ingestion/events/histogram' name=get_ingestion_events_histogram op=get_ingestion_events_histogram_api_ingestion_events_histogram_get tags=ingestion schema=True
@@ -1340,6 +1362,8 @@ SCHEMA ApiResponse_CalendarWorkspaceMutationResponse_ 8d018749e078
 SCHEMA ApiResponse_CalendarWorkspaceReadResponse_ c09ddfaf7823
 SCHEMA ApiResponse_CalendarWorkspaceSearchResponse_ f901a1c81720
 SCHEMA ApiResponse_CalendarWorkspaceSyncResponse_ 1a6f32404f84
+SCHEMA ApiResponse_CaptureIntakeContext_ 96d0b0c109f0
+SCHEMA ApiResponse_CaptureStatus_ eeeab5263771
 SCHEMA ApiResponse_CategoryBuckets_ d2acd356e445
 SCHEMA ApiResponse_ChroniclesKpi_ 95e38bd79815
 SCHEMA ApiResponse_CircuitBreakerResetResponse_ 4ed022864d1f
@@ -1357,11 +1381,13 @@ SCHEMA ApiResponse_ConsoleResponse_ cb9d57acf792
 SCHEMA ApiResponse_CorrectionPrompts_ 761ab055e049
 SCHEMA ApiResponse_DailyActivity_ 5ff1fba56e00
 SCHEMA ApiResponse_DatabaseFacts_ 5b3003f41a06
+SCHEMA ApiResponse_DeadlineRecord_ 8414759fac0f
 SCHEMA ApiResponse_DelegationLedgerEntry_ c05f59df6c01
 SCHEMA ApiResponse_DeliveryReplayResult_ 35f7e19f95b3
 SCHEMA ApiResponse_DeploymentFacts_ 70c81a700ac4
 SCHEMA ApiResponse_DisconnectStatus_ 3b57acbb4dd1
 SCHEMA ApiResponse_DriftFacts_ d280a57c71cc
+SCHEMA ApiResponse_DriveFileRead_ 1810136deb30
 SCHEMA ApiResponse_EgressCatalog_ ac97716bf725
 SCHEMA ApiResponse_EmailMatchRate_ c37dc24563e0
 SCHEMA ApiResponse_EntityDetail_ dd71da26b9db
@@ -1371,6 +1397,7 @@ SCHEMA ApiResponse_Entity_ 3d5529a65599
 SCHEMA ApiResponse_Episode_ 93c681fdc78e
 SCHEMA ApiResponse_ExpireStaleActionsResponse_ 1ebb47ee8a8b
 SCHEMA ApiResponse_ExportResponse_ b2b59c7e18ce
+SCHEMA ApiResponse_FactVouch_ a0245542d094
 SCHEMA ApiResponse_Fact_ 19c9bd5b91c6
 SCHEMA ApiResponse_FleetCaseDetail_ e7c95ac15925
 SCHEMA ApiResponse_FleetHaltAttentionObservation_ 8257b408efa9
@@ -1408,6 +1435,7 @@ SCHEMA ApiResponse_NotificationSummary_ f93c713fd366
 SCHEMA ApiResponse_OwnerPlaceResponse_ 42593605fbe9
 SCHEMA ApiResponse_PermissionSetResponse_ bbc0b29c8c20
 SCHEMA ApiResponse_PermissionsMatrix_ 8dca22714444
+SCHEMA ApiResponse_PresenceOwnerEntitiesResponse_ 3bcdcedaa5ca
 SCHEMA ApiResponse_ProbeAllResponse_ c073da7d79c0
 SCHEMA ApiResponse_ProjectDetail_ 41bfd56c3e2e
 SCHEMA ApiResponse_ProjectionView_ 64e8b26cc857
@@ -1566,7 +1594,7 @@ SCHEMA BackgroundJobTransition a3181af638c5
 SCHEMA BackupEvent 7d03e55b0d1e
 SCHEMA BackupFacts 95c4be6c1aa7
 SCHEMA BackupRunFacts 519b3012061a
-SCHEMA BalanceLaneRow e86b08b97aa6
+SCHEMA BalanceLaneRow cf8bbd4c79fd
 SCHEMA BalanceResponse 93bae3143327
 SCHEMA BaselineBand 9196c0917152
 SCHEMA BaselineResponse 8e13dda9df6b
@@ -1578,8 +1606,9 @@ SCHEMA BlobStorageStatus 6ceaee39dfa6
 SCHEMA BlobStorageTestResult 245626d039e7
 SCHEMA BlurbSegment 0455939842d0
 SCHEMA BoardAggregates fb7726d03672
+SCHEMA BoardHourlyBucket 9ed3902333fa
 SCHEMA BoardResponse 8097dc5fcddc
-SCHEMA BoardRow 00687e544138
+SCHEMA BoardRow 78d07e451570
 SCHEMA Body_snooze_insight_api_switchboard_insights__insight_id__snooze_post b41f2623e87e
 SCHEMA BreakEntry 4967d0ebd302
 SCHEMA BreakThroughClauseCreate 4819c3f4c968
@@ -1650,6 +1679,9 @@ SCHEMA CalendarWorkspaceSyncTarget a010ea065d21
 SCHEMA CalendarWorkspaceUserMutationRequest 68a358684172
 SCHEMA CalendarWorkspaceWritableCalendar 8c6fdc9a6e15
 SCHEMA Callback e23f0afbc25c
+SCHEMA CaptureIntakeContext 926b4b66df26
+SCHEMA CaptureStatus f436da8c8071
+SCHEMA CaptureTarget 2da7a121faad
 SCHEMA CategoryBucket 77803ca47ea0
 SCHEMA CategoryBuckets ec314a7fafca
 SCHEMA ChannelDefaultEntry fa7d27ba2425
@@ -1717,11 +1749,11 @@ SCHEMA ConnectorRoutingRule dc72eb705b64
 SCHEMA ConnectorRoutingRulesResponse 535bca6cc246
 SCHEMA ConnectorScopeRow f0f96a8c27f4
 SCHEMA ConnectorSettingsUpdateRequest ac0ccf8cec3a
-SCHEMA ConnectorStatsDaily 10de3da1b9ad
-SCHEMA ConnectorStatsHourly b8f4da95adb7
-SCHEMA ConnectorSummary f3cf454c57ad
-SCHEMA ConnectorSummaryResponse 8b9c453c249d
-SCHEMA ConnectorSummaryToday e5d7cf366522
+SCHEMA ConnectorStatsDaily 0ef30dfd029e
+SCHEMA ConnectorStatsHourly 968dede076eb
+SCHEMA ConnectorSummary 03fdba496598
+SCHEMA ConnectorSummaryResponse cb36f60d43be
+SCHEMA ConnectorSummaryToday e30f956cc9f9
 SCHEMA ConsoleResponse 224de954d12b
 SCHEMA ConsolidationStatus 4f287708b615
 SCHEMA ContactFact f85fc146c9ae
@@ -1776,6 +1808,7 @@ SCHEMA DayCloseRefreshQuietResponse 00a00401b49c
 SCHEMA DayCloseRefreshRequest 66c97e5c2f96
 SCHEMA DayCloseRefreshResponse e62a91337299
 SCHEMA DayCloseStaleResponse 1cc39a379a81
+SCHEMA DeadlineRecord d0154fa0197f
 SCHEMA DelegationLedgerEntry 294a7fc8d140
 SCHEMA DeleteContactResponse c36333c1a42e
 SCHEMA DeleteCredentialsResponse dc301a9d0123
@@ -1808,11 +1841,13 @@ SCHEMA DossierReceipt f762235ac98c
 SCHEMA DossierSource 3b08d29a6d15
 SCHEMA DriftEntry ddc56927efab
 SCHEMA DriftFacts 21f7676e084c
+SCHEMA DriveFileRead 33f05c8ddb75
+SCHEMA DriveFileRecord 6b171fae0fdb
 SCHEMA DunbarEntry 280df7d6f197
 SCHEMA DunbarRankingResponse 6c0710d47a41
 SCHEMA DunbarTierOverrideRequest 18416094ab98
 SCHEMA DunbarTierOverrideResponse a4577d4426f7
-SCHEMA EgressActor 42272b86da5a
+SCHEMA EgressActor da88fbb6243f
 SCHEMA EgressCatalog 0f508083d282
 SCHEMA EmailMatchRate 57d6f5deba23
 SCHEMA EnergyThresholds ac7b3c527013
@@ -1848,8 +1883,9 @@ SCHEMA ExpiringDocumentModel ea551fdf73b4
 SCHEMA ExpiringDocumentsResponse f72c9027f2e0
 SCHEMA ExportRequest c8aef78925f4
 SCHEMA ExportResponse 18e048fff3c1
-SCHEMA Fact e0887460d59c
+SCHEMA Fact 09aa35aedf1a
 SCHEMA FactReporter f3d0403b438b
+SCHEMA FactVouch 290d06ded71b
 SCHEMA FailureEntry b2a49e785caf
 SCHEMA FanoutRow 25790cdd5e25
 SCHEMA FinanceExpectedSignalModel 50d49052c996
@@ -2023,6 +2059,7 @@ SCHEMA OwnerEntityInfoResponse d596c1058f5d
 SCHEMA OwnerPlaceResponse 9ed0de620fd9
 SCHEMA OwnerSetupStatus 32f995df4bb1
 SCHEMA PageContext 182e6b0803de
+SCHEMA Page_CaptureStatus_ 71149e250264
 SCHEMA Page_EntityFactEntry_ 11ad68f8a95a
 SCHEMA Page_FleetCaseSummary_ 594f7698dd4e
 SCHEMA Page_IngestionEventSummary_ 307e0f0b28bc
@@ -2098,6 +2135,7 @@ SCHEMA PermissionsMatrix 69eab06b0634
 SCHEMA PreTripActionModel ca7f0085208b
 SCHEMA PredicateTab b88253f822af
 SCHEMA PreferenceEntry 2a25de211be4
+SCHEMA PresenceOwnerEntitiesResponse 263a32cfdb98
 SCHEMA PriorityContactAddRequest e05a70e06178
 SCHEMA PriorityContactAddResponse cb1bab04fc54
 SCHEMA PriorityContactEntry ded0024322ee
@@ -2198,7 +2236,7 @@ SCHEMA SafetyWatchUpsertRequest 06dd86667cc2
 SCHEMA SavedViewCreateRequest bac68894739f
 SCHEMA SavedViewEntry c0ddcb6a88d8
 SCHEMA SavedViewUpdateRequest 8f5a2b6f336b
-SCHEMA Schedule 2bc1f98abe3f
+SCHEMA Schedule d1d3fa162189
 SCHEMA ScheduleCost dff8f48a6110
 SCHEMA ScheduleCreate 6114c130710d
 SCHEMA ScheduleEntry 9bf95dfb40f1
@@ -2334,9 +2372,9 @@ SCHEMA TokenUsageResponse b7877b8dc092
 SCHEMA TopSession 965b1b197030
 SCHEMA TransactionModel cc9d6db5f5cb
 SCHEMA TravellerModel 58947c2c0fa3
-SCHEMA TrendAnomaly 97851bc53cf3
+SCHEMA TrendAnomaly 5f72f266b799
 SCHEMA TrendBucket 7f41a5896158
-SCHEMA TrendLaneDay 701501c4fc9c
+SCHEMA TrendLaneDay 81fe3a7df3a0
 SCHEMA TrendLaneSeries 533f55163e1d
 SCHEMA TrendResponse e935a5fac3eb
 SCHEMA TrendsResponse 8812eb184c03

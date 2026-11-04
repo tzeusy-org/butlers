@@ -28,12 +28,21 @@ from butlers.core.expected_signals import (
     upsert_expected_signal,
 )
 from butlers.core.insight_premise import probe_premise
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+    dose_of_medication_sql,
+)
 from butlers.tools.health._medication_utils import (
     expected_dose_count as _expected_dose_count,
 )
 from butlers.tools.health._medication_utils import (
     frequency_to_doses_per_day as _frequency_to_doses_per_day,
 )
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+    scheduled_doses_per_day as _scheduled_doses_per_day,
+)
+
+# Doses of the medication whose fact id is bound to $1, across edits (bu-2eaep2).
+_DOSE_OF_MEDICATION = dose_of_medication_sql("$1")
 
 # A reader that returns Home Assistant environmental readings owned by the
 # ``home`` butler. Each reading is a dict with at least::
@@ -826,7 +835,7 @@ async def _scan_adherence_symptom_correlation(
         med_id = str(med_row["id"])
         med_name = med_row["name"]
         frequency = med_row["frequency"] or "daily"
-        doses_per_day = _frequency_to_doses_per_day(frequency)
+        doses_per_day = _scheduled_doses_per_day(frequency)
 
         # Same frequency x window arithmetic as trend_report and the adherence
         # route (via the shared expected_dose_count), but deliberately without
@@ -845,13 +854,13 @@ async def _scan_adherence_symptom_correlation(
 
         # The user must normally log this medication (history before the dip).
         prior_doses = await db_pool.fetchval(
-            """
+            f"""
             SELECT count(*)
             FROM facts
             WHERE predicate = 'took_dose'
               AND validity = 'active'
               AND scope = 'health'
-              AND metadata->>'medication_id' = $1
+              AND {_DOSE_OF_MEDICATION}
               AND valid_at >= $2
               AND valid_at < $3
               AND COALESCE((metadata->>'skipped')::boolean, false) = false
@@ -864,13 +873,13 @@ async def _scan_adherence_symptom_correlation(
             continue
 
         dip_doses = await db_pool.fetchval(
-            """
+            f"""
             SELECT count(*)
             FROM facts
             WHERE predicate = 'took_dose'
               AND validity = 'active'
               AND scope = 'health'
-              AND metadata->>'medication_id' = $1
+              AND {_DOSE_OF_MEDICATION}
               AND valid_at >= $2
               AND valid_at < $3
               AND COALESCE((metadata->>'skipped')::boolean, false) = false

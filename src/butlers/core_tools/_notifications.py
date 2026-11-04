@@ -19,7 +19,7 @@ from butlers.config import ButlerType
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
 from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
-from butlers.core.scheduler import schedule_create as _schedule_create
+from butlers.core.scheduler.crud import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import (

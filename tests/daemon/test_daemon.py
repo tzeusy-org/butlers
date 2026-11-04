@@ -348,9 +348,21 @@ def _patch_infra(*, core_groups: list[str] | None = None):
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    transaction_depth = 0
+
+    async def enter_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc):
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
     mock_conn.transaction = MagicMock()
-    mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
-    mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction.return_value.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    mock_conn.transaction.return_value.__aexit__ = AsyncMock(side_effect=exit_transaction)
 
     mock_pool = AsyncMock()
     # Acquire and transaction are synchronous factories for async contexts.
@@ -583,7 +595,7 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     # A domain butler receives its actual group-gated surface, not a parallel
     # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
     # coverage; this startup test protects the daemon integration seam.
-    assert len(set(registered_tools)) == 77
+    assert len(set(registered_tools)) == 78
     assert "metric_baseline_get" in registered_tools
     assert {"report_error", "get_healing_status"} <= set(registered_tools)
     assert "retry_healing" not in registered_tools

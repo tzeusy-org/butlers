@@ -67,7 +67,7 @@ from butlers.config import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
@@ -79,6 +79,7 @@ from butlers.core.tool_catalog import (
     ToolCatalog,
     ToolCatalogError,
     build_tool_catalog,
+    declared_approval_mode,
     validate_tool_metadata,
 )
 from butlers.core.utils import generate_uuid7_string
@@ -1375,6 +1376,7 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
         from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
+        from butlers.core_tools._temporal import TEMPORAL_DARK_TOOLS
 
         # Registration owns this snapshot state. Some focused integration
         # seams construct a daemon without calling __init__, so initialise it
@@ -1449,7 +1451,9 @@ class ButlerDaemon:
         register_all_core_tools(ctx, mcp, _core_tool)
         # Dark build (RFC 0038): _finalize_tool_catalog catalogs these, then
         # hides them from today's classify-and-route sessions.
-        self._goal_runtime_dark_tools = GOAL_RUNTIME_DARK_TOOLS & mcp._registered_tool_names
+        self._goal_runtime_dark_tools = (
+            GOAL_RUNTIME_DARK_TOOLS | TEMPORAL_DARK_TOOLS
+        ) & mcp._registered_tool_names
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
@@ -1536,6 +1540,14 @@ class ButlerDaemon:
                         f"tool presentation metadata conflicts with central inventory for "
                         f"{tool_name!r}: {', '.join(mismatches)}"
                     )
+            try:
+                approval_mode = declared_approval_mode(presentation.approval_policy)
+                if presentation.approval_policy != {"mode": approval_mode}:
+                    raise ToolCatalogError("declarations may supply only approval_policy.mode")
+            except ToolCatalogError as exc:
+                raise ToolCatalogError(
+                    f"invalid approval_policy declaration for {tool_name!r}: {exc}"
+                ) from exc
             resolved[tool_name] = ToolMeta(
                 arg_sensitivities=dict(sensitivity.arg_sensitivities),
                 canonical_name=presentation.canonical_name,
@@ -1550,7 +1562,7 @@ class ButlerDaemon:
                     if field_name not in {"owner_domain", "approval_policy"}
                 },
                 owner_domain=self.config.name,
-                approval_policy={},
+                approval_policy={"mode": approval_mode},
                 read_stores=presentation.read_stores,
                 write_stores=presentation.write_stores,
                 unknown_output_source=presentation.unknown_output_source,
@@ -1559,6 +1571,7 @@ class ButlerDaemon:
             if policy is not None:
                 gate = policy.gated_tools.get(tool_name)
                 resolved[tool_name].approval_policy = {
+                    "mode": approval_mode,
                     "enabled": policy.enabled,
                     "configured_gate": gate is not None,
                     "expiry_hours": policy.get_effective_expiry(tool_name),
@@ -1568,7 +1581,10 @@ class ButlerDaemon:
             # Explicit new declarations cannot silently contradict the inventory.
             for field_name in AUTHORIZATION_FIELDS:
                 supplied = getattr(sensitivity, field_name, None)
-                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                canonical = getattr(resolved[tool_name], field_name)
+                if field_name == "approval_policy" and supplied is not None:
+                    canonical = {"mode": approval_mode}
+                if supplied is not None and supplied != canonical:
                     raise ToolCatalogError(
                         f"tool authorization metadata conflicts with central inventory for "
                         f"{tool_name!r}: {field_name}"

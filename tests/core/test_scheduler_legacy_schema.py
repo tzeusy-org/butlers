@@ -66,7 +66,7 @@ class _LegacySchedulerPool:
 @pytest.mark.asyncio
 async def test_tick_uses_null_until_at_projection_for_legacy_schema(caplog) -> None:
     from butlers.core.model_routing import Complexity
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     pool = _LegacySchedulerPool()
     dispatch_calls: list[dict[str, Any]] = []
@@ -103,7 +103,7 @@ async def test_migrated_deferred_schema_fault_is_visible_without_probing():
 
     import asyncpg
 
-    from butlers.core.scheduler import _tick_deferred_notification_pass
+    from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 
     pool = AsyncMock()
     pool.fetchval.return_value = False

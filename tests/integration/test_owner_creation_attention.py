@@ -34,7 +34,9 @@ from butlers.core.owner_creation import (
     _pending,
     argument_digest,
 )
-from butlers.core.scheduler import schedule_create, schedule_toggle, schedule_update, tick
+from butlers.core.scheduler.crud import schedule_create
+from butlers.core.scheduler.dispatch import tick
+from butlers.core.scheduler.update import schedule_toggle, schedule_update
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._scheduling import register_scheduling_tools
 from butlers.db import register_jsonb_codec
@@ -525,7 +527,7 @@ async def test_actual_clause_authoring_scope_current_revoke_and_immutable_creati
     due = now - timedelta(seconds=1)
     final_name = "final_" + uuid4().hex
     async with browser(env) as (client, _, headers):
-        with patch("butlers.core.scheduler._next_run", return_value=due):
+        with patch("butlers.core.scheduler.crud._next_run", return_value=due):
             response = await client.post(
                 "/api/butlers/general/schedules",
                 json={
@@ -634,7 +636,7 @@ async def test_actual_clause_authoring_scope_current_revoke_and_immutable_creati
         seen.append(origin)
         return {"status": "ok"}
 
-    with patch("butlers.core.scheduler._next_run", return_value=now + timedelta(days=1)):
+    with patch("butlers.core.scheduler.dispatch._next_run", return_value=now + timedelta(days=1)):
         assert await tick(env.domain, final_dispatch, stagger_key="general") == 1
     assert len(seen) == 1 and _current_origin.get() is None
     cached = seen[0]

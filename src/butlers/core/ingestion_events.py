@@ -45,8 +45,10 @@ import asyncpg
 
 from butlers.core.known_contact_state import (
     CLASSIFICATION_KEY,
+    CLASSIFYING_CONNECTOR_TYPES,
+    DRIVE_MANAGER_ENDPOINT,
+    classification_certain,
     current_available,
-    historical_available,
 )
 from butlers.core.pricing import PricingConfig, estimate_session_cost
 from butlers.pagination import InvalidCursorError, decode_cursor, encode_cursor
@@ -1708,14 +1710,15 @@ async def ingestion_classification_uncertainty(
         """
         SELECT full_payload #> '{drop_context,classification}' AS classification
         FROM connectors.filtered_events
-        WHERE connector_type = 'gmail' AND received_at >= $1 AND received_at <= $2
+        WHERE connector_type = ANY($4::text[]) AND received_at >= $1 AND received_at <= $2
           AND status = ANY($3::text[])
         """,
         from_dt,
         to_dt,
         ["filtered", "replay_failed", "replay_pending"],
+        sorted(CLASSIFYING_CONNECTOR_TYPES),
     )
-    return sum(not historical_available(row["classification"]) for row in rows)
+    return sum(not classification_certain(row["classification"]) for row in rows)
 
 
 async def ingestion_current_classification_available(
@@ -1731,13 +1734,23 @@ async def ingestion_current_classification_available(
     """
     rows = await pool.fetch(
         """
-        SELECT connector_type, operational_role, archived_at, deleted_at,
+        SELECT connector_type, endpoint_identity, operational_role, archived_at, deleted_at,
                instance_id, last_heartbeat_at, capabilities
-        FROM switchboard.connector_registry WHERE connector_type = 'gmail'
-        """
+        FROM switchboard.connector_registry WHERE connector_type = ANY($1::text[])
+        """,
+        sorted(CLASSIFYING_CONNECTOR_TYPES),
     )
     for row in rows:
-        if row["connector_type"] != "gmail" or row["archived_at"] or row["deleted_at"]:
+        if (
+            row["connector_type"] not in CLASSIFYING_CONNECTOR_TYPES
+            or row["archived_at"]
+            or row["deleted_at"]
+        ):
+            continue
+        if (
+            row["connector_type"] == "google_drive"
+            and row["endpoint_identity"] != DRIVE_MANAGER_ENDPOINT
+        ):
             continue
         role = row["operational_role"]
         if role == "checkpoint":

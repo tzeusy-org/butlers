@@ -284,6 +284,9 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
             self.fetch_calls.append((sql, args))
             return []
 
+        async def fetchval(self, sql: str, *args: Any) -> bool:
+            return False
+
     pool = _RecordingPool()
     with (
         patch("butlers.jobs.briefing.today_sgt", return_value=_DATE_2026_03_25),
@@ -291,10 +294,12 @@ async def test_run_finance_briefing_contribution_avoids_ambiguous_bound_datetime
     ):
         result = await run_finance_briefing_contribution(pool, None)
 
-    anomaly_sql, anomaly_args = pool.fetch_calls[1]
+    anomaly_sql, anomaly_args = next(
+        call for call in pool.fetch_calls if "FROM transactions" in call[0]
+    )
     assert "EXTRACT(DAY FROM $2 - $1)" not in anomaly_sql
     assert "$2 - $1" not in anomaly_sql
-    assert len(anomaly_args) == 3
+    assert len(anomaly_args) == 2
     assert result["spending_anomalies"] == 0
 
 
@@ -472,7 +477,7 @@ async def test_run_health_briefing_missed_doses_positive_case_from_facts():
     missed_med_row = {
         "name": "Metformin",
         "frequency": "daily",
-        "schedule": None,
+        "schedule": ["00:00"],  # due since midnight, so missed whatever the clock says
     }
     # fetch() order: missed_rows -> taken_rows. No weight fact (fetchrow None).
     pool = MagicMock()

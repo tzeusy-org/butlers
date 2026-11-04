@@ -17,10 +17,11 @@ import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Literal, NoReturn, cast
 
+import asyncpg
 from asyncpg.exceptions import UndefinedTableError
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -42,6 +43,7 @@ from butlers.api.models.memory import (
     EntitySummary,
     Episode,
     Fact,
+    FactVouch,
     GraphHealthCoverage,
     GraphHealthPoolCoverage,
     MemoryActivity,
@@ -62,12 +64,20 @@ from butlers.api.models.memory import (
     UpdateEntityRequest,
     UpdateRetentionPoliciesRequest,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as _audit
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
-from butlers.modules.memory.content_authority import is_rule_admitted
-from butlers.modules.memory.storage import RuleNotEndorsableError, endorse_rule, get_links
+from butlers.modules.memory.content_authority import HELD_FACT_SQL, is_fact_held, is_rule_admitted
+from butlers.modules.memory.storage import (
+    FactNotEndorsableError,
+    RuleNotEndorsableError,
+    endorse_fact,
+    endorse_rule,
+    get_links,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +300,7 @@ def _raise_memory_detail_miss(
     *,
     resource: str,
     tracker: DegradedSources,
-) -> None:
+) -> NoReturn:
     """Raise a truthful error for an unresolved cross-pool detail lookup."""
     if tracker.failed:
         names = ", ".join(tracker.names)
@@ -919,6 +929,14 @@ async def list_facts(
     importance_min: float | None = Query(
         None, description="Filter to facts with importance >= this threshold"
     ),
+    held: bool | None = Query(
+        None,
+        description=(
+            "Pass true to list only held facts ('reported, not vouched for'): live facts "
+            "from third-party or mixed authority the owner has not vouched for. Pass "
+            "false to list everything else."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     *,
@@ -964,6 +982,11 @@ async def list_facts(
         args.append(importance_min)
         idx += 1
 
+    if held is True:
+        conditions.append(HELD_FACT_SQL)
+    elif held is False:
+        conditions.append(f"NOT COALESCE({HELD_FACT_SQL}, false)")
+
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
     row_limit = offset + limit
@@ -979,7 +1002,8 @@ async def list_facts(
             f" entity_id, object_entity_id, content_authority, authority_entity_id,"
             " validity, scope, reference_count,"
             f" created_at, last_referenced_at,"
-            f" last_confirmed_at, tags, metadata"
+            f" last_confirmed_at, tags, metadata,"
+            f" endorsed_at, endorsed_by"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -1043,7 +1067,8 @@ async def get_fact(
                 " entity_id, object_entity_id, content_authority, authority_entity_id,"
                 " validity, scope, reference_count,"
                 " created_at, last_referenced_at,"
-                " last_confirmed_at, tags, metadata"
+                " last_confirmed_at, tags, metadata,"
+                " endorsed_at, endorsed_by"
                 f" FROM {relation} WHERE id = $1",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
@@ -1088,7 +1113,8 @@ _FACT_SELECT_COLUMNS = (
     " entity_id, object_entity_id, content_authority, authority_entity_id,"
     " validity, scope, reference_count,"
     " created_at, last_referenced_at,"
-    " last_confirmed_at, tags, metadata"
+    " last_confirmed_at, tags, metadata,"
+    " endorsed_at, endorsed_by"
 )
 
 
@@ -1146,6 +1172,7 @@ async def confirm_fact(
                 "fact",
                 fact_uuid,
                 memory_schema=memory_schema,
+                actor="owner",
             )
             if not confirmed:
                 continue
@@ -1175,6 +1202,83 @@ async def confirm_fact(
         fact = _row_to_fact(row)
         await _resolve_entity_names(db, [fact])
         return ApiResponse[Fact](data=fact)
+
+    _raise_memory_detail_miss(resource="Fact", tracker=tracker)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/facts/{fact_id}/vouch
+# ---------------------------------------------------------------------------
+
+
+@router.post("/facts/{fact_id}/vouch", response_model=ApiResponse[FactVouch])
+async def vouch_held_fact(
+    fact_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[FactVouch]:
+    """Vouch for a held fact: the owner stands behind a reported claim (owner only).
+
+    A fact born from a non-owner's words is stored as an attributed report. Vouching
+    stamps ``endorsed_at``/``endorsed_by`` and writes the ``fact_vouched`` audit event in
+    one transaction on the pool that owns the fact. It is additive: authority and taint
+    are unchanged, so clearing ``endorsed_at`` restores the prior state. Idempotent: a
+    repeat returns the original receipt with ``changed=false``. There is no LLM tool for
+    this; a session cannot vouch.
+
+    Errors:
+    - 400: ``fact_id`` is not a valid UUID.
+    - 401: the caller is not the authenticated dashboard owner.
+    - 404: no memory pool holds a fact with this id.
+    - 409: the fact is retracted, superseded or expired (a later correction wins).
+    - 503: no database pools are available.
+    """
+    try:
+        fact_uuid = _uuid.UUID(fact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid fact id (must be a UUID)") from exc
+
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    tracker = DegradedSources(logger)
+    for name, source in pools:
+        pool = cast("asyncpg.Pool", source)
+        try:
+            receipt = await endorse_fact(
+                pool,
+                fact_uuid,
+                endorsed_by=await fetch_owner_entity_id(pool),
+                memory_schema=_memory_source_schema(db, name),
+            )
+        except FactNotEndorsableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="fact vouch source unavailable")
+            logger.debug(
+                "Skipping pool %s while vouching fact %s (pool lacks memory tables or failed)",
+                name,
+                fact_id,
+                exc_info=True,
+            )
+            continue
+        if receipt is None:
+            continue
+        return ApiResponse[FactVouch](
+            data=FactVouch(
+                fact_id=str(receipt["fact_id"]),
+                content_authority=receipt["content_authority"],
+                endorsed_at=str(receipt["endorsed_at"]) if receipt["endorsed_at"] else None,
+                endorsed_by=str(receipt["endorsed_by"]) if receipt["endorsed_by"] else None,
+                changed=receipt["changed"],
+            )
+        )
 
     _raise_memory_detail_miss(resource="Fact", tracker=tracker)
 
@@ -2797,6 +2901,9 @@ def _row_to_fact(r) -> Fact:
         last_confirmed_at=str(r["last_confirmed_at"]) if r["last_confirmed_at"] else None,
         tags=_parse_tags(r["tags"]),
         metadata=_parse_jsonb(r["metadata"]),
+        endorsed_at=str(r["endorsed_at"]) if r.get("endorsed_at") else None,
+        endorsed_by=str(r["endorsed_by"]) if r.get("endorsed_by") else None,
+        held=is_fact_held(r.get("content_authority"), r.get("endorsed_at"), r["validity"]),
     )
 
 
@@ -3121,7 +3228,7 @@ async def update_retention_policies(
 
     updated: list[MemoryRetentionPolicy] = []
     for entry in body.policies:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn, audit_transaction(conn):
             row = await conn.fetchrow(
                 "INSERT INTO public.memory_retention_policies"
                 " (kind, ttl_days, max_rows, updated_by)"

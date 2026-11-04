@@ -12,7 +12,8 @@ parameterised by origin butler:
    ``background.dispatch_scheduled_task`` binds for the handler call, with a bounded timeout.
    No client means ``failed``; there is no direct provider fallback.
 4. Exactly one ``public.attention_ledger`` row per call, whatever the outcome. A failed or
-   uncertain delivery is recorded and never retried here.
+   uncertain delivery is recorded and never retried here; a caller that retries passes a
+   ``dedup_key`` so it can pace itself on its own failed rows.
 """
 
 from __future__ import annotations
@@ -44,8 +45,12 @@ async def send_owner_telegram(
     origin_butler: str,
     message: str,
     log_context: str,
+    dedup_key: str | None = None,
 ) -> NotifyOutcome:
-    """Send ``message`` to the owner's Telegram chat and return the recorded outcome."""
+    """Send ``message`` to the owner's Telegram chat and return the recorded outcome.
+
+    ``dedup_key`` tags the ledger row, so a caller that retries can find its own attempts.
+    """
 
     async def _record(outcome: str, reason: str | None = None, ref: Any = None) -> None:
         await record_attention_event(
@@ -58,6 +63,7 @@ async def send_owner_telegram(
             priority="medium",
             reason=reason,
             notification_ref=ref,
+            dedup_key=dedup_key,
         )
 
     reason = await check_owner_notify_suppression(pool, log_context=log_context)

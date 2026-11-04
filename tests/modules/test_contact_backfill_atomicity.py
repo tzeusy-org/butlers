@@ -70,6 +70,11 @@ class _FakePool:
     def acquire(self) -> _FakeAcquire:
         return _FakeAcquire(self._conn)
 
+    async def fetchrow(self, query: str, *args, **kwargs):
+        # The reappearing-anchor lookup (every provider since bu-iqmmi0) finds no
+        # inactive source link for a brand-new contact.
+        return None
+
 
 def _contact() -> CanonicalContact:
     return CanonicalContact(

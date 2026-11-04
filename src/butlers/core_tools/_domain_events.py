@@ -51,13 +51,13 @@ published by every butler, so it cannot rely on that identity check.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from typing import Annotated, Any
 
 from pydantic import Field
 
-from butlers.config import ButlerType
+from butlers.config import ButlerType, ScheduleSpec
 from butlers.core.domain_event_contracts import get_contract_registry
 from butlers.core.domain_event_reactions import (
     REPORTABLE_REACTION_STATUSES,
@@ -80,7 +80,10 @@ from butlers.core.domain_events import (
     select_stale_pending_deliveries,
     upsert_subscription,
 )
-from butlers.core.metrics import record_domain_event_delivery_failed_permanent
+from butlers.core.metrics import (
+    prime_domain_event_delivery_failed_permanent,
+    record_domain_event_delivery_failed_permanent,
+)
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
@@ -110,6 +113,10 @@ _FAILED_RETRY_BACKOFF = timedelta(minutes=15)
 _MAX_DELIVERY_RETRY_ATTEMPTS = 5
 _SWEEP_BATCH_LIMIT = 200
 _RECONCILIATION_SWEEP_LOCK_KEY = "public.domain_event_deliveries:reconciliation_sweep"
+# The reconciliation sweep runs only on the Switchboard daemon, so its
+# failed_permanent transitions are emitted under Switchboard's name.
+_SWEEP_EMITTER_BUTLER = "switchboard"
+RECONCILIATION_SWEEP_JOB_NAME = "domain_event_reconciliation_sweep"
 
 # route() preserves the old ``{"error": "<ExceptionType>: <message>"}``
 # envelope and current Switchboard versions add a literal boolean ``retryable``
@@ -191,6 +198,7 @@ def _unwrap_route_result(raw: Any) -> tuple[dict[str, Any] | None, str | None, b
 
 def _record_failed_permanent_delivery_metric(
     *,
+    emitter_butler: str,
     source_butler: str,
     destination_butler: str,
     retryable: bool,
@@ -204,6 +212,7 @@ def _record_failed_permanent_delivery_metric(
     reason = "attempts_exhausted" if retryable else "non_retryable"
     try:
         record_domain_event_delivery_failed_permanent(
+            emitter_butler=emitter_butler,
             source_butler=source_butler,
             destination_butler=destination_butler,
             reason=reason,
@@ -219,6 +228,43 @@ def _record_failed_permanent_delivery_metric(
         )
 
 
+def schedules_reconciliation_sweep(schedules: Iterable[ScheduleSpec]) -> bool:
+    """Whether a daemon's schedules run the domain-event reconciliation sweep."""
+    return any(schedule.job_name == RECONCILIATION_SWEEP_JOB_NAME for schedule in schedules)
+
+
+def prime_failed_permanent_delivery_series(
+    butler_name: str, *, runs_reconciliation_sweep: bool
+) -> int:
+    """Create, at zero, every failed_permanent route series this daemon can emit.
+
+    Fan-out records the daemon's own published routes under its own name; a
+    daemon that schedules the reconciliation sweep also records every
+    publisher's routes under the sweep's emitter. Routes come from the git
+    contract declarations (a subscription is admitted only for a permitted
+    subscriber), so the set is bounded by the roster. Returns the number of
+    series label sets primed per reason.
+    """
+    # Fan-out never delivers an event to its own publisher.
+    all_routes = sorted(
+        {
+            (contract.publisher, subscriber)
+            for contract in get_contract_registry().contracts()
+            for subscriber in contract.permitted_subscribers
+            if subscriber != contract.publisher
+        }
+    )
+    own_routes = [route for route in all_routes if route[0] == butler_name]
+    prime_domain_event_delivery_failed_permanent(emitter_butler=butler_name, routes=own_routes)
+    primed = len(own_routes)
+    if runs_reconciliation_sweep:
+        prime_domain_event_delivery_failed_permanent(
+            emitter_butler=_SWEEP_EMITTER_BUTLER, routes=all_routes
+        )
+        primed += len(all_routes)
+    return primed
+
+
 async def _dispatch_and_record_delivery(
     pool: Any,
     switchboard_client: Any,
@@ -229,6 +275,7 @@ async def _dispatch_and_record_delivery(
     event_type: str,
     source_butler: str,
     payload: dict[str, Any],
+    emitter_butler: str,
     max_attempts: int = _MAX_DELIVERY_RETRY_ATTEMPTS,
 ) -> dict[str, Any]:
     """Dispatch one already-claimed delivery and record its outcome.
@@ -245,6 +292,7 @@ async def _dispatch_and_record_delivery(
     own configurable ``max_attempts`` through here) -- otherwise a delivery
     could be selected under one bound but never actually cross the terminal
     ``failed_permanent`` threshold, which uses this same value.
+    ``emitter_butler`` names the daemon running this dispatch, for telemetry.
 
     Shared by :func:`fan_out_event`'s per-subscriber loop and
     ``run_domain_event_reconciliation_sweep``'s re-drive path -- exactly one
@@ -297,6 +345,7 @@ async def _dispatch_and_record_delivery(
         newly_permanently_failed = transitioned_status == "failed_permanent"
         if newly_permanently_failed:
             _record_failed_permanent_delivery_metric(
+                emitter_butler=emitter_butler,
                 source_butler=source_butler,
                 destination_butler=subscriber_butler,
                 retryable=retryable,
@@ -375,6 +424,7 @@ async def _dispatch_and_record_delivery(
         newly_permanently_failed = transitioned_status == "failed_permanent"
         if newly_permanently_failed:
             _record_failed_permanent_delivery_metric(
+                emitter_butler=emitter_butler,
                 source_butler=source_butler,
                 destination_butler=subscriber_butler,
                 retryable=False,
@@ -461,6 +511,8 @@ async def fan_out_event(
             event_type=event_type,
             source_butler=source_butler,
             payload=payload,
+            # Fan-out runs in the publishing butler's own daemon.
+            emitter_butler=source_butler,
         )
         outcome.pop("_newly_permanently_failed", None)
         outcomes.append(outcome)
@@ -585,6 +637,7 @@ async def _run_domain_event_reconciliation_sweep_locked(
             event_type=row["event_type"],
             source_butler=row["source_butler"],
             payload=row["payload"] or {},
+            emitter_butler=_SWEEP_EMITTER_BUTLER,
             max_attempts=max_attempts,
         )
         pending_redriven += 1
@@ -611,6 +664,7 @@ async def _run_domain_event_reconciliation_sweep_locked(
             event_type=row["event_type"],
             source_butler=row["source_butler"],
             payload=row["payload"] or {},
+            emitter_butler=_SWEEP_EMITTER_BUTLER,
             max_attempts=max_attempts,
         )
         failed_retried += 1

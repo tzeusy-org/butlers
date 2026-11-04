@@ -70,7 +70,7 @@ Anomaly Review — past 7 days ([N] flagged)
 **Anomaly types:**
 - `amount_spike`: Transaction amount significantly higher than merchant/category baseline
 - `new_merchant`: Charge from a merchant not seen in transaction history
-- `velocity_spike`: Category spending rate is unusually high for this point in the cycle
+- `category_velocity_anomaly`: Spend so far this week in a category and currency is above the owner's own usual range (the explanation states the range and the weeks it is drawn from)
 - `duplicate_suspected`: Same merchant, same amount, on same or adjacent days
 
 ---

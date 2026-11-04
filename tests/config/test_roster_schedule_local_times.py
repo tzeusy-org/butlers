@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from butlers.config import ScheduleSpec, load_config
-from butlers.core.scheduler import _effective_schedule_timezone, _next_run
+from butlers.core.scheduler.timing import _effective_schedule_timezone, _next_run
 
 pytestmark = pytest.mark.unit
 

@@ -284,6 +284,9 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`combine_review_comment_sources.py`](combine_review_comment_sources.py) | `ci.yml` | Flattens raw GitHub review-comment dumps into the session-link guard's input shape. |
 | [`fetch_pr_metadata.py`](fetch_pr_metadata.py) | `ci.yml` | Producer of validated PR title/body guard inputs. |
 | [`install_ci_uv.py`](install_ci_uv.py) | `ci.yml`, `nightly.yml`, `ci-python-environment` action, watchdog workflow | Installs the pinned `uv` in CI. |
+| [`session_host_ci.py`](session_host_ci.py) | `ci.yml`, `session-host-causal.yml`, `session_host_causal_probe.py` | Owns the pinned native-session CI profile lifecycle and bounded readiness checks. |
+| [`session_host_causal_probe.py`](session_host_causal_probe.py) | `session-host-causal.yml` | Runs the fixed-source disposable-VM A/B/A experiment and emits closed evidence; uncertain settlement quarantines the policy. |
+| [`session_host_probe_adapter.py`](session_host_probe_adapter.py) | `session_host_causal_probe.py` (pytest plugin) | Records test-only native launch and post-finally settlement receipts for the single causal node. |
 | [`summarize_junit_durations.py`](summarize_junit_durations.py) | `ci.yml`, `nightly.yml` | Summarizes JUnit durations for the weight pipeline. |
 | [`ci_branch_hygiene.py`](ci_branch_hygiene.py) | the live runbook [stale branch hygiene](../docs/operations/stale-branch-hygiene.md) (human) | Inventories, plans and verifies recovery for stale remote branches. Kept: `AGENTS.md` points agents at the runbook. |
 | [`test_owner_auth_browser.py`](test_owner_auth_browser.py) | `frontend/tests/owner-auth/README.md` (human), `ci_test_images.py` | Native HTTPS owner-auth evidence against a disposable PostgreSQL instance. |
@@ -336,6 +339,7 @@ criteria and dry-run controls before applying it to a database.
 | Script | Caller | Why it stays |
 | --- | --- | --- |
 | [`backfill_fleet_cases.py`](backfill_fleet_cases.py) | operators, per `REQ-fleet-case-file-011` in the [fleet-case-file spec](../openspec/specs/fleet-case-file/spec.md) | Previews or backfills resolved owner-condition episodes as closed historical cases using the Switchboard writer role; never scheduled. |
+| [`memory_authority_demotion.py`](memory_authority_demotion.py) | operators, per the [authority demotion runbook](../docs/operations/memory-authority-demotion.md), after separate operational authorization | Classifies one memory schema against an evidence manifest (default read-only dry run); an exact owner-approved apply demotes laundered owner-authority rows to `mixed` with receipts. |
 | [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | operators, per the `s3-blob-storage` spec and RFC 0016 | Moves scoped local attachment blobs to the S3-compatible backend. |
 | [`qa_reconcile_publications.py`](qa_reconcile_publications.py) | operators, with `bws run -- ...` supplying the GitHub token | Runs one read-only sweep of held QA publication operations against a fixed repository and prints a content-free JSON report. |
 | [`recover_chronicler_day_close_cache.py`](recover_chronicler_day_close_cache.py) | operators, per [`chronicler-day-close-recovery.md`](../docs/operations/chronicler-day-close-recovery.md), after separate operational authorization | Plans bounded day-close cache recovery; applying the reviewed plan requires separate authorization. |

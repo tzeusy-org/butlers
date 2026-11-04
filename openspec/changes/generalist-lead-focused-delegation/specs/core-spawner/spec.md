@@ -423,8 +423,6 @@ Scope: v1-mandatory
 - **WHEN** the Spawner prepares a `qa` session
 - **THEN** the `mcp_servers` dict is empty
 
-## ADDED Requirements
-
 ### Requirement: Starting envelopes have one bounded composition path
 The runner SHALL consume S5's exact starting-envelope/query schema, finite runtime-config snapshots, stable prefix and whole-item limits through brokered authorized reads. It SHALL NOT compose domain daemon prompts, grant from profile metadata or inline untrusted text under a typed-shape exception.
 

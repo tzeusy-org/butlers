@@ -39,7 +39,7 @@ from butlers.core.logging import CREDENTIAL_REDACTION, resolve_log_root
 from butlers.core.metrics import init_metrics
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.registry import build_runtime_adapter
-from butlers.core.scheduler import sync_schedules
+from butlers.core.scheduler.sync import sync_schedules
 from butlers.core.skills import get_skills_dir
 from butlers.core.spawner import Spawner
 from butlers.core.telemetry import init_telemetry
@@ -410,6 +410,31 @@ async def _startup_shared_bootstrap(daemon: Any, state: StartupState) -> None:
     except Exception:
         logger.warning(
             "materialize_own_contracts failed for butler=%s (best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
+
+    # 8d4. Create this daemon's failed_permanent delivery series at zero so an
+    #      alert's increase() sees a route's first-ever failure (non-fatal).
+    _prime_domain_event_delivery_series(daemon)
+
+
+def _prime_domain_event_delivery_series(daemon: Any) -> None:
+    """Prime the daemon's failed_permanent route series at zero, best-effort."""
+    try:
+        from butlers.core_tools._domain_events import (
+            prime_failed_permanent_delivery_series,
+            schedules_reconciliation_sweep,
+        )
+
+        prime_failed_permanent_delivery_series(
+            daemon.config.name,
+            runs_reconciliation_sweep=schedules_reconciliation_sweep(daemon.config.schedules),
+        )
+    except Exception:
+        logger.warning(
+            "prime_failed_permanent_delivery_series failed for butler=%s "
+            "(best-effort, startup continues)",
             daemon.config.name,
             exc_info=True,
         )

@@ -28,8 +28,6 @@ from fastapi import FastAPI
 from butlers.api.conversations import message_search, message_thread_window
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -43,34 +41,12 @@ SEARCH_PATH = "/api/conversations/messages/search"
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.dashboard_conversations CASCADE")
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-def search_app(pool: asyncpg.Pool) -> FastAPI:
+def search_app(db_pool: asyncpg.Pool) -> FastAPI:
     from unittest.mock import MagicMock
 
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = db_pool
 
     application = create_app()
     application.dependency_overrides[get_db] = lambda: mock_db
@@ -124,20 +100,20 @@ async def _seed_message(
 # ---------------------------------------------------------------------------
 
 
-async def test_message_search_returns_hits_across_butlers_ranked(pool: asyncpg.Pool) -> None:
+async def test_message_search_returns_hits_across_butlers_ranked(db_pool: asyncpg.Pool) -> None:
     now = datetime.now(UTC)
-    finance_conv = await _seed_conversation(pool, butler_name="finance")
-    home_conv = await _seed_conversation(pool, butler_name="home")
+    finance_conv = await _seed_conversation(db_pool, butler_name="finance")
+    home_conv = await _seed_conversation(db_pool, butler_name="home")
 
     await _seed_message(
-        pool,
+        db_pool,
         conversation_id=finance_conv,
         content="Remind me to email the landlord about rent",
         created_at=now - timedelta(days=6),
     )
     session_id = uuid.uuid4()
     await _seed_message(
-        pool,
+        db_pool,
         conversation_id=home_conv,
         content="Landlord landlord landlord said the lease renews in March",
         role="assistant",
@@ -145,10 +121,10 @@ async def test_message_search_returns_hits_across_butlers_ranked(pool: asyncpg.P
         session_id=session_id,
     )
     await _seed_message(
-        pool, conversation_id=finance_conv, content="unrelated message about groceries"
+        db_pool, conversation_id=finance_conv, content="unrelated message about groceries"
     )
 
-    result = await message_search(pool, query="landlord", since=now - timedelta(days=7))
+    result = await message_search(db_pool, query="landlord", since=now - timedelta(days=7))
 
     assert result["items"], "expected at least one hit"
     butler_names = {item["butler_name"] for item in result["items"]}
@@ -164,53 +140,55 @@ async def test_message_search_returns_hits_across_butlers_ranked(pool: asyncpg.P
     assert finance_item["session_id"] is None
 
 
-async def test_message_search_empty_query_returns_empty(pool: asyncpg.Pool) -> None:
-    result = await message_search(pool, query="   ")
+async def test_message_search_empty_query_returns_empty(db_pool: asyncpg.Pool) -> None:
+    result = await message_search(db_pool, query="   ")
     assert result == {"items": [], "next_cursor": None}
 
 
-async def test_message_search_no_match_returns_empty(pool: asyncpg.Pool) -> None:
-    conv = await _seed_conversation(pool, butler_name="finance")
-    await _seed_message(pool, conversation_id=conv, content="hello world")
+async def test_message_search_no_match_returns_empty(db_pool: asyncpg.Pool) -> None:
+    conv = await _seed_conversation(db_pool, butler_name="finance")
+    await _seed_message(db_pool, conversation_id=conv, content="hello world")
 
-    result = await message_search(pool, query="zzz-no-such-term")
+    result = await message_search(db_pool, query="zzz-no-such-term")
     assert result["items"] == []
     assert result["next_cursor"] is None
 
 
-async def test_message_search_query_too_long_raises(pool: asyncpg.Pool) -> None:
+async def test_message_search_query_too_long_raises(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(ValueError, match="512"):
-        await message_search(pool, query="x" * 513)
+        await message_search(db_pool, query="x" * 513)
 
 
-async def test_message_search_filters_by_since_and_channel(pool: asyncpg.Pool) -> None:
+async def test_message_search_filters_by_since_and_channel(db_pool: asyncpg.Pool) -> None:
     now = datetime.now(UTC)
     dashboard_conv = await _seed_conversation(
-        pool, butler_name="finance", source_channel="dashboard"
+        db_pool, butler_name="finance", source_channel="dashboard"
     )
-    telegram_conv = await _seed_conversation(pool, butler_name="finance", source_channel="telegram")
+    telegram_conv = await _seed_conversation(
+        db_pool, butler_name="finance", source_channel="telegram"
+    )
 
     await _seed_message(
-        pool,
+        db_pool,
         conversation_id=dashboard_conv,
         content="budget review",
         created_at=now - timedelta(days=1),
     )
     await _seed_message(
-        pool,
+        db_pool,
         conversation_id=telegram_conv,
         content="budget check",
         created_at=now - timedelta(days=1),
     )
     await _seed_message(
-        pool,
+        db_pool,
         conversation_id=dashboard_conv,
         content="old budget note",
         created_at=now - timedelta(days=30),
     )
 
     result = await message_search(
-        pool, query="budget", since=now - timedelta(days=7), channel="dashboard"
+        db_pool, query="budget", since=now - timedelta(days=7), channel="dashboard"
     )
     assert len(result["items"]) == 1
     assert result["items"][0]["snippet"].lower().startswith("budget review") or (
@@ -223,30 +201,30 @@ async def test_message_search_filters_by_since_and_channel(pool: asyncpg.Pool) -
 # ---------------------------------------------------------------------------
 
 
-async def test_message_search_cursor_stable_across_insert(pool: asyncpg.Pool) -> None:
+async def test_message_search_cursor_stable_across_insert(db_pool: asyncpg.Pool) -> None:
     now = datetime.now(UTC)
-    conv = await _seed_conversation(pool, butler_name="finance")
+    conv = await _seed_conversation(db_pool, butler_name="finance")
 
     ids = []
     for i in range(3):
         msg_id = await _seed_message(
-            pool,
+            db_pool,
             conversation_id=conv,
             content=f"widget report number {i}",
             created_at=now - timedelta(minutes=10 - i),
         )
         ids.append(msg_id)
 
-    page1 = await message_search(pool, query="widget", limit=1)
+    page1 = await message_search(db_pool, query="widget", limit=1)
     assert page1["next_cursor"] is not None
     page1_ids = {item["message_id"] for item in page1["items"]}
 
     # A new matching row is inserted "between" page fetches.
     await _seed_message(
-        pool, conversation_id=conv, content="widget report number 99", created_at=now
+        db_pool, conversation_id=conv, content="widget report number 99", created_at=now
     )
 
-    page2 = await message_search(pool, query="widget", limit=10, cursor=page1["next_cursor"])
+    page2 = await message_search(db_pool, query="widget", limit=10, cursor=page1["next_cursor"])
     page2_ids = {item["message_id"] for item in page2["items"]}
 
     # No overlap and no duplicate: the cursor seeks from actual returned
@@ -260,13 +238,13 @@ async def test_message_search_cursor_stable_across_insert(pool: asyncpg.Pool) ->
 # ---------------------------------------------------------------------------
 
 
-async def test_message_thread_window_centers_on_anchor(pool: asyncpg.Pool) -> None:
+async def test_message_thread_window_centers_on_anchor(db_pool: asyncpg.Pool) -> None:
     now = datetime.now(UTC)
-    conv = await _seed_conversation(pool, butler_name="finance")
+    conv = await _seed_conversation(db_pool, butler_name="finance")
     ids = []
     for i in range(12):
         msg_id = await _seed_message(
-            pool,
+            db_pool,
             conversation_id=conv,
             content=f"message {i}",
             created_at=now - timedelta(minutes=100 - i),
@@ -274,18 +252,18 @@ async def test_message_thread_window_centers_on_anchor(pool: asyncpg.Pool) -> No
         ids.append(msg_id)
 
     anchor = ids[6]
-    window = await message_thread_window(pool, conv, around_message_id=anchor)
+    window = await message_thread_window(db_pool, conv, around_message_id=anchor)
 
     window_ids = [m["id"] for m in window]
     assert anchor in window_ids
     assert window_ids == ids[1:12]  # 5 before + anchor + 5 after
 
 
-async def test_message_thread_window_unknown_anchor_returns_empty(pool: asyncpg.Pool) -> None:
-    conv = await _seed_conversation(pool, butler_name="finance")
-    await _seed_message(pool, conversation_id=conv, content="hi")
+async def test_message_thread_window_unknown_anchor_returns_empty(db_pool: asyncpg.Pool) -> None:
+    conv = await _seed_conversation(db_pool, butler_name="finance")
+    await _seed_message(db_pool, conversation_id=conv, content="hi")
 
-    window = await message_thread_window(pool, conv, around_message_id=uuid.uuid4())
+    window = await message_thread_window(db_pool, conv, around_message_id=uuid.uuid4())
     assert window == []
 
 
@@ -304,13 +282,13 @@ async def _search_messages(app: FastAPI, **params) -> dict:
 
 
 async def test_router_paginates_by_cursor_with_highlight_ranges(
-    search_app: FastAPI, pool: asyncpg.Pool
+    search_app: FastAPI, db_pool: asyncpg.Pool
 ) -> None:
     now = datetime.now(UTC)
-    conv = await _seed_conversation(pool, butler_name="finance")
+    conv = await _seed_conversation(db_pool, butler_name="finance")
     for i in range(3):
         await _seed_message(
-            pool,
+            db_pool,
             conversation_id=conv,
             content=f"gizmo shipment update {i}",
             created_at=now - timedelta(minutes=10 - i),

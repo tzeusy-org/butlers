@@ -89,9 +89,21 @@ def _patch_infra(butler_name: str = "health"):
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
+    transaction_depth = 0
+
+    async def enter_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc):
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
     transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock()
-    transaction.__aexit__ = AsyncMock(return_value=False)
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
     mock_conn.transaction = MagicMock(return_value=transaction)
     acquisition = MagicMock()
     acquisition.__aenter__ = AsyncMock(return_value=mock_conn)

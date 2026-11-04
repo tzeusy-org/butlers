@@ -91,9 +91,17 @@ def _patch_infra():
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.execute = AsyncMock(return_value=None)
 
+    transaction_depth = 0
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
+
     @asynccontextmanager
     async def _transaction():
-        yield
+        nonlocal transaction_depth
+        transaction_depth += 1
+        try:
+            yield
+        finally:
+            transaction_depth -= 1
 
     mock_conn.transaction = MagicMock(side_effect=_transaction)
 
@@ -421,7 +429,7 @@ async def test_deferred_actual_delivery_rechecks_outage_and_recovery(monkeypatch
     async def tick(pool, dispatch, *, notify_fn, **kwargs):
         from uuid import uuid4
 
-        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 
         now = datetime.now(UTC)
         anchor = now - timedelta(minutes=1)

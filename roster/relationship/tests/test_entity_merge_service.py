@@ -21,12 +21,6 @@ from butlers.db import register_jsonb_codec
 from butlers.entity_rebind import rebind_entity_references, run_entity_rebind_listener
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 from butlers.testing.fake_pool import AsyncCtx
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    ENTITY_REBIND_LOG,
-)
 from butlers.tools.relationship.entity_merge import (
     AuditEntityOrderError,
     LockedGuardRejected,
@@ -37,7 +31,6 @@ from butlers.tools.relationship.entity_merge import (
     TargetEntityTombstonedError,
     merge_entity_pair,
 )
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 
 def _locked_row(entity_id: UUID, *, tombstoned: bool = False) -> dict:
@@ -214,117 +207,24 @@ async def test_empty_explicit_audit_order_fails_before_database_access() -> None
     pool.acquire.assert_not_called()
 
 
+# Relationship's real layout: core in public; memory, relationship and approvals
+# in its own schema. Chronicler rides along in its own schema so every merge
+# test clones one template, including the cross-schema rebind test. The same
+# key as test_whatsapp_reconciliation.py, so a worker migrates it once.
+_MERGE_CHAINS = ("core", "memory", "relationship", "approvals", "chronicler")
+_MERGE_SCHEMAS = {
+    "memory": "relationship",
+    "relationship": "relationship",
+    "approvals": "relationship",
+    "chronicler": "chronicler",
+}
+
+
 @pytest.fixture
-async def merge_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await pool.execute("""
-            CREATE TABLE public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT NOT NULL,
-                entity_type TEXT NOT NULL DEFAULT 'person',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await pool.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, cardinality)
-            VALUES
-                ('has-email', 'contact', 'literal', 'multi'),
-                ('knows', 'relational', 'entity', 'multi')
-        """)
-        await pool.execute("""
-            CREATE TABLE relationship.entity_facts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject UUID NOT NULL REFERENCES public.entities(id),
-                predicate TEXT NOT NULL,
-                object TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                src TEXT NOT NULL,
-                conf FLOAT NOT NULL DEFAULT 1.0,
-                last_seen TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata JSONB,
-                weight INT,
-                verified BOOL NOT NULL DEFAULT false,
-                "primary" BOOL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute("""
-            CREATE UNIQUE INDEX uq_ef_spo_active
-            ON relationship.entity_facts (subject, predicate, object)
-            WHERE validity = 'active'
-        """)
-        await apply_evidence_schema(pool)
-        await pool.execute("""
-            CREATE TABLE facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id UUID,
-                object_entity_id UUID,
-                predicate TEXT NOT NULL,
-                content TEXT,
-                source_butler TEXT,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                observed_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                valid_at TIMESTAMPTZ,
-                supersedes_id UUID,
-                scope TEXT NOT NULL DEFAULT 'relationship',
-                validity TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute(CONTACT_ENTITY_MAP.ddl())
-        await pool.execute("""
-            CREATE TABLE calendar_event_entities (
-                event_id UUID NOT NULL,
-                entity_id UUID NOT NULL,
-                PRIMARY KEY (event_id, entity_id)
-            )
-        """)
-        await pool.execute("""
-            CREATE TABLE episode_entities (
-                episode_id UUID NOT NULL,
-                entity_id UUID NOT NULL,
-                role TEXT NOT NULL DEFAULT 'participant',
-                PRIMARY KEY (episode_id, entity_id)
-            )
-        """)
-        await pool.execute(ENTITY_GRAPH_EDGES.ddl())
-        await pool.execute("""
-            CREATE TABLE public.memory_catalog (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                entity_id UUID,
-                object_entity_id UUID,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await pool.execute(ENTITY_REBIND_LOG.ddl(schema="public"))
-        await pool.execute("""
-            CREATE TABLE relationship.merge_reviews (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_a UUID NOT NULL REFERENCES public.entities(id),
-                entity_b UUID NOT NULL REFERENCES public.entities(id),
-                shared_facts JSONB NOT NULL,
-                divergent_facts JSONB NOT NULL,
-                outcome TEXT NOT NULL,
-                reviewed_at TIMESTAMPTZ NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield pool
+async def merge_pool(db):
+    return await db(
+        *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS, schema="relationship", min_size=2, max_size=8
+    )
 
 
 async def _insert_entity(pool, name: str) -> UUID:
@@ -335,14 +235,8 @@ async def _insert_entity(pool, name: str) -> UUID:
 
 @pytest.fixture
 async def owner_merge_pools(fresh_db):
-    """Fresh main chains and bootstrap-established runtime identities.
-
-    This singleton proof does not use the legacy copied schema used by the
-    other bounded merge scenarios.
-    """
-    db_url = await asyncio.to_thread(
-        fresh_db, "core", "memory", "relationship", schemas={"relationship": "relationship"}
-    )
+    """Fresh main chains with bootstrap-established runtime identities (``SET ROLE``)."""
+    db_url = await asyncio.to_thread(fresh_db, *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS)
 
     async def relationship_role(conn):
         await conn.execute("SET ROLE butler_relationship_rw")
@@ -459,8 +353,8 @@ async def test_merge_rebinds_catalog_and_opens_honest_receipt_cohort(merge_pool)
     )
     local_fact = await pool.fetchval(
         """
-        INSERT INTO facts (entity_id, predicate, content)
-        VALUES ($1, 'note', 'opaque local reference')
+        INSERT INTO facts (subject, entity_id, predicate, content)
+        VALUES ('opaque-subject', $1, 'note', 'opaque local reference')
         RETURNING id
         """,
         source_id,
@@ -705,30 +599,80 @@ async def test_single_authority_preserves_alias_role_and_metadata_merge_semantic
     )
 
 
+@pytest.fixture
+async def rebind_pools(db, fresh_db):
+    """Relationship and Chronicler pools on one DB, each scoped like its daemon.
+
+    Episodes belong to Chronicler (``chronicler_014``), so their references are
+    rebound by Chronicler's own receipt, never by Relationship's.
+    """
+    db_url = await asyncio.to_thread(fresh_db, *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS)
+    return (
+        await db.open(db_url, schema="relationship"),
+        await db.open(db_url, schema="chronicler"),
+    )
+
+
+async def _pending_receipt(pool, rebind_id: UUID, source_id: UUID, target_id: UUID, schema: str):
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema, status
+        ) VALUES ($1, $2, $3, $4, 'pending')
+        """,
+        rebind_id,
+        source_id,
+        target_id,
+        schema,
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_receipt(
-    merge_pool,
+    rebind_pools,
 ) -> None:
-    pool = merge_pool
+    pool, chronicler_pool = rebind_pools
     source_id = await _insert_entity(pool, "Local source")
     target_id = await _insert_entity(pool, "Local target")
     fact_id = await pool.fetchval(
         """
-        INSERT INTO facts (entity_id, predicate, content)
-        VALUES ($1, 'note', 'opaque') RETURNING id
+        INSERT INTO facts (subject, entity_id, predicate, content)
+        VALUES ('opaque-subject', $1, 'note', 'opaque') RETURNING id
         """,
         source_id,
     )
-    event_id = uuid4()
-    episode_id = uuid4()
+    calendar_source_id = await pool.fetchval(
+        "INSERT INTO calendar_sources (source_key, source_kind) "
+        "VALUES ('rebind-test', 'provider_event') RETURNING id"
+    )
+    event_id = await pool.fetchval(
+        """
+        INSERT INTO calendar_events
+            (source_id, origin_ref, title, timezone, starts_at, ends_at, source_butler)
+        VALUES ($1, 'rebind-test', 'Opaque', 'UTC', now(), now() + interval '1 hour',
+                'relationship')
+        RETURNING id
+        """,
+        calendar_source_id,
+    )
     await pool.execute(
         "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
         event_id,
         source_id,
     )
-    await pool.execute(
+    await chronicler_pool.execute(
+        "INSERT INTO source_adapter_state (source_name, chronicler_compatibility) "
+        "VALUES ('rebind-test', 'supported')"
+    )
+    episode_id = await chronicler_pool.fetchval(
+        """
+        INSERT INTO episodes (source_name, source_ref, episode_type, start_at)
+        VALUES ('rebind-test', 'opaque', 'test', now()) RETURNING id
+        """
+    )
+    await chronicler_pool.execute(
         "INSERT INTO episode_entities (episode_id, entity_id) VALUES ($1, $2)",
         episode_id,
         source_id,
@@ -744,16 +688,8 @@ async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_r
     )
 
     rebind_id = uuid4()
-    await pool.execute(
-        """
-        INSERT INTO public.entity_rebind_log (
-            rebind_id, source_entity_id, target_entity_id, target_schema, status
-        ) VALUES ($1, $2, $3, 'relationship', 'pending')
-        """,
-        rebind_id,
-        source_id,
-        target_id,
-    )
+    for schema in ("relationship", "chronicler"):
+        await _pending_receipt(pool, rebind_id, source_id, target_id, schema)
     receipt = await rebind_entity_references(
         pool,
         rebind_id=rebind_id,
@@ -761,9 +697,18 @@ async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_r
         target_entity_id=target_id,
         target_schema="relationship",
     )
+    chronicler_receipt = await rebind_entity_references(
+        chronicler_pool,
+        rebind_id=rebind_id,
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        target_schema="chronicler",
+    )
 
-    assert receipt.status == "active"
-    assert receipt.references_rebound == 4
+    # Relationship owns its facts and catalog rows and reaches the shared
+    # calendar junction; Chronicler owns the episode anchor.
+    assert (receipt.status, receipt.references_rebound) == ("active", 3)
+    assert (chronicler_receipt.status, chronicler_receipt.references_rebound) == ("active", 1)
     assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
     assert (
         await pool.fetchval(
@@ -772,7 +717,7 @@ async def test_local_rebind_handler_repoints_every_owned_reference_and_settles_r
         == target_id
     )
     assert (
-        await pool.fetchval(
+        await chronicler_pool.fetchval(
             "SELECT entity_id FROM episode_entities WHERE episode_id = $1", episode_id
         )
         == target_id
@@ -793,7 +738,8 @@ async def test_concurrent_replay_preserves_truthful_rebound_count(merge_pool) ->
     source_id = await _insert_entity(pool, "Concurrent source")
     target_id = await _insert_entity(pool, "Concurrent target")
     await pool.execute(
-        "INSERT INTO facts (entity_id, predicate, content) VALUES ($1, 'note', 'opaque')",
+        "INSERT INTO facts (subject, entity_id, predicate, content) "
+        "VALUES ('opaque-subject', $1, 'note', 'opaque')",
         source_id,
     )
     rebind_id = uuid4()
@@ -841,8 +787,8 @@ async def test_live_fleet_event_invokes_local_rebind_handler(merge_pool) -> None
     target_id = await _insert_entity(pool, "Live target")
     fact_id = await pool.fetchval(
         """
-        INSERT INTO facts (entity_id, predicate, content)
-        VALUES ($1, 'note', 'opaque') RETURNING id
+        INSERT INTO facts (subject, entity_id, predicate, content)
+        VALUES ('opaque-subject', $1, 'note', 'opaque') RETURNING id
         """,
         source_id,
     )

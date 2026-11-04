@@ -959,11 +959,12 @@ class TestErrorHandling:
     _WIDE_HEADERS = ["Date", "Description", "Amount", "x" * 150] + [f"c{i}" for i in range(56)]
 
     @pytest.mark.parametrize(
-        ("csv_text", "headers", "headers_truncated", "missing_columns"),
+        ("csv_text", "column_map", "headers", "headers_truncated", "missing_columns"),
         [
             # Columns resolve, but the date values match no known format.
             (
                 "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n",
+                None,
                 ["Transaction Date", "Description", "Amount"],
                 False,
                 [],
@@ -971,22 +972,33 @@ class TestErrorHandling:
             # Dates parse, but no merchant or amount column can be found.
             (
                 "Date,Memo,Sum\n2024-01-15,MERCHANT,-10.00\n",
+                None,
                 ["Date", "Memo", "Sum"],
                 False,
                 ["merchant", "amount"],
             ),
+            # `description` maps the transaction description, not the merchant, so the
+            # merchant column is reported missing instead of silently imported blank.
+            (
+                "Date,Memo,Amount\n2024-01-15,MERCHANT,-10.00\n",
+                {"description": "Memo"},
+                ["Date", "Memo", "Amount"],
+                False,
+                ["merchant"],
+            ),
             # Untrusted headers are bounded: first 50 names, each cut to 100 chars.
             (
                 ",".join(_WIDE_HEADERS) + "\nJanuary 15 2024,MERCHANT,-10.00\n",
+                None,
                 ["Date", "Description", "Amount", "x" * 100] + [f"c{i}" for i in range(46)],
                 True,
                 [],
             ),
         ],
-        ids=["bad-date", "no-merchant-amount", "oversized-headers"],
+        ids=["bad-date", "no-merchant-amount", "description-key-not-merchant", "oversized-headers"],
     )
     async def test_unknown_format_returns_unrecognized_format_with_headers(
-        self, csv_text, headers, headers_truncated, missing_columns
+        self, csv_text, column_map, headers, headers_truncated, missing_columns
     ):
         """Spec 'Unknown format fallback': unrecognized_format plus the headers to map."""
         from butlers.tools.finance.data_import import import_transactions
@@ -999,6 +1011,7 @@ class TestErrorHandling:
             blob_store=self._make_blob_store(csv_text),
             storage_ref="s3://bucket/finance/bad.csv",
             origin_butler="finance",
+            column_map=column_map,
         )
 
         assert result["status"] == "unrecognized_format"

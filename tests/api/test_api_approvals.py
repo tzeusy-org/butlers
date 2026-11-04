@@ -40,14 +40,20 @@ class _NullTxCtx:
     ``mock_conn = AsyncMock()`` auto-mocks ``.transaction`` as an AsyncMock
     too, whose call returns a coroutine rather than an async context manager
     — incompatible with ``async with conn.transaction():``. Assign
-    ``mock_conn.transaction = MagicMock(return_value=_NullTxCtx())`` wherever
+    ``mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))`` wherever
     a route now wraps its writes in a transaction (approve/deny/defer/policy).
     """
 
+    def __init__(self, connection):
+        self.connection = connection
+        connection.is_in_transaction = MagicMock(return_value=False)
+
     async def __aenter__(self):
+        self.connection.is_in_transaction.return_value = True
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
+        self.connection.is_in_transaction.return_value = False
         return False  # never suppress — let exceptions propagate/rollback
 
 
@@ -86,7 +92,7 @@ def _app_with_mock_db(
     mock_conn = AsyncMock()
     mock_conn.fetch = AsyncMock(return_value=fetch_rows or [])
     mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     if has_approvals_tables:
 
@@ -1372,7 +1378,7 @@ async def test_defer_hours_bounds(app, hours, expected_status, monkeypatch):
     mock_conn = AsyncMock()
     intent_id = uuid4()
     mock_conn.execute = AsyncMock(return_value="UPDATE 1")
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     class _MockAcquire:
         async def __aenter__(self):
@@ -1489,7 +1495,7 @@ async def test_defer_expired_pending_action_expires_instead_of_extending(app):
 
     mock_conn.fetchval = AsyncMock(side_effect=fetchval_side)
     mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side)
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     class _MockAcquire:
         async def __aenter__(self):
@@ -1541,7 +1547,7 @@ async def test_policy_round_trip(app, monkeypatch):
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=policy_row)
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     def fetchval_side(*args, **kwargs):
         sql = args[0] if args else ""
@@ -1653,7 +1659,7 @@ async def test_approve_audits_action(app):
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=pending_row)
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     def fetchval_side(*args, **kwargs):
         sql = args[0] if args else ""
@@ -1753,7 +1759,7 @@ async def test_approve_no_daemon_reachable_reports_not_dispatched(app):
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=pending_row)
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     def fetchval_side(*args, **kwargs):
         sql = args[0] if args else ""
@@ -1852,7 +1858,7 @@ async def test_approve_daemon_reachable_reports_dispatched(app):
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=pending_row)
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     def fetchval_side(*args, **kwargs):
         sql = args[0] if args else ""
@@ -1952,7 +1958,7 @@ async def test_deny_audits_action(app):
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value=pending_row)
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     def fetchval_side(*args, **kwargs):
         sql = args[0] if args else ""
@@ -2737,7 +2743,7 @@ def _build_dispatch_mocks(
     mock_conn = AsyncMock()
     mock_conn.fetchrow = AsyncMock(return_value={"status": "approved", "execution_result": None})
     mock_conn.execute = AsyncMock()
-    mock_conn.transaction = MagicMock(return_value=_NullTxCtx())
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
 
     class _MockAcquire:
         async def __aenter__(self):

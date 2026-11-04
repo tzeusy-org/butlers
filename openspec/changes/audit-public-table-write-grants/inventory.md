@@ -74,7 +74,7 @@ Legitimate writers insert. The baseline also grants `UPDATE` and `DELETE`, which
 | `audit_log` | A: `api/routers/audit.py:337`; D(any): `core/runtime_config.py:292`, `core/audit.py:68` (imports the API appender) | Mixed principals, insert only; forging or erasing audit rows is the main risk |
 | `token_usage_ledger` | D(any): `core/dispatch_outcomes.py:385`, `core/model_routing.py:1459` | Spec already says INSERT only |
 | `model_dispatch_attempts` | D(any): `core/dispatch_outcomes.py:374` | Spec already says SELECT, INSERT |
-| `attention_ledger` | D/C/A: `core/attention_ledger.py:268`; callers in `core/scheduler.py`, `connectors/discretion.py`, `api/routers/notifications.py` | Three principal classes insert |
+| `attention_ledger` | D/C/A: `core/attention_ledger.py:268`; callers in `core/scheduler/`, `connectors/discretion.py`, `api/routers/notifications.py` | Three principal classes insert |
 | `dispatch_failures` | D(any): `core/spawner.py:3665` | |
 | `consolidation_runs` | D: `modules/memory/consolidation.py:567` | |
 | `memory_compaction_log` | J: `scheduled_jobs.py:525` | |

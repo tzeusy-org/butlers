@@ -81,10 +81,18 @@ async def test_owner_login_lifecycle_and_runtime_role_is_read_only(projections_d
                         "0" * 64,
                     )
 
+        rotated = await store.rotate(grant.id)
+        assert rotated is not None
+        new_grant, new_token = rotated
+        assert new_token != token and new_grant.last_fetch_status == "ok"
+        assert await resolve_grant(store, grant.id, "glance", token) is None
+        assert await resolve_grant(store, grant.id, "glance", new_token) == new_grant
+
         revoked = await store.revoke(grant.id)
         assert revoked is not None and revoked.revoked_at is not None
         assert await store.get_active(grant.id) is None
         assert await store.revoke(grant.id) is None
+        assert await store.rotate(grant.id) is None
     finally:
         await pool.close()
 
