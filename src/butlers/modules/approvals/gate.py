@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 
 import butlers.core.approvals_hooks as approval_hooks
 from butlers.config import ApprovalConfig, ApprovalRiskTier
+from butlers.core.goal_lineage import approving_lineage
 from butlers.identity import (
     ResolvedContact,
     resolve_channel_contact_with_owner_corroboration,
@@ -616,6 +617,30 @@ async def apply_approval_gates(
     return originals
 
 
+async def _goal_approval_covers(pool: Any, tool_name: str, tool_args: dict[str, Any]) -> bool:
+    """A verified approval_ref covers this exact call and names this domain's approved action.
+
+    The lineage proves the broker approved exactly these raw arguments; the
+    action row proves the approval was this domain's, for this goal and tool,
+    and has not been settled.
+    """
+    lineage = approving_lineage(tool_name, tool_args)
+    if lineage is None:
+        return False
+    try:
+        action_id = uuid.UUID(str(lineage.approval_ref))
+    except ValueError:
+        return False
+    row = await pool.fetchrow(
+        "SELECT id FROM pending_actions WHERE id = $1 AND goal_id = $2 AND tool_name = $3 "
+        "AND status = 'approved' AND execution_result IS NULL",
+        action_id,
+        lineage.goal_id,
+        tool_name,
+    )
+    return row is not None
+
+
 def _make_gate_wrapper(
     tool_name: str,
     original_fn: Any,
@@ -674,6 +699,10 @@ def _make_gate_wrapper(
 
     async def gate_wrapper(**kwargs: Any) -> dict[str, Any]:
         tool_args = dict(kwargs)
+        # A broker-forwarded approved effect (RFC 0038 D7): the verified
+        # approval_ref covering this exact call is the approval, so it runs
+        # once instead of parking again.
+        approved_by_goal = await _goal_approval_covers(pool, tool_name, tool_args)
 
         # Dossier metadata is always gate-only and is never forwarded to target
         # resolution, standing-rule matching, persistence as tool args, or the
@@ -688,6 +717,8 @@ def _make_gate_wrapper(
         argument_error = _unexpected_tool_argument_error(tool_name, original_fn, tool_args)
         if argument_error is not None:
             return argument_error
+        if approved_by_goal:
+            return await original_fn(**tool_args)
 
         action_id = uuid.uuid4()
         now = datetime.now(UTC)

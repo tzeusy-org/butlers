@@ -2,10 +2,10 @@
 
 ``Domains`` is a trusted constructor input. Parking always goes through the
 owning domain's approvals module; ``ApprovalsParking`` is the in-process
-adapter over that module's goal-park API. The HTTP forwarder that carries
-``X-Butlers-Assertion`` to a domain's verified tool wrapper lands with domain
-verification (bu-pkuny2); until then the broker has no dispatch transport and
-stays dark.
+adapter over that module's goal-park API. Dispatch goes through
+``forwarder.HttpForwarder``, which carries ``X-Butlers-Assertion`` to the
+domain's verification middleware (``verification``); nothing constructs either
+until the M6 switch.
 """
 
 from __future__ import annotations

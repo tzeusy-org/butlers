@@ -36,6 +36,7 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
+from butlers.core.goal_lineage import taint_insert
 from butlers.core.insight_premise import normalize_premise
 from butlers.telegram_api import terminal_telegram_metadata
 from butlers.telegram_text import MAX_VISIBLE_UNITS, PartialDeliveryLatch, text_units
@@ -347,12 +348,15 @@ async def propose_insight_candidate(
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
+    taint = taint_insert(12)
     candidate_id = await pool.fetchval(
-        """
+        f"""
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
-             expires_at, message, channel, metadata, status, prepared_action_id, premise)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10, $11::jsonb)
+             expires_at, message, channel, metadata, status, prepared_action_id,
+             premise{taint.columns})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10,
+                $11::jsonb{taint.placeholders})
         RETURNING id
         """,
         origin_butler,
@@ -366,6 +370,7 @@ async def propose_insight_candidate(
         metadata,
         prepared_action_id,
         premise,
+        *taint.values,
     )
     if isinstance(candidate_id, uuid.UUID):
         from butlers.core.attention_urgency import remember_candidate_origin

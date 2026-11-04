@@ -106,11 +106,67 @@ call (`broker_unavailable`); so does any ledger or catalog read failure. The
 signing key loads once from a 0400 file owned by the process whose public half
 must equal the configured verification key for its `kid`.
 
+## Forwarding and domain verification (D7, bu-pkuny2)
+
+`forwarder.HttpForwarder` sends each dispatched call as one MCP `tools/call` to
+the owning domain's endpoint with exactly one `X-Butlers-Assertion` header. A
+session that never opened is `not_received` (the one D12 retry); a result is
+`committed`; an error result, including a refused assertion, is `failed`;
+anything after the call was sent propagates and the effect becomes `unknown`.
+
+On the domain, `verification.AssertionVerificationMiddleware` is the outermost
+FastMCP middleware, so it runs before argument coercion, before the core tool
+wrapper and before any handler. It refuses (`assertion_refused`, which never
+says which check failed) a missing or repeated header, a forged signature, an
+unknown `kid`, a wrong `aud`, an expired assertion, a capability other than the
+called tool, an `args_digest` other than the digest of the raw wire arguments
+(so coercion cannot launder a difference), and a `call_id` seen within twice
+the assertion lifetime. Replay across a restart: the seen set is in memory, so
+an assertion issued before the process started is refused; D12 effect
+idempotency makes the one broker retry that costs safe.
+
+Keys come from a `version: 1` verifier keyring at
+`/run/secrets/capability_broker_assertion_verifiers`, parsed by the
+runtime-probe keyring codec (one current entry, at most one retiring). A domain
+with no valid keyring refuses every call; there is no unsigned or shared-secret
+fallback.
+
+The verified lineage is bound (`core.goal_lineage`) for exactly that call and
+replaces the spawner-derived context:
+
+- the core tool wrapper's first step refuses, while enforcement is on, any
+  call with no lineage bound for its tool. The refusal is raised as a
+  `ToolError`, so it reaches the broker as an MCP error result and the effect
+  is recorded `failed`, never `committed`;
+- `get_approval_execution_context` (RFC 0028's executor binding) and the
+  RFC 0021 replay seam treat a lineage whose `approval_ref` covers the exact
+  tool and argument digest, in the task it was verified in, as the approval;
+  it carries no session id;
+- the domain approval gate runs such a call once instead of parking it again,
+  after checking the domain's own action is `approved`, unsettled and for this
+  goal and tool;
+- memory authority is `third_party` when exposed or third-party, `owner` for
+  unexposed owner lineage and `system` for obligation and staffer lineage; an
+  explicit owner-class authority, or an owner-class fact report, under exposure
+  is refused;
+- an exposed write stamps `taint_goal_id` / `taint_invocation_id` on every D6
+  store: memory episodes, facts and rules (`mem_017`; contact notes and
+  decision memory are facts), relationship entity facts (`rel_039`), captures,
+  conversation history (`public.dashboard_messages`) and insight candidates
+  (`core_313`). Goal outcomes have no store yet. Memory reads return the
+  columns with the row;
+- `public.domain_events` rows record the producing call's `goal_id`,
+  `goal_invocation_id`, `goal_effect_id` and `goal_exposed` (`core_313`), read
+  back by `get_event` and `list_events`;
+- audit writes made inside a verified handler can read the same lineage
+  (`goal_lineage.event_lineage()`); stamping audit rows is bu-5arfj.
+
+`lifecycle` calls `attach_domain_verification` with the default-off
+`DomainVerificationSwitch`; off, nothing is installed and the runtime is
+unchanged.
+
 ## Not yet wired
 
-- The HTTP forwarder to domains and domain-side assertion verification
-  (bu-pkuny2); until then `ApprovalsParking` has no dispatch transport.
 - The runner (token issuance on launch, goal tools, Stop itself) and the M6
-  switch that constructs the broker.
-- Marking the domain's pending action executed when the broker dispatches it,
-  and syncing approval expiry back to the effect.
+  switch that constructs the broker and turns domain verification on.
+- The service-plane tool inventory that domain verification exempts.
