@@ -24,16 +24,7 @@ from butlers.routing_guidance import (
     _build_route_runtime_context as _build_recovery_route_runtime_context,
 )
 from butlers.routing_guidance import _wrap_routed_message as _wrap_recovery_routed_message
-
-
-def _write_butler(root: Path) -> Path:
-    config_dir = root / "general"
-    config_dir.mkdir()
-    (config_dir / "butler.toml").write_text(
-        '[butler]\nname = "general"\nport = 0\ndescription = "A test butler"\n\n'
-        '[butler.db]\nname = "butlers"\nschema = "general"\n'
-    )
-    return config_dir
+from butlers.testing.daemon import write_butler_config
 
 
 def _route_request_context(
@@ -85,7 +76,7 @@ def test_generated_route_context_keeps_the_payload_fence_unambiguous(
 
 async def _routed_prompt(booted_daemon, tmp_path: Path, *, source_channel: str, text: str):
     """Route *text* through a booted daemon; return the prompt the runtime received."""
-    booted = await booted_daemon(_write_butler(tmp_path))
+    booted = await booted_daemon(write_butler_config(tmp_path))
 
     result = await booted.call_tool(
         "route.execute",

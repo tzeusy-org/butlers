@@ -143,6 +143,29 @@ class FakeRuntime(RuntimeAdapter):
         return path.read_text() if path.exists() else ""
 
 
+def write_butler_config(
+    root: Path,
+    name: str = "general",
+    *,
+    schema: str = "general",
+    description: str = "booted_daemon test butler",
+    extra_toml: str = "",
+) -> Path:
+    """Write ``root/name/butler.toml`` for a one-db butler the kit can boot.
+
+    *schema* must have a runtime role (``butler_<schema>_rw``); for
+    ``registered=True`` boots, *name* must equal it. *extra_toml* is appended as is,
+    for example ``[modules.x]`` or ``[butler.security]`` sections.
+    """
+    config_dir = root / name
+    config_dir.mkdir(parents=True)
+    (config_dir / "butler.toml").write_text(
+        f'[butler]\nname = "{name}"\nport = 0\ndescription = "{description}"\n\n'
+        f'[butler.db]\nname = "butlers"\nschema = "{schema}"\n\n{extra_toml}'
+    )
+    return config_dir
+
+
 def _link_roster(roster: Path, config_dir: Path) -> None:
     roster.mkdir()
     (roster / config_dir.name).symlink_to(config_dir.resolve(), target_is_directory=True)

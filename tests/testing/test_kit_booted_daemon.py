@@ -6,13 +6,12 @@ import asyncio
 import statistics
 import time
 import warnings
-from pathlib import Path
 
 import pytest
 
 from butlers.core.model_capabilities import capability_baseline_of_adapter
 from butlers.core.runtimes import create_adapter, get_adapter, list_registered_runtime_types
-from butlers.testing.daemon import DaemonBooter, FakeRuntime
+from butlers.testing.daemon import DaemonBooter, FakeRuntime, write_butler_config
 
 pytestmark = pytest.mark.integration
 
@@ -23,15 +22,19 @@ session_loop = pytest.mark.asyncio(loop_scope="session")
 _BOOTS = 10
 
 
-def _write_butler(root: Path, name: str = "kit_smoke") -> Path:
-    config_dir = root / name
-    config_dir.mkdir()
-    # One-db topology on a schema that has a runtime role, as production boots.
-    (config_dir / "butler.toml").write_text(
-        f'[butler]\nname = "{name}"\nport = 0\ndescription = "booted_daemon smoke"\n\n'
-        '[butler.db]\nname = "butlers"\nschema = "general"\n'
+def test_write_butler_config_writes_a_bootable_one_db_butler(tmp_path) -> None:
+    from butlers.config import load_config
+
+    config_dir = write_butler_config(
+        tmp_path,
+        "general",
+        extra_toml='[butler.security]\ntrusted_route_callers = ["switchboard", "health"]\n',
     )
-    return config_dir
+
+    assert config_dir == tmp_path / "general"
+    config = load_config(config_dir)
+    assert (config.name, config.db_name, config.db_schema) == ("general", "butlers", "general")
+    assert set(config.trusted_route_callers) == {"switchboard", "health"}
 
 
 def _live_tasks() -> set[asyncio.Task]:
@@ -41,7 +44,7 @@ def _live_tasks() -> set[asyncio.Task]:
 @session_loop
 async def test_booted_daemon_serves_a_tool_and_shuts_down_clean(booted_daemon, tmp_path) -> None:
     before = _live_tasks()
-    booted = await booted_daemon(_write_butler(tmp_path))
+    booted = await booted_daemon(write_butler_config(tmp_path, "kit_smoke"))
 
     # The real spawner holds the fake adapter, so no LLM CLI can start.
     assert isinstance(booted.daemon.spawner._runtime, FakeRuntime)
@@ -61,7 +64,7 @@ async def test_booted_daemon_serves_a_tool_and_shuts_down_clean(booted_daemon, t
 async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
     booted_daemon, tmp_path
 ) -> None:
-    booted = await booted_daemon(_write_butler(tmp_path, "general"))
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
 
     assert booted.daemon._identity_facts()["accepting_routes"] is False
 
@@ -70,7 +73,7 @@ async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
 async def test_registered_boot_accepts_routes(booted_daemon, tmp_path) -> None:
     # Boot registration is the role-bound public.register_butler_boot, so the butler
     # name must match the schema's runtime role (butler_general_rw).
-    booted = await booted_daemon(_write_butler(tmp_path, "general"), registered=True)
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"), registered=True)
 
     facts = booted.daemon._identity_facts()
     assert facts["accepting_routes"] is True
@@ -80,7 +83,7 @@ async def test_registered_boot_accepts_routes(booted_daemon, tmp_path) -> None:
 
 @session_loop
 async def test_scripted_reply_comes_back_through_the_real_spawner(booted_daemon, tmp_path) -> None:
-    booted = await booted_daemon(_write_butler(tmp_path, "general"))
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
     booted.runtime.script("scripted answer")
 
     result = await booted.daemon.spawner.trigger(
@@ -164,12 +167,12 @@ async def test_wait_for_invocations_times_out_loudly() -> None:
 
 @session_loop
 async def test_boot_cost_is_reported(booted_daemon, tmp_path) -> None:
-    await (await booted_daemon(_write_butler(tmp_path, "warm"))).shutdown()
+    await (await booted_daemon(write_butler_config(tmp_path, "warm"))).shutdown()
     cycles: list[float] = []
     starts: list[float] = []
     for index in range(_BOOTS):
         began = time.monotonic()
-        booted = await booted_daemon(_write_butler(tmp_path, f"boot_{index}"))
+        booted = await booted_daemon(write_butler_config(tmp_path, f"boot_{index}"))
         starts.append(booted.start_seconds)
         await booted.call_tool("status")
         await booted.shutdown()
