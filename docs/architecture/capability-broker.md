@@ -12,7 +12,7 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | --- | --- |
 | `contracts.py` | Closed refusal reasons, 256-bit invocation tokens (hash only persisted), `Principal`, the broker's `Capability` projection of a published D4 descriptor |
 | `catalog.py` | Per-call read of the published fleet catalog on the call's own connection |
-| `recipients.py` | Owner rule 2: classify each `recipient_params` party with the core-notify owner-resolution rule |
+| `recipients.py` | Owner rule 2: classify each `recipient_params` party (UUID, email, Telegram, WhatsApp) with the core-notify owner-resolution rule |
 | `policy.py` | Dispatch, park or refuse from effect class, exposure, park-only, approval mode and approval policy |
 | `ledger.py` | SQL over the sw_047 goal ledger; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
@@ -55,9 +55,21 @@ domain does not vouch for, exposes the invocation (and so the goal).
 ## Recipients and owner rules
 
 A party is the owner only when it is the UUID of the single live, unmerged,
-undeleted owner entity, or an email address that `resolve_owner_channel_via_definer`
-resolves to that entity. Anything else, including ambiguous, unknown and
-undeterminable parties, is non-owner. A call naming nobody is owner
+undeleted owner entity, or a channel identifier that the core-notify rule
+(`resolve_owner_channel_via_definer`, with notify's channel-to-identity map
+`ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES`) resolves to that entity. The
+channel comes from notify's `channel` argument (Telegram when it names neither a
+channel nor an entity) or from a transport tool's own name (`telegram_*`: chat
+id or username; `whatsapp_*`: individual JID; `email_*`: address); any other
+party list resolves only UUIDs and email addresses. Broker authorization is
+exact. The definer matches a WhatsApp JID's digits against stored phones by
+the custody suffix rule (lengths within two digits), so the broker also
+requires the exact JID handle, or the full number exactly as stored
+(`resolve_owner_triple('has-phone', …)`), to be the owner's. A lookalike or
+2-digit-off number is non-owner and parks; core notify keeps the definer's
+rule. A bare phone number, another channel's identifier, an identifier two
+live entities share, and a failed lookup are non-owner, as are all
+unknown and undeterminable parties. A call naming nobody is owner
 communication only through notify's declared Telegram send/insight branch.
 Unrecognised forms can only over-park.
 

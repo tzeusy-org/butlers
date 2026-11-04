@@ -18,7 +18,11 @@ from typing import Any
 from uuid import UUID
 
 from butlers.core.tool_catalog import OwnerNotifyBranch
-from butlers.identity import resolve_owner_channel_via_definer
+from butlers.identity import (
+    ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES,
+    owner_channel_authorization_candidates,
+    resolve_owner_channel_via_definer,
+)
 
 from .contracts import Capability, Recipient
 
@@ -27,6 +31,8 @@ _LIVE_OWNERS_SQL = (
     "AND metadata ->> 'merged_into' IS NULL AND metadata ->> 'deleted_at' IS NULL LIMIT 2"
 )
 _OWNER_DEFAULT_INTENTS = (None, "send", "insight")
+_RESOLVE_OWNER_SQL = "SELECT entity_id FROM public.resolve_owner_triple($1, $2)"
+_PHONE = "phone-digits:"
 
 
 def _present(value: Any) -> bool:
@@ -49,23 +55,69 @@ async def _live_owner(connection) -> UUID | None:
     return rows[0]["id"] if len(rows) == 1 else None
 
 
-async def _is_owner(connection, value: Any, owner: UUID | None) -> bool:
+def _channel(capability: Capability, args: dict[str, Any]) -> str | None:
+    """The notify channel whose identifiers this call's parties are, if known."""
+    if capability.name == "notify":
+        channel = args.get("channel")
+        if channel is None and not _present(args.get("entity_id")):
+            return "telegram"  # notify's documented default without an entity
+        return channel if type(channel) is str else None
+    for channel in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES:
+        if capability.name.startswith(f"{channel}_"):
+            return channel  # A transport module's own tool names its identifiers.
+    return None
+
+
+async def _is_owner(connection, value: Any, owner: UUID | None, channel: str | None) -> bool:
     if type(value) is not str:
         return False
     try:
         return owner is not None and UUID(value) == owner and str(UUID(value)) == value.lower()
     except ValueError:
         pass
-    if "@" not in value:
+    if channel is None and "@" in value:
+        channel = "email"  # A party list outside any transport (e.g. invitees).
+    channel_type = ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES.get(channel or "")
+    if channel_type is None:
         return False
     try:
         async with connection.transaction():
             resolved = await resolve_owner_channel_via_definer(
-                connection, "email", value, raise_on_error=True
+                connection, channel_type, value, raise_on_error=True
             )
+        if owner is None or resolved is None or resolved[0].entity_id != owner:
+            return False
+        return await _exactly_the_owner(connection, owner, channel_type, value)
     except Exception:
         return False
-    return resolved is not None and resolved[0].entity_id == owner
+
+
+async def _resolves_to_owner(connection, owner: UUID, predicate: str, candidates) -> bool:
+    if not candidates:
+        return False
+    async with connection.transaction():
+        row = await connection.fetchrow(_RESOLVE_OWNER_SQL, predicate, list(candidates))
+    return row is not None and row["entity_id"] is not None and UUID(str(row["entity_id"])) == owner
+
+
+async def _exactly_the_owner(connection, owner: UUID, channel_type: str, value: str) -> bool:
+    """Broker authorization needs an exact identifier, not the custody phone rule.
+
+    The shared definer matches a WhatsApp JID's digits against stored phones by
+    suffix (lengths within two), so a lookalike number resolves to the owner.
+    Core notify keeps that rule. The broker also requires the exact JID, or the
+    full number as stored, to be the owner's; anything fuzzier is non-owner and
+    parks. The joint lookup above still guards against cross-entity ambiguity.
+    """
+    candidates = owner_channel_authorization_candidates(channel_type, value)
+    phones = [c.removeprefix(_PHONE) for c in candidates if c.startswith(_PHONE)]
+    if not phones:
+        return True  # Email and handle candidates already matched exactly.
+    exact = [c for c in candidates if not c.startswith(_PHONE)]
+    if await _resolves_to_owner(connection, owner, "owner-channel", exact):
+        return True
+    numbers = [form for digits in phones for form in (f"+{digits}", digits)]
+    return await _resolves_to_owner(connection, owner, "has-phone", numbers)
 
 
 async def classify_recipients(
@@ -94,7 +146,8 @@ async def classify_recipients(
         owner = await _live_owner(connection)
     except Exception:
         return "non_owner"
+    channel = _channel(capability, args)
     for value in values:
-        if not await _is_owner(connection, value, owner):
+        if not await _is_owner(connection, value, owner, channel):
             return "non_owner"
     return "owner"
