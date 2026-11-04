@@ -10865,10 +10865,7 @@ STORE_WRITERS = MappingProxyType(
         ),
         "public.approvals_policy": StoreWriters(
             record_capabilities=(),
-            native_writers=(
-                "butlers.api.routers.approvals.update_approvals_policy",
-                "butlers.testing.approval_delivery_schema.install_approval_delivery_schema",
-            ),
+            native_writers=("butlers.api.routers.approvals.update_approvals_policy",),
             unknown_writers=True,
         ),
         "public.attention_ledger": StoreWriters(
