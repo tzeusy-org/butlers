@@ -15,6 +15,13 @@ RFC 0038 D1, D5, D11, D12, D17 and Hard cutover, and the generalist collision di
 
 ## 3. Projections and owner controls
 
+Frozen-path bugfix `bu-mmax8j.8` implements only the KEY_ABSENT_STAGE refusal and
+legacy/orphan-pending outcomes of `REQ-ingestion-target-delivery-recovery-006`:
+`no_retained_delivery_plan` preserves public status/error/inbox state. It does not
+complete post-switch receipt/admission recovery or the projection tasks below;
+connector-filtered replay retains its independent contract.
+
+
 - [ ] 3.1 Project admission state (`buffered`, `admitted`, `joined`, `recorded_without_goal`, `refused`, `admission_failed`, unavailable) with decision and goal identities; keep coarse `ingested` distinct from admission and goal completion. Covers `REQ-ingestion-target-delivery-recovery-005` and `REQ-ingestion-event-registry-002`.
 - [ ] 3.2 Update `/ingestion` Timeline recovery controls to follow server eligibility, show legacy and admission evidence without a false all-clear, and give immediate, repeat-safe feedback in the existing dot-and-word visual language. Prove keyboard and screen-reader access and cached-row failure behavior. The D19 owner surface replaces this view at the switch. Covers `REQ-dashboard-ingestion-dispatch-console-001` and `-002`.
 

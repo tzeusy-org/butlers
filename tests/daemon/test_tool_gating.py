@@ -13,7 +13,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -24,7 +24,7 @@ from butlers.daemon import (
     _SpanWrappingMCP,
 )
 from butlers.modules.base import Module
-from butlers.modules.registry import ModuleRegistry
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
@@ -58,12 +58,12 @@ class _CalendarModule(Module):
         calls = self.calls
 
         @mcp.tool()
-        async def calendar_get_events(**kwargs: Any) -> dict:
+        async def calendar_get_events() -> dict:
             calls.append("calendar_get_events")
             return {"events": []}
 
         @mcp.tool()
-        async def calendar_check_availability(**kwargs: Any) -> dict:
+        async def calendar_check_availability() -> dict:
             calls.append("calendar_check_availability")
             return {"available": True}
 
@@ -103,7 +103,7 @@ class _EmailModule(Module):
         calls = self.calls
 
         @mcp.tool()
-        async def email_read_inbox(**kwargs: Any) -> dict:
+        async def email_read_inbox() -> dict:
             calls.append("email_read_inbox")
             return {"messages": []}
 
@@ -147,13 +147,6 @@ def _make_butler_toml(tmp_path: Path, modules: dict | None = None) -> Path:
             lines.append(f"{k} = {v!r}")
     (tmp_path / "butler.toml").write_text("\n".join(lines))
     return tmp_path
-
-
-def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
-    registry = ModuleRegistry()
-    for cls in module_classes:
-        registry.register(cls)
-    return registry
 
 
 def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
@@ -224,83 +217,22 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     return pool
 
 
-def _patch_infra(mock_pool: AsyncMock | None = None):
-    if mock_pool is None:
-        mock_pool = _make_mock_pool()
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon(
-    butler_dir: Path,
-    registry: ModuleRegistry | None = None,
-    state_store: dict | None = None,
+async def _host_with_modules(
+    butler_dir: Path, *modules: Module, state_store: dict | None = None
 ) -> ButlerDaemon:
-    """Helper: start a daemon with patched infrastructure."""
-    mock_pool = _make_mock_pool(state_store)
-    patches = _patch_infra(mock_pool)
+    """Register *modules*' tools on a DB-free host the way startup does, with no boot.
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-    ):
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
-
+    The subject is tool gating, not the boot: the host registers the daemon's core
+    tools, then the daemon's own ``_register_module_tools`` wraps each module's tools
+    with the gate over the shared runtime-state map (bu-rvgzmf.2).
+    """
+    host = await host_tools(butler_dir, pool=_make_mock_pool(state_store))
+    daemon = host.daemon
+    daemon._modules = list(modules)
+    daemon._module_runtime_states = {
+        mod.name: ModuleRuntimeState(health="active", enabled=True) for mod in modules
+    }
+    await daemon._register_module_tools()
     return daemon
 
 
@@ -399,15 +331,15 @@ class TestSpanWrappingMCPGating:
 
 
 class TestDaemonToolGating:
-    """Integration-level tests using a started ButlerDaemon."""
+    """A butler's real MCP server, with module tools registered by the daemon."""
 
     async def test_tool_module_map_populated_and_modules_gated_independently(
         self, tmp_path: Path
     ) -> None:
         """Tool-module map populated; disabling one module does not affect other modules."""
         butler_dir = _make_butler_toml(tmp_path, modules={"calendar": {}, "email": {}})
-        registry = _make_registry(_CalendarModule, _EmailModule)
-        daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
+        calendar, email = _CalendarModule(), _EmailModule()
+        daemon = await _host_with_modules(butler_dir, calendar, email, state_store={})
 
         tool_map = daemon._tool_module_map
         assert tool_map["calendar_get_events"] == "calendar"
@@ -415,17 +347,26 @@ class TestDaemonToolGating:
         assert tool_map["email_read_inbox"] == "email"
 
         await daemon.set_module_enabled("calendar", False)
-        assert daemon._module_runtime_states["calendar"].enabled is False
+
+        # Calls go through the registered MCP tools, as a session's would.
+        gated = await (await daemon.mcp.get_tool("calendar_get_events")).fn()
+        assert gated["error"] == "module_disabled"
+        assert calendar.calls == []
+        assert await (await daemon.mcp.get_tool("email_read_inbox")).fn() == {"messages": []}
+        assert email.calls == ["email_read_inbox"]
         assert daemon._module_runtime_states["email"].enabled is True
 
     async def test_gating_reflects_live_module_state(self, tmp_path: Path) -> None:
-        """Disabling a module via set_module_enabled updates the shared state reference."""
+        """Toggling via set_module_enabled gates and un-gates the live tool, no restart."""
         butler_dir = _make_butler_toml(tmp_path, modules={"calendar": {}})
-        registry = _make_registry(_CalendarModule)
-        daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
+        calendar = _CalendarModule()
+        daemon = await _host_with_modules(butler_dir, calendar, state_store={})
+        tool = (await daemon.mcp.get_tool("calendar_get_events")).fn
 
-        states = daemon.get_module_states()
-        assert states["calendar"].enabled is True
-
+        assert daemon.get_module_states()["calendar"].enabled is True
         await daemon.set_module_enabled("calendar", False)
-        assert daemon._module_runtime_states["calendar"].enabled is False
+        assert (await tool())["error"] == "module_disabled"
+
+        await daemon.set_module_enabled("calendar", True)
+        assert await tool() == {"events": []}
+        assert calendar.calls == ["calendar_get_events"]

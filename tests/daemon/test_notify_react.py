@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
 
 from butlers.core_tools._routing import _extract_delivery_id
-from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 from butlers.tools.switchboard.contracts import parse_notify_request
 
 pytestmark = pytest.mark.unit
@@ -40,214 +40,74 @@ def test_confirmed_telegram_reaction_keeps_an_operation_receipt() -> None:
     )
 
 
-@pytest.fixture
-def butler_dir(tmp_path: Path) -> Path:
-    """Create a minimal butler directory for testing."""
-    butler_path = tmp_path / "test-butler"
-    butler_path.mkdir()
-    (butler_path / "butler.toml").write_text(
-        """
-[butler]
-name = "test"
-port = 9100
-description = "Test butler"
+# A runtime passes notify() the request context its session was given. Over MCP the
+# schema requires the identity fields, so partial contexts never reach the tool.
+_CTX_WITHOUT_THREAD = {
+    "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+    "source_channel": "telegram_bot",
+    "source_endpoint_identity": "switchboard",
+    "source_sender_identity": "123",
+}
+_CTX = {**_CTX_WITHOUT_THREAD, "source_thread_identity": "123:456"}
 
-[butler.db]
-name = "butlers"
-schema = "test_butler"
 
-[[butler.schedule]]
-name = "daily-check"
-cron = "0 9 * * *"
-prompt = "Do the daily check"
-"""
+def _booted(test: Callable[..., Any]) -> Callable[..., Any]:
+    """Run *test* in the integration lane, on the session loop the kit's fixtures use."""
+    return pytest.mark.integration(pytest.mark.asyncio(loop_scope="session")(test))
+
+
+def _ok_client() -> AsyncMock:
+    """A Switchboard client whose deliver() succeeds."""
+    mock_client = AsyncMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=MagicMock(
+            is_error=False,
+            data={"status": "ok"},
+            content=[MagicMock(text='{"status":"ok"}')],
+        )
     )
-    (butler_path / "MANIFESTO.md").write_text("# Test Butler")
-    (butler_path / "CLAUDE.md").write_text("Test butler instructions.")
-    return butler_path
+    return mock_client
 
 
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
-    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
+async def _booted_with_switchboard(booted, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Give the booted butler a Switchboard that accepts every delivery."""
+    client = _ok_client()
+    monkeypatch.setattr(booted.daemon, "switchboard_client", client)
+    return client
 
 
-def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
-    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries and None for all other queries."""
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
-        return None
-
-    return _fetchrow
+async def _fresh_butler(booted_daemon, tmp_path: Path):
+    """A butler of its own: these tests deliver, so they leave attention-ledger rows."""
+    return await booted_daemon(write_butler_config(tmp_path, "general"))
 
 
-def _patch_infra() -> dict[str, Any]:
-    """Patch infrastructure dependencies for daemon tests."""
-    mock_conn = AsyncMock()
-    mock_conn.execute = AsyncMock(return_value=None)
-    # Git defaults and the runtime row agree: no conditional update or audit append.
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
+def _notify(booted) -> Callable[..., Any]:
+    """notify() as a runtime session calls it: over the daemon's MCP endpoint."""
 
-    transaction_depth = 0
+    async def notify(**arguments: Any) -> dict[str, Any]:
+        return await booted.call_tool("notify", arguments)
 
-    async def enter_transaction() -> None:
-        nonlocal transaction_depth
-        transaction_depth += 1
-
-    async def exit_transaction(*_exc: object) -> bool:
-        nonlocal transaction_depth
-        transaction_depth -= 1
-        return False
-
-    transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
-    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
-    mock_conn.transaction = MagicMock(return_value=transaction)
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
-
-    mock_pool = AsyncMock()
-    # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-    mock_pool.acquire = mock_acquire
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-    }
+    return notify
 
 
-@pytest.mark.asyncio
 class TestNotifyReactIntent:
     """Test suite for notify react intent."""
 
-    async def _start_daemon_with_notify(
-        self, butler_dir: Path, patches: dict[str, Any]
-    ) -> tuple[ButlerDaemon, Any]:
-        """Start daemon and extract notify tool function."""
-        notify_fn = None
-        mock_mcp = MagicMock()
-
-        def tool_decorator(*_decorator_args, **_decorator_kwargs):
-            def decorator(fn):
-                nonlocal notify_fn
-                if fn.__name__ == "notify":
-                    notify_fn = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["configure_logging"],
-            patches["sync_schedules"],
-            patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-            patches["Spawner"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["create_audit_pool"],
-            patches["recover_route_inbox"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-            return daemon, notify_fn
-
-    def _mock_ok_client(self) -> AsyncMock:
-        """Return a mock switchboard client that returns ok."""
-        mock_client = AsyncMock()
-        mock_client.call_tool = AsyncMock(
-            return_value=MagicMock(
-                is_error=False,
-                data={"status": "ok"},
-                content=[MagicMock(text='{"status":"ok"}')],
-            )
-        )
-        return mock_client
-
-    async def test_notify_react_validation_and_delivery(self, butler_dir: Path) -> None:
+    @_booted
+    async def test_notify_react_validation_and_delivery(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Validation errors: emoji required, telegram only, request_context, thread identity;
         successful delivery: empty/omitted message, emoji+intent forwarded."""
-        patches = _patch_infra()
-        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
+        booted = await _fresh_butler(booted_daemon, tmp_path)
+        notify_fn = _notify(booted)
 
         # Validation: intent accepted but emoji required
         r_no_emoji = await notify_fn(
             channel="telegram",
             message="",
             intent="react",
-            request_context={"source_thread_identity": "123:456"},
+            request_context=_CTX,
         )
         assert r_no_emoji["status"] == "error"
         assert "emoji" in r_no_emoji["error"].lower()
@@ -258,7 +118,7 @@ class TestNotifyReactIntent:
             message="",
             intent="react",
             emoji="👍",
-            request_context={"source_thread_identity": "123:456"},
+            request_context=_CTX,
         )
         assert r_email["status"] == "error"
         assert "telegram" in r_email["error"].lower()
@@ -274,53 +134,51 @@ class TestNotifyReactIntent:
             message="",
             intent="react",
             emoji="👍",
-            request_context={"request_id": "test"},
+            request_context=_CTX_WITHOUT_THREAD,
         )
         assert r_no_thread["status"] == "error"
         assert "source_thread_identity" in r_no_thread["error"].lower()
 
         # Successful delivery: empty message allowed
-        daemon.switchboard_client = self._mock_ok_client()
+        await _booted_with_switchboard(booted, monkeypatch)
         r1 = await notify_fn(
             channel="telegram",
             message="",
             intent="react",
             emoji="👍",
-            request_context={"source_thread_identity": "123:456"},
+            request_context=_CTX,
         )
         assert r1["status"] == "ok"
 
         # Successful delivery: omitted message normalized to empty string
-        daemon.switchboard_client = self._mock_ok_client()
+        client = await _booted_with_switchboard(booted, monkeypatch)
         r2 = await notify_fn(
             channel="telegram",
             intent="react",
             emoji="✅",
-            request_context={"source_thread_identity": "123:456"},
+            request_context=_CTX,
         )
         assert r2["status"] == "ok"
-        assert (
-            daemon.switchboard_client.call_tool.call_args[0][1]["notify_request"]["delivery"][
-                "message"
-            ]
-            == ""
-        )
+        assert client.call_tool.call_args[0][1]["notify_request"]["delivery"]["message"] == ""
 
         # Successful delivery: emoji and intent forwarded
-        daemon.switchboard_client = self._mock_ok_client()
+        client = await _booted_with_switchboard(booted, monkeypatch)
         r3 = await notify_fn(
             channel="telegram",
             message="",
             intent="react",
             emoji="🔥",
-            request_context={"source_thread_identity": "123:456"},
+            request_context=_CTX,
         )
         assert r3["status"] == "ok"
-        nr = daemon.switchboard_client.call_tool.call_args[0][1]["notify_request"]
+        nr = client.call_tool.call_args[0][1]["notify_request"]
         assert nr["delivery"]["emoji"] == "🔥"
         assert nr["delivery"]["intent"] == "react"
 
-    async def test_notify_blocked_when_notify_permission_revoked(self, butler_dir: Path) -> None:
+    @_booted
+    async def test_notify_blocked_when_notify_permission_revoked(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Revoked notify permission blocks notify() before reaching the switchboard.
 
         Mirrors the spawn gate: a granted=false cell denies the notification
@@ -329,50 +187,52 @@ class TestNotifyReactIntent:
 
         [bu-tzlq6]
         """
-        from butlers.core.permissions import PermissionStatus
+        from butlers.core.permissions import NOTIFY_PERMISSION
+        from butlers.testing.db import open_pool
 
-        patches = _patch_infra()
-        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = self._mock_ok_client()
+        booted = await _fresh_butler(booted_daemon, tmp_path)
+        client = await _booted_with_switchboard(booted, monkeypatch)
+        admin = await open_pool(booted.admin_url)
+        try:
+            await admin.execute(
+                "INSERT INTO public.permissions (butler, permission, granted, reason)"
+                " VALUES ($1, $2, false, 'revoked by owner')",
+                "general",
+                NOTIFY_PERMISSION,
+            )
+        finally:
+            await admin.close()
 
-        with patch(
-            "butlers.core_tools._notifications.check_permission",
-            new_callable=AsyncMock,
-            return_value=PermissionStatus(allowed=False, explicit=True, reason="revoked by owner"),
-        ):
-            result = await notify_fn(channel="telegram", message="hello", intent="send")
+        result = await _notify(booted)(channel="telegram", message="hello", intent="send")
 
         assert result["status"] == "error"
         assert "permission denied" in result["error"].lower()
-        daemon.switchboard_client.call_tool.assert_not_called()
+        client.call_tool.assert_not_called()
 
-    async def test_notify_allowed_when_notify_permission_granted(self, butler_dir: Path) -> None:
+    @_booted
+    async def test_notify_allowed_when_notify_permission_granted(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Granted/default notify permission lets the notification proceed."""
-        from butlers.core.permissions import PermissionStatus
+        booted = await _fresh_butler(booted_daemon, tmp_path)
+        client = await _booted_with_switchboard(booted, monkeypatch)
+        # No permissions row: the default cell is granted.
 
-        patches = _patch_infra()
-        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = self._mock_ok_client()
-
-        with patch(
-            "butlers.core_tools._notifications.check_permission",
-            new_callable=AsyncMock,
-            return_value=PermissionStatus(allowed=True, explicit=False),
-        ):
-            result = await notify_fn(
-                channel="telegram",
-                message="",
-                intent="react",
-                emoji="👍",
-                request_context={"source_thread_identity": "123:456"},
-            )
+        result = await _notify(booted)(
+            channel="telegram",
+            message="",
+            intent="react",
+            emoji="👍",
+            request_context=_CTX,
+        )
 
         assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_called_once()
+        client.call_tool.assert_called_once()
 
-    async def test_notify_coerces_stringified_request_context(self, butler_dir: Path) -> None:
+    @_booted
+    async def test_notify_coerces_stringified_request_context(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A JSON-string request_context is parsed to a dict and forwarded.
 
         Non-Claude runtimes sometimes pass request_context as a JSON string.
@@ -382,10 +242,8 @@ class TestNotifyReactIntent:
         """
         import json as _json
 
-        patches = _patch_infra()
-        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = self._mock_ok_client()
+        booted = await _fresh_butler(booted_daemon, tmp_path)
+        client = await _booted_with_switchboard(booted, monkeypatch)
 
         ctx = {
             "request_id": "019ef580-de73-7ae4-8c14-c3ccc8a9bf21",
@@ -394,7 +252,7 @@ class TestNotifyReactIntent:
             "source_sender_identity": "206570151",
             "source_thread_identity": "206570151:1311",
         }
-        result = await notify_fn(
+        result = await _notify(booted)(
             channel="telegram",
             message="The Dr Ng followup was on June 4, not today.",
             intent="reply",
@@ -402,21 +260,18 @@ class TestNotifyReactIntent:
         )
 
         assert result["status"] == "ok"
-        forwarded = daemon.switchboard_client.call_tool.call_args[0][1]["notify_request"][
-            "request_context"
-        ]
+        forwarded = client.call_tool.call_args[0][1]["notify_request"]["request_context"]
         assert forwarded == ctx
 
+    @_booted
     async def test_notify_rejects_unparseable_request_context_string(
-        self, butler_dir: Path
+        self, shared_booted_daemon, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A non-JSON request_context string returns an actionable error, not a drop."""
-        patches = _patch_infra()
-        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = self._mock_ok_client()
+        booted = await shared_booted_daemon()
+        client = await _booted_with_switchboard(booted, monkeypatch)
 
-        result = await notify_fn(
+        result = await _notify(booted)(
             channel="telegram",
             message="hi",
             intent="reply",
@@ -425,21 +280,22 @@ class TestNotifyReactIntent:
 
         assert result["status"] == "error"
         assert "object/dict" in result["error"]
-        daemon.switchboard_client.call_tool.assert_not_called()
+        client.call_tool.assert_not_called()
 
-    async def test_notify_rejects_json_array_request_context(self, butler_dir: Path) -> None:
+    @_booted
+    async def test_notify_rejects_json_array_request_context(
+        self, shared_booted_daemon, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A request_context string that parses to a non-dict (JSON array) errors.
 
         Guards the `isinstance(parsed, dict)` branch: json.loads succeeds here,
         so without the dict check a list would be forwarded and break downstream
         `.get()` access.
         """
-        patches = _patch_infra()
-        daemon, notify_fn = await self._start_daemon_with_notify(butler_dir, patches)
-        assert notify_fn is not None
-        daemon.switchboard_client = self._mock_ok_client()
+        booted = await shared_booted_daemon()
+        client = await _booted_with_switchboard(booted, monkeypatch)
 
-        result = await notify_fn(
+        result = await _notify(booted)(
             channel="telegram",
             message="hi",
             intent="reply",
@@ -448,48 +304,12 @@ class TestNotifyReactIntent:
 
         assert result["status"] == "error"
         assert "object/dict" in result["error"]
-        daemon.switchboard_client.call_tool.assert_not_called()
+        client.call_tool.assert_not_called()
 
-    async def _start_daemon_with_remind(
-        self, butler_dir: Path, patches: dict[str, Any]
-    ) -> tuple[ButlerDaemon, Any]:
-        """Start daemon and extract the remind tool function."""
-        remind_fn = None
-        mock_mcp = MagicMock()
-
-        def tool_decorator(*_decorator_args, **_decorator_kwargs):
-            def decorator(fn):
-                nonlocal remind_fn
-                if fn.__name__ == "remind":
-                    remind_fn = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["configure_logging"],
-            patches["sync_schedules"],
-            patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-            patches["Spawner"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["create_audit_pool"],
-            patches["recover_route_inbox"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-            return daemon, remind_fn
-
-    async def test_remind_coerces_stringified_request_context(self, butler_dir: Path) -> None:
+    @_booted
+    async def test_remind_coerces_stringified_request_context(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
         """remind() coerces a JSON-string request_context before embedding it.
 
         The reminder schedules a prompt that calls notify() with notify_args
@@ -498,9 +318,7 @@ class TestNotifyReactIntent:
         """
         import json as _json
 
-        patches = _patch_infra()
-        daemon, remind_fn = await self._start_daemon_with_remind(butler_dir, patches)
-        assert remind_fn is not None
+        booted = await _fresh_butler(booted_daemon, tmp_path)
 
         ctx = {
             "request_id": "019ef580-de73-7ae4-8c14-c3ccc8a9bf21",
@@ -508,20 +326,20 @@ class TestNotifyReactIntent:
             "source_endpoint_identity": "switchboard",
             "source_sender_identity": "206570151",
         }
-        with patch(
-            "butlers.core_tools._notifications._schedule_create",
-            new_callable=AsyncMock,
-            return_value="task-123",
-        ) as mock_schedule:
-            result = await remind_fn(
-                message="Take your meds",
-                channel="telegram",
-                delay_minutes=30,
-                request_context=_json.dumps(ctx),
-            )
+        result = await booted.call_tool(
+            "remind",
+            {
+                "message": "Take your meds",
+                "channel": "telegram",
+                "delay_minutes": 30,
+                "request_context": _json.dumps(ctx),
+            },
+        )
 
         assert result.get("status") != "error"
-        prompt = mock_schedule.call_args[0][3]
+        prompt = await booted.daemon.db.pool.fetchval(
+            "SELECT prompt FROM scheduled_tasks WHERE id = $1::uuid", result["id"]
+        )
         embedded = _json.loads(prompt.split("arguments: ", 1)[1])
         assert embedded["request_context"] == ctx
 

@@ -233,10 +233,10 @@ Scope: v1-mandatory
 - **THEN** the call SHALL be served
 
 ### Requirement: Response DLP scan
-Before serializing any tool result, the server SHALL normalize every text field (skipping numeric money and measurement fields) with NFKC and remove characters of Unicode categories Cc and Cf, then scan it. Secret rules SHALL cover: Luhn-valid 13- to 19-digit runs, matched after removing spaces and dashes; mod-97-valid IBANs; cloud and service token shapes (`AKIA…`, `ghp_…`, `xox…`, `sk-…`, JWTs); PEM blocks; URLs carrying `token`, `code`, `sig` or `key` query parameters, or a path segment of 20 or more token characters; high-entropy tokens of 20 or more base64 or hex characters with at least 3.5 bits of entropy per character; password-reset or OTP phrasing next to a 4- to 8-digit code; 6-character alphanumeric booking codes next to booking words; passport and national-id shapes next to document words; and 8- to 17-digit account numbers next to account words. Personal-contact rules SHALL cover email addresses and phone numbers in E.164 and common local shapes. Each match SHALL be replaced by `[redacted:<rule>]`. Secret-rule matches SHALL be counted, and a result with more than 5 counted redactions SHALL be dropped whole and replaced by the error `blocked`; personal-contact matches SHALL be redacted but not counted toward that threshold.
+Before serializing any tool result, the server SHALL normalize every text field (skipping numeric money and measurement fields) with NFKC and remove characters of Unicode categories Cc and Cf, then scan it. Credential rules SHALL run on every tool result and SHALL cover: Luhn-valid 13- to 19-digit runs, matched after removing spaces and dashes, which in `finance` and `health` tool results SHALL match only with a card word (`card`, `visa`, `mastercard`, `amex`, `credit`, `debit`, `cvv`, `expiry`) within 32 characters, an uncontexted hit there being returned unredacted and counted in a metric; cloud and service token shapes (`AKIA…`, `ghp_…`, `xox…`, `sk-…`, JWTs); PEM blocks; URLs whose authority carries userinfo with a password (`scheme://user:pass@host`); URLs carrying a query parameter whose name, split on `-`, `_` and camelCase boundaries and compared case-insensitively, has a segment equal to `token`, `code`, `sig`, `signature`, `key`, `pwd`, `passcode`, `password`, `credential` or `auth`, or a path segment of 20 or more token characters; high-entropy tokens of 20 or more base64 or hex characters with at least 3.5 bits of entropy per character; and password-reset or OTP phrasing next to a 4- to 8-digit code. Identifier rules SHALL cover mod-97-valid IBANs, 6-character alphanumeric booking codes next to booking words, passport and national-id shapes next to document words, and 8- to 17-digit account numbers next to account words. Personal-contact rules SHALL cover email addresses and phone numbers in E.164 and common local shapes. Identifier and personal-contact rules SHALL run on every tool result except those of the `finance` and `health` tools, whose fields owner decision OD17 shares. On a `finance` or `health` column the manifest marks `dlp = "identifier"`, and on a `json_fields` entry whose exact `(source_table, path)` the manifest lists in `json_dlp_identifier` (REQ-public-mcp-projection-002), the high-entropy rule and the URL path-segment rule SHALL be skipped, and every other credential rule, the userinfo rule included, SHALL still apply. Every other `json_fields` entry SHALL be scanned with every credential rule. Each match SHALL be replaced by `[redacted:<rule>]`. Credential-rule and identifier-rule matches SHALL be counted, and a result with more than 5 counted redactions SHALL be dropped whole and replaced by the error `blocked`; personal-contact matches SHALL be redacted but not counted toward that threshold.
 
 ID: REQ-public-mcp-authorization-010
-Source: RFC 0039 D15 (response DLP)
+Source: RFC 0039 D15 (response DLP; DLP scope for finance and health); owner decision OD17
 Scope: v1-mandatory
 
 #### Scenario: A card number is redacted
@@ -252,8 +252,32 @@ Scope: v1-mandatory
 - **THEN** each address SHALL be replaced by `[redacted:email]` and the result SHALL be served, not `blocked`
 
 #### Scenario: A booking code is redacted
-- **WHEN** a published text reads "booking ref Q7XK2P"
+- **WHEN** a published travel fact's text reads "booking ref Q7XK2P"
 - **THEN** the code SHALL be replaced by `[redacted:pnr]`
+
+#### Scenario: Shared finance and health identifiers are not redacted
+- **WHEN** `finance_ledger` returns a transaction whose `description` holds a mod-97-valid IBAN, and `health_profile` returns a provider whose fields hold a phone number
+- **THEN** both values SHALL be returned unredacted and the results SHALL not be `blocked`
+
+#### Scenario: Marked reference columns keep long opaque ids
+- **WHEN** `finance_records` returns a transaction whose `external_ref`, marked `dlp = "identifier"`, is a 32-character base64 reference
+- **THEN** the reference SHALL be returned unredacted
+
+#### Scenario: Marked JSON paths keep long opaque ids
+- **WHEN** `finance_records` returns a `facts` item whose `json_fields` entry `external_ref`, listed in `json_dlp_identifier` for `finance.facts`, is a 32-character base64 reference, and whose unlisted entry `note_blob` holds a 32-character high-entropy token
+- **THEN** the listed reference SHALL be returned unredacted and the unlisted token SHALL be redacted and counted
+
+#### Scenario: Signed and userinfo URLs are redacted on marked columns
+- **WHEN** a marked `receipt_url` holds an S3 pre-signed URL carrying `X-Amz-Signature=...`, or holds `https://u:p@bridge.example/simplefin`
+- **THEN** each SHALL be redacted and counted
+
+#### Scenario: Account numbers that pass Luhn are shared in finance
+- **WHEN** `finance_ledger` returns a transaction whose `description` holds a Luhn-valid 16-digit bank reference with no card word within 32 characters, and another whose `notes` read "card 4111 1111 1111 1111"
+- **THEN** the reference SHALL be returned unredacted and counted in the uncontexted-Luhn metric, and the card number SHALL be replaced by `[redacted:luhn]`
+
+#### Scenario: Credential shapes are redacted in finance and health too
+- **WHEN** a finance transaction's `notes` holds a `ghp_` token, or a marked `receipt_url` carries a `token` query parameter, or a Health calendar event's description holds a meeting link with a `pwd` query parameter
+- **THEN** each SHALL be redacted and counted
 
 #### Scenario: A flood of matches blocks the response
 - **WHEN** a result would contain 6 redactions
@@ -264,10 +288,10 @@ Scope: v1-mandatory
 - **THEN** the amount field SHALL be returned unredacted because numeric money fields are not scanned
 
 ### Requirement: Canary containment
-The server SHALL hold the values of canary tokens planted in excluded sources (a `butler_secrets` row, a secured `entity_info` row, a `pii` memory fact, a `restricted` Chronicler override, a fake IBAN in finance `metadata`, a fake code in `travel.legs.confirmation_number` and a fake channel value in `public.entities.metadata.source_value`). A response containing any canary value SHALL be blocked with `blocked`, SHALL latch every tool except `describe` off in-process until the pod restarts, and SHALL fire a critical alert.
+The server SHALL hold the values of canary tokens planted in excluded sources (a `butler_secrets` row, a secured `entity_info` row, a `pii` memory fact in the `general` schema, a `normal` `contact_phone` memory fact in the `relationship` schema, a `restricted` Chronicler override, a fake token under the credential-named key `api_token` in finance transaction `metadata`, a fake password under the credential-named key `portal_password` in a health fact's `metadata`, a fake token under the camelCase credential key `refreshToken` in a health fact's `metadata`, a fake code in `travel.legs.confirmation_number` and a fake channel value in `public.entities.metadata.source_value`). A response containing any canary value SHALL be blocked with `blocked`, SHALL latch every tool except `describe` off in-process until the pod restarts, and SHALL fire a critical alert.
 
 ID: REQ-public-mcp-authorization-011
-Source: RFC 0039 D15 (canaries) and D16 (in-process latch)
+Source: RFC 0039 D15 (canaries) and D16 (in-process latch); owner decision OD17 (the finance `metadata` canary moved to a credential-named key)
 Scope: v1-mandatory
 
 #### Scenario: Canary in a response latches the surface off
@@ -281,7 +305,7 @@ Scope: v1-mandatory
 - **THEN** tools SHALL serve again subject to every other check, and the canary alert record SHALL remain
 
 ### Requirement: Per-user and per-tool budgets
-The server SHALL enforce token-bucket budgets keyed per client: 60 calls per minute per `(sub, cid)` across all tools; for `finance_ledger` and `health_series`, 20 calls per minute and 20,000 returned rows per day per `(sub, cid, tool)`; 20 `propose_fact` calls per day per `(sub, cid)`; and 600 calls per minute for the whole server. A call over budget SHALL return `budget_exhausted` with `retryable: true` and `retry_after_s`. Budget values SHALL be configuration.
+The server SHALL enforce token-bucket budgets keyed per client: 60 calls per minute per `(sub, cid)` across all tools; for `finance_ledger`, `finance_records`, `health_series` and `health_records`, 20 calls per minute and 20,000 returned rows per day per `(sub, cid, tool)`; 20 `propose_fact` calls per day per `(sub, cid)`; and 600 calls per minute for the whole server. A call over budget SHALL return `budget_exhausted` with `retryable: true` and `retry_after_s`. Budget values SHALL be configuration.
 
 ID: REQ-public-mcp-authorization-012
 Source: RFC 0039 D15 (budgets; residual risk of steered clients)
@@ -327,14 +351,18 @@ Scope: v1-mandatory
 - **THEN** the bearer-refusal counter SHALL increase by one and no log line SHALL contain the presented bearer
 
 ### Requirement: Alerting independent of Butlers
-Prometheus alerting rules SHALL be the single source of every alert condition for the public surface. Two recording rules SHALL collapse them into flags: `butlers_public_mcp:critical_ok` and `butlers_public_mcp:warning_ok`, each 1 when no rule of its severity is firing and 0 when any is. The owner's existing Uptime Kuma SHALL deliver them: one `json-query` monitor per flag polls Prometheus' query API for `<flag> == bool 1` with `jsonPath = "data.result[0].value[1]"` and `expectedValue = "1"`, so a 0, an empty result or an unreachable Prometheus turns the monitor DOWN, and Kuma's existing Telegram notification delivers the alert. Alerts SHALL never be sent through the Switchboard, notify or any Butlers daemon, and no ingress into `butlers-public-<env>` SHALL be added for alerting. Kuma's poll interval bounds detection latency, so the critical monitor SHOULD poll every 60 seconds. Critical alerts SHALL fire on a canary hit and while the canary latch holds, on replication-slot retained WAL above 50 % of `max_slot_wal_keep_size`, on any logical replication slot on the primary other than the subscription's slot and its current table-sync slots, or any logical slot whose plugin is not `pgoutput` (REQ-database-security-016 defines the allowance; physical slots never trigger it), and when `butlers_public_mcp_owner_step_pending{change="narrowing"}` has been 1 for more than 24 hours. Warning alerts SHALL fire while `butlers_public_mcp_owner_step_pending` is 1 with either label (REQ-public-mcp-projection-015), on any DLP drop, more than 20 redactions in an hour, more than 10 assertion failures in 5 minutes, more than 20 bearer refusals in 5 minutes, more than 2,000 finance or health rows served in an hour, one `(sub, cid)` reading more than 25 % of a domain's published rows in a day, replication lag above 10 minutes, a slot inactive for more than 10 minutes, more than 500 undrained inbox rows, and any proposal reaching `apply_failed`. Thresholds SHALL be configuration.
+Prometheus alerting rules SHALL be the single source of every alert condition for the public surface. Two recording rules SHALL collapse them into flags: `butlers_public_mcp:critical_ok` and `butlers_public_mcp:warning_ok`, each 1 when no rule of its severity is firing and 0 when any is. The owner's existing Uptime Kuma SHALL deliver them: one `json-query` monitor per flag polls Prometheus' query API for `<flag> == bool 1` with `jsonPath = "data.result[0].value[1]"` and `expectedValue = "1"`, so a 0, an empty result or an unreachable Prometheus turns the monitor DOWN, and Kuma's existing Telegram notification delivers the alert. Alerts SHALL never be sent through the Switchboard, notify or any Butlers daemon, and no ingress into `butlers-public-<env>` SHALL be added for alerting. Kuma's poll interval bounds detection latency, so the critical monitor SHOULD poll every 60 seconds. Critical alerts SHALL fire on a canary hit and while the canary latch holds, on replication-slot retained WAL above 50 % of `max_slot_wal_keep_size`, on any logical replication slot on the primary other than the subscription's slot and its current table-sync slots, or any logical slot whose plugin is not `pgoutput` (REQ-database-security-016 defines the allowance; physical slots never trigger it), and when `butlers_public_mcp_owner_step_pending{change="narrowing"}` has been 1 for more than 24 hours; on dev, where every deploy runs the owner step after its migrations (REQ-public-mcp-projection-003), that critical alert SHALL be kept and signals that the automatic step is failing. Warning alerts SHALL fire while `butlers_public_mcp_owner_step_pending` is 1 with either label (REQ-public-mcp-projection-015), on any DLP drop, more than 20 redactions in an hour, more than 10 assertion failures in 5 minutes, more than 20 bearer refusals in 5 minutes, more than 2,000 finance or health rows served in an hour, one `(sub, cid)` reading more than 25 % of a domain's published rows in a day, replication lag above 10 minutes, a slot inactive for more than 10 minutes, more than 500 undrained inbox rows, and any proposal reaching `apply_failed`. Thresholds SHALL be configuration.
 
 ID: REQ-public-mcp-authorization-014
-Source: RFC 0039 D16 (alerting; owner-step pending), D15 (steered clients), D9 (slot safety) and D17 (owner step pending); owner decisions OD11 (Uptime Kuma polls a flag; no new Alertmanager receiver) and OD14 (fail closed while the owner step is pending); craft-and-care/observability-and-operations.md When Observability Work Is Mandatory
+Source: RFC 0039 D16 (alerting; owner-step pending), D15 (steered clients), D9 (slot safety) and D17 (owner step pending); owner decisions OD11 (Uptime Kuma polls a flag; no new Alertmanager receiver), OD14 (fail closed while the owner step is pending) and OD20 (the 24-hour narrowing critical stays on dev as the failure signal of the automatic step); craft-and-care/observability-and-operations.md When Observability Work Is Mandatory
 Scope: v1-mandatory
 
 #### Scenario: A narrowing left pending becomes critical
 - **WHEN** `butlers_public_mcp_owner_step_pending{change="narrowing"}` has been 1 for 24 hours and one minute
+- **THEN** `butlers_public_mcp:critical_ok` SHALL be 0 and the critical Kuma monitor SHALL deliver its Telegram notification
+
+#### Scenario: A failing automatic owner step on dev turns critical
+- **WHEN** each `make deploy-dev` after a narrowing manifest change fails at its owner step for 24 hours and one minute
 - **THEN** `butlers_public_mcp:critical_ok` SHALL be 0 and the critical Kuma monitor SHALL deliver its Telegram notification
 
 #### Scenario: A widening left pending stays a warning
@@ -360,6 +388,7 @@ Scope: v1-mandatory
 ## Source References
 
 - Non-Negotiable Rule 1 (owner sovereignty: owner-operated edge is not tenancy), Rule 3 (RFC 0039 named exception) and Rule 7 (transport and auth live in the edge process), `about/heart-and-soul/vision.md`.
-- RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`), D3, D5 to D8 and D14 to D17; owner decisions OD3, OD5, OD10 and OD11.
+- RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`), D3, D5 to D8 and D14 to D17; owner decisions OD3, OD5, OD10, OD11 and OD17.
+- Owner decision OD17 threat-model assumption (RFC 0039 D15): the surface is reachable only by the owner, through the gateway's GitHub-id allowlist and the home-side allowlist; these requirements relax no layer on its account. A security audit of ingress and egress is future work and is not filed yet.
 - `about/heart-and-soul/security.md`, partially trusted parties and deployment principles, as amended by the RFC 0039 doctrine sweep.
 - `openspec/changes/add-ambient-projection-grants`, REQ-ambient-projections-001 and -002 (digest-only secrets, constant-time comparison, non-disclosing refusal).
