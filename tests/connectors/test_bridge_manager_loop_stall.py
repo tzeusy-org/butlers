@@ -57,7 +57,7 @@ async def test_start_reaches_a_terminal_state_despite_a_loop_stall_longer_than_t
     monkeypatch.setattr(mgr, "_graceful_disconnect", AsyncMock())
     monkeypatch.setattr(mgr, "_STARTUP_POLL_INTERVAL_S", 0.0)
     monkeypatch.setattr(
-        "butlers.connectors.bridge_manager._http_get_unix",
+        "butlers.connectors.bridge_manager.BridgeClient.request_json",
         AsyncMock(return_value={"state": state}),
     )
 

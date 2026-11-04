@@ -115,6 +115,20 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
             "roster/lifestyle/tests/test_lifestyle_spotify_integration.py",
         ],
     ),
+    # Shared UDS transport serves connector, module and dashboard callers.
+    (
+        "src/butlers/whatsapp_bridge_client.py",
+        [
+            "tests/connectors/test_whatsapp_bridge_client.py",
+            "tests/connectors/test_whatsapp_backfill_protocol.py",
+            "tests/connectors/test_whatsapp_user_client.py",
+            "tests/connectors/test_bridge_manager.py",
+            "tests/connectors/test_bridge_manager_loop_stall.py",
+            "tests/modules/test_module_whatsapp.py",
+            "tests/api/test_whatsapp_bridge_config.py",
+            "tests/integration/test_whatsapp_pipeline.py",
+        ],
+    ),
     # --- Connectors ---
     (
         "src/butlers/connectors/gmail",

@@ -53,13 +53,13 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
 from butlers.connectors.bridge_manager import (
-    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
-    DEFAULT_STANDALONE_BRIDGE_SOCKET,
     BridgeConfig,
     BridgeSubprocessManager,
 )
@@ -100,6 +100,11 @@ from butlers.credential_store import (
 from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
+from butlers.whatsapp_bridge_client import (
+    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+    DEFAULT_STANDALONE_BRIDGE_SOCKET,
+    BridgeClient,
+)
 
 _DESCRIPTOR = connector_descriptor("whatsapp_user_client")
 
@@ -172,48 +177,6 @@ _WHATSAPP_UNKNOWN_SENDER_LABEL = "Unknown WhatsApp sender"
 # ---------------------------------------------------------------------------
 # Backfill acknowledgement framing
 # ---------------------------------------------------------------------------
-
-
-async def _read_backfill_acknowledgement(
-    reader: asyncio.StreamReader,
-    expected_window_hours: int | None,
-) -> int:
-    """Read and validate the close-delimited bridge acknowledgement within a byte cap."""
-    chunks: list[bytes] = []
-    total_bytes = 0
-    while True:
-        chunk = await reader.read(_BACKFILL_ACK_MAX_BYTES - total_bytes + 1)
-        if not chunk:
-            break
-        total_bytes += len(chunk)
-        if total_bytes > _BACKFILL_ACK_MAX_BYTES:
-            raise RuntimeError(
-                f"Bridge /backfill acknowledgement exceeded {_BACKFILL_ACK_MAX_BYTES}-byte limit"
-            )
-        chunks.append(chunk)
-
-    raw_response = b"".join(chunks)
-    headers, separator, response_body = raw_response.partition(b"\r\n\r\n")
-    status_line = headers.split(b"\r\n", maxsplit=1)[0]
-    status_parts = status_line.split(maxsplit=2)
-    if not separator or len(status_parts) < 2 or status_parts[1] != b"200":
-        safe_status = status_line.decode(errors="replace")
-        raise RuntimeError(f"Bridge /backfill returned unexpected response: {safe_status}")
-    acknowledgement = json.loads(response_body)
-    if (
-        acknowledgement.get("schema_version") != "whatsapp.backfill.v1"
-        or acknowledgement.get("status") != "accepted"
-        or acknowledgement.get("window_hours") != expected_window_hours
-    ):
-        raise RuntimeError("Bridge /backfill returned an invalid acknowledgement")
-    replay_event_count = acknowledgement.get("replay_event_count")
-    if (
-        not isinstance(replay_event_count, int)
-        or isinstance(replay_event_count, bool)
-        or replay_event_count < 0
-    ):
-        raise RuntimeError("Bridge /backfill acknowledgement has an invalid replay_event_count")
-    return replay_event_count
 
 
 # ---------------------------------------------------------------------------
@@ -543,78 +506,15 @@ def _extract_wa_participant_count(event: dict[str, Any]) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-async def _sse_event_stream(socket_path: str) -> asyncio.AsyncGenerator[dict[str, Any], None]:
-    """Consume SSE events from the bridge GET /events endpoint via Unix socket.
-
-    Yields parsed JSON dicts for each SSE ``data:`` line.
-    Raises on connection failure (caller handles reconnect).
-    """
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        # HTTP GET request
-        request = (
-            "GET /events HTTP/1.0\r\n"
-            "Host: localhost\r\n"
-            "Accept: text/event-stream\r\n"
-            "Connection: close\r\n"
-            "\r\n"
+async def _sse_event_stream(socket_path: str) -> AsyncGenerator[dict[str, Any], None]:
+    """Delegate bridge framing while retaining the connector's reconnect seam."""
+    async with aclosing(
+        BridgeClient(socket_path).stream_events(
+            line_timeout=_SSE_KEEPALIVE_TIMEOUT_S,
         )
-        writer.write(request.encode())
-        await writer.drain()
-
-        # Read HTTP status line and validate before consuming headers
-        status_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
-        if status_line:
-            parts = status_line.split(None, 2)
-            if len(parts) >= 2:
-                try:
-                    status_code = int(parts[1])
-                except ValueError:
-                    status_code = 0
-                if status_code != 200:
-                    status_text = status_line.decode(errors="replace").strip()
-                    raise ConnectionError(f"Bridge /events returned non-200 status: {status_text}")
-
-        # Read and discard remaining HTTP headers
-        while True:
-            line = await asyncio.wait_for(reader.readline(), timeout=30.0)
-            if not line or line == b"\r\n":
-                break
-
-        # Consume SSE stream
-        while True:
-            line = await asyncio.wait_for(
-                reader.readline(),
-                timeout=_SSE_KEEPALIVE_TIMEOUT_S,
-            )
-            if not line:
-                # Connection closed by bridge
-                return
-
-            text = line.decode(errors="replace").rstrip()
-
-            # SSE keepalive comment lines (": keepalive" or empty)
-            if not text or text.startswith(":"):
-                continue
-
-            # SSE data line
-            if text.startswith("data:"):
-                data_str = text[len("data:") :].strip()
-                if not data_str:
-                    continue
-                try:
-                    yield json.loads(data_str)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "WhatsApp bridge SSE: malformed JSON in event (redacted, length=%d bytes)",
-                        len(data_str),
-                    )
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
+    ) as events:
+        async for event in events:
+            yield event
 
 
 # ---------------------------------------------------------------------------
@@ -953,11 +853,12 @@ class WhatsAppUserClientConnector:
 
             try:
                 logger.info("Connecting to bridge SSE /events stream …")
-                async for event in _sse_event_stream(self._config.bridge_socket):
-                    if not self._running:
-                        return
-                    backoff_attempt = 0  # reset backoff on successful event
-                    await self._handle_bridge_event(event)
+                async with aclosing(_sse_event_stream(self._config.bridge_socket)) as events:
+                    async for event in events:
+                        if not self._running:
+                            return
+                        backoff_attempt = 0  # reset backoff on successful event
+                        await self._handle_bridge_event(event)
 
                 # Stream ended cleanly — reconnect
                 logger.info("Bridge SSE stream closed cleanly, reconnecting …")
@@ -2421,37 +2322,10 @@ class WhatsAppUserClientConnector:
         )
 
         try:
-            reader, writer = await asyncio.open_unix_connection(
-                self._config.bridge_socket,
-                limit=_BACKFILL_ACK_MAX_BYTES,
+            replay_event_count = await BridgeClient(self._config.bridge_socket).request_backfill(
+                self._config.backfill_window_h,
+                deadline_s=_BACKFILL_ACK_TIMEOUT_S,
             )
-            try:
-                body = json.dumps(
-                    {
-                        "schema_version": "whatsapp.backfill.v1",
-                        "window_hours": self._config.backfill_window_h,
-                    }
-                ).encode()
-                request = (
-                    "POST /backfill HTTP/1.0\r\n"
-                    "Host: localhost\r\n"
-                    "Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                )
-                writer.write(request.encode() + body)
-                await writer.drain()
-                replay_event_count = await asyncio.wait_for(
-                    _read_backfill_acknowledgement(reader, self._config.backfill_window_h),
-                    timeout=_BACKFILL_ACK_TIMEOUT_S,
-                )
-            finally:
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception:
-                    pass
 
             logger.info(
                 "Backfill request accepted by bridge",
