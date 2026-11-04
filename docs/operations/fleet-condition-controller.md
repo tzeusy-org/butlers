@@ -76,12 +76,15 @@ The migration does not backfill any of this. Right after upgrading, the
 
 ## Fleet-condition handoff
 
-`BUTLERS_FLEET_CONDITION_HANDOFF` defaults to `0` in every Compose service.
-In the Helm chart, `values.yaml` keeps `"0"` and `values.dev.yaml` sets `"1"`
-in `commonEnv`, which reaches the Dashboard API and the daemon workloads. Per
-environment: dev on (once the chart is rolled out, an owner/ops step), prod off
-until owner decision bu-s6tb7h. Set it to `1` in both the Dashboard API and the daemon process to switch on
-the handoff:
+`BUTLERS_FLEET_CONDITION_HANDOFF` defaults to `1` alongside
+`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` in the shared/dev Helm `commonEnv`
+and every routing-capable base/hotreload Compose service, following the
+owner's 2026-11-04 `receiver-routing-cutover` choice A (`bu-wh5gr1.8`). Compose
+retains explicit overrides, including `0` for rollback. These source defaults
+perform no deployment or restart and waive no readiness or legacy-retirement
+proof; see [Receiver-derived routing](receiver-derived-routing-cutover.md#legacy-retirement-remains-gated).
+An authorized rollout must set matching modes in the Dashboard API and daemon
+processes. With the handoff at `1`:
 
 - QA's `infra_state` source stops emitting per-butler `ButlerHeartbeatStale`
   findings. Instead it records one `FleetControlCondition` finding whose

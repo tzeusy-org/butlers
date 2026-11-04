@@ -97,8 +97,8 @@ dashboardAuth:
 commonEnv:
   # OTLP/HTTP (4318). The BWS value used by compose (:4317) never connected.
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.invalid:4318  # override in values.local.yaml
-  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
-  BUTLERS_FLEET_CONDITION_HANDOFF: "0"
+  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "1"
 
 # Dev-only opt-in to a key-absent topology. No signing configuration exists.
 butlersControl:

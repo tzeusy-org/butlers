@@ -1,19 +1,26 @@
-# Receiver-derived routing: dev cutover and rollback
+# Receiver-derived routing: deployment defaults and rollback
 
 This is the L3 operator boundary for `REQ-butler-control-plane-liveness-002/004/006/008`
-and `REQ-butler-switchboard-002/004`. The code defaults to legacy routing when
-`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` is unset. The current k3s dev release
-sets it to `1` in `deploy/helm/butlers/values.dev.yaml` under `commonEnv`, which
-is applied to the daemon and Dashboard API. The chart's shared default is `0`;
-production does not override it. Retained local Compose hotreload services also
-set it to `1`, while Compose base services default to `0`.
-Production activation remains a separate exact-environment decision.
+and `REQ-butler-switchboard-002/004`. The owner's 2026-11-04
+`receiver-routing-cutover` decision (choice A, tracked by `bu-wh5gr1.8`) adopts
+receiver-derived routing as the sole routing contract. The shared Helm chart
+and all six routing-capable base/hotreload Compose services default both
+`BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` and `BUTLERS_FLEET_CONDITION_HANDOFF`
+to `1`; the dev chart retains its explicit `1` values. Compose still honors
+explicit operator overrides, including `0` for the retained rollback path.
 
-## Dev cutover behavior
+These are committed deployment defaults, not a deployment or restart. They
+do not prove any running environment ready. Exact-environment activation
+remains separately authorized, and the legacy-retirement gates below remain
+mandatory. Application startup with the route flag absent still selects the
+legacy path until that separately gated implementation is retired.
 
-- The default route still uses legacy `resolve_routing_target` and its
-  `eligibility_state` projection. A test explicitly proves the separated-facts
-  resolver is not called with the flag absent.
+## Receiver-derived behavior
+
+- With the process flag absent, routing still uses legacy
+  `resolve_routing_target` and its `eligibility_state` projection. The existing
+  flag-absent test preserves this rollback behavior; deployment defaults now
+  supply `1` without changing that negative control.
 - With the flag set to `1` in a separately authorized process, Switchboard
   reads policy, observation, compatibility, and current boot epoch separately.
   A policy hold or incompatible/not-accepting target is refused before a
@@ -72,20 +79,24 @@ the daemon.
 
 ## Activation and rollback
 
-Dev activation requires `sw_035`, the `sw_036` evidence repair, the QA receiver
-view in `sw_037`, current boot registrations, fresh receiver observations,
-and active policy for the exact intended targets. Verify the internal route preflight, a real
-authenticated route, and policy-denied negative case; then observe health and
-route acceptance beyond two legacy TTL windows. The dev Helm values supply the
-flag; production's Helm values and Compose base services remain default-off.
-Production needs its own exact-environment verification and activation.
+Activation in an exact environment requires `sw_035`, the `sw_036` evidence
+repair, the QA receiver view in `sw_037`, current boot registrations, fresh
+receiver observations, and active policy for the exact intended targets.
+Verify the internal route preflight, a real authenticated route, and
+policy-denied negative case; then observe health and route acceptance beyond
+two legacy TTL windows. Both flags must agree across the Dashboard API and
+daemon processes. Shared/dev Helm values and Compose supply on defaults;
+existing releases change only through their separately authorized deployment
+workflow. Any future production activation needs its own exact-environment
+verification and authorization.
 
 For the k3s dev release, change the exact release's
 `commonEnv.BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER` value through the chart's normal
 committed-image deployment workflow in [Kubernetes Deployment](kubernetes-deployment.md#deploy).
 Changing a host dotenv file or launching Compose does not change a running pod.
 
-For rollback, set the flag to `0` in the exact process deployment and restart
+For rollback, explicitly set both flags to `0` in the matched Dashboard API
+and daemon deployments and restart
 the affected processes through that deployment workflow so startup selects the
 legacy reporter again. This does not grant its POST any new authentication
 authority or guarantee its acceptance. Retain
@@ -97,6 +108,21 @@ or a stale last-seen value as an owner release. Do not drop the new schema,
 restore an older process UUID, or re-enable the daemon heartbeat mutation as a
 shortcut. A rollback whose old projection cannot prove this restriction must
 keep routing unavailable and escalate rather than widen eligibility.
+
+## Legacy retirement remains gated
+
+The defaults decision authorizes no deployment, restart, auth-policy change,
+or heartbeat-mutation workaround. `bu-wh5gr1.4` (legacy writer retirement)
+and `bu-60pwv6.26` (flag and legacy resolver removal) remain blocked until
+`bu-wh5gr1.7` diagnoses Concierge and a named butlers-dev observation window
+proves all 13 of 13 receivers healthy. The earlier 12-of-13 observation and
+unexplained Concierge receiver are not readiness evidence.
+
+Every remaining `bu-s6tb7h` acceptance condition also remains mandatory:
+reconcile all legacy-versus-shadow mismatches, record auth-enabled policy,
+epoch and timeout negative cases, establish post-cutover route truth, and
+verify restrictive rollback. None is waived by changing defaults. Keep the
+legacy implementation and rollback controls until those retirement gates pass.
 
 ## Implementation Notes
 
@@ -118,8 +144,8 @@ keep routing unavailable and escalate rather than widen eligibility.
   match transition ID, state, exact timestamp and the writer-specific reason, or automatic
   staleness becomes a sticky `review_required` policy.
 - The route flag governs candidate filtering, scheduled dispatch, recovery-notification admission,
-  TTL sweeps and the board and heartbeat projections, which must agree. The dev chart enables
-  the flag; shared chart defaults and Compose base services keep it off. Retained local Compose
-  hotreload enables it too. Keep the legacy reporter implementation available
+  TTL sweeps and the board and heartbeat projections, which must agree. Shared/dev chart
+  defaults and all routing-capable Compose services enable both flags; explicit overrides remain
+  available for a separately authorized rollback. Keep the legacy reporter implementation available
   for flag-off and rollback startup; do not run it in receiver-authoritative
   mode or infer receiver freshness from its POST result.
