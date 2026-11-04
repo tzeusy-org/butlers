@@ -176,7 +176,7 @@ def _count(plan, category: ReconciliationCategory) -> int:
 _REBIND_RECEIPT_COUNTED_AS_REFERENCE = pytest.mark.xfail(
     strict=True,
     raises=(reconciliation.PartialApplyError, AssertionError),
-    reason="bu-TBD: apply postcondition treats the merge's own entity_rebind_log receipt "
+    reason="bu-rvgzmf.8: apply postcondition treats the merge's own entity_rebind_log receipt "
     "as a reference to the source",
 )
 

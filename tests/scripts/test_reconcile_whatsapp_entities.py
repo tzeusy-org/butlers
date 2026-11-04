@@ -296,7 +296,7 @@ def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> No
 @pytest.mark.xfail(
     strict=True,
     raises=AssertionError,
-    reason="bu-TBD: apply postcondition treats the merge's own entity_rebind_log receipt "
+    reason="bu-rvgzmf.8: apply postcondition treats the merge's own entity_rebind_log receipt "
     "as a reference to the source",
 )
 async def test_pep_723_apply_path_runs_with_only_declared_dependencies(fresh_db) -> None:
