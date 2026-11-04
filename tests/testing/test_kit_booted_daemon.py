@@ -111,9 +111,7 @@ async def test_admin_url_reaches_the_daemons_clone_as_its_owner(booted_daemon, t
 
 
 @session_loop
-async def test_other_butlers_chains_migrate_into_their_own_schemas(
-    booted_daemon, tmp_path
-) -> None:
+async def test_other_butlers_chains_migrate_into_their_own_schemas(booted_daemon, tmp_path) -> None:
     # Cross-butler reads (notify resolving an entity's handle from
     # relationship.entity_facts) need the owning butler's chain in its own schema,
     # with the booted butler's role kept to production grants.
