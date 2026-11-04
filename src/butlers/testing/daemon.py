@@ -585,7 +585,8 @@ class SharedDaemons:
 def _reset_runtime(runtime: FakeRuntime) -> None:
     runtime.invocations.clear()
     runtime._script.clear()
-    runtime.__dict__.pop("supports_resume", None)
+    if "supports_resume" in vars(runtime):
+        del runtime.supports_resume  # back to the class default
     runtime._last_process_info = None
 
 
