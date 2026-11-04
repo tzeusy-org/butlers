@@ -37,6 +37,8 @@ One boot costs a clone plus a full startup and shutdown;
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import importlib
 import json
 import logging
@@ -400,7 +402,13 @@ class DaemonBooter:
         schemas = dict.fromkeys(chains, schema)
         if registered:
             schemas["switchboard"] = "switchboard"
-        url = await asyncio.to_thread(migrated_url, self._container, *schemas, schemas=schemas)
+        # A clean context: an earlier boot left its butler context on this task, and a
+        # worker thread inheriting it would route the template build's migration logs
+        # into that daemon's DB log handler, on the wrong loop (bu-rvgzmf.12).
+        build = functools.partial(migrated_url, self._container, *schemas, schemas=schemas)
+        url = await asyncio.get_running_loop().run_in_executor(
+            None, contextvars.Context().run, build
+        )
         db_name = urlparse(url).path.lstrip("/")
         if registered:
             await self._seed_roster_row(url, config_dir)

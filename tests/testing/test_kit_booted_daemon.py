@@ -114,6 +114,22 @@ async def test_seeded_credentials_let_credentialed_modules_start(booted_daemon, 
 
 
 @session_loop
+async def test_a_later_boot_does_not_log_into_an_earlier_daemon(
+    booted_daemon, tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Boot leaves the first daemon's butler context on the test task. A later boot's
+    # template build runs migrations on its own loop in a worker thread; if that
+    # thread inherits the context, the first daemon's DB log handler tries to write
+    # every migration line through a pool on another loop (bu-rvgzmf.12).
+    await booted_daemon(write_butler_config(tmp_path, "general"))
+
+    with caplog.at_level("WARNING", logger="butlers.core.butler_logging"):
+        await booted_daemon(write_butler_config(tmp_path / "second", "general"), registered=True)
+
+    assert "failed to write log line" not in caplog.text
+
+
+@session_loop
 async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
     booted_daemon, tmp_path
 ) -> None:
