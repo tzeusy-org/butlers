@@ -36,6 +36,19 @@ from butlers.testing.db import open_pool
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
+@pytest.fixture(autouse=True)
+def _outside_the_owners_quiet_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evaluate every notify here outside the owner's quiet window.
+
+    The migrated owner policy has a quiet window, and entity or explicit targets
+    obey it (see test_notify_attention_ledger.py). These tests are about resolution,
+    parking and dossiers, so a host clock inside that window must not defer them.
+    """
+    import butlers.core.approvals_policy as approvals_policy
+
+    monkeypatch.setattr(approvals_policy, "policy_quiet_hours_deliver_at", lambda *_a, **_k: None)
+
+
 async def _fresh(booted_daemon, tmp_path: Path):
     """A butler of its own, for a test that writes rows."""
     return await booted_daemon(write_butler_config(tmp_path, "general"))
