@@ -52,7 +52,7 @@ def test_a_new_pool_or_migrated_db_url_fixture_fails(tmp_path: Path) -> None:
         tmp_path,
         {
             "roster/finance/tests/test_a.py": FIXTURE_FILE,
-            "tests/test_b.py": FIXTURE_FILE.replace(DEF_POOL, "def migrated_db_url("),
+            "tests/test_b.py": FIXTURE_FILE.replace(DEF_POOL, "def " + "migrated_db_url("),
         },
     )
     assert _run(root, {})[0] == 1
