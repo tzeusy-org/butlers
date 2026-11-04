@@ -22,11 +22,12 @@ import pytest
 from butlers.core.temporal.delivery_db import WAKE_HOLD_KIND_OWNER_QUIET_HOURS, envelope_digest
 from butlers.core_tools._notifications import _wake_hold_provenance
 from butlers.daemon import ButlerDaemon
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
-# Mocked-daemon harness, kept here verbatim from the pre-S7c ledger tests until this
-# file moves onto booted_daemon too (bu-rvgzmf.14).
+# DB-free harness: the daemon's real notify on a mock pool whose INSERT args the
+# tests read (bu-rvgzmf.14).
 
 
 @contextmanager
@@ -113,105 +114,14 @@ def _make_fetchrow_side_effect(*, approvals_policy_row: dict | None):
     return _fetchrow
 
 
-def _patch_infra(mock_pool: Any) -> dict[str, Any]:
-    """Patch infrastructure dependencies for daemon tests (mirrors test_notify_entity_id.py)."""
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
+async def _host_notify(butler_dir: Path, mock_pool: Any) -> tuple[ButlerDaemon, Any]:
+    """The daemon's real notify, registered on a DB-free host over *mock_pool*.
 
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    mock_credential_store = AsyncMock()
-    mock_credential_store.resolve = AsyncMock(return_value=None)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_credential_store": patch.object(
-            ButlerDaemon,
-            "_build_credential_store",
-            new_callable=AsyncMock,
-            return_value=mock_credential_store,
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-    }
-
-
-async def _start_daemon_with_notify(
-    butler_dir: Path, patches: dict[str, Any]
-) -> tuple[ButlerDaemon, Any]:
-    notify_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal notify_fn
-            if fn.__name__ == "notify":
-                notify_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_credential_store"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        return daemon, notify_fn
+    The subject is the INSERT notify builds, not the boot, so no lifecycle runs
+    (bu-rvgzmf.2, bu-rvgzmf.14).
+    """
+    host = await host_tools(butler_dir, pool=mock_pool)
+    return host.daemon, await host.tool("notify")
 
 
 def _make_mock_pool(*, approvals_policy_row: dict | None) -> AsyncMock:
@@ -334,7 +244,7 @@ async def test_a_new_policy_hold_writes_its_provenance_in_the_same_insert(
     butler_dir: Path,
 ) -> None:
     mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(mock_pool))
+    daemon, notify_fn = await _host_notify(butler_dir, mock_pool)
     daemon.switchboard_client = _make_mock_client()
 
     with (
@@ -378,7 +288,7 @@ async def test_a_hold_for_an_unprovable_owner_target_parks_without_provenance(
     butler_dir: Path,
 ) -> None:
     mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(mock_pool))
+    daemon, notify_fn = await _host_notify(butler_dir, mock_pool)
     daemon.switchboard_client = _make_mock_client()
 
     with (
@@ -401,7 +311,7 @@ async def test_a_context_only_hold_carries_no_provenance(butler_dir: Path) -> No
     from butlers.context_bus import ContextEntry
 
     mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
-    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(mock_pool))
+    daemon, notify_fn = await _host_notify(butler_dir, mock_pool)
     daemon.switchboard_client = _make_mock_client()
     dnd = ContextEntry(
         signal_type="dnd",
@@ -442,7 +352,7 @@ async def test_a_priority_or_explicit_target_hold_parks_without_provenance(
     butler_dir: Path, send_kwargs: dict[str, Any]
 ) -> None:
     mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(mock_pool))
+    daemon, notify_fn = await _host_notify(butler_dir, mock_pool)
     daemon.switchboard_client = _make_mock_client()
     owner_contact = MagicMock(roles=["owner"])
 
@@ -543,7 +453,7 @@ async def test_a_policy_hold_extended_by_context_keeps_the_policy_window_and_the
     from butlers.context_bus import ContextEntry
 
     mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
-    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(mock_pool))
+    daemon, notify_fn = await _host_notify(butler_dir, mock_pool)
     daemon.switchboard_client = _make_mock_client()
     dnd = ContextEntry(
         signal_type="dnd",
