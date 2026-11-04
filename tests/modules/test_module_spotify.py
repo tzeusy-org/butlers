@@ -20,13 +20,13 @@ import pytest
 from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
-from butlers.connectors.spotify_client import SpotifyTokenRefreshUnavailableError
 from butlers.modules.base import Module
 from butlers.modules.spotify import (
     SpotifyModule,
     SpotifyModuleConfig,
     _token_refresh_unavailable_error,
 )
+from butlers.spotify_client import SpotifyTokenRefreshUnavailableError
 from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit

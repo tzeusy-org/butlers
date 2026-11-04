@@ -1176,8 +1176,6 @@
     "[\"src/butlers/connectors/owntracks.py\", \"reportArgumentType\", \"1fab840b7e17dd11e8221ad0471163311f55aa98cb5c503519c7d1cedc9e8623\"]": 1,
     "[\"src/butlers/connectors/owntracks.py\", \"reportArgumentType\", \"80ee6128e1736bcfdf9b958d0a644e849217a29e109fd9ca9b2b08de01811c66\"]": 1,
     "[\"src/butlers/connectors/spotify.py\", \"reportAssignmentType\", \"42575fee8ffa48d36fd9f09283d46ef01381d2020a4f831048257174c2da455a\"]": 1,
-    "[\"src/butlers/connectors/spotify.py\", \"reportCallIssue\", \"071cb0fe06a38cabdef1c27e77ebdc6111eba18d1b5182b419831199eae462fc\"]": 1,
-    "[\"src/butlers/connectors/spotify_client.py\", \"reportCallIssue\", \"071cb0fe06a38cabdef1c27e77ebdc6111eba18d1b5182b419831199eae462fc\"]": 1,
     "[\"src/butlers/connectors/steam.py\", \"reportArgumentType\", \"147249da06150221fedc16c917afd0c1ccc90d98d629664085b71efd45589887\"]": 1,
     "[\"src/butlers/connectors/steam.py\", \"reportArgumentType\", \"38535aece735ef4e17881d2569f38729f9040c05f8fe504b17bcb18549671c87\"]": 1,
     "[\"src/butlers/connectors/telegram_bot.py\", \"reportArgumentType\", \"1fab840b7e17dd11e8221ad0471163311f55aa98cb5c503519c7d1cedc9e8623\"]": 1,

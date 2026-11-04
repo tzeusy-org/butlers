@@ -183,7 +183,7 @@ Helper-only exclusions are source-backed: `db_role`, `metrics`,
 `heartbeat`, `health_socket` and live-listener metrics/config own role, status or count
 metadata, not a checked-in message replay store. `gmail_policy`, `known_contact_state`
 and contact-weight resolution cache policy/identity/weights, not bodies; policy evaluation
-arguments still see text in the adapter path. `google_health_client` and `spotify_client`
+arguments still see text in the adapter path. `google_health_client` and `butlers.spotify_client`
 are source HTTP/auth transports. `telegram_user_client_consent` stores consent state.
 Home Assistant's checkpoint/envelope/filter/pipeline/REST/statistics/wellness helpers
 and every live-listener helper are included in their family rows. `__init__`, README

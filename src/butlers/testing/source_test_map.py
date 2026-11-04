@@ -105,6 +105,16 @@ _PREFIX_MAP: list[tuple[str, list[str]]] = [
     ("src/butlers/core/", ["tests/core/", "tests/daemon/"]),
     # --- API layer ---
     ("src/butlers/api/", ["tests/api/"]),
+    # Shared Spotify transport also serves module tools and the lifestyle roster.
+    (
+        "src/butlers/spotify_client.py",
+        [
+            "tests/connectors/test_spotify_client.py",
+            "tests/connectors/test_spotify_connector.py",
+            "tests/modules/test_module_spotify.py",
+            "roster/lifestyle/tests/test_lifestyle_spotify_integration.py",
+        ],
+    ),
     # --- Connectors ---
     (
         "src/butlers/connectors/gmail",
