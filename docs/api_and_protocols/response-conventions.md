@@ -287,3 +287,20 @@ absent legacy fields. Retained stale query data during an error does not certify
 current scrub availability. An unavailable source never becomes a zero or an
 all-clear. No raw metric labels or upstream diagnostic text is exposed in the
 scrub projection.
+
+### Ingestion recovery without retained delivery evidence
+
+In the frozen classify-and-route lane, single-event replay of public `failed`,
+`ingested`, `replay_failed`, or legacy `replay_pending` rows returns HTTP 409 with
+`detail.reason=no_retained_delivery_plan`. This is a refusal: source status and
+error detail remain unchanged, no inbox row resets, and no classification or
+routing is scheduled. Other public statuses remain conflicts. A replay-safe
+connector policy does not prove retained target intent. Unsafe policy and
+unavailable policy keep their existing rejection precedence.
+
+Bulk retry records these public rows as individual conflicts with the same fixed
+reason and counts them as failed. A mixed batch may still queue eligible
+`connectors.filtered_events` rows under the current server-derived replay-safe
+policy and connector worker contract. The existing replay audit history records
+public refusals without message content; audit failure cannot turn refusal into
+success. No historical row repair or live replay follows from this source fix.
