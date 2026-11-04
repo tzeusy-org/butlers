@@ -151,6 +151,42 @@ No local gate command matches CI's scope; check which command produced a number.
   for it and the root `conftest.py` turns a "Docker not available" skip into a failure there.
   Local runs leave the flag unset, so Docker-less hosts keep skipping real-PG tests.
 
+### Session-host native proof
+
+The existing unit groups install Bubblewrap, static C build prerequisites and OpenSSL,
+and set `BUTLERS_REQUIRE_SESSION_HOST_NATIVE=1`. The dark session-host tests compile
+synthetic static payloads and execute real filesystem/PID namespace isolation and
+cleanup proofs; their local TLS tests use generated synthetic certificates.
+Missing Bubblewrap or a denied namespace preflight fails under hosted `CI=true` or
+that strict flag. A local non-strict skip is setup information, never native evidence.
+The unit jobs pin Ubuntu24.04 and run a bounded CI-host-only AppArmor experiment.
+The global userns restriction stays1. The helper verifies the published Noble
+`apparmor-profiles` package and purpose-built ABI4 Bubblewrap member by pinned
+SHA256, extracts only that member, and refuses preloaded/conflicting or local
+policy overrides. It applies the exact two-header `mediate_deleted` transform from
+AppArmor MR1272, verifies a separate derived SHA256, and preserves every rule byte.
+Both load receipts and cleanup bind to that derived policy. It loads the
+`/usr/bin/bwrap` policy with its inseparable
+child-capability-deny companion, never a generic unconfined profile. The exact
+unprivileged synthetic preflight must change from a recognized refusal to payload
+exit31 while generic map-root `unshare` remains denied. The exact observed
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` line (including its
+terminal newline) admits only this bounded experiment; the before-profile error
+does not establish AppArmor as its cause. Near misses remain refused. Cleanup runs
+with `always()` and removal is observed. An unproven/partial load is quarantined
+as NONPASS rather than removing policy whose ownership is uncertain.
+No global sysctl relaxation, disabled AppArmor/seccomp, privileged fallback or
+hosted skip is permitted. Package/profile verification, setup or cleanup failure
+fails the job; no production policy is installed. Native fixture diagnostics expose
+fixed failure categories and a stderr digest. The CI prerequisite additionally logs
+at most the first 512 stderr bytes from its fixed synthetic preflight, preserving
+printable ASCII and replacing control/non-ASCII bytes with question marks. That
+command receives no invocation or provider material. The primary sources and separate
+integration disk-exhaustion limitation are recorded in the session-host page.
+The unit JUnit evidence must include passing native and TLS cases; no new CI job or
+second broad lane is introduced. The private API and remaining production gates are in
+[session host](../runtime/session-host.md).
+
 ## Removing or weakening tests
 
 Review is the only deletion gate; there is no inventory, ledger or guard script

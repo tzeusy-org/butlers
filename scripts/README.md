@@ -284,6 +284,9 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`combine_review_comment_sources.py`](combine_review_comment_sources.py) | `ci.yml` | Flattens raw GitHub review-comment dumps into the session-link guard's input shape. |
 | [`fetch_pr_metadata.py`](fetch_pr_metadata.py) | `ci.yml` | Producer of validated PR title/body guard inputs. |
 | [`install_ci_uv.py`](install_ci_uv.py) | `ci.yml`, `nightly.yml`, `ci-python-environment` action, watchdog workflow | Installs the pinned `uv` in CI. |
+| [`session_host_ci.py`](session_host_ci.py) | `ci.yml`, `session-host-causal.yml`, `session_host_causal_probe.py` | Owns the pinned native-session CI profile lifecycle and bounded readiness checks. |
+| [`session_host_causal_probe.py`](session_host_causal_probe.py) | `session-host-causal.yml` | Runs the fixed-source disposable-VM A/B/A experiment and emits closed evidence; uncertain settlement quarantines the policy. |
+| [`session_host_probe_adapter.py`](session_host_probe_adapter.py) | `session_host_causal_probe.py` (pytest plugin) | Records test-only native launch and post-finally settlement receipts for the single causal node. |
 | [`summarize_junit_durations.py`](summarize_junit_durations.py) | `ci.yml`, `nightly.yml` | Summarizes JUnit durations for the weight pipeline. |
 | [`ci_branch_hygiene.py`](ci_branch_hygiene.py) | the live runbook [stale branch hygiene](../docs/operations/stale-branch-hygiene.md) (human) | Inventories, plans and verifies recovery for stale remote branches. Kept: `AGENTS.md` points agents at the runbook. |
 | [`test_owner_auth_browser.py`](test_owner_auth_browser.py) | `frontend/tests/owner-auth/README.md` (human), `ci_test_images.py` | Native HTTPS owner-auth evidence against a disposable PostgreSQL instance. |
