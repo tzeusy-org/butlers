@@ -25,6 +25,7 @@ from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as routes
 from butlers.modules.memory import tools as memory_tools
 from butlers.testing.db import open_pool
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -47,20 +48,6 @@ class _EmbeddingEngine:
     def embed(self, _text: str) -> list[float]:
         self.calls += 1
         return [0.1] * 384
-
-
-class _DbManager:
-    butler_names = ["home"]
-
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-
-    def pool(self, butler_name: str) -> asyncpg.Pool:
-        assert butler_name == "home"
-        return self._pool
-
-    def butlers_with_module(self, module_name: str) -> list[str]:
-        return self.butler_names if module_name in {"approvals", "memory"} else []
 
 
 class _UnavailableDaemon:
@@ -236,7 +223,9 @@ async def test_rule_memory_requires_real_owning_commit(database, monkeypatch, bo
     app.state.owner_auth_service = _DomainOwnerState(_KEY)
     app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_KEY))
     app.include_router(routes.router)
-    app.dependency_overrides[get_db] = lambda: _DbManager(owner)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"home": owner}, modules={"home": ["approvals", "memory"]}
+    )
     app.dependency_overrides[routes.get_mcp_manager] = lambda: daemon
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

@@ -52,6 +52,7 @@ from butlers.jobs.calendar_sync_deadman import (
     reconcile_calendar_conditions,
     run_calendar_sync_deadman_check,
 )
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -59,19 +60,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
-
-
-class _FakeDatabaseManager:
-    """Minimal stand-in for DatabaseManager: only .pool() is used by this module."""
-
-    def __init__(self, *, pools: dict[str, object] | None = None):
-        self._pools = pools or {}
-
-    def pool(self, name: str):
-        try:
-            return self._pools[name]
-        except KeyError:
-            raise KeyError(name) from None
 
 
 def _source(
@@ -139,7 +127,7 @@ async def test_compute_report_fresh_source_is_not_stale(monkeypatch):
         AsyncMock(return_value=(sources, [])),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert report.is_available
     assert not report.is_stale
@@ -162,7 +150,7 @@ async def test_compute_report_flags_source_past_threshold(monkeypatch):
         AsyncMock(return_value=(sources, [])),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert report.is_available
     assert report.is_stale
@@ -188,7 +176,7 @@ async def test_compute_report_never_synced_provider_source_is_stale(monkeypatch)
         AsyncMock(return_value=(sources, [])),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert report.is_stale
     assert report.stale_sources[0].last_synced_at is None
@@ -209,7 +197,7 @@ async def test_compute_report_disabled_source_never_flagged(monkeypatch):
         AsyncMock(return_value=(sources, [])),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert not report.is_stale
 
@@ -228,7 +216,7 @@ async def test_compute_report_internal_source_never_flagged(monkeypatch):
         AsyncMock(return_value=(sources, [])),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert not report.is_stale
 
@@ -239,7 +227,7 @@ async def test_compute_report_degraded_on_total_fan_out_failure(monkeypatch):
         AsyncMock(side_effect=RuntimeError("fan-out down")),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert not report.is_available
     assert not report.is_stale  # a degraded check must not fabricate staleness either
@@ -263,7 +251,7 @@ async def test_compute_report_partial_fan_out_failure_is_available_but_incomplet
         AsyncMock(return_value=(sources, ["relationship"])),
     )
 
-    report = await compute_calendar_sync_report(_FakeDatabaseManager())
+    report = await compute_calendar_sync_report(db_manager({}))
 
     assert report.is_available
     assert report.failed_butlers == ("relationship",)
@@ -528,7 +516,7 @@ async def test_run_check_degraded_never_raises(monkeypatch):
             )
         ),
     )
-    result = await run_calendar_sync_deadman_check(_FakeDatabaseManager())
+    result = await run_calendar_sync_deadman_check(db_manager({}))
     assert result == {"available": False, "stale": False}
 
 
@@ -546,9 +534,7 @@ async def test_run_check_not_stale_still_reconciles(monkeypatch):
         "butlers.jobs.calendar_sync_deadman.reconcile_calendar_conditions", reconcile_mock
     )
 
-    result = await run_calendar_sync_deadman_check(
-        _FakeDatabaseManager(pools={"switchboard": object()})
-    )
+    result = await run_calendar_sync_deadman_check(db_manager({"switchboard": object()}))
 
     assert result == {
         "available": True,
@@ -571,9 +557,7 @@ async def test_run_check_stale_reconciles(monkeypatch):
         "butlers.jobs.calendar_sync_deadman.reconcile_calendar_conditions",
         AsyncMock(return_value=[{"fingerprint": "fp", "transition": "opened"}]),
     )
-    result = await run_calendar_sync_deadman_check(
-        _FakeDatabaseManager(pools={"switchboard": object()})
-    )
+    result = await run_calendar_sync_deadman_check(db_manager({"switchboard": object()}))
     assert result == {
         "available": True,
         "stale": True,
@@ -591,7 +575,7 @@ async def test_run_check_no_switchboard_pool_degrades_gracefully(monkeypatch):
         ),
     )
 
-    result = await run_calendar_sync_deadman_check(_FakeDatabaseManager(pools={}))
+    result = await run_calendar_sync_deadman_check(db_manager({}))
 
     assert result == {
         "available": True,
