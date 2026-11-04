@@ -2597,7 +2597,7 @@ async def _callback_secret_configured(db_mgr: DatabaseManager) -> bool | None:
 # New Dispatch-language endpoints (§8.1-§8.7)
 # ---------------------------------------------------------------------------
 
-_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed", "abandoned"}
+_DECIDED_STATUSES = {"approved", "rejected", "expired", "executed", "abandoned", "cancelled"}
 _WAITING_STATUSES = {"pending"}
 _STALLED_STATUS = "approved"
 

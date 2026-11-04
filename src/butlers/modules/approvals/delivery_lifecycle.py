@@ -38,11 +38,16 @@ _EVENT_FOR_STATUS = {
     ActionStatus.APPROVED: ApprovalEventType.ACTION_APPROVED,
     ActionStatus.REJECTED: ApprovalEventType.ACTION_REJECTED,
     ActionStatus.EXPIRED: ApprovalEventType.ACTION_EXPIRED,
+    ActionStatus.CANCELLED: ApprovalEventType.ACTION_CANCELLED,
 }
+# A goal Stop withdraws the owner's prompt exactly as a rejection does, so the
+# delivery fence reuses that stored reason code; the action's own event is
+# ``action_cancelled``.
 _REASON_FOR_STATUS: dict[ActionStatus, DeliveryTerminalReason] = {
     ActionStatus.APPROVED: "action_approved",
     ActionStatus.REJECTED: "action_rejected",
     ActionStatus.EXPIRED: "action_expired",
+    ActionStatus.CANCELLED: "action_rejected",
 }
 _PRESTART_STATES = ("ready", "claimed", "retry_wait")
 
@@ -272,7 +277,12 @@ async def transition_pending_action(
     source: Any,
     *,
     action_id: uuid.UUID,
-    target_status: Literal[ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED],
+    target_status: Literal[
+        ActionStatus.APPROVED,
+        ActionStatus.REJECTED,
+        ActionStatus.EXPIRED,
+        ActionStatus.CANCELLED,
+    ],
     decided_by: str,
     event_actor: str,
     event_reason: str,

@@ -28,6 +28,9 @@ from butlers.modules.approvals.autonomy_tracker import (
     compute_fingerprint as _compute_fingerprint,
 )
 from butlers.modules.approvals.autonomy_tracker import (
+    counts_toward_promotion as _counts_toward_promotion,
+)
+from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
@@ -305,8 +308,8 @@ async def _approve_action_write(
                 updated_row = await tracker_connection.fetchrow(
                     "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-                if updated_row is not None:
-                    updated_action = PendingAction.from_row(updated_row)
+                updated_action = PendingAction.from_row(updated_row) if updated_row else None
+                if updated_action is not None and _counts_toward_promotion(updated_action):
                     await _record_approval(tracker_connection, updated_action)
                     # Use a minimal config namespace with defaults (no module import needed)
                     _default_config = type(

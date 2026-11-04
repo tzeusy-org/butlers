@@ -93,6 +93,7 @@ class TestPendingActionModel:
             ActionStatus.EXPIRED,
             ActionStatus.EXECUTED,
             ActionStatus.ABANDONED,
+            ActionStatus.CANCELLED,
         }
         assert ActionStatus.PENDING.value == "pending"
 

@@ -54,6 +54,9 @@ from butlers.modules.approvals.autonomy_tracker import (
     compute_fingerprint as _compute_fingerprint,
 )
 from butlers.modules.approvals.autonomy_tracker import (
+    counts_toward_promotion as _counts_toward_promotion,
+)
+from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.autonomy_tracker import (
@@ -927,8 +930,10 @@ class ApprovalsModule(Module):
                 updated_action_row = await tracker_connection.fetchrow(
                     "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-                if updated_action_row is not None:
-                    updated_action = PendingAction.from_row(updated_action_row)
+                updated_action = (
+                    PendingAction.from_row(updated_action_row) if updated_action_row else None
+                )
+                if updated_action is not None and _counts_toward_promotion(updated_action):
                     tool_meta = self._tool_metadata.get(action.tool_name)
                     fingerprint = _compute_fingerprint(
                         action.tool_name, action.tool_args, tool_meta=tool_meta
