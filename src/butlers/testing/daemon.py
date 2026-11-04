@@ -521,10 +521,11 @@ class SharedDaemons:
       test's own exporter).
     - After each test, :meth:`verify` compares durable daemon state with what the
       test was handed: row counts in ``route_inbox``, ``sessions``,
-      ``public.attention_ledger`` and ``scheduled_tasks``, and the loaded config. Any change fails the test with
-      :class:`SharedDaemonMutated` and retires that boot, so the next test gets a
-      fresh one. A test that routes, triggers a session, scripts the runtime or
-      changes config therefore belongs on ``booted_daemon``.
+      ``public.attention_ledger`` and ``scheduled_tasks``, and the loaded config.
+      Any change fails the test with :class:`SharedDaemonMutated` and retires that
+      boot, so the next test gets a fresh one. A test that routes, triggers a
+      session, delivers a notification, schedules a task or changes config
+      therefore belongs on ``booted_daemon``.
 
     Patch with ``monkeypatch`` only; it is undone before the next test.
     """
