@@ -448,3 +448,106 @@ async def test_approved_drive_call_revalidates_frozen_destination_audience(
             "approval_unavailable" if change == "partial" else "destination_changed"
         )
     assert enqueue.await_count == 2
+
+
+async def _pagination_case(mode):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    calls = []
+
+    def response(data):
+        return SimpleNamespace(status_code=200, json=lambda: data, text="synthetic")
+
+    async def get(path, **kwargs):
+        if not path.endswith("/permissions"):
+            return response(
+                {
+                    "id": "destination",
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "trashed": False,
+                }
+            )
+        calls.append(kwargs.get("params", {}).get("pageToken"))
+        owner = {
+            "id": "owner-permission",
+            "type": "user",
+            "role": "owner",
+            "emailAddress": "owner@example.test",
+        }
+        guest = {
+            "id": "guest-permission",
+            "type": "user",
+            "role": "reader",
+            "emailAddress": "guest@example.test",
+        }
+        if kwargs.get("params", {}).get("pageToken") == "page-two":
+            return response({"permissions": [guest]})
+        data = {"permissions": [owner]}
+        if mode == "guest-next-page":
+            data["nextPageToken"] = "page-two"
+        elif mode == "empty-terminal":
+            data["nextPageToken"] = ""
+        elif mode == "null-terminal":
+            data["nextPageToken"] = None
+        elif mode == "malformed-false":
+            data["nextPageToken"] = False
+        elif mode == "malformed-zero":
+            data["nextPageToken"] = 0
+        elif mode == "malformed-empty-list":
+            data["nextPageToken"] = []
+        elif mode == "malformed-nonempty-list":
+            data["nextPageToken"] = ["invalid"]
+        return response(data)
+
+    m = GoogleDriveModule()
+    m._db = SimpleNamespace(pool=object())
+    m._client = SimpleNamespace(
+        get=AsyncMock(side_effect=get),
+        post=AsyncMock(return_value=response({"id": "synthetic-new", "name": "synthetic"})),
+    )
+    m._approval_enqueuer = AsyncMock(return_value="synthetic-action")
+
+    async def identity(pool, channel, value):
+        return SimpleNamespace(roles=["owner"]) if value == "owner@example.test" else None
+
+    with patch("butlers.identity.resolve_channel_contact_with_owner_corroboration", identity):
+        result = await m._drive_write_file(
+            "synthetic", "Synthetic content", folder_id="destination"
+        )
+    return {
+        "case": mode,
+        "provider_write_attempts": m._client.post.await_count,
+        "permission_pages": len(calls),
+        "approval_enqueues": m._approval_enqueuer.await_count,
+        "result": result.get("status", "uploaded" if "file_id" in result else "other"),
+    }
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "owner-complete",
+        "empty-terminal",
+        "null-terminal",
+        "guest-next-page",
+        "malformed-false",
+        "malformed-zero",
+        "malformed-empty-list",
+        "malformed-nonempty-list",
+    ],
+)
+async def test_destination_permission_pagination_is_complete_before_write(mode):
+    row = await _pagination_case(mode)
+    if mode in {"owner-complete", "empty-terminal", "null-terminal"}:
+        assert row["provider_write_attempts"] == 1
+        assert row["approval_enqueues"] == 0
+    elif mode == "guest-next-page":
+        assert row["provider_write_attempts"] == 0
+        assert row["permission_pages"] == 2
+        assert row["approval_enqueues"] == 1
+        assert row["result"] == "approval_required"
+    else:
+        assert row["provider_write_attempts"] == 0
+        assert row["approval_enqueues"] == 0
+        assert row["result"] == "approval_unavailable"

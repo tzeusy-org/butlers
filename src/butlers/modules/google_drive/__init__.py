@@ -588,6 +588,8 @@ class GoogleDriveModule(Module):
                     else:
                         parties.append(("email", permission["emailAddress"]))
                 token = page.get("nextPageToken")
+                if token is not None and not isinstance(token, str):
+                    return None, None, None
                 if not token:
                     if not audience:
                         return None, None, None
