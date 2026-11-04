@@ -93,6 +93,24 @@ class Broker:
         if self.signer is None or self.catalog is None or self.domains is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
 
+    @property
+    def _live_catalog(self) -> CatalogSource:
+        if self.catalog is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        return self.catalog
+
+    @property
+    def _live_domains(self) -> Domains:
+        if self.domains is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        return self.domains
+
+    @property
+    def _live_signer(self) -> AssertionSigner:
+        if self.signer is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        return self.signer
+
     @asynccontextmanager
     async def _transaction(self):
         """Acquire-through-commit under one deadline; store errors become UNAVAILABLE."""
@@ -128,7 +146,7 @@ class Broker:
         self._require_available()
         async with self._transaction() as ledger:
             principal = await ledger.authenticate(goal_id, token)
-            catalog = await self.catalog.load(ledger.connection)
+            catalog = await self._live_catalog.load(ledger.connection)
             if catalog.digest != principal.catalog_digest:
                 raise BrokerRefused(Reason.CATALOG)
             return tuple(
@@ -162,7 +180,7 @@ class Broker:
         self, ledger: BrokerLedger, principal: Principal, name: str, args, args_digest: str
     ) -> Reservation | BrokerRefused:
         """D7 steps 2-4 inside the call's transaction, in the RFC's order."""
-        catalog = await self.catalog.load(ledger.connection)
+        catalog = await self._live_catalog.load(ledger.connection)
         if catalog.digest != principal.catalog_digest:
             raise self._refused(principal, name, Reason.CATALOG)
         capability = catalog.get(name)
@@ -198,7 +216,7 @@ class Broker:
 
     def _assertion(self, reservation: Reservation, approval_ref: str | None) -> str:
         principal, capability = reservation.principal, reservation.capability
-        return self.signer.sign(
+        return self._live_signer.sign(
             {
                 "aud": capability.domain,
                 "goal_id": str(principal.goal_id),
@@ -223,7 +241,7 @@ class Broker:
         try:
             assertion = self._assertion(reserved, None)
             async with asyncio.timeout(self.forward_timeout):
-                receipt = await self.domains.park(reserved, args, assertion)
+                receipt = await self._live_domains.park(reserved, args, assertion)
             if not isinstance(receipt, ParkReceipt):
                 raise TypeError("park_receipt")
         except asyncio.CancelledError:
@@ -236,15 +254,23 @@ class Broker:
             parked = await ledger.mark_parked(reserved, receipt.approval_ref)
         if not parked:
             # Stop cancelled the effect while the park was in flight.
-            await self.domains.cancel(
+            await self._live_domains.cancel(
                 reserved.capability.domain, reserved.principal.goal_id, [receipt.approval_ref]
             )
             raise BrokerRefused(Reason.GOAL)
-        if receipt.approved_by_rule:
+        if receipt.approved_by_rule and reserved.effect_id is not None:
             return await self.execute_approved(
                 reserved.principal.goal_id, reserved.effect_id, receipt.approval_ref, args
             )
         return BrokerResult("parked", reserved.effect_id, receipt.approval_ref)
+
+    async def _dispatch(
+        self, reserved: Reservation, args: dict[str, Any], assertion: str, key: str | None
+    ) -> DomainReceipt:
+        receipt = await self._live_domains.dispatch(reserved, args, assertion, idempotency_key=key)
+        if not isinstance(receipt, DomainReceipt):
+            raise TypeError("domain_receipt")
+        return receipt
 
     async def _forward(
         self, reserved: Reservation, args: dict[str, Any], approval_ref: str | None = None
@@ -259,18 +285,12 @@ class Broker:
         except Exception:
             await self._settle(reserved, "failed")
             raise BrokerRefused(Reason.UNAVAILABLE) from None
-        receipt = None
         try:
             async with asyncio.timeout(self.forward_timeout):
+                receipt = await self._dispatch(reserved, args, assertion, key)
                 # D12: one transport retry, only when the domain provably did not receive it.
-                for _ in range(2):
-                    receipt = await self.domains.dispatch(
-                        reserved, args, assertion, idempotency_key=key
-                    )
-                    if not isinstance(receipt, DomainReceipt):
-                        raise TypeError("domain_receipt")
-                    if receipt.status != "not_received":
-                        break
+                if receipt.status == "not_received":
+                    receipt = await self._dispatch(reserved, args, assertion, key)
         except asyncio.CancelledError:
             raise  # The effect stays dispatched: never silently re-dispatched.
         except Exception:
@@ -305,7 +325,7 @@ class Broker:
         args = parse_json_object(canonical_bytes(arguments))
         async with self._transaction() as ledger:
             effect = await ledger.effect_capability(goal_id, effect_id)
-            catalog = await self.catalog.load(ledger.connection)
+            catalog = await self._live_catalog.load(ledger.connection)
             reserved = await ledger.begin_approved(
                 goal_id,
                 effect_id,
@@ -316,7 +336,8 @@ class Broker:
             )
         if isinstance(reserved, BrokerRefused):
             # The goal ended: the effect is cancelled here, so cancel its approval too.
-            await self.domains.cancel(effect.split("__", 1)[0], goal_id, [approval_ref])
+            if effect is not None:
+                await self._live_domains.cancel(effect.split("__", 1)[0], goal_id, [approval_ref])
             raise reserved
         return await self._forward(reserved, args, approval_ref)
 
@@ -327,5 +348,5 @@ class Broker:
             cancelled = await ledger.cancel_parked(goal_id)
         for domain in sorted({capability.split("__", 1)[0] for capability, _ in cancelled}):
             refs = [ref for capability, ref in cancelled if capability.startswith(domain + "__")]
-            await self.domains.cancel(domain, goal_id, refs)
+            await self._live_domains.cancel(domain, goal_id, refs)
         return len(cancelled)
