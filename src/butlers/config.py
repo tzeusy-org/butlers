@@ -351,6 +351,7 @@ class ApprovalConfig:
     default_risk_tier: ApprovalRiskTier = ApprovalRiskTier.MEDIUM
     rule_precedence: tuple[str, ...] = DEFAULT_APPROVAL_RULE_PRECEDENCE
     gated_tools: dict[str, GatedToolConfig] = field(default_factory=dict)
+    domain_producers: tuple[str, ...] = ()
 
     def get_effective_expiry(self, tool_name: str) -> int:
         """Get the effective expiry hours for a tool.
@@ -552,6 +553,16 @@ def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
         return None
 
     enabled = raw.get("enabled", False)
+    domain_producers = raw.get("domain_producers", ())
+    if (
+        not isinstance(domain_producers, (list, tuple))
+        or any(
+            not isinstance(name, str) or name not in {"calendar", "google_drive"}
+            for name in domain_producers
+        )
+        or len(set(domain_producers)) != len(domain_producers)
+    ):
+        raise ConfigError("domain_producers must be a unique list of calendar/google_drive")
     default_expiry_hours = raw.get("default_expiry_hours", 48)
     default_risk_tier_raw = raw.get("default_risk_tier", ApprovalRiskTier.MEDIUM.value)
 
@@ -591,6 +602,7 @@ def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
 
     return ApprovalConfig(
         enabled=enabled,
+        domain_producers=tuple(domain_producers),
         default_expiry_hours=default_expiry_hours,
         default_risk_tier=default_risk_tier,
         gated_tools=gated_tools,

@@ -124,7 +124,7 @@ class ApprovalsConfig(ToolGroupMixin, BaseModel):
     promotions : list_promotion_suggestions, confirm_promotion_suggestion,
                  dismiss_promotion_suggestion
 
-    Extra fields (default_expiry_hours, default_risk_tier, gated_tools) are
+    Extra fields (default_expiry_hours, default_risk_tier, gated_tools, domain_producers) are
     consumed by the daemon's approval-gate wiring via parse_approval_config()
     and are intentionally ignored here.
     """

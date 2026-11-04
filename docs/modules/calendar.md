@@ -374,3 +374,55 @@ an inbox row disappears or the undo HTTP reply is lost. A pending inverse remain
 pending until the existing approval executor completes it; its owner-qualified
 approval dossier is the execution recovery door. An unavailable read retains the
 last known receipt and does not replay the original response.
+
+### Party-reaching mutations
+
+Creating an invitation or changing an event with non-owner or unresolved
+attendees requires owner approval. Every attendee must pass the existing
+ambiguity-safe identity resolver; one owner address cannot hide another guest.
+The module checks inherited attendees before updates and notifying deletions.
+For Google deletion, explicit `send_updates="none"` suppresses notifications;
+`None` omits the provider flag, so its audience is conservatively gated.
+See [Google's deletion contract](https://developers.google.com/workspace/calendar/api/v3/reference/events/delete).
+
+Without a wired approvals producer, a party-reaching call returns
+`approval_unavailable` before provider mutation. Existing permission, conflict,
+series-impact and request-id replay checks still apply. Only the executor's
+exact stored call can pass the new party boundary. Configured standing-rule
+authority retains the existing generic approvals gate and safety-argument rules.
+
+Dashboard guest creates remain on the selected calendar owner's credentials and
+calendar. Every configured calendar owner has approvals capability; no unrelated
+tool gates or rules are added. The authenticated owner submission approves only
+the pending call whose digest the module returned, and the locked owning
+approval checks that exact call again before dispatch. This self-submission
+contributes no autonomy promotion history. Approved-but-undispatched remains
+truthful rather than claiming an event was created.
+
+The original bu-fg499t dashboard update/delete/undo wording refers to retired
+surfaces: owner decision `bu-kf3n4i=A`, current dashboard-api requirement and
+retirement commit `c064141c31f6b715911ede7e09cbe64a907b7c5d` (PR4901) retain
+create-only dashboard mutation. Update/delete remain HTTP422 and undo remains
+absent; the corresponding MCP mutation gates are covered instead.
+
+Party approval receipts bind the complete stored call, owning butler, currently
+verified Google account and concrete calendar. A retry with the same request ID
+reuses its pending receipt only when these still match; changed invitations or
+default destinations refuse. Rejected, expired and executed decisions are never
+reactivated. This checks current module/account binding; it does not add a
+cross-restart credential-generation fence or an atomic provider ACL/write CAS.
+
+Approved party execution resolves its unique durable projection receipt by the
+executor's action ID, including when the caller omitted `request_id`. The
+receipt binds the fetched effective attendee set as well as the current owning
+provider/account/calendar; any drift, missing or ambiguous receipt refuses
+before mutation, including before an owner-only shortcut. Inherited
+`attendees=None` remains unchanged in the stored call. Existing-event approved
+non-owner mutations also require the fetched event version. Google update,
+delete and recurrence writes carry that same snapshot ETag as `If-Match`;
+concurrent changes return HTTP412 without silently refetching and retrying the
+approved effect. A missing version refuses before effect. This protects that
+event resource, not external calendar ACL changes or a multi-write transaction.
+Owner-only legacy overlap/series approvals retain their original authority;
+a generic overlap approval never authorizes a non-owner audience without the
+owning party receipt.
