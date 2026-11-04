@@ -375,7 +375,8 @@ failures are `isError: true` results with a fixed `error.code` (`domain_disabled
 to subscription `butlers_public_sub` on `butlers_public`, as `butlers_projection_publisher`, which
 has no credential and connects over the instance's local socket by peer authentication (OD14).
 Both databases live on the same CNPG cluster, `postgres-<env>` (RFC 0039 D3), so the owner step
-(`butlers public-mcp owner-sql`, run by the owner as superuser through `kubectl exec`) pre-creates
+(`butlers public-mcp owner-sql`, run as superuser through `kubectl exec`, by every
+`make deploy-dev` after the migrations on dev, OD20, and by the owner elsewhere) pre-creates
 the slot with `pg_create_logical_replication_slot(..., 'pgoutput')` and creates the subscription
 with `create_slot = false` and `password_required = false`, then hands it to
 `mcp_subscription_owner`.
@@ -386,7 +387,13 @@ Job; the subscriber DDL is in the owner step; DDL is never replicated. Row-filte
 matching (reclassified, restricted) arrives as a DELETE. Chronicler publishes source-owned
 `episodes_public` and `rollups_public` tables, because its corrections live in an overlay a row
 filter cannot see. No JSONB column is published: entity flags, finance overlays and health
-values reach the projection through trigger-maintained plain columns or tables. The manifest
+values reach the projection through trigger-maintained plain columns or tables, and since OD17
+every scalar leaf of a finance or health JSONB column reaches it through
+`finance.json_fields_public` and `health.json_fields_public`, skipping credential-named paths.
+Finance and health publish everything they hold except credentials (OD17); the other domains
+stay narrow, under the breadth tier of the column denylist and literal predicate allowlists with
+no contact- or identity-kind predicate, which also filter graph edges through a trigger-kept
+`publish_key` (OD21). The manifest
 digest and the kill-switch rows replicate via `mcp_surface`; the public pod refuses tools when
 the replicated digest differs from its built-in one (`projection_version_mismatch`) and when the
 digest the last owner step applied differs from it (`projection_apply_pending`). A CI contract

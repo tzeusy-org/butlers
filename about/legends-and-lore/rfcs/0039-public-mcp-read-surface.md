@@ -1,10 +1,10 @@
 # RFC 0039: Public MCP Read Surface
 
 **Status:** Accepted (2026-11-04) on the owner decisions recorded in
-[Owner decisions](#owner-decisions) (OD1 to OD16). Under the owner's standing
+[Owner decisions](#owner-decisions) (OD1 to OD22). Under the owner's standing
 rule, text that conforms to those decisions is adopted once the PR's independent
 conformance review passes; the owner does not sign off exact wording. Text that
-goes beyond OD1 to OD16 returns to the owner. The conformance review returned
+goes beyond OD1 to OD22 returns to the owner. The conformance review returned
 four items beyond OD1 to OD9, and the owner answered all four on 2026-11-04:
 the projection is a second database on the existing cluster (OD10, D3), alerts
 reach the owner through the existing Uptime Kuma (OD11, D16), live data in
@@ -13,7 +13,15 @@ of the source-owned materializations in D2 is accepted (OD13). After homelab
 PR Tzeusy/homelab#40 applied the CNPG owner acts to `postgres-dev`, the owner
 also adopted a publisher with no credential, whose slot and subscription work
 is one owner step (OD14, D3, D9), and kept `mcp_subscription_owner` as created
-(OD15, D9). The
+(OD15, D9). Later the same day the owner widened finance and health to
+everything those domains hold except credentials, on the assumption that only
+the owner can reach the surface (OD17, D4, D15), and deferred prod rollout for
+the foreseeable future (OD18, [Rollout](#rollout-and-owner-acts)). The owner
+then accepted the two records tools and the JSON-field materialization that
+OD17 needed (OD19, D2, D10), had the dev deploy run the owner step
+automatically (OD20, D3), and published facts about people other than the
+owner, excluding only contact- and identity-kind predicates and credentials
+(OD21, D4). The
 [decision record](../decisions/2026-11-04-doctrine-public-mcp-read-surface.md)
 records them. Implementation has not started.
 **Author:** Claude (th-projects project-feature-request run), for the owner (tze)
@@ -56,7 +64,8 @@ Cloudflare gateway at `mcp.tze.how`. The rules of the surface:
   admits its role to the projection database alone; that role is read-only
   except INSERT on a proposals inbox.
 - **One server for all domains**, finance and health included (OD3), with
-  per-domain kill switches for incidents and no unlock step.
+  per-domain kill switches for incidents and no unlock step. Finance and
+  health publish everything they hold except credentials (OD17).
 - **The only write is `propose_fact`.** A triple lands in an inbox; a
   deterministic importer parks it on the dashboard approvals page; only the
   owner's approval applies it, through deterministic code, with
@@ -73,7 +82,7 @@ subscriptions do the reasoning, and no request reaches a Butlers model.
 | Client | Main use | Tools it leans on |
 |---|---|---|
 | ChatGPT, including Dots (OD6: Pro and higher tiers can use custom MCP) | Deep-research and agent tasks with the owner's context: who someone is, recent trips and taste, what happened last week | `search` and `fetch` in the exact ChatGPT contract, `trips`, `timeline` |
-| claude.ai (and Claude Code sessions that inherit the connector) | Cross-domain synthesis: sleep against spend against who the owner saw, meeting and relationship prep, retrospectives from Chronicler aggregates | typed tools: `entity_profile`, `graph_*`, `time_use`, `finance_*`, `health_series` |
+| claude.ai (and Claude Code sessions that inherit the connector) | Cross-domain synthesis: sleep against spend against who the owner saw, meeting and relationship prep, retrospectives from Chronicler aggregates | typed tools: `entity_profile`, `graph_*`, `time_use`, `finance_*`, `health_*` |
 | Excel | Deferred (OD7) | — |
 
 [Inferred] Today the only way to get this context into those clients is to
@@ -114,7 +123,7 @@ remains is Butlers-side work plus a short list of owner acts
 | Hop bearer | `UPSTREAM_BEARER`, which filter-proxy injects into every forwarded request (D6). |
 | Domain | A kill-switch unit: `knowledge`, `relationship`, `time`, `travel`, `finance`, `health`, `proposals`. |
 | Proposal | One `propose_fact` call. It is stored in the inbox and has no effect until the owner approves it. |
-| Owner step | The one idempotent SQL file that `butlers public-mcp owner-sql` emits for a manifest, which the owner runs as the CNPG superuser through `kubectl exec`. It creates the slot and the subscription, converges the subscriber side and records the applied digest (D3, OD14). |
+| Owner step | The one idempotent SQL file that `butlers public-mcp owner-sql` emits for a manifest, run as the CNPG superuser through `kubectl exec`: by every dev deploy (OD20), and by the owner elsewhere. It creates the slot and the subscription, converges the subscriber side and records the applied digest (D3, OD14). |
 | Applied digest | The manifest digest the last complete owner step recorded in `butlers_public`. The public server serves only while it equals the digest the server ships with (D17). |
 | Publisher | `butlers_projection_publisher`, the `REPLICATION` role the subscription connects as. It has no password or certificate and logs in only by local peer authentication inside the instance pods (D9, OD14). |
 | Migration Job | The step that applies Butlers migrations as the migration user, today the `dashboard-api` `migrations` initContainer that runs `db migrate` (`deploy/helm/butlers/templates/dashboard-api.yaml`). `butlers public-mcp reconcile` runs in it after Alembic (D4). OD14 calls it the migration Job; it is not a separate Kubernetes Job. |
@@ -141,7 +150,7 @@ flowchart LR
     FP -->|"only allowed ingress"| MCP
     MCP -->|"only allowed egress: 5432;<br/>pg_hba admits butlers_public only"| PROJ
     PRI -->|"logical replication, one way,<br/>same instance, publisher by local peer auth"| PROJ
-    OWN["owner step (OD14): owner-sql file,<br/>kubectl exec psql -U postgres"] -->|"slot, publisher grants"| PRI
+    OWN["owner step (OD14): owner-sql file,<br/>kubectl exec psql -U postgres<br/>(run by make deploy-dev, OD20)"] -->|"slot, publisher grants"| PRI
     OWN -->|"subscription, purge,<br/>applied digest"| PROJ
     REL -->|"pull inbox (SELECT, DELETE)"| PROJ
     REL -->|"park relationship_assert_fact"| APR
@@ -224,7 +233,9 @@ tap. That is why it needs its own owner decision (D13).
 The owner recorded these on 2026-11-04. They are authoritative for this RFC.
 OD10 to OD13 answer the four items the conformance review returned to the
 owner. OD14 and OD15 followed the homelab apply of the CNPG owner acts to
-`postgres-dev` (homelab PR Tzeusy/homelab#40).
+`postgres-dev` (homelab PR Tzeusy/homelab#40). OD16 answered open question 5.
+OD17 and OD18 answered open questions 1 to 3. OD19 to OD21 followed the OD17
+pass.
 
 | | Decision |
 |---|---|
@@ -244,6 +255,12 @@ owner. OD14 and OD15 followed the homelab apply of the CNPG owner acts to
 | OD14 | The publisher has no credential. It logs in only by local peer authentication through the CNPG `local` `pg_ident` map; no password or certificate exists, and every TCP login as the publisher is rejected. The slot, the subscription (created by the superuser with `password_required = false`, `create_slot = false` and conninfo on the local socket, then owned by `mcp_subscription_owner`), `REFRESH PUBLICATION` and the narrowing purge become one owner step: Butlers generates one idempotent SQL file per manifest change, and the owner pipes it through the same `kubectl exec ... psql -U postgres` path as `init-db.sql`. Publication DDL in `butlers` stays with the migration user in the migration Job. The public server fails closed while the owner step is pending, so a narrowed manifest never keeps serving rows that should have been purged (D3, D4, D9, D17). |
 | OD15 | `mcp_subscription_owner` is kept as created: `LOGIN`, with its three password copies. No Butlers workflow needs it to log in (D9). |
 | OD16 | No `pg_hba` reject line for `mcp_subscription_owner`. The owner accepts that its password can log in over TCP to `butlers_public` and `postgres` (D9, D17). |
+| OD17 | Share all finance and health data. Owner: "For finance and health data, assume free to share all for now. We should operate under the assumption that this information is only accessible to me (can have a security audit later of various ingress/egresses)." Finance and health publish everything those domains hold, including account names, `last_four`, balance snapshots, notes, descriptions, clinicians, allergies and visits. No credential-named column or JSON path, no `butler_secrets` row and no `entity_info` row is published: condition 1 and the credential tier of the denylist stand. A credential written into free text is caught only by the shape-based credential DLP rules (D2, D4, D10, D15). |
+| OD18 | Prod rollout is deferred for the foreseeable future. `dev` is the only target. The prod plan stays in this RFC as deferred text ([Rollout](#rollout-and-owner-acts)). |
+| OD19 | Both OD17 implementation choices are accepted: the tools `finance_records` and `health_records` (19 tools in all, D10) and the sixth source-owned materialization, `finance.json_fields_public` and `health.json_fields_public` (scalar JSON values, skipping credential-like keys, D2). |
+| OD20 | On dev the deploy runs the owner step automatically. `make deploy-dev` already runs `init-db.sql` as the superuser through `kubectl exec` (`bootstrap-dev`); it also runs `butlers public-mcp owner-sql` through the same path, after the migrations (where reconcile creates the publication) complete, so no manual step remains on dev. A failure is reported loudly, nothing rolls back, and the server stays fail-closed with `projection_apply_pending`. The step is idempotent and runs on every dev deploy. Prod (deferred, OD18) stays manual. The 24-hour narrowing-pending critical alert stays and on dev signals that the automatic step is failing (D3, D16, owner act 10). D3 implements it: the step runs whatever the release returned and its guard decides, the server is fail-closed whenever a manifest change or rebuild is pending, and the same deploy upgrades the public chart so no manual step remains. |
+| OD21 | Facts whose subject is someone other than the owner are published, on OD17's assumption that only the owner can reach the surface. Credentials stay excluded, and so do contact- and identity-kind predicates (other people's phone, email, address and similar). The line is predicate kind and credentials, not schema or subject (D4). |
+| OD22 | In finance and health, OD17 wins over OD21: those domains share everything except credentials, including other people's contact details held there. OD21's line applies only to knowledge and relationship facts (D4). |
 
 ## Decisions
 
@@ -304,10 +321,18 @@ subscription needs identical column lists, hence exactly one publication;
 (6) PG17 does not publish generated columns, so the subscriber defines its
 own (e.g. `relationship.entity_facts.object_entity_id`).
 
-Each row-filtered table gets a non-partial unique index over `(id,
-<filter columns>)`, with every column `NOT NULL`, set with `REPLICA IDENTITY
-USING INDEX`. The owning chain's migration creates it, through one helper:
-`butlers.migrations.projection.ensure_replica_identity`. Because the filter
+Each row-filtered table gets a non-partial unique index over its declared
+key columns plus its filter columns (`(id, <filter columns>)` for a table
+keyed by `id`), with every column `NOT NULL`, set with `REPLICA IDENTITY
+USING INDEX`; a table whose primary key already covers its filter columns,
+such as `public.entity_graph_withheld_counts`, keeps `REPLICA IDENTITY
+DEFAULT`. The owning chain's migration creates it, through one helper:
+`butlers.migrations.projection.ensure_replica_identity`. By rule (2), every
+replica-identity column, filter columns included, is also in the entry's
+column list, even where no `mcp_read` view returns it: otherwise every
+UPDATE or DELETE of the table fails on the primary [Inferred: PG15+
+`CheckCmdReplicaIdentity`, "Column list used by the publication does not
+cover the replica identity"]. Because the filter
 columns are part of the replica identity, a row that stops matching (a fact
 reclassified to `pii`, an episode restricted by the owner) arrives at the
 subscriber as a DELETE. A later restriction therefore removes the row from
@@ -322,7 +347,7 @@ a small table on the primary, owned by the source's migration chain, kept equal
 to its source by deterministic code, and covered by a parity test. There is
 still only one transport, replication. A materialization is not a second pipe
 into the projection; it is the OD1 fallback for sources that cannot be
-row-filtered or column-narrowed. v1 needs five, and any future source of the
+row-filtered or column-narrowed. v1 needs six, and any future source of the
 same kind uses the same pattern:
 
 - **Chronicler corrected visibility.** [Observed] Owner privacy and tombstone
@@ -335,8 +360,41 @@ same kind uses the same pattern:
   tombstoned`). Deterministic Chronicler code rewrites the affected rows from
   the corrected view in the same transaction as each override write, plus a
   15-minute sweep. The manifest publishes it filtered to
-  `effective_privacy = 'normal' AND tombstoned = false`. The rollups behind
-  `time_use` get the same treatment (`chronicler.rollups_public`).
+  `effective_privacy IN ('normal', 'sensitive') AND tombstoned = false`, so
+  only `restricted` episodes (today set only by overrides) and tombstones are
+  withheld. The rollups behind `time_use` get the same
+  treatment (`chronicler.rollups_public`).
+  - *What `sensitive` covers.* [Observed] Adapters set the label from the
+    source declaration, deterministically (`src/butlers/chronicler/models.py:32-37`):
+    `sensitive` marks Google Health sleep episodes and workouts with heart
+    rate (`src/butlers/chronicler/adapters/google_health.py:371-377,675`),
+    exercise episodes (`exercise.py:311`) and Home Assistant presence
+    episodes (`home_assistant.py:510`); meals (`meals.py:230-240`) and
+    heart-rate samples (`google_health.py:907-918`) are `sensitive` point
+    events, which v1 does not publish. No adapter sets `restricted`. Sleep,
+    workouts and exercise are health data, which OD17 shares. Home Assistant presence
+    is routine, not health: an episode titled "`<Name>` at home" for a
+    tracked `person.*` entity (`home_assistant.py:487-489`), whose payload
+    (the HA entity id and state) `episodes_public` never carries. [Observed]
+    Chronicler's own default read already shows `normal` and `sensitive` and
+    withholds only `restricted` (`src/butlers/chronicler/rollups.py:55-56`).
+    Presence is a fact about the owner or a household member, which OD21
+    publishes, and is no contact or identity datum.
+  - *Labels only narrow.* [Observed] The LLM-callable
+    `chronicler_submit_correction` tool accepts any of the three labels and
+    leaves `submitted_by` at its default `'user'`
+    (`roster/chronicler/modules/__init__.py:376-421`,
+    `src/butlers/chronicler/models.py:376`), while the dashboard route stamps
+    the authenticated principal `'owner'`
+    (`roster/chronicler/api/router.py:518-523`,
+    `src/butlers/api/audit_emit.py:43,69-80`). `effective_privacy` in
+    `episodes_public` therefore folds the overrides oldest first: an override
+    with `submitted_by = 'owner'` sets the label, and any other override can
+    only make it more restrictive (`normal` < `sensitive` < `restricted`). A
+    model can withhold an episode from the surface but never republish one
+    the owner or a source restricted. This is the one place
+    `episodes_public` may differ from `v_episodes_corrected`, and the parity
+    test compares against the fold.
 - **Entity flags.** [Observed] The merge pointer, the soft-delete stamp and
   the unidentified-sender marker are all `public.entities.metadata` keys
   (`merged_into`, `deleted_at` and `unidentified`;
@@ -344,6 +402,15 @@ same kind uses the same pattern:
   `src/butlers/identity.py:459`). Plain columns `merged_into UUID NULL`,
   `deleted BOOLEAN NOT NULL` and `unidentified BOOLEAN NOT NULL` are kept
   equal to them by a `BEFORE INSERT OR UPDATE` trigger (design.md S1).
+  [Observed] An unknown sender's entity is named `Unknown (<channel>
+  <value>)` (`src/butlers/identity.py:1067-1071`), with `source_channel` and
+  `source_value` in `metadata` (`identity.py:1208-1210`), and the dashboard
+  promote route clears `unidentified` without renaming it
+  (`src/butlers/api/routers/memory.py:2792-2799`). The same trigger
+  therefore keeps a fourth column, `placeholder_name BOOLEAN NOT NULL`, true
+  while `canonical_name` still equals the `Unknown (<source_channel>
+  <source_value>)` form built from those keys, so a promoted but unrenamed
+  entity stays out (D4 filter).
 - **Finance overlays.** [Observed] The merchant and category the finance
   tools show are overlays, read as
   `COALESCE(metadata->>'normalized_merchant', merchant)` and
@@ -358,18 +425,104 @@ same kind uses the same pattern:
   (`roster/health/tools/measurements.py:133-135`,
   `roster/health/tools/medications.py:96-108`,
   `roster/health/tools/conditions.py:88-92`). An `AFTER INSERT OR UPDATE OR
-  DELETE` trigger on `health.facts` keeps three small tables,
+  DELETE` trigger on `health.facts` keeps three small typed tables,
   `health.measurements_public`, `health.medications_public` and
-  `health.conditions_public`, holding only allowlisted keys and never `notes`
-  (design.md S7).
-- **Graph withheld counts.** [Observed] Live edges of any sensitivity carry
-  `predicate` and `object_entity_id`; only withheld stubs have NULL payloads
-  (`alembic/versions/core/core_215_entity_graph_edges.py`). Edges are
-  therefore published filtered to `sensitivity = 'normal'`, and a trigger on
-  `public.entity_graph_edges` maintains `public.entity_graph_withheld_counts
-  (entity_id, withheld)`, the number of each entity's non-normal edges, so
-  the tools can report withheld counts without any non-normal row leaving
-  the primary.
+  `health.conditions_public`, which serve the series and profile tools. Since
+  OD17 they carry `notes` too, and they cover active facts of every
+  sensitivity (design.md S7).
+- **Finance and health JSON fields (OD17).** [Observed] Finance and health
+  keep much of their data in JSONB: the finance fact layer stores amounts,
+  merchants, account names and `last_four` as `metadata` keys
+  (`roster/finance/tools/facts.py:19-20,256-266,533-535`), and health facts keep
+  their values and notes there. One generic trigger function, attached to
+  every published `finance` and `health` table that has a JSONB column, keeps
+  `finance.json_fields_public` and `health.json_fields_public` (`source_table,
+  row_id, path, value_text, value_numeric`, keyed by the first three) equal to
+  every scalar leaf of those columns, one row per dotted path. `row_id` is
+  TEXT: the source row's single-column primary key rendered as text. The
+  manifest declares each table's key column (`id` by default, `event_id` for
+  `visit_briefs` [Observed: `roster/health/migrations/005_visit_briefs.py:31`],
+  `claim_id` for `claim_match_bindings` [Observed:
+  `roster/finance/migrations/015_claim_match_bindings.py:22`]), and the drift
+  check refuses a published finance or health table without a single-column
+  primary key. The function skips any path with a segment that matches the
+  credential tier of the D4 column denylist, where a JSON key is first split
+  into segments on `.`, `_`, `-`, whitespace and every lower-to-upper camelCase
+  boundary, then compared case-insensitively (so `accessToken` becomes
+  `access, token` and matches `token`, and `Client-Secret` matches `secret`).
+  It deletes a row's fields when the row stops qualifying. This publishes the
+  JSONB content without publishing a JSONB column, and keeps the credential
+  rule on keys as well as on columns. [Observed] The keys are unconstrained:
+  the finance tools take a free-form JSON `metadata` string from the model
+  (`roster/finance/modules/tools.py:69,89`), so the split is what keeps a
+  camelCase or kebab-case credential key out.
+- **Graph publish key and withheld counts.** [Observed] Every fact with an
+  object entity projects one row into `public.entity_graph_edges`, from every
+  memory schema (`src/butlers/modules/memory/storage.py:2066-2080`), from
+  `relationship.entity_facts` (`roster/relationship/tools/relationship_assert_fact.py:1024-1038`)
+  and from commitments (`src/butlers/core/commitments.py:329-337`), whatever
+  the source's own publication rules. A `pii` or `confidential` fact becomes
+  a stub with NULL `predicate` and `object_entity_id`
+  (`src/butlers/core/entity_graph_edges.py:33-46,132-170`), so `predicate`
+  is nullable (`core_215_entity_graph_edges.py:146,173-181`) and cannot
+  enter a replica-identity index. A filter on `sensitivity = 'normal'` alone
+  would publish, as live edges, facts the facts filters exclude: `home`
+  schema facts, an override-kind `entity_facts` row with an entity object,
+  a `relationship` memory fact with a contact- or identity-kind predicate,
+  or a `general` fact whose predicate is off its allowlist. The edges
+  therefore take the same literal allowlists as the facts they mirror:
+  - A `BEFORE INSERT OR UPDATE` trigger on `public.entity_graph_edges` keeps
+    a plain `publish_key TEXT NOT NULL` equal to
+    `<source_schema>.<source_table>:<predicate>` on a live edge and to `''`
+    on a stub.
+  - The manifest publishes edges filtered to `sensitivity = 'normal' AND
+    publish_key IN (...)`, with `publish_key` and `sensitivity` in the
+    replica identity. The generator writes that literal list from the
+    manifest's own fact entries: one key per allowlisted predicate of every
+    published fact source that can produce edges (the `knowledge` and
+    `travel` memory schemas, the `relationship` memory schema and
+    `relationship.entity_facts`). It is never hand-edited, and drift check 2
+    asserts it equals the union of those allowlists, so a predicate the
+    facts withhold can never appear as an edge, and an edge leaves the
+    projection as a DELETE when its fact does.
+  - *Lifecycle.* [Observed] A memory fact keeps its live edge while it is
+    `fading`: the edge backfill takes `validity IN ('active', 'fading')`
+    (`src/butlers/core/entity_graph_edges.py:598`), fading does not cascade
+    because fading facts stay live for retrieval
+    (`src/butlers/modules/memory/storage.py:3810-3819`), and an edge is
+    deleted only when its fact is disowned (`storage.py:573-583`). The edge
+    filter cannot see the fact's validity, so the memory-fact entries that
+    produce edges (`knowledge`, `travel` and `relationship`) publish
+    `validity IN ('active', 'fading')`, the same lifecycle as their edges and
+    as Butlers' own retrieval (D4). A fact that moves to fading therefore
+    stays published together with its edge, and a disowned fact leaves with
+    its edge. `relationship.entity_facts` edges are projected only for
+    active rows (`roster/relationship/tools/relationship_assert_fact.py:1011-1016,1247-1253`;
+    a `candidate` row gets none, `:2622`), which its `validity = 'active'`
+    filter matches. The graph parity test asserts that every published edge's
+    source fact is itself published.
+  - Edges from `finance` and `health` facts, from schemas no fact entry
+    publishes (`home`, `switchboard`, `chronicler`) and from commitments
+    (`public.owner_conditions`) get no key in the list and are not
+    published. Finance and health links stay in their own domains: their
+    `facts` tables publish `entity_id` and `object_entity_id` at every
+    sensitivity (OD17), so a health fact never shows as a withheld edge in a
+    relationship tool while `health_records` serves it.
+  - The `mcp_read` view never returns `publish_key`; it maps the key's
+    source prefix to that source's domain, so an edge from a `general`
+    fact is dropped while `knowledge` is disabled, as the fact is (D5).
+    `publish_key` carries Butlers schema and table names, which are fixed
+    vocabulary, not source-system provenance; no `source_id` is published.
+  - An `AFTER` trigger maintains `public.entity_graph_withheld_counts
+    (entity_id, source_key, withheld)`, with `PRIMARY KEY (entity_id,
+    source_key)` and `REPLICA IDENTITY DEFAULT`, which covers the
+    `source_key` filter, the number of each entity's stubs
+    per `<source_schema>.<source_table>`, and the manifest publishes only
+    the rows whose `source_key` is one of the same fact sources. The tools
+    therefore count a withheld edge exactly where the matching fact is
+    withheld for its label, and an edge excluded by predicate or source is
+    neither served nor counted, as an excluded fact is not. No stub row
+    leaves the primary.
 
 **Upkeep cost of materializations.** [Inferred] One trigger function per
 source, one parity test each, and a sweep only where the source is an overlay
@@ -377,10 +530,16 @@ source, one parity test each, and a sweep only where the source is an overlay
 change. A source migration that renames a JSONB key the trigger reads fails
 the parity test in its own PR. This is upkeep beyond "one manifest". The owner
 accepted it (OD13), with the parity tests and the D4 drift checks as its
-mitigation.
+mitigation. D2 listed five materializations when the owner accepted their
+upkeep (OD13); the JSON-field flattening is the sixth, with one generic
+function, one parity test per attached table and no sweep, and the owner
+accepted it as well (OD19). The graph `publish_key` column and the per-source
+withheld counts extend the existing graph materialization (one table, one
+`BEFORE` and one `AFTER` trigger, one parity test); they add no seventh
+source.
 
 **Why.** OD1. [Observed] On the primary, `butler_secrets` stores
-`secret_value TEXT` in every schema (`src/butlers/core/credential_store.py:148-163`).
+`secret_value TEXT` in every schema (`src/butlers/credential_store.py:62,147-162`).
 `public.entity_info` holds `secured=true` rows. Runtime roles get DML on all
 of `public` (`scripts/init-db.sql:445-451`). Three `SECURITY DEFINER`
 functions are granted to PUBLIC, among them `resolve_owner_triple`, an owner
@@ -469,12 +628,103 @@ slot, are therefore superuser work, and they form one owner step:
 
 - **The file.** `butlers public-mcp owner-sql` prints one SQL file computed
   from the manifest alone. It opens no database connection, holds no secret,
-  and the same manifest always yields the same bytes. The owner runs it from
-  a checkout at the deployed revision through the same path as
-  `scripts/init-db.sql`:
-  `butlers public-mcp owner-sql > owner-step.sql`, then
-  `kubectl exec -i -n postgres-<env> <instance> -- psql -X -U postgres -d butlers -f - < owner-step.sql`.
-  That is peer authentication over the instance's local socket.
+  and the same manifest always yields the same bytes. It runs through the
+  same path as `scripts/init-db.sql`, `kubectl exec -i -n postgres-<env>
+  <instance> -- psql -X -U postgres -d butlers -f -`, which is peer
+  authentication over the instance's local socket.
+- **On dev the deploy runs it (OD20).** [Observed] `make deploy-dev` runs
+  `bootstrap-dev` (`scripts/k8s/bootstrap-db.sh`, which pipes the tag's
+  `init-db.sql` through that path), then `record-deploy.sh`, which runs
+  `helm upgrade` and waits for the `dashboard-api` rollout, whose
+  `migrations` initContainer runs Alembic and then reconcile, before it
+  waits for `butlers-up` and readiness
+  (`deploy/helm/butlers/makefile:33-40`, `scripts/k8s/record-deploy.sh:47-66`).
+  The owner step needs the publication that reconcile creates, so it cannot
+  run in `bootstrap-dev`, which precedes the migrations. A new script,
+  `scripts/k8s/public-mcp-owner-step.sh <env> <tag>`, runs as the second
+  command of the `deploy-%` recipe, whatever `record-deploy.sh` returned:
+  - *Order.* `bootstrap-dev` (`init-db.sql`), then the release with its
+    migrations and reconcile, then the owner step, then the public chart
+    (below). [Observed] `record-deploy.sh` exits non-zero for failures after
+    the `dashboard-api` rollout too, when the migrations and reconcile have
+    already run: the `butlers-up` or `butlers-control` rollout and the
+    readiness wait (`record-deploy.sh:49-66,74`). Gating the step on that
+    exit would leave a narrowed publication unpurged with no step output at
+    all. The recipe therefore keeps `record-deploy.sh`'s status, runs the
+    owner step in every case, and exits with the first non-zero status of
+    the two (for example `rd=0; record-deploy.sh ... || rd=$$?;
+    public-mcp-owner-step.sh $* $(TAG) || os=$$?; ...`). The step's own
+    guard decides whether it may act: when the migrations did not
+    reconcile this manifest, the publication differs from the rows the file
+    embeds, the guard refuses, and that refusal is fail-closed (step 1).
+  - *Where the file is generated.* Inside a deployed `dashboard-api` pod.
+    The script selects a running `dashboard-api` pod whose image tag equals
+    `<tag>` and execs into that pod by name, running
+    `/app/.venv/bin/butlers public-mcp owner-sql`, the console-script path
+    `record-deploy.sh:37-44` already uses; when no such pod exists (the
+    release failed before the rollout, so an older pod still runs) it fails.
+    That image is the one whose migrations container reconciled, so the file
+    and the publication come from the same manifest, also on a rollback to
+    an older tag (where a local checkout could differ). The script first
+    captures the whole output in a shell variable under `set -euo pipefail`,
+    as `bootstrap-db.sh:39` captures `init-db.sql`, and only after the
+    generator exited 0 pipes it with `printf '%s\n'` into the superuser
+    `psql` in the CNPG primary, selected by label as `bootstrap-db.sh:40-45`
+    selects it, with `ON_ERROR_STOP=1`. A generator that dies midway
+    therefore feeds psql nothing. The file holds no secret, so nothing is
+    written to disk. Trusting the pod is a residual risk (D9).
+  - *Older tags.* Before generating, the script asks the same pod for its
+    command listing in a separate call (`butlers --help`, then `butlers
+    public-mcp --help` when `public-mcp` is listed) and treats the image as
+    older only when no exact `owner-sql` entry appears. Only then does it
+    print a notice and exit 0 (a rollback to a tag before the command
+    shipped). A failed listing call, and any non-zero exit of the
+    generation call itself, a usage error included, is a failure.
+  - *Failure.* Any failure (no matching pod, the listing or generation
+    call, `kubectl exec`, a guard stop or a failed statement) prints
+    `public-mcp owner step FAILED` with the step's last error to stderr and
+    makes `make deploy-dev` exit non-zero. Every stop in the file is an
+    error under `ON_ERROR_STOP` (step 1), so a guard stop is a non-zero psql
+    exit. Nothing rolls back: the Butlers release and its deployments row
+    stand, the publication stays as reconcile left it, and the file's own
+    ordering means a partial run never records a digest. What the public
+    server does then depends on the run:
+    - when reconcile applied a manifest change, or the run had already
+      deleted the applied record (a rebuild), it refuses with
+      `projection_apply_pending` (D17), the warning flag is down, and a
+      narrowing pending for 24 hours turns critical (D16);
+    - otherwise (an unchanged manifest and no rebuild, so the applied
+      record still matches) the projection already applied keeps serving,
+      and only the deploy's `FAILED` marker reports the failure.
+    The next deploy or a manual run of the same script retries.
+  - *Idempotence.* The script runs on every dev deploy. With an unchanged
+    manifest and a healthy slot the file changes nothing (see Rerun), so
+    the cost is a guard check and a grant sync.
+  - *Off switch.* A committed recipe variable,
+    `PUBLIC_MCP_OWNER_STEP_dev := on` in `deploy/helm/butlers/makefile`, is
+    passed to the script; set to `off` in a reviewed change, the script
+    prints a notice and exits 0 before it does anything and the recipe
+    skips the public chart, so a dev teardown stays down across later
+    deploys (task 8.1). Reconcile still keeps the
+    publication, which costs nothing without a slot or subscription.
+  - *The public chart.* The public server ships its own manifest from its
+    own chart (D8), and a pod on an older image refuses with
+    `projection_version_mismatch` after a manifest change until it is
+    redeployed. So after the owner step exits 0, the same recipe upgrades
+    `deploy/helm/butlers-public-mcp` on dev at the same `TAG`, and its exit
+    status joins the recipe's; the shipped, replicated and applied digests
+    then converge in one deploy, with no manual step on dev. When the owner
+    step fails the public chart is not upgraded, and the server refuses
+    either way (`projection_version_mismatch` on the old image,
+    `projection_apply_pending` on a new one). The values file and image
+    build of that release are task 2.4.
+  - *Prod.* Prod is deferred (OD18) and stays manual: for any environment
+    other than `dev` the script prints a reminder and exits 0, as
+    `bootstrap-db.sh:31-35` does.
+- **Elsewhere the owner runs it** from the deployed image, or from a
+  checkout at the deployed revision, through the same path, capturing the
+  file first and writing nothing into the checkout:
+  `sql="$(butlers public-mcp owner-sql)" && printf '%s\n' "$sql" | kubectl exec -i -n postgres-<env> <instance> -- psql -X -U postgres -v ON_ERROR_STOP=1 -d butlers -f -`.
 - **Control flow.** The file sets `ON_ERROR_STOP`, so the first failure ends
   it. It moves between the two databases with psql `\connect` (to
   `butlers_public` and back to `butlers`) and branches with `\gset` and
@@ -487,9 +737,17 @@ slot, are therefore superuser work, and they form one owner step:
   [Inferred: PostgreSQL 17 docs, ALTER SUBSCRIPTION and DROP SUBSCRIPTION],
   so those two are never put in a `DO` block. A `DO` block is allowed for
   statements that may run in a transaction, such as the bounded wait for a
-  slot to be released in step 4.
+  slot to be released in step 4. **Every stop is an error.** [Inferred:
+  psql exit status, 0 on a normal end including `\q`, 3 for a script error
+  under `ON_ERROR_STOP`] A `\q` or `\quit` under `\if` ends the file with
+  exit 0, so a guard written that way would let `make deploy-dev` pass
+  silently. Each stop in the file (both superuser checks, the digest check,
+  the publication-match check and the no-credential check) therefore raises
+  an error, a `DO` block with `RAISE EXCEPTION` naming the check, which
+  `ON_ERROR_STOP` turns into a non-zero exit; the file never contains `\q`
+  or `\quit`.
 - **Order.**
-  1. *Guard, in `butlers`.* Stop unless the current user is a superuser,
+  1. *Guard, in `butlers`.* Stop, by raising an error, unless the current user is a superuser,
      `mcp_surface.manifest_state` carries the file's digest, and the
      publication itself matches the manifest: the file embeds the expected
      `pg_publication_tables` rows (schema, table, attnames and rowfilter) and
@@ -562,11 +820,17 @@ slot, are therefore superuser work, and they form one owner step:
   slot and the applied record unchanged, and exits successfully. Idempotent
   `GRANT`, `REVOKE`, `OWNER TO`, `ENABLE` and `REFRESH PUBLICATION`
   statements still run and change nothing.
-- **Cadence.** The owner runs the step once at the first sync, once after
-  each manifest change the migration Job has applied, and once after each
-  slot invalidation (D9), when the step rebuilds the slot and the
-  subscription. That is the owner's one recurring upkeep for the projection,
-  and it is small because manifest changes are deliberate and rare (OD1).
+- **Cadence.** The step must run once at the first sync, once after each
+  manifest change the migration Job has applied, and once after each slot
+  invalidation (D9), when it rebuilds the slot and the subscription. On dev
+  every deploy runs it (OD20), which covers the first sync and every
+  manifest change, since a manifest change reaches dev only by a deploy, and
+  the same deploy then upgrades the public chart to the same tag; an
+  invalidation is picked up by the next deploy, or the owner runs
+  `scripts/k8s/public-mcp-owner-step.sh dev <deployed tag>` at once. So on
+  dev the projection needs no recurring owner act, which answers the OD1
+  maintenance concern there. Elsewhere it stays the owner's one recurring
+  upkeep, small because manifest changes are deliberate and rare (OD1).
   Until it runs after the first sync or a manifest change, the public server
   refuses every tool except `describe` with `projection_apply_pending` (D17)
   and the warning flag is down (D16). An invalidated slot surfaces
@@ -611,7 +875,8 @@ storage volume, WAL, backups and restore drill.
   public pod can put on the primary.
 - [Observed: homelab report] Prod (`postgres-prod`) is also PG 17.8 with
   `wal_level=logical`, one instance and no standbys, so the same placement
-  works there when a separate owner act enables it.
+  would work there. Prod rollout is deferred for the foreseeable future
+  (OD18).
 
 **Why.** OD10. [Inferred] The second database keeps the isolation that
 condition 1 rests on: the public role connects only to a database that never
@@ -641,8 +906,9 @@ domain   = "relationship"
 columns  = ["id", "subject", "predicate", "object", "object_kind", "conf",
             "verified", "validity", "content_authority", "created_at"]
 replica_identity = ["id", "predicate", "validity"]
-row_filter = { validity = ["active"], predicate = ["knows", "colleague-of", "friend-of",
-               "co-attended", "visited", "works-at", "member-of"] }
+row_filter = { validity = ["active"], predicate = ["knows", "family-of", "partner-of",
+               "parent-of", "child-of", "colleague-of", "friend-of", "co-attended",
+               "visited", "works-at", "member-of"] }   # abridged: every relational-kind predicate
 uri      = "butlers://relationship/fact/{id}"
 ```
 
@@ -662,7 +928,9 @@ work is split by who may do it (OD14):
   touches no slot, no subscription and nothing in `butlers_public`.
 - **`butlers public-mcp owner-sql`** prints the owner-step file (D3): the
   slot, the subscriber DDL, the subscription, the purge and re-copy, and the
-  applied digest. The owner runs it as the superuser.
+  applied digest. It runs as the superuser: on dev the deploy runs it after
+  the migration Job, followed by the public chart at the same tag (OD20,
+  D3), and elsewhere the owner runs it.
 
 The pod refuses tools when its built-in manifest digest differs from the
 replicated one (deploy skew), and when it differs from the applied digest the
@@ -695,26 +963,70 @@ refuses.
 
 **Drift checks (CI, on a PG17 testcontainer with all migrations applied):**
 1. Every manifest table and column exists; filter columns are `NOT NULL`;
-   the replica-identity index exists and matches.
+   the replica-identity index exists and matches; every replica-identity
+   column is in the entry's column list; and an UPDATE and a DELETE on each
+   published row-filtered table succeed on the primary with the real
+   publication in place (D2 rule 2).
 2. After reconcile and the owner-step file, `pg_publication_tables`
    (attnames, rowfilter) equals the manifest exactly, and the subscriber
-   tables have exactly the published columns plus declared local extras.
+   tables have exactly the published columns plus declared local extras. The
+   edges `publish_key` list equals the union of the predicate allowlists of
+   the edge-producing fact entries, and the withheld-count `source_key` list
+   names exactly those sources (D2).
 3. Denylist: no table is `butler_secrets`, `entity_info`, `credentials`,
    `oauth_*`, `*_tokens`, `pending_actions`, `approval_events`, a
    private-custody table, a raw message table or location fixes; no published
-   column has a JSONB type; no column name matches a denylist entry; every
-   table with a sensitivity or privacy column filters it to a literal safe
-   value. The column denylist is `secret`, `token`, `password`, `credential`,
-   `otp`, `iban`, `account_number`, `card`, `cvv`, `cancellation_url`, `raw`,
-   `body`, `metadata`, `tags`, `embedding`, `confirmation`, `pnr`, `seat`,
-   `address`, `passport`, `document_number`, `last_four`, `phone`, `email`,
-   `description`, `memo`, `note`, `notes`, `receipt_url`, `external_ref`,
-   `source_message`, `source_value`, `source_schema`, `source_table`,
-   `source_id`, `blob_ref` and `payment_method`. Matching is case-insensitive
-   on underscore-separated name segments: an entry matches when its segments
-   appear as a contiguous run of the column's segments. So `access_token`
-   matches `token` and `source_message_id` matches `source_message`, while
-   `withdrawal` does not match `raw` and `direction` passes.
+   column has a JSONB type; no column name matches a denylist entry that
+   applies to its domain; every table with a sensitivity or privacy column,
+   outside `finance` and `health`, filters it to a literal list of safe
+   values (`normal` for memory sensitivity and edges; `normal` and
+   `sensitive` for Chronicler privacy, D2); every memory-fact entry outside
+   `finance` and `health` filters `predicate` to a literal list, and no list
+   names a contact- or identity-kind predicate (the D4 knowledge row lists
+   them; the manifest holds that list once, and a predicate the registry
+   marks `contact` or `override` in `relationship.entity_facts` is refused
+   the same way, OD21). The
+   column denylist has two tiers (OD17):
+   - *Credential tier, every domain:* `secret`, `token`, `password`,
+     `credential`, `otp`, `cvv`, `card`, `api_key`, `private_key`,
+     `access_key`, `client_key`, `signing_key`, `access_url`, `passcode`,
+     `passphrase`, `pin`, `bearer`, `cookie` and `auth`. These name
+     authenticators or payment credentials (a full card number with its CVV
+     can pay; SimpleFIN's own credential is an access URL with Basic userinfo,
+     stored as `SIMPLEFIN_ACCESS_URL` [Observed:
+     `roster/finance/jobs/finance_jobs.py:177,186-218`]), so no domain
+     publishes them. The `*_key` entries are two segments because a bare `key`
+     would refuse published columns such as `payee_key`, `source_key` and
+     `idempotency_key`. [Observed: grep of `roster/finance/migrations`,
+     `roster/health/migrations`, `core_003_calendar.py` and the memory
+     migrations, 2026-11-04] No column the v1 manifest publishes matches an
+     entry added on 2026-11-04.
+   - *Every domain, columns only:* no column whose name matches `embedding`,
+     because no vectors are replicated (D11). It is not a credential-tier
+     entry, so the JSON-field trigger does not apply it; no vectors live in
+     JSONB.
+   - *Breadth tier, every domain except `finance` and `health`:* `iban`,
+     `account_number`, `cancellation_url`, `raw`, `body`, `metadata`, `tags`,
+     `confirmation`, `pnr`, `seat`, `address`, `passport`, `document_number`,
+     `last_four`, `phone`, `email`, `description`, `memo`, `note`, `notes`,
+     `receipt_url`, `external_ref`, `source_message`, `source_value`,
+     `source_schema`, `source_table`, `source_id`, `blob_ref` and
+     `payment_method`. These keep identifiers, contact details and free text
+     out of the narrower domains; OD17 shares them in finance and health.
+     (`metadata` and other JSONB columns stay out of every domain through the
+     JSONB-type rule; their content reaches finance and health only through
+     the D2 JSON-field materialization.)
+   Matching is case-insensitive on underscore-separated name segments: an
+   entry matches when its segments appear as a contiguous run of the column's
+   segments. So `access_token` matches `token` and `source_message_id`
+   matches `source_message`, while `withdrawal` does not match `raw` and
+   `direction` passes. The JSON-field trigger applies the credential tier to
+   the segments of a JSON path the same way, after splitting each key on `.`,
+   `_`, `-`, whitespace and camelCase boundaries (D2), so
+   `metadata.refreshToken` and `metadata.simplefin_access_url` are skipped.
+   A `dlp = "identifier"` mark (D15) is refused on a column or JSON path with
+   a credential-tier segment, on any `json_fields_public` column, and outside
+   `finance` and `health`.
 4. Canaries planted in excluded sources (D15) are absent after a full sync.
 5. A migration that drops or renames a published or filter column fails the
    drift check in its own PR.
@@ -728,45 +1040,122 @@ that touches a published column, which the drift check flags in its own PR.
 This is the owner's maintenance concern (OD1), met by having one file and no
 generated code to keep in sync. Two additions remain: the source-owned
 materializations of D2, whose upkeep is listed there, and the owner step
-(D3), which the owner runs once at the first sync, once per manifest change
-and once per slot invalidation.
+(D3), which must run once at the first sync, once per manifest change and
+once per slot invalidation. On dev the deploy runs it every time and then
+upgrades the public chart to the same tag (OD20), so a manifest change there
+costs no step beyond the deploy itself.
 
-**Initial contents (v1 defaults, conservative, reversible by manifest edit).**
+**Initial contents (v1 defaults, reversible by manifest edit; conservative
+except finance and health, which publish at full breadth under OD17, and
+facts about people other than the owner, which publish up to the contact,
+identity and credential line under OD21).**
 
 | Domain | Source | Exposed | Never exposed |
 |---|---|---|---|
-| knowledge | memory `facts` in `general`, `lifestyle` and `education` | `id, subject, predicate, content, valid_at, sensitivity, content_authority, search_vector`, filtered to `sensitivity='normal'`, `validity='active'` and a literal per-schema predicate allowlist (`predicate IN (...)`, with `predicate` in the replica identity) | `metadata`, `tags`, `embedding`; schemas `relationship`, `home`, `switchboard`, `finance`, `health`; every predicate whose registry scope is `relationship` and every contact-, interaction- or identity-kind predicate (`contact_phone`, `contact_email`, `contact_note`, `birthday`, `lives_in`, `interaction`, `life_event`, `loan`, `gift`, `contact_task`, `reminder`) |
+| knowledge | memory `facts` in `general`, `lifestyle` and `education` | `id, subject, predicate, content, valid_at, sensitivity, validity, content_authority, search_vector`, filtered to `sensitivity='normal'`, `validity IN ('active', 'fading')` (the lifecycle of their graph edges, D2) and a literal per-schema predicate allowlist (`predicate IN (...)`, with `predicate` in the replica identity) that holds no contact- or identity-kind predicate (OD21); `sensitivity`, `validity` and `predicate` are replica-identity filter columns and so in the column list (D2) | `metadata`, `tags`, `embedding`; schemas `home`, `switchboard` and `chronicler`, whose facts no entry publishes, and `relationship`, `finance` and `health`, which publish in their own domains; every contact- or identity-kind predicate (`contact_phone`, `contact_email`, `birthday`, `lives_in`, `nickname`, and any later predicate naming a phone, email, address, handle, website, birthday or identity document) |
 | travel | memory `facts` in `travel` (same columns and filters as knowledge); `travel.trips`; `travel.legs`; `travel.documents` | trips `id, name, destination, start_date, end_date, status`; legs `id, trip_id, type, carrier, departure_city, departure_at, arrival_city, arrival_at`; documents `id, trip_id, type, expiry_date` | `confirmation_number`, `pnr`, `seat`, airport and station columns, `accommodations` (it holds `address`), `reservations`, document `blob_ref`, every `metadata`, raw booking emails, location fixes (bu-s11n0s.7 retention applies) |
-| relationship | `public.entities`; `relationship.entity_facts`; `public.entity_graph_edges`; `public.entity_graph_withheld_counts` | entity `id, canonical_name, entity_type, aliases, roles, merged_into`, filtered to `deleted = false AND unidentified = false` (S1); relational-kind facts only; edges `id, subject_entity_id, predicate, object_entity_id, sensitivity, created_at`, filtered to `sensitivity = 'normal'`; withheld counts `entity_id, withheld` (a source-owned, trigger-maintained count of each entity's non-normal edges, so withheld stubs stay countable without publishing them) | `entities.metadata`; `entity_info`; edge `source_schema`, `source_table`, `source_id` and `withheld_reason`; every non-normal edge; contact-kind predicates (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`); override-kind (`dunbar_tier_override`); interactions, which live as `relationship` memory facts and are not published in v1 |
-| time | `chronicler.episodes_public`, `chronicler.rollups_public` | as listed in D2 | `overrides`, raw activity, location |
-| finance | `finance.transactions`; `finance.accounts`; `finance.bills`; `finance.subscriptions` | transactions `id, account_id, posted_at, amount, currency, direction, display_merchant, display_category, deleted_at` (D2; `deleted_at` is nullable, so it is not a row filter, and the `mcp_read` view hides soft-deleted rows); accounts `id, institution, type`, from which the view derives `account_label` as institution plus type; bills `id, payee, amount, currency, due_date, frequency, status`; subscriptions `id, service, amount, currency, frequency, next_renewal, status` | account `name`, `last_four` and numbers; transaction `description`, `notes`, `source_message_id`, `external_ref`, `receipt_url`, `payment_method`, `raw_data`, `metadata`, `tags`; `cancellation_url`; `balance_snapshots`; the finance memory-fact layer |
-| health | `health.measurements_public`, `health.medications_public`, `health.conditions_public` (D2) | measurements `id, metric, value_numeric, unit, measured_at` (numeric `measurement_*` predicates only; a dict-valued reading yields one row per numeric key, named `<predicate>.<key>`); medications `id, name, dosage, frequency, schedule, active, recorded_at`; conditions `id, name, status, diagnosed_at` | `health.facts` itself, `notes`, clinicians and providers, visit notes, documents |
+| relationship | `public.entities`; `relationship.entity_facts`; memory `facts` in `relationship` (OD21); `public.entity_graph_edges`; `public.entity_graph_withheld_counts` | entity `id, canonical_name, entity_type, aliases, roles, merged_into` plus the filter columns `deleted`, `unidentified` and `placeholder_name`, which no `mcp_read` view returns, filtered to `deleted = false AND unidentified = false AND placeholder_name = false` (D2 entity flags, S1); `entity_facts` of every relational-kind predicate, family-kind ones (`family-of`, `partner-of`, `parent-of`, `child-of`) included (OD21); `relationship` memory facts under the knowledge columns and filters, so interactions, life events, contact notes, activities, gifts, loans, contact tasks and reminders are published (OD21); edges `id, subject_entity_id, predicate, object_entity_id, sensitivity, created_at` plus the filter key `publish_key`, filtered to `sensitivity = 'normal'` and the D2 literal key list; withheld counts `entity_id, source_key, withheld`, filtered to the same fact sources (D2) | `entities.metadata`; `entity_info`; edge `source_schema`, `source_table`, `source_id` and `withheld_reason`; every non-normal edge, and every edge whose fact source or predicate the facts do not publish (D2); contact-kind predicates (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`) and the memory contact- and identity-kind predicates of the knowledge row; override-kind (`dunbar_tier_override`, `prefers-channel`) |
+| time | `chronicler.episodes_public`, `chronicler.rollups_public` | as listed in D2: `normal` and `sensitive` episodes (health, exercise and home presence) that are not tombstoned | `restricted` episodes; `overrides`, episode payloads, point events, raw activity, location |
+| finance | Every domain table in schema `finance`: `transactions`, `accounts`, `balance_snapshots`, `bills`, `subscriptions`, `budgets`, `categories`, `merchant_mappings`, `recurring_groups`, `obligation_ledger`, `transaction_corrections`, `payment_destinations` and `claim_match_bindings`; the finance memory-fact layer `finance.facts`; `finance.json_fields_public` (D2) | Every column of those tables that is not JSONB and not on the credential tier (OD17). That includes account `name` and `last_four`, balances, transaction `description`, `notes`, `payment_method`, `receipt_url`, `external_ref`, `source_message_id` and `tags`, `cancellation_url`, and the D2 `display_merchant` and `display_category`. `deleted_at` is nullable, so it is not a row filter; the `mcp_read` view hides soft-deleted rows. Facts: every column except `embedding` and JSONB, filtered to `validity = 'active'` only, so every predicate and every sensitivity is published. The scalar leaves of every JSONB column (`metadata`, `raw_data`, `field_claims`) arrive as `json_fields_public` rows | Credential-tier columns and JSON paths (none exist in finance today [Observed: `roster/finance/migrations/001` to `019`; `payment_destinations.fingerprint` is an HMAC digest, not a credential, `roster/finance/tools/payment_destinations.py:131-137`]); JSONB columns as columns; `embedding`; facts that are not `active`; the butler infrastructure every schema carries (`butler_secrets`, `state`, `sessions`, `session_process_logs`, `scheduled_tasks`, `route_inbox`, `corrections`, and the memory module's tables other than `facts`, such as `episodes` and `rules`) |
+| health | Every domain table in schema `health`: the memory-fact layer `health.facts` (measurements, medications and doses, conditions, symptoms, meals, workouts, allergies, providers such as `doctor_name`, `doctor_primary_care` and `pharmacy`, and research); the typed `measurements_public`, `medications_public` and `conditions_public` (D2); `health.json_fields_public` (D2); `visit_briefs`; Health's calendar tables `calendar_sources`, `calendar_events` and `calendar_event_instances`, which hold its appointments [Inferred: per-butler calendar tables, `alembic/versions/core/core_003_calendar.py:9`]; and the health migration 001 tables still present (`medications`, `medication_doses`, `conditions`, `meals`, `symptoms`, `research`) | Every column that is not JSONB and not on the credential tier (OD17), notes, descriptions and locations included. Facts: every column except `embedding` and JSONB, filtered to `validity = 'active'` only. Typed tables: measurements `id, metric, value_numeric, unit, measured_at` (a dict-valued reading yields one row per numeric key, named `<predicate>.<key>`); medications `id, name, dosage, frequency, schedule, active, notes, recorded_at`; conditions `id, name, status, diagnosed_at, notes`. JSONB leaves (fact `metadata` and `tags`, `visit_briefs.digest`, calendar `metadata`) arrive as `json_fields_public` rows | Credential-tier columns and JSON paths, so `calendar_sync_cursors` (its `sync_token`); JSONB columns as columns; `embedding`; facts that are not `active`; the same butler infrastructure as finance, plus the calendar module's `calendar_action_log` |
 | proposals | `relationship.external_fact_proposals` | `proposal_id, state, decided_at` | payload, note, evidence URL, submitter ids |
 | (surface) | `mcp_surface.controls`, `mcp_surface.manifest_state` | controls `domain, state, changed_at` (`domain` is `all` or a domain name); manifest state `digest` | the actor of a change |
 
 Each published table belongs to exactly one domain, and memory facts take the
-domain of their source schema (`travel` memory facts are domain `travel`).
+domain of their source schema (`travel` memory facts are domain `travel`,
+`relationship` memory facts are domain `relationship`). Graph edges belong to
+`relationship` and are also dropped while the domain of their fact source is
+disabled (D2).
 `mcp_surface` belongs to no domain and is read by `describe` and the switch
 evaluator. `mcp_local.manifest_applied`, which the owner step writes, is a
 subscriber-local table, never published.
 
-[Inferred] Dropping the `relationship` memory schema and filtering the other
-schemas by a predicate allowlist matters because sensitivity labels come from
-LLM writers and default to `normal`. Relationship-schema memory facts hold
-contact details and email-derived interaction summaries (the deprecated
-`contact_phone` and `contact_email` predicates are still seeded,
-`src/butlers/modules/memory/migrations/002_seed_predicates.py:694-716`), and a
-row filter on sensitivity alone would publish them. The allowlist costs one
-manifest edit per new predicate the owner wants published; a new predicate
-stays unpublished by default.
+**People other than the owner (OD21).** The owner chose to publish facts
+whose subject is someone other than the owner, on OD17's assumption that only
+the owner can reach the surface. The line is predicate kind and credentials,
+not schema or subject. Under it, the earlier exclusion of the whole
+`relationship` memory schema does not hold, and this RFC lifts it.
+[Observed] The predicates scoped to that schema include both
+(`src/butlers/modules/memory/migrations/002_seed_predicates.py:310-333,683-811,1062-1173`)
+facts about a contact's life and the owner's dealings with them
+(`interaction`, `life_event`, `contact_note`, `activity`, `gift`, `loan`,
+`contact_task`, `reminder`), which OD21 publishes; and contact or identity
+data (the active `birthday` and `lives_in`, and the deprecated
+`contact_phone`, `contact_email` and `nickname`), which OD21 keeps out.
+Because `birthday` and `lives_in` are active, new facts can still be written
+with them, so their exclusion is load-bearing. A predicate allowlist
+separates the two in every memory schema outside finance and health.
+
+**Finance and health under OD21 (OD22).** [Observed] In those two
+domains the text above does not hold, by owner decision OD22. OD17 publishes "everything those domains hold":
+`finance.facts` and `health.facts` publish every predicate, auto-registered
+novel ones included (`src/butlers/modules/memory/storage.py:2229-2265`); the
+JSON-field trigger skips only credential-tier keys (D2); and the
+personal-contact DLP rules do not run on their results (D15). So other
+people's contact data held there is published: clinicians' and pharmacies'
+phone numbers, which OD17 names as shared, and Health's calendar `metadata`,
+whose `organizer`, `attendees` and `attendee_status_provenance[].email`
+leaves hold other people's email addresses
+(`src/butlers/modules/calendar/projection.py:874-891`,
+`roster/health/butler.toml:91`), which reach `health_records` as
+`json_fields_public` rows. OD21's "not schema or subject" reads against
+this; OD17's "share all" and its explicit removal of the personal-contact
+DLP rules from finance and health read for it. The owner ruled that OD17
+wins in those two domains (OD22, 2026-11-05), so v1 publishes that contact
+data. Should a later decision apply OD21 there, the change would be: a
+contact/identity tier for the JSON-field path skip (segments such as
+`email`, `phone`, `mobile`, `address`, `handle`, `attendees`, `organizer`,
+`birthday` and `passport`), and literal predicate allowlists for
+`finance.facts` and `health.facts` written from each registry without the
+manifest's contact- and identity-kind list, with `predicate` in the replica
+identity and the column list.
+
+Schema exclusions remain only where
+no domain owns the data (`home`, `switchboard`, `chronicler`), which OD21
+does not address. In `relationship.entity_facts` the registry already names
+the kinds (`roster/relationship/migrations/014_predicate_registry.py:150`):
+every `relational` predicate is published, the family-kind ones included,
+and no `contact` or `override` predicate is. Override predicates stay out as
+contact-kind in substance: `prefers-channel` names the channel a contact is
+reached on (`roster/relationship/migrations/022_prefers_channel_predicate.py:11-22`),
+and `dunbar_tier_override` is owner control state over the same routing
+[Inferred]. `nickname` is treated as identity-kind because aliases feed
+identity resolution [Inferred]; `entities.aliases` stays published as the
+entity's own label.
+
+[Inferred] Filtering memory facts by a predicate allowlist, and not by
+sensitivity alone, matters because sensitivity labels come from LLM writers
+and default to `normal`: a row filter on sensitivity alone would publish a
+`contact_phone` fact stored at the default. Outside finance and health the
+label can only narrow (a `pii` or `confidential` fact is withheld), never
+widen, because the deterministic predicate allowlist is the gate. Free text
+about other people can still carry an email address, phone number or street
+address. The personal-contact DLP rules redact only the email and phone
+shapes, in every domain but finance and health (D15); a street address
+written into a published note goes out unredacted, a residual risk (D15).
+The allowlist costs one manifest edit per new predicate the
+owner wants published; a new predicate stays unpublished by default.
 
 [Unknown] Whether `entities.aliases` or trip `destination` ever hold an email
-address, phone number or street address. The DLP rules in D15 redact those
-shapes as a backstop.
+address, phone number or street address. The DLP rules in D15 redact the
+email and phone shapes as a backstop; no rule matches a street address.
 
-`last_four` and balances are excluded by default ([Inferred] low value for
-the target use cases). The owner can add them later with a one-line manifest
-edit. There is no unlock.
+**Finance and health breadth (OD17).** The owner chose to share everything
+finance and health hold, on the assumption that only the owner can reach the
+surface (D15). The line OD17 keeps is credentials, not sensitivity: no
+credential-named column or JSON path, no `butler_secrets` row and no
+`entity_info` row is published in any domain, and condition 1 is unchanged.
+Free text of every sensitivity is published, though, so a credential written
+into a note, a description or a fact's `content` is caught only by the
+shape-based credential DLP rules (D15 residual risk). Three exclusions in
+these two domains are about correctness or mechanism, not breadth: facts that
+are not `active` (superseded or retracted facts would mislead the client), the
+`embedding` column (D11) and soft-deleted transactions (hidden by the view, as
+the finance tools hide them). Butler infrastructure tables are not domain data
+and stay out: session logs and memory episodes hold raw session content, the
+state store holds runtime state, and `butler_secrets` holds credentials. A new finance or
+health table or column still needs a manifest edit, so the safe default for
+new data is unchanged. There is no unlock.
 
 ### D5. One server for every domain, with kill switches
 
@@ -1066,6 +1455,23 @@ not what the role can read. Four controls follow:
    leave headroom for the subscription's slot, its table-sync slots and one
    more.
 
+**Residual risk: the dev owner step trusts the deployed `dashboard-api`.**
+[Observed] On dev the superuser SQL of the owner step is emitted by a running
+`dashboard-api` container (D3), which runs as root with a writable root
+filesystem and privileged (`deploy/helm/butlers/templates/dashboard-api.yaml:95-100`,
+`deploy/helm/butlers/values.yaml:135`; the Dockerfiles set no `USER`),
+whereas `bootstrap-db.sh` reads its reviewed SQL from git
+(`scripts/k8s/bootstrap-db.sh:39`). The holders are not widened: whoever
+runs the deploy can already exec into the primary, and a privileged pod
+already reaches node root. But the integrity of the superuser SQL now rests
+on the deployed image and pod, and setting `dashboardApi.privileged=false`
+would not remove that trust. The tag check and the captured output (D3)
+narrow it to the pod of the deployed tag and a complete file. The
+alternative, generating from the tag locally (`git worktree add --detach
+<tmp> <tag>` plus `uv run --project <tmp> butlers public-mcp owner-sql`),
+gives the same rollback consistency without trusting a live pod; it was not
+chosen because the pod's image is the one whose migrations reconciled.
+
 **Residual risk: superuser-equivalent access to the instance.** Whoever can
 `kubectl exec` into a `postgres-<env>` instance pod can already run `psql -U
 postgres` by peer authentication, which is the superuser [Observed: that is
@@ -1168,7 +1574,8 @@ the line and accepted the risk (OD16).
 - An `outputSchema`, with results as `structuredContent` plus the same
   object as one JSON text block.
 - Each record item (entity, fact, edge, timeline item, trip, ledger row,
-  obligation, medication, condition) carries
+  obligation, medication, condition, profile entry, finance or health
+  record) carries
   `source: {kind, uri, as_of, content_authority}`: `uri` is
   `butlers://<domain>/<kind>/<id>`, `as_of` is the replication time (D17),
   `content_authority` comes from the source row or is `null`. Aggregate
@@ -1195,18 +1602,20 @@ the line and accepted the risk (OD16).
 | `fetch` | (the id's domain) | `id: str` | Exactly `{id, title, text, url, metadata}`, with `metadata` = `{domain, kind, source, valid_at, truncated}`. A `proposal:<uuid>` id keeps the same shape: `title: "Proposal"`, `text` = the state, `metadata` = `{domain: "proposals", kind: "proposal", source, valid_at: null, truncated: false, state, decided_at}`, with no payload. An id whose domain is disabled returns `domain_disabled`. | index, plus proposal state | `text ≤ 16 KiB` |
 | `search_filtered` | (spans as above) | `query`, `domains?`, `kinds?`, `since?`, `until?`, `limit ≤ 50`, `cursor?` | `{items: [{id, title, snippet, domain, kind, url, source}], next_cursor, sources_degraded}` | index | 50 per page |
 | `entity_lookup` | relationship | `name ≤ 128`, `type?` | `{matches: [{entity_id, name, type, match: exact\|alias\|trigram, score}]}`; merged entities resolve to their survivor; deleted and unidentified entities are never published | `entities` | 10 |
-| `entity_profile` | relationship | `entity_id`, `sections? ⊆ {facts, edges}` (default both) | `{entity, facts[], edges: {known, withheld}, coverage}` | facts, edges, withheld counts; modelled on `dossier_for_entity`. Interactions are not offered in v1: they live as `relationship` memory facts, which v1 does not publish (D4). | 200 facts |
-| `graph_neighbors` | relationship | `entity_id`, `predicates?`, `hops 1..2`, `limit ≤ 200` | nodes, edges with receipts (edge id and anchors), withheld counts | `entity_graph_edges` (normal only) and `entity_graph_withheld_counts`; parity with REQ-entity-graph-003/005/009 | 200 |
+| `entity_profile` | relationship | `entity_id`, `sections? ⊆ {facts, edges}` (default both) | `{entity, facts[], edges: {known, withheld}, coverage}`; `facts` holds the entity's published `entity_facts` and its `relationship` memory facts (interactions, life events, notes, gifts, loans, tasks, reminders; OD21), each with its predicate and `valid_at` | facts, edges, withheld counts; modelled on `dossier_for_entity` | 200 facts |
+| `graph_neighbors` | relationship | `entity_id`, `predicates?`, `hops 1..2`, `limit ≤ 200` | nodes, edges with receipts (edge id and anchors), withheld counts | `entity_graph_edges` as filtered in D2 and `entity_graph_withheld_counts`; parity with REQ-entity-graph-003/005/009 | 200 |
 | `graph_path` | relationship | `from_id`, `to_id`, `max_hops ≤ 4` | `{path: [edge receipts]} \| {path: null}` | parity with REQ-entity-graph-006 | 4 hops |
 | `timeline` | time and travel (multi-domain) | `start`, `end` (span ≤ 92 d), `kinds?`, `cursor?`, `limit ≤ 200` | `{items: [{at, end, kind, title, domain, source}], next_cursor, sources_degraded}`; a disabled domain's items are omitted and the domain listed with reason `"disabled"` | `episodes_public`, trip legs | 200 per page |
 | `time_use` | time | `start`, `end` (≤ 366 d), `bucket: day\|week\|month`, `group_by: category\|kind` | `{series: [{bucket_start, group, minutes}]}` | `rollups_public` | 400 points |
 | `trips` | travel | `status?`, `trip_id?`, `limit ≤ 50` | trips with legs, city-level places, document expiry dates | trips, legs | 50 |
 | `describe` | (none) | — | `{server_version, manifest_digest, domains: {name: enabled\|disabled\|stale}, as_of, tools, columns}` | controls, manifest | — |
 | `finance_summary` | finance | `start`, `end` (≤ 366 d), `group_by: category\|merchant\|month`, `currency?` | totals per currency, never converted; `count` | transactions | 500 groups |
-| `finance_ledger` | finance | `start`, `end` (≤ 366 d), `category?`, `merchant?`, `cursor?`, `limit ≤ 500` | rows `{date, amount (decimal string), currency, direction, merchant, category, account_label}`; `merchant` = `display_merchant`, `category` = `display_category`, `account_label` = institution plus account type, or `null` | transactions, accounts | 500 per page |
-| `finance_obligations` | finance | `horizon_days` (1 to 90) | `{items: [{payee, kind: bill\|subscription, amount (decimal string), currency, cadence, next_due, source}]}`; bills by `due_date`, active subscriptions by `next_renewal` | bills, subscriptions | 200 |
+| `finance_ledger` | finance | `start`, `end` (≤ 366 d), `category?`, `merchant?`, `cursor?`, `limit ≤ 500` | rows `{id, date, amount (decimal string), currency, direction, merchant, category, description, notes, payment_method, receipt_url, external_ref, tags, account_label, account, source}`; `merchant` = `display_merchant`, `category` = `display_category`, `account_label` = institution plus account type, or `null`; `account` = `{id, institution, type, name, last_four}`, or `null` (OD17) | transactions, accounts | 500 per page |
+| `finance_obligations` | finance | `horizon_days` (1 to 90) | `{items: [{payee, kind: bill\|subscription, amount (decimal string), currency, cadence, next_due, status, payment_method, autopay, cancellation_url, notice_period_days, cancel_by, source}]}`; bills by `due_date`, active subscriptions by `next_renewal`; a field the item's table lacks is `null` | bills, subscriptions | 200 |
+| `finance_records` | finance | `kind` (enum generated from the published finance tables, `facts` included), `since?`, `until?` (on the time column the manifest declares for that kind; a kind with none refuses them; span ≤ 366 d), `predicate?` and `query? ≤ 256` (`facts` only; lexical over `search_vector`), `cursor?`, `limit ≤ 200` | `{items: [{kind, id, fields, json_fields, source}], next_cursor}`; `id` is the value of the key column the manifest declares for that kind (`id` by default, `event_id` for `visit_briefs`, `claim_id` for `claim_match_bindings`), rendered as text, and is the `<id>` of the source uri; `fields` maps each published column to its value (NUMERIC as a decimal string), `json_fields` maps each published JSON path to its value (OD17) | every finance table in D4, `finance.json_fields_public` | 200 per page |
 | `health_series` | health | `metric` (enum generated from the published `metric` values), `start`, `end` (≤ 366 d), `bucket: raw\|day\|week` | `{unit, points: [{t, value}], source}`, numeric values only; `day` and `week` buckets return the mean per bucket in the unit unchanged | `health.measurements_public` | 2,000 points |
-| `health_profile` | health | `sections? ⊆ {medications, conditions}` (default both) | `{medications: [{name, dose, frequency, schedule, status, since, source}], conditions: [{name, status, since, source}]}`; medication `status` is `active` or `stopped` from `active`, `since` is `recorded_at`; condition `since` is `diagnosed_at` | `health.medications_public`, `health.conditions_public` | 200 |
+| `health_profile` | health | `sections? ⊆ {medications, conditions, allergies, providers}` (default all) | `{medications: [{name, dose, frequency, schedule, status, since, notes, source}], conditions: [{name, status, since, notes, source}], allergies: [{text, predicate, since, fields, source}], providers: [{text, predicate, entity_id, fields, source}]}`; medication `status` is `active` or `stopped` from `active`, `since` is `recorded_at`; condition `since` is `diagnosed_at`; allergies are `allergy` and `food_allergy` facts and providers are `doctor_name`, `doctor_primary_care` and `pharmacy` facts, with `text` = the fact's content and `fields` = its JSON fields (OD17) | `health.medications_public`, `health.conditions_public`, `health.facts`, `health.json_fields_public` | 200 per section |
+| `health_records` | health | as `finance_records`, over the published health tables | as `finance_records`; visits come from the calendar and `visit_briefs` kinds (OD17) | every health table in D4, `health.json_fields_public` | 200 per page |
 | `propose_fact` | proposals | `subject_entity_id`, `predicate`, `object_entity_id`, `evidence_url?`, `note ≤ 500`, `idempotency_key ≤ 64` | `{proposal_id, status: "received"}` | inbox INSERT | D13 |
 
 **ChatGPT compatibility.** `search` takes one string and `fetch` takes one
@@ -1215,7 +1624,16 @@ research pass against OpenAI's connector documentation]. These outputs are a
 compatibility contract under `interfaces-and-dependencies.md:18-19`, so
 changing a field is a versioned change. `search` and `fetch` never return
 finance or health records; those come only from typed tools, so a research
-agent running broad searches does not sweep the ledger by accident.
+agent running broad searches does not sweep the ledger by accident. OD17
+widens what the finance and health tools return, not what `search` reaches.
+
+**Records tools.** `finance_records` and `health_records` exist so that
+everything OD17 publishes is reachable, not only what the summary, ledger,
+obligation, series and profile tools shape; the owner accepted them (OD19).
+They are not a generic query
+tool: `kind` is a closed enum generated from the manifest, the filters are
+fixed, and they return only published columns and paths of one table per
+call.
 
 **Performance budget** [Inferred; measure before tuning]: p95 ≤ 500 ms for
 lookups and pages at current volumes; `statement_timeout` 2 s; per-tool cost
@@ -1262,7 +1680,9 @@ relational-kind predicates only (`knows`, `colleague-of`, `friend-of`,
 `co-attended`, `visited`, `works-at`, `member-of`); not the family-gated set
 (`family-of`, `partner-of`, `parent-of`, `child-of`), which stays
 owner-direct; no contact-kind predicate, because contact predicates feed
-identity resolution and owner routing; no override-kind predicate.
+identity resolution and owner routing; no override-kind predicate. OD21
+widens what is published, not what an outside client may propose: the
+family-kind predicates are readable since OD21 and still not proposable.
 
 Every allowed predicate has `object_kind='entity'` [Observed: rel_014/024
 seeds], so v1 proposals take no literal object. The subject must be an
@@ -1439,19 +1859,72 @@ NFKC, and characters of Unicode categories Cc and Cf (controls, zero-width
 and format characters) are removed, so full-width digits or zero-width joiners
 cannot split a match.
 
-- *Secret rules* (redacted and counted): Luhn-valid 13- to 19-digit runs,
-  matched after removing spaces and dashes; IBANs passing mod-97; `AKIA…`,
-  `ghp_…`, `xox…`, `sk-…` and JWT-shaped tokens; PEM blocks; URLs with
-  `token`, `code`, `sig` or `key` query parameters, or with a path segment of
-  20 or more token characters; high-entropy tokens (20 or more base64 or hex
-  characters with at least 3.5 bits of entropy per character);
-  password-reset and OTP phrasing next to a 4- to 8-digit code; a
-  6-character alphanumeric booking code next to booking words (PNR,
-  confirmation, booking, reservation); passport and national-id shapes next
-  to document words; 8- to 17-digit account numbers next to account words.
+- *Credential rules* (redacted and counted, in every domain): Luhn-valid
+  13- to 19-digit runs, matched after removing spaces and dashes (a full card
+  number is payment credential material, and finance stores only
+  `last_four`); `AKIA…`, `ghp_…`, `xox…`, `sk-…` and JWT-shaped tokens; PEM
+  blocks; URLs whose authority carries userinfo with a password
+  (`scheme://user:pass@host`, the shape of a SimpleFIN access URL); URLs
+  with a query parameter whose name, split on `-`, `_` and camelCase
+  boundaries and compared case-insensitively, has a segment equal to
+  `token`, `code`, `sig`, `signature`, `key`, `pwd`, `passcode`, `password`,
+  `credential` or `auth` (so `X-Amz-Signature`, `X-Amz-Credential`,
+  `X-Amz-Security-Token` and `X-Goog-Signature` match; `pwd`, `passcode` and
+  `password` since OD17, because Health's calendar descriptions, now
+  published, can carry meeting links with an embedded passcode), or with a
+  path segment of 20 or more token characters; high-entropy tokens
+  (20 or more base64 or hex characters with at least 3.5 bits of entropy per
+  character); password-reset and OTP phrasing next to a 4- to 8-digit code.
+- *Identifier rules* (redacted and counted, in every domain except finance
+  and health): IBANs passing mod-97; a 6-character alphanumeric booking code
+  next to booking words (PNR, confirmation, booking, reservation); passport
+  and national-id shapes next to document words; 8- to 17-digit account
+  numbers next to account words.
 - *Personal-contact rules* (redacted, not counted toward the drop
-  threshold, so ordinary content still serves): email addresses, and phone
-  numbers in E.164 and common local shapes.
+  threshold, so ordinary content still serves; in every domain except
+  finance and health): email addresses, and phone numbers in E.164 and
+  common local shapes.
+
+**DLP scope for finance and health (OD17).** The identifier and
+personal-contact rules do not run on the results of the finance and health
+tools, which return only their own domain. Otherwise they would strip what
+OD17 shares (account and IBAN numbers in descriptions and notes, a
+clinician's or pharmacy's phone number) and, counted, drop whole pages. The
+credential rules still run on every field. Two of them, the high-entropy rule
+and the long URL path segment, would also hit opaque references that finance
+and health store on purpose (`external_ref`, `source_message_id`,
+`receipt_url` paths, `payment_destinations.fingerprint`, calendar event ids).
+The manifest therefore marks such columns `dlp = "identifier"`, and on a
+marked column those two rules are skipped while every other credential rule
+still applies, so a signed `receipt_url` with a `token` or `X-Amz-Signature`
+query parameter, or a URL with userinfo, is still redacted. The same
+references also arrive as JSON leaves: the finance fact layer copies
+`receipt_url`, `external_ref` and `source_message_id` into `metadata`
+[Observed: `roster/finance/tools/facts.py:256-266`], and the calendar tables
+carry `metadata` JSONB [Observed:
+`alembic/versions/core/core_003_calendar.py:83,129`] that can hold event
+references [Inferred]. A `json_fields_public`
+column never carries the column mark, because marking `value_text` would
+switch the two rules off for every JSON leaf, model-supplied keys included.
+JSON leaves get a path-level mark instead: the manifest lists
+`json_dlp_identifier = [{source_table, path}]` (for example `finance.facts`
+with `external_ref`, `source_message_id` and `receipt_url`, and Health's
+calendar event-id paths), matched on the exact `(source_table, path)` of a
+`json_fields` entry, and the scan treats a marked leaf as it treats a marked
+column. Only finance and health columns and paths may carry a mark, and the
+drift check refuses it on a column or path with a credential-tier segment
+(D4 check 3).
+
+**Luhn in finance and health.** [Inferred] About one random digit string in
+ten passes the Luhn check, so 13- to 17-digit account and bank reference
+numbers that OD17 shares would collide with the card rule. In finance and
+health results the Luhn rule therefore needs card context: a card word
+(`card`, `visa`, `mastercard`, `amex`, `credit`, `debit`, `cvv`, `expiry`)
+within 32 characters of the run. An uncontexted Luhn hit there is returned,
+not redacted, and counted in the `dlp_luhn_uncontexted_total` metric by tool,
+which task 4.2 reviews. The accepted residual is a bare full card number
+with no card word nearby in finance or health free text. In every other
+domain the Luhn rule is unchanged.
 
 A match is redacted to `[redacted:<rule>]`. A response with more than 5
 counted redactions is dropped whole, with the D17 error. Labels in Butlers
@@ -1459,10 +1932,19 @@ come from LLM writers [Observed: `store_fact` defaults to `normal`], so the
 scan is load-bearing, not cosmetic.
 
 **Canaries.** Unique fake tokens are planted in excluded sources: a
-`butler_secrets` row, a `secured` `entity_info` row, a `pii` memory fact, a
-`restricted` Chronicler override, a fake IBAN in finance `metadata`, a fake
-code in `travel.legs.confirmation_number`, and a fake channel value in
-`public.entities.metadata.source_value`. The pod holds their values. A canary
+`butler_secrets` row, a `secured` `entity_info` row, a `pii` memory fact in
+the `general` schema, a `normal` `contact_phone` memory fact in the
+`relationship` schema, which only the predicate allowlist keeps out since
+OD21, a `restricted` Chronicler override, a fake token under
+a credential-named key in finance transaction `metadata`
+(`metadata.api_token`) and a fake password under a credential-named key in a
+health fact's `metadata` (`metadata.portal_password`) and a fake token under
+a camelCase credential key in a health fact's `metadata`
+(`metadata.refreshToken`), which the JSON-field trigger must skip (D2), a
+fake code in `travel.legs.confirmation_number`, and
+a fake channel value in `public.entities.metadata.source_value`. OD17 retired
+the earlier fake IBAN in finance `metadata`, because finance `metadata` is now
+published and IBANs are shared there. The pod holds their values. A canary
 in a response blocks that response, latches every tool except `describe` off
 in-process until restart, and fires a critical alert. The CI drift check (D4
 check 4) and a 30-minute projection probe also search the projection for
@@ -1482,8 +1964,9 @@ the audit line.
 
 **Budgets.** In-process token buckets (one replica), keyed per client so one
 steered client cannot spend another's budget: 60 calls per minute per
-`(sub, cid)` on any tool; on `finance_ledger` and `health_series`, 20 calls
-per minute and 20,000 returned rows per day per `(sub, cid, tool)`; 20
+`(sub, cid)` on any tool; on `finance_ledger`, `finance_records`,
+`health_series` and `health_records`, 20 calls per minute and 20,000
+returned rows per day per `(sub, cid, tool)`; 20
 `propose_fact` per day per `(sub, cid)` (the importer enforces the same cap
 independently); 600 calls per minute for the whole server. Exhaustion returns
 the D17 error with `retry_after_s`. Defaults are configuration, measured after
@@ -1493,13 +1976,45 @@ shared egress IPs, so it is not a per-user budget.
 **Residual risk: steered clients.** [Inferred] The most likely real-world
 leak is not a forged call but a genuine one. ChatGPT agents and claude.ai
 read attacker-controlled pages; injected instructions can make the client
-call `finance_ledger`, `health_series` or `entity_profile` under the owner's
-valid session and then send the results out through the client's own tools.
-Every layer past Cloudflare authenticates the owner's session, not the
-owner's intent, and Butlers cannot see the client's intent. Per-client
-budgets, volume alerts (D16), audit and per-domain kill switches bound and
-detect this; they do not prevent it. OD3 accepts the exposure; this RFC and
-`security.md` record it as a residual risk.
+call `finance_ledger`, `finance_records`, `health_records` or
+`entity_profile` under the owner's valid session and then send the results
+out through the client's own tools. Every layer past Cloudflare
+authenticates the owner's session, not the owner's intent, and Butlers
+cannot see the client's intent. Per-client budgets, volume alerts (D16),
+audit and per-domain kill switches bound and detect this; they do not
+prevent it. OD3 accepts the exposure; this RFC and `security.md` record it as
+a residual risk. OD17 widens what such a call can return in finance and
+health.
+
+**Residual risk: credentials in free text.** [Inferred] OD17 publishes
+finance and health free text of every sensitivity: notes, descriptions, fact
+`content`, and `pii` and `confidential` facts. [Observed] Memory sensitivity
+has only `normal`, `pii` and `confidential` (`src/butlers/modules/memory/storage.py:61`),
+so no credential class exists to filter on. The denylist acts on names
+(columns and JSON keys) and the credential DLP rules act on shapes, so a
+password the owner types into a note, which has no detectable shape, is
+published. This is mitigated, not prevented, and is an item for the future
+ingress and egress audit.
+
+**Residual risk: street addresses in free text about other people.**
+[Inferred] OD21 publishes relationship `contact_note`, `interaction` and
+`life_event` content. The personal-contact rules above match email
+addresses and phone numbers only, so a street address written into such
+text is published; the predicate allowlist, not DLP, is the only control
+that keeps other people's addresses out (D4). An address-shape rule is a
+possible later addition if the owner wants one.
+
+**Threat-model assumption (OD17).** The owner's words: "We should operate
+under the assumption that this information is only accessible to me (can
+have a security audit later of various ingress/egresses)." This RFC adopts
+that as an explicit assumption: the surface is reachable only by the owner,
+through the gateway's GitHub-id allowlist and the home-side allowlist that
+duplicates it (D7). The OD17 breadth rests on it. It relaxes no layer above,
+and it does not cover the steered-client risk, which is a genuine owner
+session. A security audit of the surface's ingress and egress paths is
+future work; nothing is filed for it yet. If the audit, or any change, lets
+anyone other than the owner reach the surface, the assumption fails and the
+finance and health breadth needs a new owner decision.
 
 ### D16. Kill switches and alerting
 
@@ -1548,8 +2063,19 @@ because they must survive a Butlers outage and must never start a model.
   The critical rule fires on `change="narrowing"` held for 24 hours. The bound
   is a choice: the surface already refuses, so what remains is rows sitting
   in `butlers_public` that the manifest no longer allows, which a stolen
-  `mcp_public_ro` password could still read through the views. A day leaves
-  room for a manual step without letting it be forgotten.
+  `mcp_public_ro` password could still read through the views. Elsewhere a
+  day leaves room for the manual step without letting it be forgotten. On
+  dev the deploy runs the step on every deploy, whatever the release
+  returned, and then upgrades the public chart (OD20, D3), so the pending
+  state normally lasts only between a deploy's reconcile and its owner
+  step, and the warning clears within that deploy. A warning that outlives
+  the deploy, or the critical after 24 hours, means the automatic step is
+  failing: every such deploy prints `public-mcp owner step FAILED` with the
+  reason (a guard refusal when the migrations did not reconcile, or the
+  failed statement), and the critical stays as the backstop the owner asked
+  for. A pending state with no `FAILED` marker in the last deploy means the
+  step was switched off (D3 off switch) or no dev deploy has run since the
+  change.
 - **Flags.** Two recording rules collapse the conditions into one series per
   severity: `butlers_public_mcp:critical_ok` and
   `butlers_public_mcp:warning_ok`, each 1 when no rule of its severity is
@@ -1631,7 +2157,8 @@ The codes are `domain_disabled`, `projection_stale`,
 `budget_exhausted`, `invalid_argument`, `not_found`, `too_large`, `blocked`
 (DLP or canary) and `unavailable`. `projection_apply_pending` is
 `retryable: true` with `retry_after_s: null`, because it clears only when the
-owner acts. Auth failures are JSON-RPC `-32001`, so they never look like tool
+owner step completes (on dev, in the next deploy; elsewhere, when the owner
+runs it). Auth failures are JSON-RPC `-32001`, so they never look like tool
 data. Messages are fixed strings that never echo arguments.
 
 **Precedence.** When several refusals apply, the first in this order wins:
@@ -1650,9 +2177,9 @@ otherwise a stale projection reports `stale`.
 | Projection database alone unavailable (connection limit reached, or the database dropped and re-created) | `unavailable`; `describe` still answers | No |
 | Replication lagging | Served with `as_of` and degraded entries | No |
 | Replication stalled | `projection_stale` after 15 minutes; WAL alert | Only WAL growth, bounded by the cap |
-| Slot invalidated by the cap | The applied record still matches, so `projection_stale` after 15 minutes, with the slot and lag alerts; the owner reruns the owner step, which rebuilds the slot and the subscription and re-copies (D3), and `projection_apply_pending` holds from the moment it deletes the applied record until the copy completes | No |
+| Slot invalidated by the cap | The applied record still matches, so `projection_stale` after 15 minutes, with the slot and lag alerts; the owner step, run by the next dev deploy or by the owner (D3), rebuilds the slot and the subscription and re-copies, and `projection_apply_pending` holds from the moment it deletes the applied record until the copy completes | No |
 | Manifest digest mismatch (deploy skew) | `projection_version_mismatch` on every tool | No |
-| Owner step pending (first sync, manifest change, a rebuild the owner step has started, or a run that stopped midway) | `projection_apply_pending` on every tool except `describe`; warning flag down; critical after 24 hours if narrowing | No |
+| Owner step pending (first sync, manifest change, a rebuild the owner step has started, or a run that stopped midway) | `projection_apply_pending` on every tool except `describe`; warning flag down; critical after 24 hours if narrowing. On dev the same deploy's owner step clears it and the same deploy upgrades the public chart (OD20); a pending state that persists means the automatic step failed, and that deploy printed `public-mcp owner step FAILED`. A failed step with an unchanged manifest and no rebuild leaves the applied record matching, so the server keeps serving and only the marker reports it (D3) | No |
 | Source migration breaks a published column | CI fails in that PR; at runtime, replication errors and goes stale | No |
 | Gateway down | Clients cannot connect | No |
 | Importer down | Proposals stay `received`; inbox alert | No |
@@ -1729,20 +2256,41 @@ accept query-string tokens.
 | Phase | Work | Gate to the next phase |
 |---|---|---|
 | P0 Preconditions | Default-deny ingress in `butlers-<env>` (new bead, child of `bu-viat6h`); this RFC, the doctrine sweep and the OpenSpec change; the RFC 0038 amendment | Merged; ingress contract test green |
-| P1 Projection | Manifest, `reconcile`, `owner-sql`, replica-identity migrations, Chronicler `*_public` tables, the `mcp_surface` schema, roles and init-db exceptions and grants, drift and grant contract tests, the no-credential publisher checks | Owner acts 9 and 10 run; initial sync matches the manifest in dev; canaries absent |
+| P1 Projection | Manifest, `reconcile`, `owner-sql`, replica-identity migrations, Chronicler `*_public` tables, the `mcp_surface` schema, roles and init-db exceptions and grants, drift and grant contract tests, the no-credential publisher checks | Owner acts 9 and 10 run (both automatic in `make deploy-dev`, OD20); initial sync matches the manifest in dev; canaries absent |
 | P2 Dark server | `butlers.knowledge_read`, `capability_host`, `mcp_public`, the chart and the namespace policies. Smoke test from a test pod in `mcp` with a test keyring. | Assertion, bearer, DLP and kill-switch tests green; import-ban test green |
 | P3 Gateway | Owner acts 4-8 below (1 is the chart's; 2 and 3 are done on dev); connect claude.ai, then ChatGPT | First real calls audited; each flag forced to 0 turns its Kuma monitor DOWN and the Telegram notification arrives; live NetworkPolicy check green |
-| P4 Finance and health tools | Same server, enabled on deploy (OD3) | DLP false-positive rate reviewed after one week |
+| P4 Finance and health tools | Same server, enabled on deploy (OD3), at full breadth (OD17): the finance and health manifest entries, the JSON-field materialization, `finance_records` and `health_records` | DLP false-positive rate reviewed after one week |
 | P5 Proposals | Inbox, importer job, typed approvals card, apply | An end-to-end proposal reaches `applied` and `owner_rejected` in dev |
 | P6 Successors | Taint and labels; the D19 card; the auto-approval decision | See [Dependencies](#dependencies-and-queueing) |
 
+**Target environment (OD18).** Every phase targets `dev` (`butlers-dev` and
+`postgres-dev`), the live system, and nothing else. Prod rollout is deferred
+for the foreseeable future. The design stays written for `<env>`, and the
+prod facts it records (D3: PG 17.8, `wal_level=logical`, one instance, the
+shared disk) stay as the deferred prod plan: the same placement, owner acts
+and phases would apply to the prod CNPG cluster and the prod namespace
+`butlers` (not the `butlers` database, which every dev step also uses). No owner act, chart
+value or task in this RFC runs against prod until a new owner decision lifts
+the deferral. [Unknown] Where prod's Butlers database lives is unresolved:
+the prod release points at `postgresql-cloudnativepg-rw.postgres.svc`
+(`deploy/helm/butlers/values.prod.yaml:1-4`), not at `postgres-prod`, so a
+prod plan starts by settling which cluster the acts below apply to.
+
 **Owner acts (homelab side, OD5).** Numbers are stable, because other
-documents cite them. Acts 2 and 3 are done on dev by homelab PR
-Tzeusy/homelab#40 [Observed: homelab report, 2026-11-04].
+documents cite them. Acts 2, 3 and 7 are per environment: homelab declares
+them, and every new cluster repeats them with its own parameters (cluster
+name, node pod range, target namespaces). On dev, homelab PR
+Tzeusy/homelab#40 applied acts 2 and 3 through
+`helm/postgresql_cloudnativepg/values.dev.yaml` and `make helm_install_dev`
+[Observed: homelab report and PR file list, 2026-11-04]. The ordered setup
+for a fresh environment, with a check for each step, is
+`docs/operations/public-mcp-read-surface.md`; it follows this list and
+carries no normative text of its own.
 1. *Moved to the chart.* The Butlers chart `deploy/helm/butlers-public-mcp`
    creates namespace `butlers-public-<env>` and the ExternalSecret that
    reads `MCP_PUBLIC_RO_DB_PASSWORD` (D8 item 1). No owner act remains here.
-2. *Done on dev.* CNPG `postgres-<env>` (D3, D9; no new cluster, OD10):
+2. *Per environment; done on dev.* CNPG `postgres-<env>` (D3, D9; no new
+   cluster, OD10):
    - database `butlers_public`, owned by `mcp_projection_owner`;
    - the managed roles `mcp_projection_owner` (NOLOGIN), `mcp_public_ro`
      (LOGIN NOINHERIT, connection limit 10), `mcp_proposals_reader`,
@@ -1751,15 +2299,18 @@ Tzeusy/homelab#40 [Observed: homelab report, 2026-11-04].
      REPLICATION NOINHERIT, no password), none of them superuser, `CREATEDB`
      or `CREATEROLE`;
    - the D3 `pg_hba` lines for `mcp_public_ro` and `mcp_proposals_reader` on
-     `10.42.0.0/24`, with the three reject lines including the publisher's,
+     the node's pod range (`10.42.0.0/24` on dev), with the three reject
+     lines including the publisher's,
      and no `replication` entry for the publisher;
    - the `local` `pg_ident` map line `local postgres
      butlers_projection_publisher`, so the publisher logs in by local peer
      authentication only (D9, OD14);
-   - `max_slot_wal_keep_size = 10GB`; `max_replication_slots` (32) and
-     `max_wal_senders` (10) left unchanged with headroom;
+   - `max_slot_wal_keep_size` (`10GB` on dev, sized against the host disk's
+     free space); `max_replication_slots` (32) and `max_wal_senders` (10)
+     left unchanged with headroom;
    - the password Secrets and Bitwarden items named in D9.
-3. *Done on dev (nothing to add).* NetworkPolicy on `postgres-<env>`: only if
+3. *Per environment; done on dev (nothing to add).* NetworkPolicy on
+   `postgres-<env>`: only if
    a default-deny ingress policy selects the instance pods, add one allow for
    the public server pod on 5432 and nothing else (D8 item 3). None selects
    the `postgres-dev` pods, so no policy was added.
@@ -1786,14 +2337,27 @@ Tzeusy/homelab#40 [Observed: homelab report, 2026-11-04].
 9. Rerun `scripts/init-db.sql` through `kubectl exec -i -n postgres-<env>
    <instance> -- psql -X -U postgres -d butlers -f -` once it carries the
    publisher's `CONNECT` and `SELECT` grants and `ALTER ROLE mcp_public_ro
-   SET statement_timeout = '2s'` (D9).
+   SET statement_timeout = '2s'` (D9). On dev this runs automatically:
+   `make deploy-dev` first runs `bootstrap-dev` (`scripts/k8s/bootstrap-db.sh
+   dev <tag>`), which pipes the deployed tag's `init-db.sql` through this
+   path as the CNPG superuser [Observed: `deploy/helm/butlers/makefile`,
+   `scripts/k8s/bootstrap-db.sh:39-54`]. Elsewhere it stays manual.
 10. The owner step (D3, OD14), through the same path: once at the first
     sync, once after each manifest change the migration Job has applied, and
-    once after each slot invalidation. This is the one recurring owner act.
-    Until it runs after the first sync or a manifest change, the public
-    server refuses with `projection_apply_pending` and the warning flag is
-    down; after an invalidation it refuses with `projection_stale` (D16,
-    D17).
+    once after each slot invalidation. On dev this runs automatically
+    (OD20): `make deploy-dev` runs `scripts/k8s/public-mcp-owner-step.sh dev
+    <tag>` after the release on every deploy, whatever the release
+    returned, generating the file in the deployed tag's `dashboard-api` pod
+    and piping the captured file to the superuser `psql`; its guard refuses
+    when the migrations did not reconcile, a failure fails the deploy
+    loudly and rolls nothing back, and after a successful step the same
+    deploy upgrades the public chart to the same tag (D3). After a slot invalidation on dev the owner may run
+    the same script at once instead of waiting for the next deploy.
+    Elsewhere (prod, deferred by OD18) it stays manual, the one recurring
+    owner act. Until it runs after the first sync or a manifest change, the
+    public server refuses with `projection_apply_pending` and the warning
+    flag is down; after an invalidation it refuses with `projection_stale`
+    (D16, D17).
 
 ## Dependencies and queueing
 
@@ -1854,21 +2418,36 @@ the umbrella `bu-4c7nvp`, `bu-bda935`, `bu-krc9su` adoption, or
 
 Genuine questions only. Every other choice above is decided and reversible.
 
-1. **Finance breadth.** `last_four` and balance snapshots are excluded by
-   default; widening is a one-line manifest edit.
-2. **Health profile breadth.** Medications and conditions without notes or
-   clinicians is the default; allergies and visits wait until asked for.
-3. **Prod rollout.** Rollout targets `dev` (the live system); prod waits for
-   a separate owner act. Prod's version is no longer open (closed below).
-4. **Knowledge predicate allowlist.** The v1 allowlist is written from the
-   predicate registry at implementation time (D4); the owner may widen it.
-Closed on 2026-11-04: the subscription-owner login path (OD16). No
-`pg_hba` line rejects `mcp_subscription_owner`, so its password reaches
-`butlers_public` and `postgres` over TCP [Observed: `postgres-dev`,
-2026-11-04], and on `butlers_public` it could rewrite the projection and
-forge the applied digest (D9). The owner accepted that risk; the D17
-guarantee assumes the password stays unused, which the custody list and the
-rendered-chart check support. Also closed: projection placement (a second database on the existing
+Numbers are stable, because other documents cite them; closed questions keep
+their place.
+
+1. **Finance breadth.** Closed by OD17 (2026-11-04): finance publishes
+   everything it holds except credentials, `last_four`, account names and
+   balance snapshots included (D4).
+2. **Health profile breadth.** Closed by OD17 (2026-11-04): health publishes
+   everything it holds except credentials, notes, clinicians, allergies and
+   visits included (D4, D10).
+3. **Prod rollout.** Closed by OD18 (2026-11-04): prod is deferred for the
+   foreseeable future and `dev` is the only target; the prod plan stays as
+   deferred text ([Rollout](#rollout-and-owner-acts)).
+4. **Knowledge predicate allowlist.** The v1 allowlists are written from the
+   predicate registries at implementation time (D4), holding every predicate
+   of the published memory schemas except the contact- and identity-kind
+   ones (OD21); the owner may widen them.
+5. **Subscription-owner login path.** Closed by OD16 (2026-11-04): no
+   `pg_hba` reject line for `mcp_subscription_owner`, an accepted risk (D9,
+   D17). Its password reaches `butlers_public` and `postgres` over TCP
+   [Observed: `postgres-dev`, 2026-11-04], and on `butlers_public` it could
+   rewrite the projection and forge the applied digest (D9). The D17
+   guarantee assumes the password stays unused, which the custody list and
+   the rendered-chart check support.
+6. **Other people's contact data in finance and health.** Closed by OD22
+   (2026-11-05): OD17 wins in those two domains. Finance and health share
+   everything except credentials, including other people's contact details
+   held there; OD21's contact and identity line applies only to the
+   knowledge and relationship facts (D4 "Finance and health under OD21").
+
+Also closed on 2026-11-04: projection placement (a second database on the existing
 cluster, OD10, D3) and the alert path (Uptime Kuma polling Prometheus flags,
 OD11, D16). The Chronicler materialization shape is decided: source-owned
 `episodes_public` and `rollups_public` tables (D2). Prod's PostgreSQL version
@@ -1888,6 +2467,9 @@ does (D8 item 3).
 | D2, D3, D4, D9 | `public-mcp-projection` |
 | D3 owner step, D4 reconcile split, D17 apply digest (OD14) | `public-mcp-projection` REQ-003 and ADDED REQ-015; `public-mcp-surface` REQ-013 (`projection_apply_pending`); `public-mcp-authorization` REQ-014 (pending-step alerts) |
 | D9 publisher with no credential (OD14), subscription owner (OD15) | `database-security` REQ-016; `public-mcp-projection` REQ-008 and REQ-009 |
+| D2, D4, D10, D15 finance and health breadth (OD17), records tools and JSON fields (OD19) | `public-mcp-projection` REQ-002, REQ-012 and REQ-013; `public-mcp-surface` REQ-002, REQ-005, REQ-009, REQ-010 and REQ-014; `public-mcp-authorization` REQ-010 to REQ-012 |
+| D3 owner step on dev deploys, D16 critical as a failure signal (OD20) | `public-mcp-projection` REQ-003; `public-mcp-authorization` REQ-014 |
+| D4 people other than the owner (OD21); D2 graph publish key and per-source withheld counts; D2 Chronicler `sensitive` episodes and narrow-only overrides | `public-mcp-projection` REQ-002, REQ-005, REQ-006, REQ-012 and REQ-013; `public-mcp-surface` REQ-007 and REQ-008 |
 | D13 | `public-mcp-proposals`; ADDED `module-approvals` REQ-010, `dashboard-approvals` REQ-904, `relationship-facts` REQ-011 |
 | D8 precondition | `deployment-hardening` ADDED REQ-013 |
 | D9 | `database-security` ADDED REQ-016 |

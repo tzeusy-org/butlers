@@ -166,12 +166,17 @@ name for it) after Alembic, as the migration user; in the same transaction it wr
 replicated manifest digest. The projection has one subscription, `butlers_public_sub`. Because both live on one
 instance, and because the subscription's `password_required = false` makes it superuser-only
 work, the slot and subscription are one owner step (OD14): `butlers public-mcp owner-sql`
-prints one idempotent SQL file that the owner pipes through
+prints one idempotent SQL file that is piped through
 `kubectl exec -i -n postgres-<env> <instance> -- psql -X -U postgres -d butlers -f -`, the same
-path as `scripts/init-db.sql`. It pre-creates the slot with
+path as `scripts/init-db.sql`. On dev, `make deploy-dev` does this on every deploy (OD20): after
+`bootstrap-dev` and after `record-deploy.sh`, whatever it returned (its guard refuses when the
+migrations did not reconcile), `scripts/k8s/public-mcp-owner-step.sh` captures the file from the
+`dashboard-api` pod running the deployed tag and pipes it to the superuser `psql` in the primary;
+a failure fails the deploy loudly and rolls nothing back, and after a success the same target
+upgrades the public chart at the same tag. Elsewhere the owner runs it. It pre-creates the slot with
 `pg_create_logical_replication_slot(..., 'pgoutput')`, creates the subscription with
 `create_slot = false` on the local socket and hands it to `mcp_subscription_owner`, refreshes it,
-purges and re-copies after a narrowing, and records the applied digest. The owner runs it at the
+purges and re-copies after a narrowing, and records the applied digest. It must run at the
 first sync, after each manifest change and after each slot invalidation; until it runs after the
 first sync or a manifest change the public server refuses with `projection_apply_pending`, and
 after an invalidation with `projection_stale`. Roles: `butlers_projection_publisher` (the only
@@ -309,18 +314,27 @@ hold the public pod to the projection. **Precondition:** `butlers-<env>` has no 
 ingress today [Observed]; that, with a contract test, lands before any gateway allow rule
 points into Butlers.
 
-**Owner acts** (RFC 0039 Rollout, OD5). Done on dev by homelab PR Tzeusy/homelab#40: on
+**Owner acts** (RFC 0039 Rollout, OD5). The ordered setup for a fresh environment, with checks
+for each step, is [Public MCP Read Surface](../../docs/operations/public-mcp-read-surface.md).
+Per environment, declared by homelab in its CNPG chart values
+(`helm/postgresql_cloudnativepg/values.<env>.yaml`) and repeated on any new cluster: on
 `postgres-<env>`, database `butlers_public` and the managed roles, the ordered `pg_hba` lines that
-admit `mcp_public_ro` and `mcp_proposals_reader` only to it plus the publisher's reject line, the
-`local` `pg_ident` line for the publisher's peer login, `max_slot_wal_keep_size = 10GB`, and the
-password Secrets; no `postgres-<env>` allow was needed. The namespace `butlers-public-<env>` is
-the chart's, not an owner act. Still to do: rerun `scripts/init-db.sql` with the publisher grants
-and `statement_timeout`; run the owner step at first sync, then after each manifest change and
-each slot invalidation (the one recurring owner act); generate the Worker's Ed25519 key
+admit `mcp_public_ro` and `mcp_proposals_reader` only to it from the node's pod range plus the
+publisher's reject line, the `local` `pg_ident` line for the publisher's peer login,
+`max_slot_wal_keep_size`, and the password Secrets; plus a `postgres-<env>` allow only where a
+default-deny selects the instance pods. Homelab PR Tzeusy/homelab#40 applied these to dev
+(`values.dev.yaml`, `10GB`, pod range `10.42.0.0/24`; no allow was needed). The namespace
+`butlers-public-<env>` is the chart's, not an owner act. Automatic on dev, so not owner acts
+there: the `scripts/init-db.sql` rerun with the publisher grants and `statement_timeout`
+(`make deploy-dev` runs `bootstrap-dev` first) and the owner step at first sync, after each
+manifest change and after each slot invalidation (`make deploy-dev` runs it after the migrations,
+OD20; elsewhere it stays the one recurring owner act). Still to do: generate the Worker's Ed25519 key
 and add assertion signing; deploy the `butlers` filter-proxy release with an ExternalSecret on
 the dev store; add `butlers` to the Worker's `MCP_SERVERS`; add two Uptime Kuma `json-query`
 monitors on the alert flags `butlers_public_mcp:critical_ok` (at `interval = 60`) and
 `butlers_public_mcp:warning_ok` in the homelab's `uptimekuma-monitors.toml`, on its existing
 Telegram notification. Alerting adds no ingress to `butlers-public-<env>`: Kuma polls Prometheus.
 Rollout targets `dev`, which is the live system, so the first client connection exposes live
-data, which the owner accepted (OD12); prod waits on a separate owner act.
+data, which the owner accepted (OD12). Prod rollout is deferred for the foreseeable future
+(OD18): `butlers-public-dev` and `postgres-dev` are the only targets, and the `<env>` design
+stays as the deferred prod plan.

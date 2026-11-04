@@ -6,7 +6,10 @@ is adopted once the PR's independent conformance review passes. The four
 items the conformance review returned to the owner were answered the same day
 (OD10 to OD13) and are adopted with the rest. OD14 and OD15, recorded after
 homelab PR Tzeusy/homelab#40 applied the CNPG owner acts to `postgres-dev`,
-are adopted the same way.
+are adopted the same way, as are OD16 to OD18, which answer RFC 0039 open
+questions 1, 2, 3 and 5, and OD19 to OD21, which accept the OD17
+implementation choices, automate the owner step on dev and publish facts about
+people other than the owner.
 **Date:** 2026-11-04
 **Baseline:** `9f723b9468`
 **OpenSpec change:** `add-public-mcp-read-surface`
@@ -89,6 +92,57 @@ Tzeusy/homelab#40 to `postgres-dev` and reported the result (see [Homelab facts]
     2026-11-04: "Leave it open"). The owner accepts that its password can log in over TCP to
     `butlers_public` and `postgres`, where it could rewrite the projection and forge the applied digest.
     The D17 fail-closed guarantee assumes that password stays unused.
+
+Recorded by the owner (tze) later on 2026-11-04, answering RFC 0039 open questions 1 to 3:
+
+17. **Share all finance and health data** (open questions 1 and 2). Owner: "For finance and health data,
+    assume free to share all for now. We should operate under the assumption that this information is
+    only accessible to me (can have a security audit later of various ingress/egresses)." Finance and
+    health publish everything those domains hold, including account names, `last_four`, balance
+    snapshots, notes, descriptions, clinicians, allergies and visits, and the content of their JSONB
+    columns through a source-owned materialization. No credential-named column or JSON path, no
+    `butler_secrets` row and no `entity_info` row is published: condition 1 below stands, and so does
+    the credential tier of the column denylist (`secret`, `token`, `password`, `credential`, `otp`,
+    `cvv`, `card`, `api_key`, `private_key`, `access_key`, `client_key`, `signing_key`, `access_url`,
+    `passcode`, `passphrase`, `pin`, `bearer`, `cookie`, `auth`), now applied to JSON paths too, with
+    JSON keys split on separators and camelCase boundaries. A credential written into free text is
+    caught only by the shape-based credential DLP rules, a residual risk for the future audit. The identifier and
+    personal-contact DLP rules no longer run on finance and health results; the credential DLP rules
+    still do. The threat-model assumption is the owner's: the surface is reachable only by the owner,
+    through the GitHub-id allowlist. A security audit of ingress and egress is future work and is not
+    filed yet.
+18. **Prod rollout is deferred for the foreseeable future** (open question 3). `dev` is the only
+    target. The prod plan stays in RFC 0039 as deferred text, and nothing runs against prod until a new
+    owner decision lifts the deferral.
+
+Recorded by the owner (tze) later on 2026-11-04, on the OD17 implementation and the owner step:
+
+19. **Accept both OD17 implementation choices.** The two new tools `finance_records` and
+    `health_records` (19 tools in all), and the sixth source-owned materialization,
+    `finance.json_fields_public` and `health.json_fields_public` (the scalar values of finance and
+    health JSONB columns, skipping credential-like keys). Neither returns to the owner; both are
+    adopted contract.
+20. **On dev, the deploy runs the owner step automatically.** `make deploy-dev` already runs
+    `scripts/init-db.sql` as the Postgres superuser through `kubectl exec` (`bootstrap-dev`,
+    `scripts/k8s/bootstrap-db.sh`). The dev deploy also runs `butlers public-mcp owner-sql` through
+    the same path, so no manual step remains on dev. The owner step needs the publication, which
+    reconcile creates in the migrations initContainer, so it runs after the migrations complete,
+    never inside the bootstrap before them. A failure is reported loudly by the deploy; nothing
+    rolls back, and the public server stays fail-closed with `projection_apply_pending`. The step
+    is idempotent and runs on every dev deploy. Prod (deferred, OD18) stays manual. The 24-hour
+    narrowing-pending critical alert stays; on dev it now signals that the automatic step is
+    failing.
+21. **Publish facts whose subject is someone other than the owner**, consistent with OD17's
+    assumption that only the owner can reach the surface. Credentials stay excluded, and so do
+    contact- and identity-kind predicates (other people's phone, email, address and similar). The
+    remaining line is predicate kind (contact or identity) and credentials, not schema or subject.
+    The owner asked for the earlier exclusion of `relationship`-schema memory facts to be
+    revisited under this decision; RFC 0039 D4 records the result: that exclusion is lifted, and
+    a predicate allowlist with no contact- or identity-kind predicate replaces it.
+22. **In finance and health, OD17 wins over OD21** (2026-11-05, RFC 0039 open question 6). Those two
+    domains share everything except credentials, including other people's contact details held
+    there (for example clinician phone numbers and Health calendar attendee emails). OD21's contact
+    and identity line applies only to knowledge and relationship facts.
 
 ## Homelab facts
 
@@ -227,3 +281,18 @@ owner decision, blocked by `bu-u5euwb.3` and `bu-u5s4w8`.
   and the topology docs were amended to match the homelab facts above. The
   owner then answered RFC 0039 open question 5 (OD16): no `pg_hba` reject
   line for `mcp_subscription_owner`, as an accepted risk.
+- Later on 2026-11-04 the owner answered RFC 0039 open questions 1 to 3:
+  finance and health share everything except credentials, on the stated
+  threat-model assumption (OD17), and prod rollout is deferred (OD18). RFC
+  0039 (D2, D3, D4, D10, D15, rollout and open questions), this record, the
+  OpenSpec change and the topology docs were amended to match.
+- Later on 2026-11-04 the owner accepted the OD17 records tools and JSON-field
+  materialization (OD19), had the dev deploy run the owner step automatically
+  (OD20) and published facts about people other than the owner, up to the
+  contact, identity and credential line (OD21). The same pass closed two gaps
+  an independent review found: graph edges now use the same literal predicate
+  allowlists as the facts they mirror, and the label semantics match OD17
+  (Chronicler `sensitive` episodes publish, health edges defer to the health
+  domain). RFC 0039 (D2, D3, D4, D10, D16, D17 and owner acts), this record,
+  the OpenSpec change, the topology docs and the operations page were amended
+  to match.

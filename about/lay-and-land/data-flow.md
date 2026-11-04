@@ -348,6 +348,8 @@ sequenceDiagram
    `mcp_read` views.
 3. **Response**: DLP redaction and canary detection run on every result. A canary hit latches all
    tools off until restart. `search` and `fetch` never return finance or health records.
+   Finance and health results are shared at full breadth (OD17), so only the credential rules
+   scan them; the identifier and personal-contact rules run on the other domains.
 4. **Freshness**: past 15 minutes of replication lag every tool refuses with `projection_stale`,
    so a kill switch cannot go unseen for longer. While the owner step is pending, every tool
    refuses with `projection_apply_pending`, so a server shipping a narrowed manifest never serves
@@ -363,7 +365,7 @@ Reads never write: no `knowledge_read` function reuses memory search, which bump
 ```mermaid
 graph LR
     M["projection.toml<br/>(checked-in allowlist)"] -->|"butlers public-mcp reconcile<br/>(migration Job, after Alembic)"| PUB["primary: publication butlers_public_v1<br/>column lists + row filters"]
-    M -->|"butlers public-mcp owner-sql<br/>(owner step, superuser via kubectl exec)"| SUBDDL["projection: subscriber tables,<br/>mcp_read views, inbox, subscription,<br/>applied digest"]
+    M -->|"butlers public-mcp owner-sql<br/>(owner step, superuser via kubectl exec;<br/>run by make deploy-dev, OD20)"| SUBDDL["projection: subscriber tables,<br/>mcp_read views, inbox, subscription,<br/>applied digest"]
     M -->|"owner step"| SLOT["primary: slot butlers_public_sub,<br/>publisher USAGE + SELECT sync"]
     SRC["primary tables"] -->|"WAL"| PUB
     PUB -->|"logical replication, one way"| SUB["projection: subscription butlers_public_sub"]
@@ -373,12 +375,15 @@ graph LR
 
 Only allowlisted tables and columns leave the primary; a new table or column stays unpublished
 until someone adds it to the manifest. Restrictions arrive as DELETEs because filter columns sit
-in the replica identity. Credentials, `butler_secrets`, secured `entity_info` rows, connector
+in the replica identity. Memory facts outside finance and health, and the graph edges they
+project, pass the same literal predicate allowlists, which hold no contact- or identity-kind
+predicate; facts about people other than the owner are published under them (OD21). Credentials, `butler_secrets`, secured `entity_info` rows, connector
 tokens, approval tables and raw message bodies are never published (RFC 0039 D2, D4). Both
 databases live on `postgres-<env>`, so the owner step pre-creates the replication slot and creates
 the subscription with `create_slot = false` and `password_required = false`, on the local socket
-as the credential-less publisher (RFC 0039 D3, OD14). The owner runs it at the first sync, after
-each manifest change and after each slot invalidation; until it has applied the manifest the
+as the credential-less publisher (RFC 0039 D3, OD14). It runs at the first sync, after each
+manifest change and after each slot invalidation: on dev every `make deploy-dev` runs it after the
+migrations (OD20), and elsewhere the owner does; until it has applied the manifest the
 public server ships with, every tool except `describe` refuses with `projection_apply_pending`.
 An invalidated slot leaves the applied digest matching, so it shows as `projection_stale` and
 the slot and lag alerts until the owner step rebuilds.
