@@ -17,7 +17,7 @@ the idempotence key so calling ``carry_forward`` twice in one session updates
 the same row instead of appending a duplicate. The partial unique index over
 ``is_live`` rows is the hard backstop that guarantees exactly one live row per
 task even under a true concurrent write from two sessions; the scheduler's
-existing atomic occurrence claim (``core.scheduler.tick`` optimistic
+existing atomic occurrence claim (``core.scheduler.dispatch.tick`` optimistic
 ``next_run_at`` UPDATE) is what normally prevents that race from arising at
 all.
 

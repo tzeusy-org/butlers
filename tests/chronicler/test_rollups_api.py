@@ -79,9 +79,7 @@ def _build_app(
     monkeypatch.setattr(router_module, "list_daily_rollups_range", fake_rollups_range)
     monkeypatch.setattr(router_module, "list_daily_rollup_flags_range", fake_flags_range)
 
-    async def fake_numeric_snapshot(
-        pool, *, start_date, end_date, flag_start_date, flag_end_date
-    ):
+    async def fake_numeric_snapshot(pool, *, start_date, end_date, flag_start_date, flag_end_date):
         if raise_error:
             raise RuntimeError("simulated query failure")
         return rollups or [], flags or [], set(), False
@@ -465,7 +463,9 @@ async def test_pending_retention_marks_only_affected_rollup_days_pending(
         )
 
     monkeypatch.setattr(router_module, "_numeric_snapshot", pending_snapshot, raising=False)
-    response = await _get(app, {"start_date": affected.isoformat(), "end_date": unaffected.isoformat()})
+    response = await _get(
+        app, {"start_date": affected.isoformat(), "end_date": unaffected.isoformat()}
+    )
     assert response.status_code == 200
     days = response.json()["data"]["days"]
     assert days[0]["status"] == "pending_repair"
@@ -537,13 +537,15 @@ async def test_trends_marks_pending_date_and_keeps_later_unaffected_day(
             params={"window": "week", "end_date": "2026-07-05", "lookback_days": 1},
         )
     assert response.status_code == 200
-    days = {day["local_date"]: day for lane in response.json()["data"]["lanes"]
-            for day in lane["days"] if lane["lane"] == "work"}
+    days = {
+        day["local_date"]: day
+        for lane in response.json()["data"]["lanes"]
+        for day in lane["days"]
+        if lane["lane"] == "work"
+    }
     assert days[pending.isoformat()]["status"] == "pending_repair"
     assert days[pending.isoformat()]["seconds"] == 0
-    work_series = next(
-        lane for lane in response.json()["data"]["lanes"] if lane["lane"] == "work"
-    )
+    work_series = next(lane for lane in response.json()["data"]["lanes"] if lane["lane"] == "work")
     assert work_series["streak_days"] is None
     assert days[unaffected.isoformat()]["status"] == "materialized"
     assert days[unaffected.isoformat()]["seconds"] == 2400

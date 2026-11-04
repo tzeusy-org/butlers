@@ -29,6 +29,7 @@ import pytest
 
 from butlers.config import RuntimeSeedConfig
 from butlers.core.runtime_config import RuntimeConfigAccessor
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.integration
 
@@ -319,11 +320,6 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
         async def execute(self, query, *args):
             return await self.connection.execute(query, *args)
 
-    class DBManager:
-        def pool(self, name):
-            assert name == "test"
-            return interleaving_pool
-
     roster_dir = tmp_path / "roster"
     butler_dir = roster_dir / "test"
     butler_dir.mkdir(parents=True)
@@ -359,7 +355,7 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
                     "test",
                     request,
                     runtime_config.RuntimeConfigPatch(core_groups_narrowing_reason=None),
-                    db=DBManager(),
+                    db=db_manager({"test": interleaving_pool}),
                     roster_dir=roster_dir,
                 ),
                 name="clear-reason",
@@ -369,7 +365,7 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
                     "test",
                     request,
                     runtime_config.RuntimeConfigPatch(core_groups=["infra", "delegation"]),
-                    db=DBManager(),
+                    db=db_manager({"test": interleaving_pool}),
                     roster_dir=roster_dir,
                 ),
                 name="change-groups",

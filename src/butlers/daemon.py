@@ -67,7 +67,7 @@ from butlers.config import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
@@ -1587,6 +1587,22 @@ class ButlerDaemon:
                     "risk_tier": policy.get_effective_risk_tier(tool_name).value,
                     "rule_precedence": policy.rule_precedence,
                 }
+                if tool_name in {
+                    "calendar_create_event",
+                    "calendar_update_event",
+                    "calendar_delete_event",
+                    "calendar_update_event_instance",
+                    "calendar_delete_event_instance",
+                    "drive_write_file",
+                    "drive_create_folder",
+                    "drive_move_file",
+                } and (policy.enabled or presentation.module_name in policy.domain_producers):
+                    # Descriptive configuration, never evidence of an owner
+                    # decision or a generic gate for unrelated capabilities.
+                    resolved[tool_name].approval_policy = {
+                        **(resolved[tool_name].approval_policy or {}),
+                        "domain_producer": True,
+                    }
             # Explicit new declarations cannot silently contradict the inventory.
             for field_name in AUTHORIZATION_FIELDS:
                 supplied = getattr(sensitivity, field_name, None)
@@ -2046,29 +2062,31 @@ class ButlerDaemon:
             )
 
     def _wire_calendar_approval_enqueuer(self) -> None:
-        """Wire calendar overlap-approval enqueuer when both modules are loaded.
+        """Wire calendar and Drive domain gates to their owning approval queue.
 
-        When both the ``calendar`` and ``approvals`` modules are active on this
-        butler, connects the calendar module's overlap-override gate to the
-        approvals pending-action queue via a lightweight enqueue callback.
+        Enabling this callback does not install unrelated tool gates or grant
+        standing rules. Both consumers retain exact stored-call replay checks.
         """
         approvals_raw = self.config.modules.get("approvals")
         approval_config = parse_approval_config(approvals_raw)
-        if approval_config is None or not approval_config.enabled:
+        if approval_config is None:
+            return
+        approvals = next((m for m in self._active_modules if m.name == "approvals"), None)
+        if (
+            approvals is None
+            or not callable(getattr(approvals, "_tool_executor", None))
+            or getattr(self.db, "pool", None) is None
+        ):
             return
 
-        calendar_mod = None
-        for mod in self._active_modules:
-            if mod.name == "calendar":
-                calendar_mod = mod
-                break
-
-        if calendar_mod is None:
-            return
-
-        # Only wire if the calendar module exposes the setter.
-        set_enqueuer = getattr(calendar_mod, "set_approval_enqueuer", None)
-        if not callable(set_enqueuer):
+        setters = [
+            getattr(mod, "set_approval_enqueuer", None)
+            for mod in self._active_modules
+            if mod.name in {"calendar", "google_drive"}
+            and (approval_config.enabled or mod.name in approval_config.domain_producers)
+            and callable(getattr(mod, "set_approval_enqueuer", None))
+        ]
+        if not setters:
             return
 
         pool = self.db.pool
@@ -2081,7 +2099,7 @@ class ButlerDaemon:
             tool_args: dict[str, Any],
             agent_summary: str,
         ) -> str:
-            """Insert a pending_actions row for a calendar overlap override."""
+            """Park the owning domain's exact requested call without delivery here."""
             import uuid as _uuid
             from datetime import UTC as _UTC
             from datetime import datetime as _dt
@@ -2121,9 +2139,17 @@ class ButlerDaemon:
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
-                actor="system:calendar_overlap_gate",
+                actor=(
+                    "system:calendar_overlap_gate"
+                    if tool_name.startswith("calendar_")
+                    else "system:drive_party_gate"
+                ),
                 action_id=action_id,
-                reason="calendar overlap override requires approval",
+                reason=(
+                    "calendar overlap override requires approval"
+                    if tool_name.startswith("calendar_")
+                    else "Drive destination audience requires approval"
+                ),
                 metadata={"tool_name": tool_name},
                 occurred_at=now,
             )
@@ -2135,7 +2161,9 @@ class ButlerDaemon:
             )
             return str(action_id)
 
-        set_enqueuer(_enqueue_overlap_action)
+        for set_enqueuer in setters:
+            if callable(set_enqueuer):
+                set_enqueuer(_enqueue_overlap_action)
         logger.info("Wired calendar overlap-approval enqueuer via approvals module")
 
     def _wire_module_runtime(self) -> None:

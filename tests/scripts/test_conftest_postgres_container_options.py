@@ -107,6 +107,61 @@ def test_offset_without_the_library_preloaded_is_not_forwarded() -> None:
     assert container.env == {}
 
 
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({}, True),
+        ({"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}, True),
+        ({"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}, False),
+    ],
+)
+def test_only_a_discarded_hosted_runner_keeps_the_session_data_volume(environ, expected) -> None:
+    # bu-pj05nc: avoid observed expensive teardown on disposable hosted VMs;
+    # the restore timeout's cause remains unproven.
+    assert root_conftest._delete_session_data_volume(environ) is expected
+
+
+class _LifecycleContainer:
+    def __init__(self, fail_start: bool = False) -> None:
+        self.fail_start = fail_start
+        self.stops: list[bool] = []
+
+    def start(self) -> Any:
+        if self.fail_start:
+            raise RuntimeError("synthetic start failure")
+        return self
+
+    def stop(self, force: bool = True, delete_volume: bool = True) -> None:
+        assert force is True
+        self.stops.append(delete_volume)
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+@pytest.mark.parametrize("fail_start", [False, True])
+def test_session_container_always_stops_with_the_volume_decision(
+    monkeypatch: pytest.MonkeyPatch, hosted: bool, fail_start: bool
+) -> None:
+    import testcontainers.postgres
+
+    container = _LifecycleContainer(fail_start=fail_start)
+    monkeypatch.setattr(testcontainers.postgres, "PostgresContainer", lambda image: container)
+    monkeypatch.setattr(root_conftest, "_configure_postgres_container", lambda c, environ: c)
+    if hosted:
+        monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
+    else:
+        monkeypatch.delenv("RUNNER_ENVIRONMENT", raising=False)
+    fixture = root_conftest.postgres_container.__wrapped__()
+    if fail_start:
+        with pytest.raises(RuntimeError, match="synthetic start failure"):
+            next(fixture)
+    else:
+        assert next(fixture) is container
+        assert container.stops == []
+        with pytest.raises(StopIteration):
+            next(fixture)
+    assert container.stops == [not hosted]
+
+
 @pytest.mark.parametrize("schema", [None, "public", "health", "switchboard", "chronicler_mem"])
 async def test_provisioned_pool_is_administrative(monkeypatch, schema):
     from unittest.mock import AsyncMock
@@ -384,3 +439,63 @@ async def test_provisioned_pool_terminates_native_initialization(monkeypatch, ca
     assert pools[0].is_closing()
     with pytest.raises(asyncpg.InterfaceError, match="closed"):
         await pools[0].acquire()
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "unit", "marker", "cleanup_timeout"),
+    [
+        (b"synthetic-private-stdout", b"synthetic-private-stderr", "bytes", False, False),
+        (b"[backup] start: synthetic-private-detail", b"", "bytes", True, False),
+        (None, None, "absent", False, False),
+        (b"", b"", "bytes", False, False),
+        ("synthetic-private-☃", "synthetic-private-error", "characters", False, False),
+        (None, None, "absent", False, True),
+    ],
+    ids=["private-bytes", "observed-marker", "absent", "empty", "unicode", "cleanup-timeout"],
+)
+def test_restore_client_timeout_keeps_only_closed_diagnostics(
+    monkeypatch, stdout, stderr, unit, marker, cleanup_timeout
+):
+    import json
+    import subprocess
+    from types import SimpleNamespace
+
+    from tests.integration import test_dashboard_stepup_restore as restore
+
+    timeout = subprocess.TimeoutExpired("synthetic-client", 120, output=stdout, stderr=stderr)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["timeout"]))
+        if len(calls) == 1:
+            raise timeout
+        if cleanup_timeout:
+            raise subprocess.TimeoutExpired("synthetic-cleanup", 10)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(restore, "os", SimpleNamespace(environ={}))
+    monkeypatch.setattr(restore, "prepare_alias_on_hosted_runner", lambda image: None)
+    monkeypatch.setattr(restore.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        restore.client(None, "synthetic-command", "synthetic-password")
+
+    assert caught.value is timeout
+    assert calls[0][1] == 120
+    name = calls[0][0][calls[0][0].index("--name") + 1]
+    assert calls[1] == (["docker", "rm", "--force", name], 10)
+    assert len(calls) == 2
+    notes = "\n".join(timeout.__notes__)
+    assert "synthetic-private" not in notes
+    assert len(notes) < 1000
+    prefix = "client timeout diagnostics: "
+    assert len(timeout.__notes__) == 1 and notes.startswith(prefix)
+    diagnostic = json.loads(notes.removeprefix(prefix))
+    assert set(diagnostic) == {"execution_stage", "stdout", "stderr"}
+    assert diagnostic["execution_stage"] == "unknown"
+    for stream, output in (("stdout", stdout), ("stderr", stderr)):
+        assert diagnostic[stream] == {
+            "captured": output is not None,
+            "size": len(output) if output is not None else 0,
+            "unit": unit,
+            "backup_start_observed": marker if stream == "stdout" else False,
+        }

@@ -94,6 +94,17 @@ configuration is absent or the configured endpoint/bucket fails validation
 (blob operations fail at runtime). The Switchboard must be up before connectors
 attempt ingestion, enforced by the readiness probe.
 
+The planned public MCP surface (RFC 0039, Draft) hangs off the side of this tree and nothing
+above depends on it:
+
+```
+1. PostgreSQL primary
+   └── 2. Migrations, then butlers public-mcp reconcile (publication + subscriber DDL)
+       └── 3. Projection cluster subscription (initial copy)
+           └── 4. butlers-public-mcp (refuses tools until replication is fresh and the
+                  manifest digest matches)
+```
+
 ---
 
 ## External Dependencies
@@ -126,6 +137,21 @@ each module under `src/butlers/modules/` depends on its own provider API.
 | **Gmail API** | gmail connector | Watch/history delta email ingestion | Email ingestion stops |
 | **Google Calendar API** | calendar module | Calendar CRUD | Calendar tools return errors |
 | **Google Contacts API** | contacts module | Contact sync | Contact sync pauses |
+
+### Owner-Operated Homelab Dependencies (public MCP surface only, Draft)
+
+These belong to the owner's homelab, not this repository, and are set up as owner acts
+([RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) Rollout). Only the public
+MCP surface uses them; every failure below leaves the rest of Butlers unaffected.
+
+| Dependency | Used By | Purpose | Failure Impact |
+|---|---|---|---|
+| **Cloudflare Worker** (`mcp.tze.how`) | Public MCP gateway | OAuth 2.1 + PKCE, client and user allowlist, per-call assertion signing (holds the Ed25519 private key) | Clients cannot connect |
+| **GitHub OAuth** | Worker | Owner identity; the numeric GitHub id is the allowlist key | Clients cannot sign in |
+| **cloudflared-mcp, traefik-mcp** (namespace `mcp-gateway` / `mcp`) | Gateway | Tunnel from the Worker's VPC binding; routing to filter-proxy | Surface unreachable |
+| **filter-proxy release `butlers`** (namespace `mcp`) | Gateway | Injects the hop bearer from an ExternalSecret; forwards bytes unchanged (`FIXES` off) | Surface unreachable; any body rewrite fails the assertion body hash |
+| **CNPG operator, cluster `postgres-public-<env>`** | Projection | Hosts `butlers_public` and the subscription | Tools return `unavailable` |
+| **Alertmanager receiver outside Butlers** (channel pending the owner) | Public MCP alerts | Canary, DLP, assertion-failure, bearer-refusal, bulk-read, unexpected-slot, lag and WAL-retention alerts that bypass Butlers | Alerts unseen. [Unknown] whether any such receiver exists today |
 
 ### Build-Time Dependencies
 
@@ -181,3 +207,17 @@ errors. Connectors cannot resolve credentials.
 - Attachment upload/download fails at runtime.
 - Core messaging continues for text-based ingestion and routing.
 - Gmail connector attachment lazy-fetch fails.
+
+### Public MCP surface failures (Draft, RFC 0039 D17)
+
+No Butlers daemon depends on the public server, the projection or the gateway.
+
+- **Projection cluster down**: public tools return `unavailable`; `describe` still answers.
+  The primary is unaffected.
+- **Replication stalled**: tools refuse with `projection_stale` after 15 minutes. The primary's
+  only exposure is WAL retained for the slot, bounded by `max_slot_wal_keep_size` and alerted at
+  50 % of the cap; an invalidated slot means rebuilding the projection, never risking the primary.
+- **Gateway down**: clients cannot connect; nothing else changes.
+- **Importer down**: proposals stay `received` in the inbox (capped at 1,000 undrained rows).
+- **Public pod compromised**: it can read published projection data and insert capped inbox
+  rows. It has no route to the primary, the daemons, the dashboard or the internet.

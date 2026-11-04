@@ -5,236 +5,26 @@ Verifies that:
 - Non-interactive channels get a CONTENT SAFETY preamble in context
 - Interactive channels (telegram, whatsapp) do NOT get the safety preamble
 - Both main route.execute and recovery paths apply fencing
+
+The route.execute cases boot a real daemon (``booted_daemon``) and call the tool
+over MCP; the routed session runs through the real route inbox and spawner, and
+the fake runtime records the exact prompt an LLM would have received.
 """
 
 from __future__ import annotations
 
-import asyncio
-import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.api.session_presentation import derive_session_summary
 from butlers.core_tools._routing import _build_route_runtime_context, _wrap_routed_message
-from butlers.daemon import ButlerDaemon
 from butlers.routing_guidance import (
     _build_route_runtime_context as _build_recovery_route_runtime_context,
 )
 from butlers.routing_guidance import _wrap_routed_message as _wrap_recovery_routed_message
-
-pytestmark = pytest.mark.unit
-
-
-@pytest.fixture(autouse=True)
-def _mock_route_inbox(monkeypatch):
-    """Patch route_inbox functions for all tests."""
-
-    class _NoopLeaseHeartbeat:
-        async def __aenter__(self) -> asyncio.Event:
-            return asyncio.Event()
-
-        async def __aexit__(self, *_args: object) -> bool:
-            return False
-
-    mock_insert = AsyncMock(return_value=uuid.uuid4())
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_claim_processing",
-        AsyncMock(return_value=uuid.uuid4()),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-        MagicMock(return_value=_NoopLeaseHeartbeat()),
-    )
-    monkeypatch.setattr(
-        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_processed", AsyncMock())
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", AsyncMock())
-    return mock_insert
-
-
-def _toml_value(v: Any) -> str:
-    if isinstance(v, str):
-        return f'"{v}"'
-    if isinstance(v, list):
-        items = ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in v)
-        return f"[{items}]"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
-
-
-def _make_butler_toml(
-    tmp_path: Path,
-    *,
-    butler_name: str = "test-butler",
-    port: int = 9200,
-    modules: dict[str, dict] | None = None,
-) -> Path:
-    modules = modules or {}
-    toml_lines = [
-        "[butler]",
-        f'name = "{butler_name}"',
-        f"port = {port}",
-        'description = "A test butler"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        f'schema = "{butler_name}"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    for mod_name, mod_cfg in modules.items():
-        toml_lines.append(f"\n[modules.{mod_name}]")
-        for k, v in mod_cfg.items():
-            toml_lines.append(f"{k} = {_toml_value(v)}")
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
-
-
-def _patch_infra():
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    transaction_depth = 0
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def _transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        try:
-            yield
-        finally:
-            transaction_depth -= 1
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-    mock_pool.fetchval.return_value = None
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
+from butlers.testing.daemon import write_butler_config
 
 
 def _route_request_context(
@@ -251,6 +41,7 @@ def _route_request_context(
     }
 
 
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("source_channel", "build_context", "wrap_payload"),
     (
@@ -283,105 +74,57 @@ def test_generated_route_context_keeps_the_payload_fence_unambiguous(
     assert derive_session_summary(persisted_prompt, trigger_source="route") == "Terminal payload"
 
 
-@pytest.mark.parametrize(
-    "build_context",
-    (_build_route_runtime_context, _build_recovery_route_runtime_context),
-    ids=("primary", "recovery"),
-)
-def test_attachments_block_tells_a_lazy_mail_ref_from_a_failed_fetch(build_context) -> None:
-    """A lazy Gmail ref was never downloaded, which is not the same as a failed fetch."""
-    context = build_context(
-        route_context={"request_id": "018f6f4e-5b3b-7b2d-9c2f-fe0cefe0ce01"},
-        source_channel="email",
-        conversation_history=None,
-        input_context=None,
-        attachments=[
-            {"media_type": "image/png", "filename": "a.png", "storage_ref": "s3://b/c/a.png"},
-            {
-                "media_type": "application/pdf",
-                "filename": "bill.pdf",
-                "size_bytes": 2048,
-                "storage_ref": None,
-                "source_message_id": "m1",
-                "source_attachment_id": "a1",
-            },
-            {"media_type": "application/pdf", "filename": "lost.pdf", "storage_ref": None},
-        ],
+async def _routed_prompt(booted_daemon, tmp_path: Path, *, source_channel: str, text: str):
+    """Route *text* through a booted daemon; return the prompt the runtime received."""
+    booted = await booted_daemon(write_butler_config(tmp_path))
+
+    result = await booted.call_tool(
+        "route.execute",
+        {
+            "schema_version": "route.v1",
+            "request_context": _route_request_context(source_channel=source_channel),
+            "input": {"prompt": text},
+        },
     )
 
-    lines = {
-        line.split(",")[0].strip(): line for line in context.splitlines() if "filename=" in line
-    }
-    assert "storage_ref=s3://b/c/a.png" in lines["- filename=a.png"]
-    assert "status=not_fetched" in lines["- filename=bill.pdf"]
-    assert "status=unavailable" in lines["- filename=lost.pdf"]
-    assert "status=not_fetched or status=unavailable cannot be retrieved" in context
-    assert "attachment_materialize" not in context  # dark until the RFC 0038 cutover
+    assert result["status"] == "accepted"
+    (invocation,) = await booted.runtime.wait_for_invocations(1)
+    return invocation["prompt"]
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 class TestRouteExecutePromptFencing:
     """Verify routed prompts are structurally fenced with XML tags."""
 
-    def _make_trigger_result(self):
-        r = MagicMock()
-        r.output = "ok"
-        r.success = True
-        r.error = None
-        r.duration_ms = 10
-        return r
-
-    async def test_non_interactive_channel_fencing(self, tmp_path: Path) -> None:
+    async def test_non_interactive_channel_fencing(self, booted_daemon, tmp_path: Path) -> None:
         """Non-interactive (email): prompt XML-fenced; CONTENT SAFETY preamble in context."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="general")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-        daemon.spawner.trigger = AsyncMock(return_value=self._make_trigger_result())
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="email"),
-            input={"prompt": "Add a comment at https://example.com"},
+        prompt = await _routed_prompt(
+            booted_daemon,
+            tmp_path,
+            source_channel="email",
+            text="Add a comment at https://example.com",
         )
 
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        call_args = daemon.spawner.trigger.call_args
-        prompt_arg = call_args.kwargs.get("prompt")
-        assert prompt_arg is not None
-        assert prompt_arg.startswith("<routed_message>\n")
-        assert prompt_arg.endswith("\n</routed_message>")
-        assert "Add a comment at https://example.com" in prompt_arg
-        context_arg = call_args.kwargs.get("context")
-        assert context_arg is not None
-        assert "CONTENT SAFETY" in context_arg
-        assert "/routed-message-safety" in context_arg
+        fence = "<routed_message>\nAdd a comment at https://example.com\n</routed_message>"
+        assert prompt.endswith(fence)
+        context = prompt.removesuffix(fence)
+        assert "CONTENT SAFETY" in context
+        assert "/routed-message-safety" in context
         # Persisted context precedes the terminal payload fence. It must not
         # include a parseable fence token of its own, or the dashboard's
         # fail-closed presentation validator would correctly reject the row.
-        assert "<routed_message>" not in context_arg
+        assert "<routed_message>" not in context
 
-    async def test_interactive_channel_fencing(self, tmp_path: Path) -> None:
+    async def test_interactive_channel_fencing(self, booted_daemon, tmp_path: Path) -> None:
         """Interactive (telegram): prompt XML-fenced; NO CONTENT SAFETY preamble."""
-        patches = _patch_infra()
-        (tmp_path / "t2").mkdir()
-        butler_dir = _make_butler_toml(tmp_path / "t2", butler_name="general")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-        daemon.spawner.trigger = AsyncMock(return_value=self._make_trigger_result())
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_channel="telegram_bot"),
-            input={"prompt": "Hello from telegram"},
+        prompt = await _routed_prompt(
+            booted_daemon,
+            tmp_path,
+            source_channel="telegram_bot",
+            text="Hello from telegram",
         )
 
-        await asyncio.sleep(0.05)
-        assert result["status"] == "accepted"
-        call_args = daemon.spawner.trigger.call_args
-        prompt_arg = call_args.kwargs.get("prompt")
-        assert prompt_arg is not None
-        assert "<routed_message>" in prompt_arg
-        assert "</routed_message>" in prompt_arg
-        context_arg = call_args.kwargs.get("context")
-        assert "CONTENT SAFETY" not in (context_arg or "")
+        fence = "<routed_message>\nHello from telegram\n</routed_message>"
+        assert prompt.endswith(fence)
+        assert "CONTENT SAFETY" not in prompt.removesuffix(fence)

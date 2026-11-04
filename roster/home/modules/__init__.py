@@ -314,7 +314,9 @@ class HomeAssistantModule(Module):
         if self._config and self._config.read_only:
             return {}
         return {
-            "ha_call_service": ToolMeta(arg_sensitivities={"domain": True, "service": True}),
+            "ha_call_service": ToolMeta(
+                arg_sensitivities={"domain": True, "service": True, "target": True, "data": True}
+            ),
         }
 
     def wire_runtime(
@@ -1875,6 +1877,13 @@ class HomeAssistantModule(Module):
         }
         effective = effective_actuation_risk(domain, service, target, data, temperature_units=units)
         risk = effective.risk
+        from butlers.modules.party_approval import parties_are_owner
+
+        from .actuation import communication_parties
+
+        communicates, parties = communication_parties(domain, service, target, data)
+        owner_only = await parties_are_owner(pool, parties) if communicates else True
+        communication = {"effect_class": "communicate", "owner_only": owner_only}
         approval_context = get_approval_execution_context(
             tool_name="ha_call_service",
             tool_args={"domain": domain, "service": service, "target": target, "data": data},
@@ -1885,7 +1894,7 @@ class HomeAssistantModule(Module):
             else get_current_runtime_session_id()
         )
 
-        if risk.requires_approval and approval_context is None:
+        if (risk.requires_approval or not owner_only) and approval_context is None:
             action_id = await self._park_actuation_for_approval(
                 pool=pool,
                 domain=domain,
@@ -1894,12 +1903,17 @@ class HomeAssistantModule(Module):
                 data=data,
                 risk=risk,
                 session_id=session_id,
-                why=effective.approval_reason,
+                why=(
+                    "non-owner communication requires owner approval; physical risk: " + risk.value
+                    if not owner_only
+                    else effective.approval_reason
+                ),
             )
             return {
                 "status": "pending_approval",
                 "action_id": str(action_id),
                 "risk": risk.value,
+                **({"communication": communication} if communicates else {}),
                 "message": f"{domain}.{service} requires explicit owner approval",
             }
 

@@ -549,6 +549,22 @@ class TestStep13cCalendarApprovalWiring:
         else:
             daemon._modules = []
 
+        # Real approvals collaborator: the old helper omitted the loaded owner
+        # entirely. This wiring-only transport cannot execute without the real
+        # executor's exact-call context; no provider execution is claimed here.
+        from butlers.modules.approvals import ApprovalsModule
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+
+        approvals = ApprovalsModule()
+
+        async def dispatch(tool_name, arguments):
+            assert (
+                get_approval_execution_context(tool_name=tool_name, tool_args=arguments) is not None
+            )
+            raise AssertionError("Wiring-only fixture does not execute provider effects")
+
+        approvals.set_tool_executor(dispatch)
+        daemon._modules.append(approvals)
         return daemon, enqueuer_calls
 
     def test_wires_enqueuer_when_approvals_enabled_and_calendar_active(self) -> None:
@@ -631,7 +647,19 @@ class TestStep13cCalendarApprovalWiring:
         daemon._module_statuses = {}
         daemon.db = MagicMock()
         daemon.db.pool = mock_pool
-        daemon._modules = [_CalendarMod()]
+        from butlers.modules.approvals import ApprovalsModule
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+
+        approvals = ApprovalsModule()
+
+        async def dispatch(tool_name, arguments):
+            assert (
+                get_approval_execution_context(tool_name=tool_name, tool_args=arguments) is not None
+            )
+            raise AssertionError("Wiring-only fixture does not execute provider effects")
+
+        approvals.set_tool_executor(dispatch)
+        daemon._modules = [_CalendarMod(), approvals]
         # __init__ is bypassed above, so the cached park -> push runtime
         # (bu-mda0r) must be set explicitly like every other instance attr.
         daemon._approval_push_runtime = None

@@ -630,6 +630,23 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
     )
 
 
+def _delete_session_data_volume(environ: Mapping[str, str]) -> bool:
+    """Whether session teardown should delete the container's anonymous PGDATA volume.
+
+    CI has observed 25-60+ s volume-removal calls and concurrent restore-client
+    timeouts. Avoiding anonymous-volume deletion on disposable hosted VMs is
+    a contention mitigation; these observations do not establish the timeout's
+    cause or guarantee the ordering of test bodies and worker teardown.
+
+    Hosted VMs are discarded after the job. Everywhere else (developer
+    machines and self-hosted runners), teardown still requests volume deletion
+    so retained hosts do not accumulate session data. Container-removal errors
+    retain the existing retry/warning behavior; this decision is not proof that
+    cleanup succeeded.
+    """
+    return environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+
+
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
@@ -648,8 +665,12 @@ def postgres_container() -> Iterator[PostgresContainer]:
     container = _configure_postgres_container(
         PostgresContainer("pgvector/pgvector:pg17"), os.environ
     )
-    with container as pg:
-        yield pg
+    # Equivalent to ``with container`` (stop also runs after a failed start),
+    # except that the volume decision is explicit rather than always-delete.
+    try:
+        yield container.start()
+    finally:
+        container.stop(delete_volume=_delete_session_data_volume(os.environ))
 
 
 @pytest.fixture

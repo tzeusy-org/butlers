@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,19 @@ from tests.integration.test_dashboard_stepup import proof_for
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _timeout_capture_summary(output: bytes | str | None) -> dict[str, bool | int | str]:
+    """Report only closed observations; empty capture cannot establish execution stage."""
+    if output is None:
+        return {"captured": False, "size": 0, "unit": "absent", "backup_start_observed": False}
+    start_marker = b"[backup] start:" if isinstance(output, bytes) else "[backup] start:"
+    return {
+        "captured": True,
+        "size": len(output),
+        "unit": "bytes" if isinstance(output, bytes) else "characters",
+        "backup_start_observed": start_marker in output,
+    }
 
 
 def client(container, shell, password, mounts=(), **environment):
@@ -54,7 +68,20 @@ def client(container, shell, password, mounts=(), **environment):
             timeout=120,
             check=False,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as timeout:
+        # Captured output can contain backup data or credentials. Record only
+        # closed observations; neither empty capture nor a marker proves a stage.
+        timeout.add_note(
+            "client timeout diagnostics: "
+            + json.dumps(
+                {
+                    "execution_stage": "unknown",
+                    "stdout": _timeout_capture_summary(timeout.stdout),
+                    "stderr": _timeout_capture_summary(timeout.stderr),
+                },
+                sort_keys=True,
+            )
+        )
         # Killing only the Docker CLI can leave its owned container running.
         # Cleanup cannot turn the original timeout into a successful owner.
         try:
@@ -65,7 +92,7 @@ def client(container, shell, password, mounts=(), **environment):
                 check=False,
             )
         finally:
-            raise
+            raise timeout from None
 
 
 async def test_ordinary_dump_privileged_restore_preserves_receipts_owners_and_acl(

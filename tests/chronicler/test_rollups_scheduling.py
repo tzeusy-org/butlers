@@ -149,7 +149,7 @@ async def test_chronicler_module_registers_rollup_daily_default_schedule(monkeyp
     async def _fake_ensure(pool, **kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+    monkeypatch.setattr("butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure)
 
     module = _load_chronicler_module()
     fake_db = AsyncMock()
@@ -177,7 +177,11 @@ async def test_run_rollup_daily_waits_for_retention_before_materializing(monkeyp
         return (("00000000-0000-0000-0000-000000000001", start_date, start_date),)
 
     monkeypatch.setattr("butlers.chronicler.rollups.materialize_daily_rollups", _fake_materialize)
-    monkeypatch.setattr("butlers.chronicler.history_repair._pending_retention_scopes", _pending_scopes, raising=False)
+    monkeypatch.setattr(
+        "butlers.chronicler.history_repair._pending_retention_scopes",
+        _pending_scopes,
+        raising=False,
+    )
     result = await run_rollup_daily(ready, job_args=None)
 
     assert result == {"status": "waiting_repair", "days_processed": []}

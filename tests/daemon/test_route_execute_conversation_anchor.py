@@ -6,257 +6,47 @@ should get a durable ``dashboard_conversations`` anchor row on the TARGET
 butler, via ``conversation_get_or_create_by_thread``, and the resulting
 conversation id should be forwarded to ``spawner.trigger(conversation_id=...)``
 so the spawner can attach a provider resume handle to it.
+
+Each test boots a real daemon (``booted_daemon``) and calls route.execute over MCP;
+the route inbox, lease, anchor upsert and spawner are the production ones, and
+anchors are read back from ``public.dashboard_conversations`` on the clone. The
+spawner's ``trigger`` is wrapped by a pass-through recorder, so the forwarded
+``conversation_id`` is observed at the boundary it crosses. Two failures the
+database will not produce on its own (an anchor lookup raising, and a recovery
+takeover landing mid-anchor) wrap the anchor helper; nothing in the lifecycle is
+patched.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import uuid
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.core.model_routing import QuotaStatus
-from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
-from butlers.core.runtimes.base import RuntimeAdapter
-from butlers.core.spawner import Spawner
-from butlers.daemon import ButlerDaemon
+from butlers.api import conversations
+from butlers.testing.daemon import write_butler_config
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
-
-class _NoopLeaseHeartbeat:
-    async def __aenter__(self) -> asyncio.Event:
-        return asyncio.Event()
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
-
-
-class _ReclaimedLeaseHeartbeat:
-    """Controllable heartbeat used to model takeover during pre-spawn I/O."""
-
-    def __init__(self) -> None:
-        self.entered = asyncio.Event()
-        self.lease_lost = asyncio.Event()
-
-    async def __aenter__(self) -> asyncio.Event:
-        self.entered.set()
-        return self.lease_lost
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
-
-
-class _ResumeRecordingAdapter(RuntimeAdapter):
-    supports_resume = True
-
-    def __init__(self) -> None:
-        self.invoke_calls: list[str | None] = []
-        self._last_process_info: dict[str, Any] | None = None
-        self.two_invocations = asyncio.Event()
-
-    @property
-    def binary_name(self) -> str:
-        return "mock"
-
-    @property
-    def last_process_info(self) -> dict[str, Any] | None:
-        return self._last_process_info
-
-    async def invoke(self, *_args: Any, **kwargs: Any) -> tuple[str, list, None]:
-        self.invoke_calls.append(kwargs.get("resume_session_id"))
-        if len(self.invoke_calls) == 2:
-            self.two_invocations.set()
-        self._last_process_info = {
-            "runtime_type": DEFAULT_RUNTIME_TYPE,
-            "provider_session_id": "provider-session-from-first-turn",
-        }
-        return "ok", [], None
-
-    async def reset(self) -> None:
-        return None
-
-    def build_config_file(self, _mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
-        config_file = tmp_dir / "runtime.json"
-        config_file.write_text("{}")
-        return config_file
-
-    def parse_system_prompt_file(self, _config_dir: Path) -> str:
-        return ""
-
-
-# ---------------------------------------------------------------------------
-# Helpers (mirrors tests/daemon/test_route_execute_async_dispatch.py)
-# ---------------------------------------------------------------------------
-
-
-def _make_butler_toml(tmp_path: Path, *, butler_name: str = "health", port: int = 9200) -> Path:
-    toml_lines = [
-        "[butler]",
-        f'name = "{butler_name}"',
-        f"port = {port}",
-        'description = "A test butler"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        f'schema = "{butler_name}"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
-
-
-def _patch_infra(butler_name: str = "health"):
-    mock_pool = AsyncMock()
-    mock_pool.fetchval.return_value = None
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    transaction_depth = 0
-
-    async def enter_transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-
-    async def exit_transaction(*_exc):
-        nonlocal transaction_depth
-        transaction_depth -= 1
-        return False
-
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-    transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
-    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
-    mock_conn.transaction = MagicMock(return_value=transaction)
-    acquisition = MagicMock()
-    acquisition.__aenter__ = AsyncMock(return_value=mock_conn)
-    acquisition.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.acquire = MagicMock(return_value=acquisition)
-
-    async def runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": butler_name,
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow.side_effect = runtime_row
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patch("butlers.lifecycle.Spawner", return_value=patches["mock_spawner"]),
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
+_REQUEST_IDS = (f"018f6f4e-5b3b-7b2d-9c2f-{n:012x}" for n in itertools.count(0xC0))
 
 
 def _route_request_context(
     *,
-    source_endpoint_identity: str = "switchboard",
-    source_sender_identity: str = "health",
     source_channel: str = "telegram_bot",
     source_thread_identity: str | None = "12345:678",
     external_conversation_id: str | None = "telegram:12345",
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
-        "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+        "request_id": next(_REQUEST_IDS),
         "received_at": "2026-02-18T10:00:00Z",
         "source_channel": source_channel,
-        "source_endpoint_identity": source_endpoint_identity,
-        "source_sender_identity": source_sender_identity,
+        "source_endpoint_identity": "switchboard",
+        "source_sender_identity": "health",
     }
     if source_thread_identity is not None:
         ctx["source_thread_identity"] = source_thread_identity
@@ -265,474 +55,190 @@ def _route_request_context(
     return ctx
 
 
-def _make_trigger_mock():
-    trigger_mock = AsyncMock()
-    trigger_result = MagicMock()
-    trigger_result.session_id = uuid.uuid4()
-    trigger_mock.return_value = trigger_result
-    return trigger_mock
+async def _boot(booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Boot a registered butler whose spawner records each trigger's kwargs."""
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"), registered=True)
+    spawner = booted.daemon.spawner
+    real_trigger = spawner.trigger
+    booted.triggers = []
+
+    async def recording_trigger(**kwargs: Any) -> Any:
+        booted.triggers.append(kwargs)
+        return await real_trigger(**kwargs)
+
+    monkeypatch.setattr(spawner, "trigger", recording_trigger)
+    return booted
 
 
-def _renew_processing_claim_patch():
-    """Keep route tests focused on routing rather than the DB lease primitive."""
-    return patch(
-        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
-        new_callable=AsyncMock,
-        return_value=True,
+async def _route(booted, prompt: str, **request: Any) -> dict[str, Any]:
+    return await booted.call_tool(
+        "route.execute",
+        {
+            "schema_version": "route.v1",
+            "request_context": _route_request_context(**request),
+            "input": {"prompt": prompt},
+        },
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+async def _drain(booted) -> None:
+    """Wait for every background route task the daemon started."""
+    await asyncio.gather(*tuple(booted.daemon._route_inbox_tasks))
+
+
+async def _anchors(booted) -> list[dict[str, Any]]:
+    rows = await booted.daemon.db.pool.fetch(
+        """
+        SELECT id, butler_name, title, source_channel, external_conversation_id,
+               provider_session_id
+        FROM public.dashboard_conversations
+        ORDER BY created_at
+        """
+    )
+    return [dict(row) for row in rows]
 
 
 async def test_creates_conversation_anchor_and_forwards_conversation_id(
-    tmp_path: Path,
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    patches = _patch_infra("health")
-    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-    assert route_execute_fn is not None
+    booted = await _boot(booted_daemon, tmp_path, monkeypatch)
 
-    trigger_mock = _make_trigger_mock()
-    daemon.spawner.trigger = trigger_mock
+    result = await _route(booted, "Hello from Telegram.")
+    await _drain(booted)
 
-    conversation_id = uuid.uuid4()
-    mock_get_or_create = AsyncMock(return_value=({"id": conversation_id, "is_new": True}, True))
-
-    with (
-        patch(
-            "butlers.core_tools._routing.route_inbox_insert",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_claim_processing",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
-        ),
-        _renew_processing_claim_patch(),
-        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
-        patch(
-            "butlers.api.conversations.conversation_get_or_create_by_thread",
-            mock_get_or_create,
-        ),
-    ):
-        await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(
-                source_channel="telegram_bot", source_thread_identity="12345:678"
-            ),
-            input={"prompt": "Hello from Telegram."},
-        )
-        await asyncio.sleep(0.05)
-
-    mock_get_or_create.assert_awaited_once()
-    call_kwargs = mock_get_or_create.call_args.kwargs
-    assert call_kwargs["butler_name"] == "health"
-    assert call_kwargs["source_channel"] == "telegram_bot"
-    assert call_kwargs["external_conversation_id"] == "telegram:12345"
-    # The raw prompt, not the <routed_message>-wrapped text sent to the runtime.
-    assert call_kwargs["first_message"] == "Hello from Telegram."
-    assert "<routed_message>" not in call_kwargs["first_message"]
-
-    trigger_mock.assert_awaited()
-    assert trigger_mock.call_args.kwargs["conversation_id"] == conversation_id
+    assert result["status"] == "accepted"
+    (anchor,) = await _anchors(booted)
+    assert anchor["butler_name"] == "general"
+    assert anchor["source_channel"] == "telegram_bot"
+    assert anchor["external_conversation_id"] == "telegram:12345"
+    # Titled from the raw prompt, not the <routed_message>-wrapped runtime text.
+    assert anchor["title"] == "Hello from Telegram."
+    (trigger,) = booted.triggers
+    assert trigger["conversation_id"] == anchor["id"]
 
 
 async def test_dashboard_channel_resolves_existing_conversation_without_forking(
-    tmp_path: Path,
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """bu-0ynlk.5: a dashboard turn must resolve the existing conversation by
     id (its source_thread_identity IS that conversation's id, see
     build_dashboard_envelope) rather than upsert it as a novel thread key --
     the latter forks an invisible second "ghost" anchor every turn.
     """
-    patches = _patch_infra("finance")
-    butler_dir = _make_butler_toml(tmp_path, butler_name="finance")
-    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-    assert route_execute_fn is not None
-
-    trigger_mock = _make_trigger_mock()
-    daemon.spawner.trigger = trigger_mock
-
-    existing_conversation_id = uuid.uuid4()
-    mock_get_by_id = AsyncMock(
-        return_value={"id": existing_conversation_id, "butler_name": "switchboard"}
+    booted = await _boot(booted_daemon, tmp_path, monkeypatch)
+    # Classification may route a dashboard turn to any butler, so the existing
+    # conversation need not belong to the one that runs it.
+    existing = await conversations.conversation_create(
+        booted.daemon.db.pool, butler_name="switchboard", first_message="Groceries"
     )
-    mock_get_or_create = AsyncMock()
 
-    with (
-        patch(
-            "butlers.core_tools._routing.route_inbox_insert",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_claim_processing",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
-        ),
-        _renew_processing_claim_patch(),
-        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
-        patch(
-            "butlers.api.conversations.conversation_get_by_id_any_butler",
-            mock_get_by_id,
-        ),
-        patch(
-            "butlers.api.conversations.conversation_get_or_create_by_thread",
-            mock_get_or_create,
-        ),
-    ):
-        await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(
-                source_channel="dashboard",
-                source_thread_identity=str(existing_conversation_id),
-            ),
-            input={"prompt": "What did I spend on groceries?"},
-        )
-        await asyncio.sleep(0.05)
+    await _route(
+        booted,
+        "What did I spend on groceries?",
+        source_channel="dashboard",
+        source_thread_identity=str(existing["id"]),
+    )
+    await _drain(booted)
 
-    mock_get_by_id.assert_awaited_once_with(patches["mock_pool"], existing_conversation_id)
-    mock_get_or_create.assert_not_awaited()
-    trigger_mock.assert_awaited()
-    assert trigger_mock.call_args.kwargs["conversation_id"] == existing_conversation_id
+    assert [anchor["id"] for anchor in await _anchors(booted)] == [existing["id"]]
+    (trigger,) = booted.triggers
+    assert trigger["conversation_id"] == existing["id"]
 
 
 async def test_two_routed_telegram_ingests_reuse_anchor_and_resume_provider_session(
-    tmp_path: Path,
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    patches = _patch_infra("health")
-    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-    assert route_execute_fn is not None
+    booted = await _boot(booted_daemon, tmp_path, monkeypatch)
+    booted.runtime.supports_resume = True
 
-    anchors: dict[tuple[str, str, str], uuid.UUID] = {}
+    for message_id, prompt in (("1", "first turn"), ("2", "second turn")):
+        await _route(booted, prompt, source_thread_identity=f"12345:{message_id}")
+        await _drain(booted)
 
-    async def get_or_create_anchor(
-        _pool: Any,
-        *,
-        butler_name: str,
-        source_channel: str,
-        external_conversation_id: str,
-        first_message: str,
-    ) -> tuple[dict[str, Any], bool]:
-        del first_message
-        key = (butler_name, source_channel, external_conversation_id)
-        is_new = key not in anchors
-        conversation_id = anchors.setdefault(key, uuid.uuid4())
-        return {"id": conversation_id}, is_new
-
-    provider_state: dict[str, Any] | None = None
-
-    async def get_provider_session(*_args: Any, **_kwargs: Any) -> dict[str, Any] | None:
-        return provider_state
-
-    async def set_provider_session(
-        _pool: Any,
-        _conversation_id: uuid.UUID,
-        *,
-        provider_session_id: str,
-        provider_runtime_type: str,
-        **_kwargs: Any,
-    ) -> None:
-        nonlocal provider_state
-        provider_state = {
-            "provider_session_id": provider_session_id,
-            "provider_runtime_type": provider_runtime_type,
-            "provider_session_updated_at": __import__("datetime").datetime.now(
-                __import__("datetime").UTC
-            ),
-        }
-
-    adapter = _ResumeRecordingAdapter()
-    real_spawner = Spawner(
-        config=daemon.config,
-        config_dir=butler_dir,
-        pool=patches["mock_pool"],
-        runtime=adapter,
-    )
-    real_spawner._ensure_mcp_endpoints_warmed = AsyncMock(return_value=None)
-    daemon.spawner.trigger.side_effect = real_spawner.trigger
-    quota_allowed = QuotaStatus(
-        allowed=True,
-        usage_24h=0,
-        limit_24h=None,
-        usage_30d=0,
-        limit_30d=None,
-    )
-
-    with (
-        patch(
-            "butlers.core_tools._routing.route_inbox_insert",
-            new_callable=AsyncMock,
-            side_effect=[uuid.uuid4(), uuid.uuid4()],
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_claim_processing",
-            new_callable=AsyncMock,
-            side_effect=[uuid.uuid4(), uuid.uuid4()],
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
-        ),
-        _renew_processing_claim_patch(),
-        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
-        patch(
-            "butlers.api.conversations.conversation_get_or_create_by_thread",
-            new_callable=AsyncMock,
-            side_effect=get_or_create_anchor,
-        ) as anchor_lookup,
-        patch(
-            "butlers.core.spawner.session_create",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
-        patch(
-            "butlers.core.spawner.resolve_model_with_effective_tier",
-            new_callable=AsyncMock,
-            return_value=(
-                DEFAULT_RUNTIME_TYPE,
-                "test-model",
-                [],
-                uuid.uuid4(),
-                1800,
-                "workhorse",
-            ),
-        ),
-        patch(
-            "butlers.core.spawner.check_token_quota",
-            new_callable=AsyncMock,
-            return_value=quota_allowed,
-        ),
-        patch(
-            "butlers.core.spawner.conversation_get_provider_session",
-            new_callable=AsyncMock,
-            side_effect=get_provider_session,
-        ),
-        patch(
-            "butlers.core.spawner.conversation_set_provider_session",
-            new_callable=AsyncMock,
-            side_effect=set_provider_session,
-        ),
-    ):
-        for message_id, prompt in (("1", "first turn"), ("2", "second turn")):
-            await route_execute_fn(
-                schema_version="route.v1",
-                request_context=_route_request_context(
-                    source_channel="telegram_bot",
-                    source_thread_identity=f"12345:{message_id}",
-                    external_conversation_id="telegram:12345",
-                ),
-                input={"prompt": prompt},
-            )
-            await asyncio.sleep(0.1)
-
-        await asyncio.wait_for(adapter.two_invocations.wait(), timeout=5)
-
-    assert anchor_lookup.await_count == 2
-    assert len(anchors) == 1
-    assert [call.kwargs["external_conversation_id"] for call in anchor_lookup.await_args_list] == [
-        "telegram:12345",
-        "telegram:12345",
+    (anchor,) = await _anchors(booted)
+    assert [trigger["conversation_id"] for trigger in booted.triggers] == [anchor["id"]] * 2
+    # Turn 1 cold-starts and mints a session; turn 2 resumes it and mints the next.
+    assert [call["resume_session_id"] for call in booted.runtime.invocations] == [
+        None,
+        "fake-session-1",
     ]
-    assert adapter.invoke_calls == [None, "provider-session-from-first-turn"]
+    assert anchor["provider_session_id"] == "fake-session-2"
 
 
-async def test_skips_conversation_anchor_when_no_thread_identity(tmp_path: Path) -> None:
-    patches = _patch_infra("health")
-    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-    assert route_execute_fn is not None
+async def test_skips_conversation_anchor_when_no_thread_identity(
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    booted = await _boot(booted_daemon, tmp_path, monkeypatch)
 
-    trigger_mock = _make_trigger_mock()
-    daemon.spawner.trigger = trigger_mock
+    await _route(
+        booted,
+        "Run health check.",
+        source_channel="api",
+        source_thread_identity=None,
+        external_conversation_id=None,
+    )
+    await _drain(booted)
 
-    mock_get_or_create = AsyncMock()
-
-    with (
-        patch(
-            "butlers.core_tools._routing.route_inbox_insert",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_claim_processing",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
-        ),
-        _renew_processing_claim_patch(),
-        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
-        patch(
-            "butlers.api.conversations.conversation_get_or_create_by_thread",
-            mock_get_or_create,
-        ),
-    ):
-        await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(
-                source_channel="api",
-                source_thread_identity=None,
-                external_conversation_id=None,
-            ),
-            input={"prompt": "Run health check."},
-        )
-        await asyncio.sleep(0.05)
-
-    mock_get_or_create.assert_not_awaited()
-    trigger_mock.assert_awaited()
-    assert trigger_mock.call_args.kwargs["conversation_id"] is None
+    assert await _anchors(booted) == []
+    (trigger,) = booted.triggers
+    assert trigger["conversation_id"] is None
+    assert len(booted.runtime.invocations) == 1
 
 
 async def test_conversation_anchor_lookup_failure_does_not_block_routing(
-    tmp_path: Path,
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    patches = _patch_infra("health")
-    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-    assert route_execute_fn is not None
+    booted = await _boot(booted_daemon, tmp_path, monkeypatch)
+    lookups: list[dict[str, Any]] = []
 
-    trigger_mock = _make_trigger_mock()
-    daemon.spawner.trigger = trigger_mock
+    async def failing_anchor(_pool: Any, **kwargs: Any) -> Any:
+        lookups.append(kwargs)
+        raise RuntimeError("db unavailable")
 
-    mock_get_or_create = AsyncMock(side_effect=RuntimeError("db unavailable"))
+    monkeypatch.setattr(conversations, "conversation_get_or_create_by_thread", failing_anchor)
 
-    with (
-        patch(
-            "butlers.core_tools._routing.route_inbox_insert",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_claim_processing",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-            side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat(),
-        ),
-        _renew_processing_claim_patch(),
-        patch("butlers.core_tools._routing.route_inbox_mark_processed", new_callable=AsyncMock),
-        patch(
-            "butlers.api.conversations.conversation_get_or_create_by_thread",
-            mock_get_or_create,
-        ),
-    ):
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(
-                source_channel="telegram_bot", source_thread_identity="12345:678"
-            ),
-            input={"prompt": "Hello from Telegram."},
-        )
-        await asyncio.sleep(0.05)
+    result = await _route(booted, "Hello from Telegram.")
+    await _drain(booted)
 
     assert result["status"] == "accepted"
-    mock_get_or_create.assert_awaited_once()
-    trigger_mock.assert_awaited()
-    assert trigger_mock.call_args.kwargs["conversation_id"] is None
+    assert len(lookups) == 1
+    (trigger,) = booted.triggers
+    assert trigger["conversation_id"] is None
+    assert len(booted.runtime.invocations) == 1
+    (state,) = await booted.daemon.db.pool.fetch("SELECT lifecycle_state FROM route_inbox")
+    assert state["lifecycle_state"] == "processed"
 
 
 async def test_reclaimed_lease_during_anchor_never_invokes_original_worker(
-    tmp_path: Path,
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A recovery takeover while anchor I/O waits fences the original route worker."""
+    booted = await _boot(booted_daemon, tmp_path, monkeypatch)
+    real_anchor = conversations.conversation_get_or_create_by_thread
+    takeover_claim = uuid.uuid4()
 
-    from butlers.core.route_inbox import RouteInboxLeaseLost
-
-    patches = _patch_infra("health")
-    butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-    assert route_execute_fn is not None
-
-    trigger_mock = _make_trigger_mock()
-    trigger_mock.return_value.success = True
-    trigger_mock.return_value.error = None
-    daemon.spawner.trigger = trigger_mock
-    heartbeat = _ReclaimedLeaseHeartbeat()
-    anchor_saw_heartbeat = False
-    anchor_called = asyncio.Event()
-
-    async def reclaim_during_anchor(
-        _pool: object,
-        **_kwargs: object,
-    ) -> tuple[dict[str, object], bool]:
-        nonlocal anchor_saw_heartbeat
-        anchor_saw_heartbeat = heartbeat.entered.is_set()
-        anchor_called.set()
-        if anchor_saw_heartbeat:
-            # This models a recovery worker replacing the claim while the
-            # original worker is still waiting on optional anchor I/O.
-            heartbeat.lease_lost.set()
-        return {"id": uuid.uuid4()}, True
-
-    async def wait_while_reclaiming(*args: object) -> object:
-        if len(args) == 2:
-            lease_lost, invocation = args
-        else:
-            _pool, _row_id, _claim_id, lease_lost, invocation = args
-        assert isinstance(lease_lost, asyncio.Event)
-        assert callable(invocation)
-        if lease_lost.is_set():
-            raise RouteInboxLeaseLost("reclaimed during anchor")
-        return await invocation()
-
-    mark_processed = AsyncMock(return_value=True)
-    mark_errored = AsyncMock(return_value=True)
-    with (
-        patch(
-            "butlers.core_tools._routing.route_inbox_insert",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_claim_processing",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-            return_value=heartbeat,
-        ),
-        patch("butlers.core_tools._routing.route_inbox_wait_while_claimed", wait_while_reclaiming),
-        patch("butlers.core_tools._routing.route_inbox_mark_processed", mark_processed),
-        patch("butlers.core_tools._routing.route_inbox_mark_errored", mark_errored),
-        patch(
-            "butlers.api.conversations.conversation_get_or_create_by_thread",
-            reclaim_during_anchor,
-        ),
-    ):
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(
-                source_channel="telegram_bot", source_thread_identity="12345:678"
-            ),
-            input={"prompt": "Do not spawn after the reclaimed anchor."},
+    async def reclaim_during_anchor(pool: Any, **kwargs: Any) -> Any:
+        # A recovery worker replaces the claim while the original worker is still
+        # waiting on optional anchor I/O inside its lease heartbeat.
+        await pool.execute(
+            "UPDATE route_inbox SET processing_claim_id = $1, processing_claimed_at = now()",
+            takeover_claim,
         )
-        assert result["status"] == "accepted"
-        tasks = tuple(daemon._route_inbox_tasks)
-        assert len(tasks) == 1
-        await asyncio.wait_for(tasks[0], timeout=1)
-        assert anchor_called.is_set()
+        return await real_anchor(pool, **kwargs)
 
-    assert anchor_saw_heartbeat is True
-    trigger_mock.assert_not_awaited()
-    mark_processed.assert_not_awaited()
-    mark_errored.assert_not_awaited()
+    monkeypatch.setattr(
+        conversations, "conversation_get_or_create_by_thread", reclaim_during_anchor
+    )
+
+    result = await _route(booted, "Do not spawn after the reclaimed anchor.")
+    await _drain(booted)
+
+    assert result["status"] == "accepted"
+    assert len(await _anchors(booted)) == 1
+    assert booted.triggers == []
+    assert booted.runtime.invocations == []
+    # The displaced worker wrote no terminal state: the row is the new owner's.
+    (row,) = await booted.daemon.db.pool.fetch(
+        "SELECT lifecycle_state, processing_claim_id FROM route_inbox"
+    )
+    assert (row["lifecycle_state"], row["processing_claim_id"]) == ("processing", takeover_claim)

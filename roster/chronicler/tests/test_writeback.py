@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.chronicler.balance import LaneBalance
+from butlers.chronicler.history_repair import RepairAdmissionError
 from butlers.chronicler.writeback import (
     INSIGHT_CONFIDENCE_CEILING,
     INSIGHT_CONFIDENCE_FLOOR,
@@ -38,7 +39,6 @@ from butlers.chronicler.writeback import (
     synthesize_self_reminders,
     synthesize_sleep_debt_insight,
 )
-from butlers.chronicler.history_repair import RepairAdmissionError
 
 _DAY = date(2026, 7, 9)
 
@@ -240,9 +240,7 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
     monkeypatch.setattr("butlers.modules.memory.storage.store_fact", _fake_store_fact)
     sentinel_pool = object()
     guard = AsyncMock()
-    writer = build_chronicler_fact_writer(
-        sentinel_pool, object(), memory_schema="chronicler_mem"
-    )
+    writer = build_chronicler_fact_writer(sentinel_pool, object(), memory_schema="chronicler_mem")
     await writer(
         subject="sleep",
         predicate=PREDICATE_SLEEP_DEBT,

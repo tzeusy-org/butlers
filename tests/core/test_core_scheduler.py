@@ -174,7 +174,7 @@ class _NoopButlerDBLogHandler(logging.Handler):
 @_asyncio_session
 async def test_sync_inserts_and_sets_next_run_at(general_pool):
     """sync_schedules inserts toml tasks with source=toml and non-null next_run_at."""
-    from butlers.core.scheduler import sync_schedules
+    from butlers.core.scheduler.sync import sync_schedules
 
     schedules = [
         ScheduleSpec(name="daily-report", cron="0 9 * * *", prompt="Generate daily report"),
@@ -194,7 +194,7 @@ async def test_sync_inserts_and_sets_next_run_at(general_pool):
 @_asyncio_session
 async def test_sync_updates_changed_fields_and_disables_removed(general_pool):
     """sync_schedules updates changed cron/prompt, disables removed tasks, re-enables restored."""
-    from butlers.core.scheduler import sync_schedules
+    from butlers.core.scheduler.sync import sync_schedules
 
     base = [
         ScheduleSpec(name="keep-me", cron="0 9 * * *", prompt="keep"),
@@ -226,7 +226,8 @@ async def test_sync_updates_changed_fields_and_disables_removed(general_pool):
 @_asyncio_session
 async def test_sync_removal_does_not_re_disable_a_concurrently_recovered_default(general_pool):
     """A stale TOML-removal snapshot cannot undo an atomic module-default recovery."""
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     name = "memory_consolidation_stale_disable"
     await sync_schedules(
@@ -303,7 +304,7 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
     legacy_public_pool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """A schema-less daemon boot derives the recovery audit identity from lifecycle config."""
-    from butlers.core.scheduler import sync_schedules
+    from butlers.core.scheduler.sync import sync_schedules
 
     name = f"memory_consolidation_legacy_{uuid.uuid4().hex}"
     owner_butler = f"legacy_recovery_{uuid.uuid4().hex[:8]}"
@@ -450,7 +451,8 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
 @_asyncio_session
 async def test_module_default_recovery_reclaims_only_disabled_toml_orphans_and_audits(general_pool):
     """A post-sync TOML orphan is recovered once without rewriting its runtime payload."""
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     name = "memory_consolidation_recovery"
     await sync_schedules(
@@ -547,7 +549,8 @@ async def test_module_default_recovery_rolls_back_when_audit_append_fails(
     general_pool, monkeypatch
 ):
     """A recovery has no observable state transition when its canonical audit cannot commit."""
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     name = "memory_decay_sweep_audit_rollback"
     await sync_schedules(
@@ -597,7 +600,8 @@ async def test_module_default_recovery_concurrently_commits_one_transition_and_a
     """The returned conditional transition is the sole authority for the recovery audit."""
     import asyncio
 
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     name = "memory_purge_superseded_concurrent_recovery"
     await sync_schedules(
@@ -650,7 +654,8 @@ async def test_module_default_recovery_attributes_same_name_across_butler_schema
     fresh_db,
 ):
     """Same schedule names remain distinguishable by configured butler and schema metadata."""
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     # Several pools share one database here, so take a URL rather than a db() pool.
     db_url = await asyncio.to_thread(fresh_db, "core", schemas={"core": "general"})
@@ -742,7 +747,8 @@ async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ow
     """A disabled TOML orphan is recovered — including ``memory_episode_cleanup``,
     now that ``run_episode_cleanup`` is bounded + consolidation-aware and can no
     longer trigger a destructive catch-up. DB ownership remains a hard fence."""
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     active_name = "memory_decay_sweep_active_toml"
     db_name = "memory_purge_superseded_operator_disabled"
@@ -845,7 +851,7 @@ async def test_module_default_recovery_reclaims_episode_cleanup_but_fences_db_ow
 @_asyncio_session
 async def test_sync_default_timezone_pins_cron_to_local(general_pool):
     """sync_schedules computes next_run_at by evaluating cron in default_timezone."""
-    from butlers.core.scheduler import sync_schedules
+    from butlers.core.scheduler.sync import sync_schedules
 
     schedules = [ScheduleSpec(name="day-close", cron="5 1 * * *", prompt="summary; call notify()")]
     await sync_schedules(general_pool, schedules, default_timezone="Asia/Singapore")
@@ -862,7 +868,8 @@ async def test_sync_default_timezone_pins_cron_to_local(general_pool):
 @_asyncio_session
 async def test_tick_advance_honors_row_timezone(general_pool):
     """tick() advances next_run_at using the per-row timezone column."""
-    from butlers.core.scheduler import sync_schedules, tick
+    from butlers.core.scheduler.dispatch import tick
+    from butlers.core.scheduler.sync import sync_schedules
 
     await sync_schedules(
         general_pool,
@@ -893,7 +900,8 @@ async def test_tick_advance_follows_owner_default_for_utc_rows(general_pool):
     This is the chronicler day_close scenario: a TOML schedule (timezone='UTC')
     must advance in the owner's local time, not UTC.
     """
-    from butlers.core.scheduler import sync_schedules, tick
+    from butlers.core.scheduler.dispatch import tick
+    from butlers.core.scheduler.sync import sync_schedules
 
     await sync_schedules(
         general_pool,
@@ -927,7 +935,8 @@ async def test_tick_advance_follows_owner_default_for_utc_rows(general_pool):
 @_asyncio_session
 async def test_tick_dispatch_prompt_and_job(general_pool):
     """tick() dispatches prompt tasks with trigger_source; job tasks via job_name/job_args without prompt/complexity."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     # Prompt task
     t1 = await schedule_create(general_pool, "due-task", "*/1 * * * *", "run this")
@@ -975,7 +984,8 @@ async def _exhaust_every_catalog_account(pool, reset_at: datetime) -> None:
 @_asyncio_session
 async def test_tick_defers_prompt_task_to_allowance_reset_without_dispatching(general_pool):
     """With every fit account exhausted, a due prompt task is deferred, never dispatched."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     reset_at = datetime.now(UTC) + timedelta(hours=2)
     task_id = await schedule_create(general_pool, "allowance-task", "*/1 * * * *", "run this")
@@ -1014,7 +1024,8 @@ async def test_tick_defers_prompt_task_to_allowance_reset_without_dispatching(ge
 @_asyncio_session
 async def test_tick_dispatches_normally_once_allowance_reset_passed(general_pool):
     """An exhausted account whose reset is already past no longer defers anything."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     task_id = await schedule_create(general_pool, "allowance-lapsed", "*/1 * * * *", "run this")
     await general_pool.execute(
@@ -1034,7 +1045,8 @@ async def test_tick_dispatches_normally_once_allowance_reset_passed(general_pool
 @_asyncio_session
 async def test_tick_prepares_prompt_with_shared_run_time_and_timezone(general_pool):
     """Prompt and completion hooks share one authoritative tick context."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     task_id = await schedule_create(general_pool, "bound-task", "*/1 * * * *", "original prompt")
     await general_pool.execute(
@@ -1085,7 +1097,8 @@ async def test_tick_prepares_prompt_with_shared_run_time_and_timezone(general_po
 @_asyncio_session
 async def test_tick_keeps_legacy_completion_hook_signature_compatible(general_pool):
     """Existing three-keyword completion hooks keep running after timezone wiring."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     task_id = await schedule_create(general_pool, "legacy-hook-task", "*/1 * * * *", "prompt")
     await general_pool.execute(
@@ -1114,7 +1127,8 @@ async def test_tick_keeps_legacy_completion_hook_signature_compatible(general_po
 @_asyncio_session
 async def test_tick_prompt_hook_failure_prevents_unbound_dispatch(general_pool):
     """A failed deterministic binding must not send the stored prompt to the LLM."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     task_id = await schedule_create(general_pool, "unbound-task", "*/1 * * * *", "unsafe prompt")
     original_next_run_at = _past()
@@ -1165,7 +1179,8 @@ async def test_tick_dispatches_legacy_complexity_at_canonical_tier(general_pool,
     feeds resolve_model). bu-lq7m4: a schedule row stored with the retired 'high'/'extra_high'
     tier must dispatch at reasoning — previously _parse_complexity_from_db_row collapsed every
     legacy tier to workhorse, so those rows silently under-resolved their model."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     task_id = await schedule_create(general_pool, "tiered-task", "*/1 * * * *", "run tiered")
     # schedule_create validates complexity on write; persist the stale/legacy value directly.
@@ -1186,7 +1201,8 @@ async def test_tick_dispatches_legacy_complexity_at_canonical_tier(general_pool,
 @_asyncio_session
 async def test_tick_skips_disabled_continues_on_failure_and_timestamps(general_pool):
     """tick() skips disabled tasks; continues when dispatch raises; sets last_run_at; advances next_run_at; disables when until_at exceeded."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     # Disabled task — skipped
     t1 = await schedule_create(general_pool, "disabled-task2", "*/1 * * * *", "skip me")
@@ -1231,7 +1247,7 @@ async def test_tick_skips_disabled_continues_on_failure_and_timestamps(general_p
 @_asyncio_session
 async def test_tick_tolerates_legacy_schema_without_until_at(general_pool):
     """An incompatible migrated schema is visible; no legacy projection hides it."""
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
 
     async with general_pool.acquire() as conn:
         tx = conn.transaction()
@@ -1294,7 +1310,7 @@ class _FakeEligibilityPool:
 
 @_asyncio_session
 async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired(monkeypatch):
-    from butlers.core.scheduler import _butler_dispatch_gated
+    from butlers.core.scheduler.claim import _butler_dispatch_gated
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
     eligibility_pool = AsyncMock()
@@ -1319,7 +1335,7 @@ async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired
 @_asyncio_session
 async def test_receiver_scheduler_gate_policy_function_edges(monkeypatch):
     """Missing policy holds; denial or another butler's pool fails open."""
-    from butlers.core.scheduler import _butler_dispatch_gated
+    from butlers.core.scheduler.claim import _butler_dispatch_gated
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
 
@@ -1342,7 +1358,8 @@ async def test_receiver_scheduler_gate_policy_function_edges(monkeypatch):
 @_asyncio_session
 async def test_tick_skips_dispatch_when_butler_quarantined(general_pool):
     """A paused/quarantined butler must NOT dispatch its due cron tick."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     t1 = await schedule_create(general_pool, "gated-task", "*/1 * * * *", "should not run")
     await general_pool.execute(
@@ -1373,7 +1390,8 @@ async def test_tick_skips_dispatch_when_butler_quarantined(general_pool):
 @_asyncio_session
 async def test_tick_dispatches_when_butler_active(general_pool):
     """An eligible (active) butler dispatches its due cron tick normally."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     t1 = await schedule_create(general_pool, "active-task", "*/1 * * * *", "run me")
     await general_pool.execute(
@@ -1397,7 +1415,8 @@ async def test_tick_dispatches_when_butler_active(general_pool):
 @_asyncio_session
 async def test_tick_dispatches_when_no_eligibility_pool(general_pool):
     """Without an eligibility_pool, ticks dispatch as before (backward compatible)."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     t1 = await schedule_create(general_pool, "ungated-task", "*/1 * * * *", "run me")
     await general_pool.execute(
@@ -1476,7 +1495,7 @@ async def test_non_qa_butler_reads_its_own_hold_through_its_runtime_role(
     general_policy_db_url, monkeypatch
 ):
     """sw_053: general's own role sees its own hold; a role-less pool is refused."""
-    from butlers.core.scheduler import _butler_dispatch_gated
+    from butlers.core.scheduler.claim import _butler_dispatch_gated
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
 
@@ -1531,7 +1550,7 @@ class _PoisonPool:
 @_asyncio_session
 async def test_qa_policy_read_maps_every_result_to_a_typed_category(qa_pools):
     """Each valid pair and each failure is one closed, content-blind category."""
-    from butlers.core.scheduler import QaSchedulePolicy, read_qa_schedule_policy
+    from butlers.core.scheduler.claim import QaSchedulePolicy, read_qa_schedule_policy
 
     owner, qa = qa_pools
     expected = {
@@ -1583,7 +1602,8 @@ async def test_qa_tick_rechecks_own_policy_before_each_dispatch(
     qa_pools, monkeypatch, caplog, cutover_flag
 ):
     """TTL staleness admits; a mid-tick pause blocks later work, which resumes once."""
-    from butlers.core.scheduler import schedule_create, tick
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", cutover_flag)
     owner, qa = qa_pools
@@ -1661,7 +1681,7 @@ async def test_qa_tick_rechecks_own_policy_before_each_dispatch(
 @_asyncio_session
 async def test_schedule_create_and_list(general_pool):
     """schedule_create persists prompt and job tasks; schedule_list returns fields; invalid cron and dup name raise."""
-    from butlers.core.scheduler import schedule_create, schedule_list
+    from butlers.core.scheduler.crud import schedule_create, schedule_list
 
     # Prompt task with optional fields
     task_id = await schedule_create(
@@ -1728,7 +1748,7 @@ async def test_schedule_list_coerces_null_and_legacy_complexity(general_pool, st
     callers; valid tiers pass through unchanged. Guards bu-e0d9x (schedule_list previously
     returned dict(row) uncoerced) and bu-lq7m4 (retired high/extra_high must remap to
     reasoning, not collapse to workhorse)."""
-    from butlers.core.scheduler import schedule_create, schedule_list
+    from butlers.core.scheduler.crud import schedule_create, schedule_list
 
     task_id = await schedule_create(general_pool, "coerce-task", "0 9 * * *", "coerce test")
 
@@ -1746,7 +1766,8 @@ async def test_schedule_list_coerces_null_and_legacy_complexity(general_pool, st
 @_asyncio_session
 async def test_schedule_update_and_delete(general_pool):
     """schedule_update changes fields; schedule_delete removes runtime tasks."""
-    from butlers.core.scheduler import schedule_create, schedule_delete, schedule_update
+    from butlers.core.scheduler.crud import schedule_create, schedule_delete
+    from butlers.core.scheduler.update import schedule_update
 
     task_id = await schedule_create(general_pool, "updatable", "0 9 * * *", "original")
 
@@ -1766,7 +1787,8 @@ async def test_schedule_update_and_delete(general_pool):
 @_asyncio_session
 async def test_schedule_toggle_requested_state_is_idempotent_under_concurrency(general_pool):
     """Concurrent retries converge on one requested state, never double-flip."""
-    from butlers.core.scheduler import schedule_create, schedule_toggle
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.update import schedule_toggle
 
     task_id = await schedule_create(general_pool, "toggle-concurrent", "0 9 * * *", "toggle me")
 
@@ -1791,7 +1813,8 @@ async def test_schedule_toggle_requested_state_is_idempotent_under_concurrency(g
 @_asyncio_session
 async def test_schedule_toggle_reenable_recomputes_next_run(general_pool):
     """Enabling a DB-owned row stores a fresh next occurrence."""
-    from butlers.core.scheduler import schedule_create, schedule_toggle
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.update import schedule_toggle
 
     task_id = await schedule_create(general_pool, "toggle-reenable", "0 9 * * *", "toggle me")
     await schedule_toggle(general_pool, task_id, enabled=False, stagger_key="test-butler")
@@ -1812,7 +1835,8 @@ async def test_schedule_toggle_reenable_recomputes_next_run(general_pool):
 @_asyncio_session
 async def test_schedule_validation(general_pool):
     """schedule_update raises for invalid cron and nonexistent ID; complexity enforced on create and update."""
-    from butlers.core.scheduler import schedule_create, schedule_update
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.update import schedule_update
 
     # Invalid cron on update
     task_id = await schedule_create(general_pool, "cron-update-bad", "0 9 * * *", "prompt")
@@ -1851,7 +1875,7 @@ async def test_deadline_task_create(general_pool):
     """schedule_create with task_type=deadline requires target_date and alert_thresholds."""
     import datetime as _dt
 
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     future_date = (_dt.datetime.now(_dt.UTC) + _dt.timedelta(days=60)).date()
     task_id = await schedule_create(
@@ -1892,7 +1916,7 @@ def test_stagger_determinism_cap_and_cadence() -> None:
     """Same key/cron always same offset; every-minute capped; cadences preserved."""
     from datetime import UTC, datetime, timedelta
 
-    from butlers.core.scheduler import _next_run, _stagger_offset_seconds
+    from butlers.core.scheduler.timing import _next_run, _stagger_offset_seconds
 
     now = datetime(2026, 2, 20, 12, 0, tzinfo=UTC)
 
@@ -1924,7 +1948,7 @@ def test_next_run_interprets_cron_in_timezone() -> None:
     """Hour-pinned crons are evaluated in the given IANA zone, returned in UTC."""
     from datetime import UTC, datetime
 
-    from butlers.core.scheduler import _next_run
+    from butlers.core.scheduler.timing import _next_run
 
     # 2026-06-14 02:00Z == 10:00 Asia/Singapore (UTC+8). The next "01:05" local
     # is 2026-06-15 01:05 SGT == 2026-06-14 17:05 UTC.
@@ -1943,7 +1967,7 @@ def test_coerce_schedule_zone_fails_open_to_utc() -> None:
     """Unknown/empty timezone strings degrade to UTC rather than raising."""
     from zoneinfo import ZoneInfo
 
-    from butlers.core.scheduler import _coerce_schedule_zone
+    from butlers.core.scheduler.timing import _coerce_schedule_zone
 
     assert _coerce_schedule_zone("Not/AZone") == ZoneInfo("UTC")
     assert _coerce_schedule_zone(None) == ZoneInfo("UTC")
@@ -1954,7 +1978,7 @@ def test_coerce_schedule_zone_fails_open_to_utc() -> None:
 @pytest.mark.unit
 def test_effective_schedule_timezone_sentinels_follow_default() -> None:
     """'UTC'/NULL/empty follow the owner default; non-UTC values override it."""
-    from butlers.core.scheduler import _effective_schedule_timezone
+    from butlers.core.scheduler.timing import _effective_schedule_timezone
 
     default = "Asia/Singapore"
     assert _effective_schedule_timezone("UTC", default) == default
@@ -1974,7 +1998,7 @@ def test_check_notify_reference(tmp_path, caplog) -> None:
     """Warns when notify absent; silent when present or in skill; safe on missing dir."""
     import logging
 
-    from butlers.core.scheduler import _check_notify_reference
+    from butlers.core.scheduler.rows import _check_notify_reference
 
     # Present: no warning
     with caplog.at_level(logging.WARNING, logger="butlers.core.scheduler"):
@@ -2024,7 +2048,7 @@ async def test_sync_schedules_notify_validation(general_pool, caplog) -> None:
     """sync_schedules warns only for prompt tasks missing notify(); job tasks and notify-present tasks silenced."""
     import logging
 
-    from butlers.core.scheduler import sync_schedules
+    from butlers.core.scheduler.sync import sync_schedules
 
     schedules = [
         ScheduleSpec(

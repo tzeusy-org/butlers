@@ -15,12 +15,14 @@ import check_test_db_fixtures as guard  # noqa: E402
 
 pytestmark = pytest.mark.unit
 
-# Built from parts so this file does not itself hold the literal it plants.
+# Built from parts so this file does not itself hold the literals it plants.
 DDL = "CREATE " + "TABLE"
 DDL_FILE = f'SCHEMA = """\n{DDL} IF NOT EXISTS notes (id INT);\n"""\n'
+DEF_POOL = "def " + "pool("
 FIXTURE_FILE = (
-    "import pytest\n\n\n@pytest.fixture\nasync def pool(db):\n    return await db('core')\n"
+    f"import pytest\n\n\n@pytest.fixture\nasync {DEF_POOL}db):\n    return await db('core')\n"
 )
+MANAGER_FILE = f"class Manager:\n    {DEF_POOL}self, name):\n        return name\n"
 
 
 def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -50,9 +52,15 @@ def test_a_new_pool_or_migrated_db_url_fixture_fails(tmp_path: Path) -> None:
         tmp_path,
         {
             "roster/finance/tests/test_a.py": FIXTURE_FILE,
-            "tests/test_b.py": FIXTURE_FILE.replace("def pool", "def migrated_db_url"),
+            "tests/test_b.py": FIXTURE_FILE.replace(DEF_POOL, "def " + "migrated_db_url("),
         },
     )
+    assert _run(root, {})[0] == 1
+
+
+def test_a_hand_written_database_manager_fails(tmp_path: Path) -> None:
+    """A fake manager's pool method copies butlers.testing.db_manager instead of using it."""
+    root = _repo(tmp_path, {"tests/api/test_a.py": MANAGER_FILE})
     assert _run(root, {})[0] == 1
 
 
@@ -71,8 +79,13 @@ def test_frozen_instances_pass_and_only_ever_tighten(tmp_path: Path) -> None:
     [
         # Production code and migrations own DDL; only test files are scanned.
         ("src/butlers/migrations/core_999.py", DDL_FILE),
-        # A method or a non-fixture function named pool is not a fixture.
-        ("tests/test_c.py", "class Manager:\n    def pool(self, name):\n        return name\n"),
+        # Production code keeps the DatabaseManager.pool interface.
+        ("src/butlers/api/db.py", MANAGER_FILE),
+        # A pool attribute is not a hand-written lookup.
+        (
+            "tests/test_c.py",
+            "class Manager:\n    def __init__(self, pool):\n        self.pool = pool\n",
+        ),
         # Prose about the statement is not DDL.
         ("tests/test_d.py", "MESSAGE = 'tables are created by migrations'\n"),
     ],

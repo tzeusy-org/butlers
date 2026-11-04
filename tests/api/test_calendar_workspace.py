@@ -2955,3 +2955,74 @@ async def test_accept_proposal_overrides_description_and_location(app, monkeypat
     _tool, args = create_client.call_tool.await_args.args
     assert args["description"] == "Bring insurance card"
     assert args["location"] == "Suite 200"
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_dashboard_guest_create_decides_only_the_exact_owning_call(app, monkeypatch, changed):
+    from types import SimpleNamespace
+
+    from butlers.api.routers import approvals, calendar_workspace
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+    action_id = uuid4()
+    arguments = {
+        "title": "Guest meeting",
+        "attendees": ["guest@example.test"],
+        "start_at": "2026-06-20T10:00:00+00:00",
+        "end_at": "2026-06-20T10:30:00+00:00",
+        "calendar_id": "owner-calendar",
+        "request_id": "guest-create",
+    }
+    parked = {**arguments, "conflict_policy": "suggest"}
+    receipt = {
+        "status": "approval_required",
+        "action_id": str(action_id),
+        "args_digest": approval_tool_args_digest(parked),
+    }
+    stored = {**parked, "title": "Changed after presentation"} if changed else parked
+    pool = SimpleNamespace(
+        fetchrow=AsyncMock(
+            return_value={
+                "tool_name": "calendar_create_event",
+                "tool_args": stored,
+                "status": "pending",
+            }
+        )
+    )
+    app, db, mgr = _build_app(app)
+    db.pool.return_value = pool
+    call = AsyncMock(return_value=receipt)
+    monkeypatch.setattr(calendar_workspace, "_call_mcp_tool", call)
+    monkeypatch.setattr(
+        calendar_workspace, "_projection_freshness_after_mutation", AsyncMock(return_value=None)
+    )
+    decision = AsyncMock(return_value=SimpleNamespace(data=SimpleNamespace(dispatched=False)))
+    monkeypatch.setattr(approvals, "approve_owning_action", decision)
+    monkeypatch.setattr(approvals, "_decision_actor_id", lambda *a, **kw: "owner:test")
+    monkeypatch.setattr("butlers.api.audit_emit.authenticated_principal", lambda: "owner:test")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/calendar/workspace/user-events",
+            json={
+                "butler_name": "general",
+                "action": "create",
+                "request_id": "guest-create",
+                "payload": {k: v for k, v in arguments.items() if k != "request_id"},
+            },
+        )
+    if changed:
+        assert response.status_code == 409
+        decision.assert_not_awaited()
+    else:
+        assert response.status_code == 200
+        decision.assert_awaited_once()
+        kwargs = decision.await_args.kwargs
+        assert kwargs["target_pool"] is pool
+        assert kwargs["action_butler"] == "general"
+        assert kwargs["actor_id"] == "owner:test"
+        assert kwargs["expected_tool_args"] == parked
+        assert kwargs["expected_tool_name"] == "calendar_create_event"
+        assert kwargs["promotion_eligible"] is False
+        assert call.await_args.args[1] == "general"

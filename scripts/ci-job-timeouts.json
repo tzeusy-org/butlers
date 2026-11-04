@@ -409,6 +409,21 @@
       "state": "provisional source-derived bound for a sparse checkout plus a few Actions API pages and cancels (bu-29wkwj.16); current calibration unknown",
       "sample_source": "none; local dry run against the live repo took seconds",
       "p95_s": null
+    },
+    {
+      "workflow": ".github/workflows/session-host-causal.yml",
+      "job": "causal",
+      "existing_timeout_minutes": 20,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 20,
+      "retry_extra_s": 0,
+      "state": "provisional source-derived watchdog for the fixed-source disposable-VM causal experiment; no p95 calibration",
+      "sample_source": "Reviewed PR5479 launcher: retains the installed 20-minute whole-job watchdog, a 300-second probe envelope under a 6-minute step, source verification and dependency setup, success-only bounded evidence staging and 2-minute artifact upload. This admission row does not infer p95 from the single completed causal run.",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "installed_timeout_minutes": 20
     }
   ],
   "tests": [

@@ -61,6 +61,7 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._notifications import register_notification_tools
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
+from butlers.testing.db_manager import db_manager
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -101,28 +102,6 @@ async def _fetch_latest_tool_args(pool, tool_name: str) -> Any:
     return row["tool_args"]
 
 
-class _FakeDbManager:
-    """Duck-typed stand-in for DatabaseManager exposing ``.pool(name)`` and
-    ``.credential_shared_pool()``.
-
-    ``credential_shared_pool`` raises ``KeyError``, mirroring what the real
-    ``DatabaseManager`` does when no shared credential pool is configured
-    (see api/db.py). That makes ``_build_dashboard_approval_push_runtime``
-    degrade to ``None`` (push skipped, KeyError-only per bu-1j5q6) rather
-    than raising -- these tests only assert the jsonb roundtrip of the
-    pending_actions INSERT, not the owner-push path.
-    """
-
-    def __init__(self, pool: Any) -> None:
-        self._pool = pool
-
-    def pool(self, _name: str) -> Any:
-        return self._pool
-
-    def credential_shared_pool(self) -> Any:
-        raise KeyError("Shared credential pool is not configured")
-
-
 class _FakeCalendarModule:
     name = "calendar"
 
@@ -147,7 +126,18 @@ class TestDaemonCalendarOverlapEnqueuer:
         )
         daemon.db = SimpleNamespace(pool=pool)
         fake_cal = _FakeCalendarModule()
-        daemon._modules = [fake_cal]
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+        from butlers.modules.approvals.module import ApprovalsModule
+
+        approvals = ApprovalsModule()
+
+        async def approved_transport(tool_name, tool_args):
+            if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is None:
+                raise PermissionError("Exact approved executor context required")
+            raise AssertionError("This roundtrip test parks only; it must never execute a tool")
+
+        approvals.set_tool_executor(approved_transport)
+        daemon._modules = [fake_cal, approvals]
         daemon._module_statuses = {}
         # __new__ bypasses __init__, so the cached park -> push runtime
         # (bu-mda0r) must be set explicitly like every other instance attr.
@@ -277,7 +267,7 @@ class TestIngestionConnectorsWriters:
             "gmail",
             "user@example.com",
         )
-        db = _FakeDbManager(pool)
+        db = db_manager({"switchboard": pool})
         request = SimpleNamespace(client=None)
 
         response = await disconnect_connector("gmail", "user@example.com", request, db=db)
@@ -299,7 +289,7 @@ class TestIngestionConnectorsWriters:
             "gmail",
             "user2@example.com",
         )
-        db = _FakeDbManager(pool)
+        db = db_manager({"switchboard": pool})
         request = SimpleNamespace(client=None)
 
         from fastapi import HTTPException

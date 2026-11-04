@@ -8,9 +8,9 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
-from butlers.core.scheduler import schedule_create as _schedule_create
-from butlers.core.scheduler import schedule_delete as _schedule_delete
-from butlers.core.scheduler import schedule_update as _schedule_update
+from butlers.core.scheduler.crud import schedule_create as _schedule_create
+from butlers.core.scheduler.crud import schedule_delete as _schedule_delete
+from butlers.core.scheduler.update import schedule_update as _schedule_update
 from butlers.modules.calendar_approval import calendar_approval_args, calendar_approval_datetime
 
 from .constants import (

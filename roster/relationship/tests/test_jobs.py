@@ -11,14 +11,10 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    CONTACT_ENTITY_MAP,
-    PENDING_ACTIONS,
-)
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
 ]
 
 
@@ -34,113 +30,11 @@ def _utcnow() -> datetime:
 # Schema setup helpers
 # ---------------------------------------------------------------------------
 
-CREATE_CONTACTS_SQL = """
-CREATE TABLE IF NOT EXISTS contacts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    first_name TEXT,
-    last_name TEXT,
-    nickname TEXT,
-    company TEXT,
-    entity_id UUID,
-    stay_in_touch_days INT,
-    listed BOOLEAN NOT NULL DEFAULT true,
-    metadata JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
-)
-"""
 
-CREATE_IMPORTANT_DATES_SQL = """
-CREATE TABLE IF NOT EXISTS important_dates (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-    label TEXT NOT NULL,
-    month INT NOT NULL,
-    day INT NOT NULL,
-    year INT,
-    created_at TIMESTAMPTZ DEFAULT now()
-)
-"""
-
-CREATE_FACTS_SQL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject TEXT NOT NULL,
-    predicate TEXT NOT NULL,
-    content TEXT NOT NULL,
-    embedding vector(384),
-    search_vector tsvector,
-    importance FLOAT NOT NULL DEFAULT 5.0,
-    confidence FLOAT NOT NULL DEFAULT 1.0,
-    decay_rate FLOAT NOT NULL DEFAULT 0.008,
-    permanence TEXT NOT NULL DEFAULT 'standard',
-    source_butler TEXT,
-    source_episode_id UUID,
-    supersedes_id UUID,
-    validity TEXT NOT NULL DEFAULT 'active',
-    scope TEXT NOT NULL DEFAULT 'global',
-    reference_count INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_referenced_at TIMESTAMPTZ,
-    last_confirmed_at TIMESTAMPTZ,
-    tags JSONB DEFAULT '[]'::jsonb,
-    metadata JSONB DEFAULT '{}'::jsonb,
-    entity_id UUID,
-    object_entity_id UUID,
-    valid_at TIMESTAMPTZ,
-    tenant_id TEXT NOT NULL DEFAULT 'shared',
-    request_id TEXT,
-    retention_class TEXT NOT NULL DEFAULT 'operational',
-    sensitivity TEXT NOT NULL DEFAULT 'normal',
-    idempotency_key TEXT,
-    observed_at TIMESTAMPTZ DEFAULT now(),
-    invalid_at TIMESTAMPTZ,
-    embedding_model_version TEXT DEFAULT 'unknown'
-)
-"""
-
-CREATE_ENTITIES_SQL = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    canonical_name VARCHAR NOT NULL DEFAULT '',
-    name TEXT NOT NULL DEFAULT '',
-    entity_type VARCHAR NOT NULL DEFAULT 'other',
-    aliases TEXT[] NOT NULL DEFAULT '{}',
-    metadata JSONB DEFAULT '{}'::jsonb,
-    roles TEXT[] NOT NULL DEFAULT '{}',
-    listed BOOLEAN NOT NULL DEFAULT true,
-    posture TEXT NOT NULL DEFAULT 'active',
-    stay_in_touch_days INT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-# contact_entity_map (rel_029) — contact_id → entity_id bridge that dunbar reads
-# instead of public.contacts (Phase 7.4e).
-CREATE_CONTACT_ENTITY_MAP_SQL = CONTACT_ENTITY_MAP.ddl()
-
-
-async def _setup_relationship_schema(pool) -> None:
-    """Create the relationship-related tables needed for insight scan tests."""
-    # Install required extensions for vector embeddings and full-text search
-    await pool.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
-    await pool.execute('CREATE EXTENSION IF NOT EXISTS "pg_trgm"')
-
-    await pool.execute(CREATE_ENTITIES_SQL)
-    await pool.execute(CREATE_CONTACTS_SQL)
-    await pool.execute(CREATE_CONTACT_ENTITY_MAP_SQL)
-    await pool.execute(CREATE_IMPORTANT_DATES_SQL)
-    await pool.execute(CREATE_FACTS_SQL)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
-    )
-    # bu-2jtfw.11: the stale-contact producer parks a prepared action via
-    # park_prepared_action, so this fixture needs pending_actions -- the
-    # shared stand-in (not the full approvals migration chain, matching this
-    # file's local-DDL convention for every other table it sets up).
-    await pool.execute(PENDING_ACTIONS.ddl())
+@pytest.fixture
+async def jobs_pool(db):
+    """Real core/memory/relationship/approvals chains, flat in ``public``."""
+    return await db("core", "memory", "relationship", "approvals")
 
 
 async def _setup_insight_tables(pool) -> None:
@@ -181,56 +75,35 @@ async def _insert_contact(
     # Seed public.entities with listed + stay_in_touch_days (rel_031 columns)
     await pool.execute(
         """
-        INSERT INTO public.entities (id, canonical_name, name, listed, stay_in_touch_days, posture)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO public.entities (id, canonical_name, listed, stay_in_touch_days, posture)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (id) DO NOTHING
         """,
         resolved_entity_id,
-        canonical_name,
         canonical_name,
         listed,
         stay_in_touch_days,
         posture,
     )
 
-    # Seed contact_entity_map bridge (rel_029)
-    await pool.execute(
-        """
-        INSERT INTO contact_entity_map (contact_id, entity_id)
-        VALUES ($1::uuid, $2)
-        ON CONFLICT (contact_id) DO NOTHING
-        """,
-        contact_id,
-        resolved_entity_id,
-    )
-
     # Keep contacts row so important_dates FK + _insert_interaction_fact entity_id lookup work
     await pool.execute(
         """
-        INSERT INTO contacts (id, first_name, last_name, listed, stay_in_touch_days, entity_id)
-        VALUES ($1::uuid, $2, $3, $4, $5, $6)
+        INSERT INTO contacts
+            (id, name, first_name, last_name, listed, stay_in_touch_days, entity_id)
+        VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
         """,
         contact_id,
+        canonical_name,
         first_name,
         last_name,
         listed,
         stay_in_touch_days,
         resolved_entity_id,
     )
-    # Seed the entity + contact_entity_map bridge so dunbar (which now reads via
+
+    # Seed the contact_entity_map bridge (rel_029) so dunbar (which reads via
     # contact_entity_map → public.entities, not public.contacts) sees this contact.
-    await pool.execute(
-        """
-        INSERT INTO public.entities (id, name, canonical_name, listed, stay_in_touch_days)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (id) DO NOTHING
-        """,
-        resolved_entity_id,
-        first_name,
-        f"{first_name} {last_name}".strip(),
-        listed,
-        stay_in_touch_days,
-    )
     await pool.execute(
         """
         INSERT INTO contact_entity_map (contact_id, entity_id)
@@ -337,65 +210,62 @@ async def _insert_gift_fact(
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_no_contacts_no_op(provisioned_postgres_pool):
+async def test_insight_scan_no_contacts_no_op(jobs_pool):
     """No-op: returns zeros when no contacts exist."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        result = await run_insight_scan(pool)
+    result = await run_insight_scan(pool)
 
-        assert result["candidates_proposed"] == 0
-        assert result["candidates_accepted"] == 0
-        assert result["candidates_filtered"] == 0
-        assert result["candidates_errored"] == 0
-        assert result["early_exit"] is False
+    assert result["candidates_proposed"] == 0
+    assert result["candidates_accepted"] == 0
+    assert result["candidates_filtered"] == 0
+    assert result["candidates_errored"] == 0
+    assert result["early_exit"] is False
 
 
-async def test_insight_scan_unlisted_contact_excluded(provisioned_postgres_pool):
+async def test_insight_scan_unlisted_contact_excluded(jobs_pool):
     """Unlisted contacts are excluded from all insight categories."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        # Unlisted contact with upcoming birthday
-        contact_id = await _insert_contact(pool, first_name="Bob", listed=False)
-        today = _today()
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=today.month,
-            day=today.day,
-        )
+    # Unlisted contact with upcoming birthday
+    contact_id = await _insert_contact(pool, first_name="Bob", listed=False)
+    today = _today()
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=today.month,
+        day=today.day,
+    )
 
-        result = await run_insight_scan(pool)
-        assert result["candidates_proposed"] == 0
+    result = await run_insight_scan(pool)
+    assert result["candidates_proposed"] == 0
 
 
 @pytest.mark.parametrize("posture", ["memorial", "quiet", "no_contact"])
-async def test_insight_scan_non_active_posture_excluded(provisioned_postgres_pool, posture):
+async def test_insight_scan_non_active_posture_excluded(jobs_pool, posture):
     """A person the owner marked memorial/quiet/no_contact is no insight's subject."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(
-            pool, first_name="Person", last_name="Synthetic", posture=posture
-        )
-        today = _today()
-        await _insert_important_date(
-            pool, contact_id=contact_id, label="birthday", month=today.month, day=today.day
-        )
+    contact_id = await _insert_contact(
+        pool, first_name="Person", last_name="Synthetic", posture=posture
+    )
+    today = _today()
+    await _insert_important_date(
+        pool, contact_id=contact_id, label="birthday", month=today.month, day=today.day
+    )
 
-        result = await run_insight_scan(pool)
-        assert result["candidates_proposed"] == 0
+    result = await run_insight_scan(pool)
+    assert result["candidates_proposed"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -403,230 +273,213 @@ async def test_insight_scan_non_active_posture_excluded(provisioned_postgres_poo
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_upcoming_birthday_today_priority_95(provisioned_postgres_pool):
+async def test_insight_scan_upcoming_birthday_today_priority_95(jobs_pool):
     """Birthday today gets priority 95 (time-critical)."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        today = _today()
-        contact_id = await _insert_contact(pool, first_name="Alice", last_name="Day")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=today.month,
-            day=today.day,
-        )
+    today = _today()
+    contact_id = await _insert_contact(pool, first_name="Alice", last_name="Day")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=today.month,
+        day=today.day,
+    )
 
-        result = await run_insight_scan(pool)
+    result = await run_insight_scan(pool)
 
-        assert result["candidates_proposed"] >= 1
-        rows = await pool.fetch(
-            "SELECT priority, category, dedup_key FROM insight_candidates"
-            " WHERE category = 'birthday'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 95
+    assert result["candidates_proposed"] >= 1
+    rows = await pool.fetch(
+        "SELECT priority, category, dedup_key FROM insight_candidates WHERE category = 'birthday'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 95
 
 
-async def test_insight_scan_upcoming_birthday_3_days_priority_80(provisioned_postgres_pool):
+async def test_insight_scan_upcoming_birthday_3_days_priority_80(jobs_pool):
     """Birthday in 3 days gets priority 80."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=3)
-        contact_id = await _insert_contact(pool, first_name="Carol")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
+    target = _today() + timedelta(days=3)
+    contact_id = await _insert_contact(pool, first_name="Carol")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT priority FROM insight_candidates WHERE category = 'birthday'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 80
+    rows = await pool.fetch("SELECT priority FROM insight_candidates WHERE category = 'birthday'")
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 80
 
 
-async def test_insight_scan_upcoming_birthday_7_days_priority_70(provisioned_postgres_pool):
+async def test_insight_scan_upcoming_birthday_7_days_priority_70(jobs_pool):
     """Birthday in 5-7 days gets priority 70."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=6)
-        contact_id = await _insert_contact(pool, first_name="Dave")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
+    target = _today() + timedelta(days=6)
+    contact_id = await _insert_contact(pool, first_name="Dave")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT priority FROM insight_candidates WHERE category = 'birthday'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 70
+    rows = await pool.fetch("SELECT priority FROM insight_candidates WHERE category = 'birthday'")
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 70
 
 
-async def test_insight_scan_birthday_beyond_window_excluded(provisioned_postgres_pool):
+async def test_insight_scan_birthday_beyond_window_excluded(jobs_pool):
     """Birthdays beyond 7 days are excluded."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=10)
-        contact_id = await _insert_contact(pool, first_name="Eve")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
+    target = _today() + timedelta(days=10)
+    contact_id = await _insert_contact(pool, first_name="Eve")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
 
-        result = await run_insight_scan(pool)
-        assert result["candidates_proposed"] == 0
+    result = await run_insight_scan(pool)
+    assert result["candidates_proposed"] == 0
 
 
-async def test_insight_scan_anniversary_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_anniversary_dedup_key_format(jobs_pool):
     """Anniversary dedup_key follows anniversary:{entity-id}:{year} format."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=2)
-        entity_id = str(uuid.uuid4())
-        contact_id = await _insert_contact(pool, first_name="Frank", entity_id=entity_id)
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="anniversary",
-            month=target.month,
-            day=target.day,
-        )
+    target = _today() + timedelta(days=2)
+    entity_id = str(uuid.uuid4())
+    contact_id = await _insert_contact(pool, first_name="Frank", entity_id=entity_id)
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="anniversary",
+        month=target.month,
+        day=target.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'anniversary'"
-        )
-        assert len(rows) == 1
-        dedup_key = rows[0]["dedup_key"]
-        assert dedup_key.startswith("anniversary:")
-        assert entity_id in dedup_key
-        assert str(target.year) in dedup_key
+    rows = await pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'anniversary'"
+    )
+    assert len(rows) == 1
+    dedup_key = rows[0]["dedup_key"]
+    assert dedup_key.startswith("anniversary:")
+    assert entity_id in dedup_key
+    assert str(target.year) in dedup_key
 
 
-async def test_insight_scan_birthday_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_birthday_dedup_key_format(jobs_pool):
     """Birthday dedup_key follows birthday:{entity-id}:{year} format when entity_id exists."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=4)
-        entity_id = str(uuid.uuid4())
-        contact_id = await _insert_contact(pool, first_name="Grace", entity_id=entity_id)
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
+    target = _today() + timedelta(days=4)
+    entity_id = str(uuid.uuid4())
+    contact_id = await _insert_contact(pool, first_name="Grace", entity_id=entity_id)
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'birthday'"
-        )
-        assert len(rows) == 1
-        dedup_key = rows[0]["dedup_key"]
-        assert dedup_key.startswith("birthday:")
-        assert entity_id in dedup_key
+    rows = await pool.fetch("SELECT dedup_key FROM insight_candidates WHERE category = 'birthday'")
+    assert len(rows) == 1
+    dedup_key = rows[0]["dedup_key"]
+    assert dedup_key.startswith("birthday:")
+    assert entity_id in dedup_key
 
 
-async def test_insight_scan_birthday_cooldown_days(provisioned_postgres_pool):
+async def test_insight_scan_birthday_cooldown_days(jobs_pool):
     """Birthday cooldown_days matches priority tier."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        # within 1 day → cooldown 1
-        target = _today() + timedelta(days=1)
-        contact_id = await _insert_contact(pool, first_name="Hannah")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
+    # within 1 day → cooldown 1
+    target = _today() + timedelta(days=1)
+    contact_id = await _insert_contact(pool, first_name="Hannah")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT cooldown_days FROM insight_candidates WHERE category = 'birthday'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["cooldown_days"] == 1
+    rows = await pool.fetch(
+        "SELECT cooldown_days FROM insight_candidates WHERE category = 'birthday'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["cooldown_days"] == 1
 
 
-async def test_insight_scan_birthday_message_includes_contact_name(provisioned_postgres_pool):
+async def test_insight_scan_birthday_message_includes_contact_name(jobs_pool):
     """Birthday message includes the contact name."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=3)
-        contact_id = await _insert_contact(pool, first_name="Isabella", last_name="Clark")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
+    target = _today() + timedelta(days=3)
+    contact_id = await _insert_contact(pool, first_name="Isabella", last_name="Clark")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT message FROM insight_candidates WHERE category = 'birthday'"
-        )
-        assert len(rows) == 1
-        assert "Isabella" in rows[0]["message"]
+    rows = await pool.fetch("SELECT message FROM insight_candidates WHERE category = 'birthday'")
+    assert len(rows) == 1
+    assert "Isabella" in rows[0]["message"]
 
 
 @pytest.mark.pg_clock
 async def test_insight_scan_contact_candidates_include_entity_and_event_metadata(
-    provisioned_postgres_pool,
+    jobs_pool,
     monkeypatch,
 ):
     """Relationship candidates preserve the contact entity and real occasion date."""
@@ -634,51 +487,50 @@ async def test_insight_scan_contact_candidates_include_entity_and_event_metadata
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
-        entity_id = str(uuid.uuid4())
-        contact_id = await _insert_contact(
-            pool,
-            first_name="Cora",
-            entity_id=entity_id,
-            stay_in_touch_days=7,
-        )
-        upcoming_date = _today() + timedelta(days=3)
-        await _insert_important_date(
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
+    entity_id = str(uuid.uuid4())
+    contact_id = await _insert_contact(
+        pool,
+        first_name="Cora",
+        entity_id=entity_id,
+        stay_in_touch_days=7,
+    )
+    upcoming_date = _today() + timedelta(days=3)
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=upcoming_date.month,
+        day=upcoming_date.day,
+    )
+    await _insert_gift_fact(pool, contact_id=contact_id, description="tea", status="idea")
+    for offset in range(10):
+        await _insert_interaction_fact(
             pool,
             contact_id=contact_id,
-            label="birthday",
-            month=upcoming_date.month,
-            day=upcoming_date.day,
+            occurred_at=_utcnow() - timedelta(days=30 + offset),
         )
-        await _insert_gift_fact(pool, contact_id=contact_id, description="tea", status="idea")
-        for offset in range(10):
-            await _insert_interaction_fact(
-                pool,
-                contact_id=contact_id,
-                occurred_at=_utcnow() - timedelta(days=30 + offset),
-            )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT category, metadata FROM insight_candidates WHERE category = ANY($1::text[])",
-            ["birthday", "stale-contact", "pending-gift", "milestone"],
-        )
-        metadata_by_category = {row["category"]: row["metadata"] for row in rows}
+    rows = await pool.fetch(
+        "SELECT category, metadata FROM insight_candidates WHERE category = ANY($1::text[])",
+        ["birthday", "stale-contact", "pending-gift", "milestone"],
+    )
+    metadata_by_category = {row["category"]: row["metadata"] for row in rows}
 
-        assert metadata_by_category["birthday"] == {
-            "entity_id": entity_id,
-            "event_date": upcoming_date.isoformat(),
-        }
-        assert metadata_by_category["stale-contact"] == {"entity_id": entity_id}
-        assert metadata_by_category["pending-gift"] == {
-            "entity_id": entity_id,
-            "event_date": upcoming_date.isoformat(),
-            "choice": {"key": f"gift:{entity_id}:{upcoming_date.isoformat()}", "option": "tea"},
-        }
-        assert metadata_by_category["milestone"] == {"entity_id": entity_id}
+    assert metadata_by_category["birthday"] == {
+        "entity_id": entity_id,
+        "event_date": upcoming_date.isoformat(),
+    }
+    assert metadata_by_category["stale-contact"] == {"entity_id": entity_id}
+    assert metadata_by_category["pending-gift"] == {
+        "entity_id": entity_id,
+        "event_date": upcoming_date.isoformat(),
+        "choice": {"key": f"gift:{entity_id}:{upcoming_date.isoformat()}", "option": "tea"},
+    }
+    assert metadata_by_category["milestone"] == {"entity_id": entity_id}
 
 
 # ---------------------------------------------------------------------------
@@ -701,7 +553,7 @@ def _mock_stale_contact_gate(monkeypatch: pytest.MonkeyPatch, *, is_overdue: boo
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
-    provisioned_postgres_pool,
+    jobs_pool,
     monkeypatch,
 ):
     """Contact overdue by >2x cadence gets priority 45."""
@@ -709,30 +561,29 @@ async def test_insight_scan_stale_contact_overdue_2x_cadence_priority_45(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        # Contact with stay_in_touch_days=14, last interaction 35 days ago (>2x)
-        contact_id = await _insert_contact(pool, first_name="Jack", stay_in_touch_days=14)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=35),
-        )
+    # Contact with stay_in_touch_days=14, last interaction 35 days ago (>2x)
+    contact_id = await _insert_contact(pool, first_name="Jack", stay_in_touch_days=14)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=35),
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT priority, category FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 45
+    rows = await pool.fetch(
+        "SELECT priority, category FROM insight_candidates WHERE category = 'stale-contact'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 45
 
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
-    provisioned_postgres_pool,
+    jobs_pool,
     monkeypatch,
 ):
     """bu-2jtfw.11: the stale-contact candidate links a silently-parked prepared action."""
@@ -740,52 +591,51 @@ async def test_insight_scan_stale_contact_parks_a_prepared_reach_out(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(pool, first_name="Priya", stay_in_touch_days=14)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=35),
-        )
+    contact_id = await _insert_contact(pool, first_name="Priya", stay_in_touch_days=14)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=35),
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        candidate = await pool.fetchrow(
-            "SELECT prepared_action_id FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        assert candidate is not None
-        assert candidate["prepared_action_id"] is not None
+    candidate = await pool.fetchrow(
+        "SELECT prepared_action_id FROM insight_candidates WHERE category = 'stale-contact'"
+    )
+    assert candidate is not None
+    assert candidate["prepared_action_id"] is not None
 
-        action = await pool.fetchrow(
-            "SELECT origin, status, tool_name, tool_args, deduplication_key "
-            "FROM pending_actions WHERE id = $1",
-            candidate["prepared_action_id"],
-        )
-        assert action is not None
-        assert action["origin"] == "prepared"
-        assert action["status"] == "pending"
-        assert action["tool_name"] == "notify"
-        tool_args = action["tool_args"]
-        assert tool_args["intent"] == "send"
-        assert "Priya" in tool_args["message"]
-        assert action["deduplication_key"].startswith("relationship:prepared-reach-out:")
+    action = await pool.fetchrow(
+        "SELECT origin, status, tool_name, tool_args, deduplication_key "
+        "FROM pending_actions WHERE id = $1",
+        candidate["prepared_action_id"],
+    )
+    assert action is not None
+    assert action["origin"] == "prepared"
+    assert action["status"] == "pending"
+    assert action["tool_name"] == "notify"
+    tool_args = action["tool_args"]
+    assert tool_args["intent"] == "send"
+    assert "Priya" in tool_args["message"]
+    assert action["deduplication_key"].startswith("relationship:prepared-reach-out:")
 
-        # A same-week re-run must not double-park (approvals_013's active
-        # deduplication_key uniqueness) -- it must reuse the same row.
-        await run_insight_scan(pool)
-        rows = await pool.fetch(
-            "SELECT id FROM pending_actions WHERE deduplication_key = $1",
-            action["deduplication_key"],
-        )
-        assert len(rows) == 1
+    # A same-week re-run must not double-park (approvals_013's active
+    # deduplication_key uniqueness) -- it must reuse the same row.
+    await run_insight_scan(pool)
+    rows = await pool.fetch(
+        "SELECT id FROM pending_actions WHERE deduplication_key = $1",
+        action["deduplication_key"],
+    )
+    assert len(rows) == 1
 
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_action(
-    provisioned_postgres_pool,
+    jobs_pool,
     monkeypatch,
 ):
     """bu-2jtfw.11: two concurrent scan ticks racing the same dedup key must not
@@ -808,56 +658,55 @@ async def test_insight_scan_stale_contact_concurrent_scans_park_one_prepared_act
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(pool, first_name="Rosa", stay_in_touch_days=14)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=35),
+    contact_id = await _insert_contact(pool, first_name="Rosa", stay_in_touch_days=14)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=35),
+    )
+
+    real_park = relationship_jobs.park_prepared_action
+    both_reached_park = asyncio.Event()
+    arrivals = 0
+    arrivals_lock = asyncio.Lock()
+
+    async def _synchronized_park(*args, **kwargs):
+        nonlocal arrivals
+        async with arrivals_lock:
+            arrivals += 1
+            if arrivals == 2:
+                both_reached_park.set()
+        await asyncio.wait_for(both_reached_park.wait(), timeout=5)
+        return await real_park(*args, **kwargs)
+
+    with patch.object(relationship_jobs, "park_prepared_action", new=_synchronized_park):
+        first, second = await asyncio.gather(
+            run_insight_scan(pool),
+            run_insight_scan(pool),
         )
 
-        real_park = relationship_jobs.park_prepared_action
-        both_reached_park = asyncio.Event()
-        arrivals = 0
-        arrivals_lock = asyncio.Lock()
+    assert first.get("errors", 0) == 0
+    assert second.get("errors", 0) == 0
 
-        async def _synchronized_park(*args, **kwargs):
-            nonlocal arrivals
-            async with arrivals_lock:
-                arrivals += 1
-                if arrivals == 2:
-                    both_reached_park.set()
-            await asyncio.wait_for(both_reached_park.wait(), timeout=5)
-            return await real_park(*args, **kwargs)
+    rows = await pool.fetch(
+        "SELECT id FROM pending_actions WHERE deduplication_key LIKE "
+        "'relationship:prepared-reach-out:%'"
+    )
+    assert len(rows) == 1
 
-        with patch.object(relationship_jobs, "park_prepared_action", new=_synchronized_park):
-            first, second = await asyncio.gather(
-                run_insight_scan(pool),
-                run_insight_scan(pool),
-            )
-
-        assert first.get("errors", 0) == 0
-        assert second.get("errors", 0) == 0
-
-        rows = await pool.fetch(
-            "SELECT id FROM pending_actions WHERE deduplication_key LIKE "
-            "'relationship:prepared-reach-out:%'"
-        )
-        assert len(rows) == 1
-
-        candidates = await pool.fetch(
-            "SELECT prepared_action_id FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        prepared_action_ids = {c["prepared_action_id"] for c in candidates}
-        assert prepared_action_ids == {rows[0]["id"]}
+    candidates = await pool.fetch(
+        "SELECT prepared_action_id FROM insight_candidates WHERE category = 'stale-contact'"
+    )
+    prepared_action_ids = {c["prepared_action_id"] for c in candidates}
+    assert prepared_action_ids == {rows[0]["id"]}
 
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
-    provisioned_postgres_pool,
+    jobs_pool,
     monkeypatch,
 ):
     """Contact overdue by 1-2x cadence gets priority 35."""
@@ -865,85 +714,76 @@ async def test_insight_scan_stale_contact_overdue_1x_cadence_priority_35(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        # Contact with stay_in_touch_days=14, last interaction 20 days ago (1-2x)
-        contact_id = await _insert_contact(pool, first_name="Karen", stay_in_touch_days=14)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=20),
-        )
+    # Contact with stay_in_touch_days=14, last interaction 20 days ago (1-2x)
+    contact_id = await _insert_contact(pool, first_name="Karen", stay_in_touch_days=14)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=20),
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT priority FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 35
+    rows = await pool.fetch(
+        "SELECT priority FROM insight_candidates WHERE category = 'stale-contact'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 35
 
 
-async def test_insight_scan_stale_contact_not_yet_overdue_excluded(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_stale_contact_not_yet_overdue_excluded(jobs_pool, monkeypatch):
     """Contact not yet overdue is excluded from stale-contact insights."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=False)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        # Contact with cadence 14 days, last interaction 10 days ago
-        contact_id = await _insert_contact(pool, first_name="Leo", stay_in_touch_days=14)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=10),
-        )
+    # Contact with cadence 14 days, last interaction 10 days ago
+    contact_id = await _insert_contact(pool, first_name="Leo", stay_in_touch_days=14)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=10),
+    )
 
-        await run_insight_scan(pool)
-        # No stale-contact candidates
-        rows = await pool.fetch(
-            "SELECT id FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        assert len(rows) == 0
+    await run_insight_scan(pool)
+    # No stale-contact candidates
+    rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'stale-contact'")
+    assert len(rows) == 0
 
 
-async def test_insight_scan_unmeasurable_stale_contact_suppresses_candidate(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_unmeasurable_stale_contact_suppresses_candidate(jobs_pool, monkeypatch):
     """Elapsed cadence cannot emit when producer admission is unmeasurable."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=False)
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
-        contact_id = await _insert_contact(pool, first_name="Instrument", stay_in_touch_days=7)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=30),
-        )
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
+    contact_id = await _insert_contact(pool, first_name="Instrument", stay_in_touch_days=7)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=30),
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        assert (
-            await pool.fetchval(
-                "SELECT count(*) FROM insight_candidates WHERE category = 'stale-contact'"
-            )
-            == 0
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM insight_candidates WHERE category = 'stale-contact'"
         )
+        == 0
+    )
 
 
 @pytest.mark.pg_clock
 async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
-    provisioned_postgres_pool,
+    jobs_pool,
     monkeypatch,
 ):
     """Stale contact dedup_key uses relationship:stale-contact:{id}:{year-week} format."""
@@ -951,61 +791,57 @@ async def test_insight_scan_stale_contact_dedup_key_weekly_granularity(
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(pool, first_name="Mia", stay_in_touch_days=7)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=30),
-        )
+    contact_id = await _insert_contact(pool, first_name="Mia", stay_in_touch_days=7)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=30),
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        assert len(rows) == 1
-        dedup_key = rows[0]["dedup_key"]
-        assert dedup_key.startswith("relationship:stale-contact:")
-        assert contact_id in dedup_key
-        # Should contain year-week pattern
-        iso_year, iso_week, _ = _today().isocalendar()
-        assert f"{iso_year}-W{iso_week:02d}" in dedup_key
+    rows = await pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'stale-contact'"
+    )
+    assert len(rows) == 1
+    dedup_key = rows[0]["dedup_key"]
+    assert dedup_key.startswith("relationship:stale-contact:")
+    assert contact_id in dedup_key
+    # Should contain year-week pattern
+    iso_year, iso_week, _ = _today().isocalendar()
+    assert f"{iso_year}-W{iso_week:02d}" in dedup_key
 
 
 @pytest.mark.pg_clock
-async def test_insight_scan_stale_contact_expires_7_days_from_now(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_insight_scan_stale_contact_expires_7_days_from_now(jobs_pool, monkeypatch):
     """Stale contact candidate expires 7 days from generation."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
     _mock_stale_contact_gate(monkeypatch, is_overdue=True)
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(pool, first_name="Noah", stay_in_touch_days=7)
-        await _insert_interaction_fact(
-            pool,
-            contact_id=contact_id,
-            occurred_at=_utcnow() - timedelta(days=30),
-        )
+    contact_id = await _insert_contact(pool, first_name="Noah", stay_in_touch_days=7)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=_utcnow() - timedelta(days=30),
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT expires_at FROM insight_candidates WHERE category = 'stale-contact'"
-        )
-        assert len(rows) == 1
-        expires_at = rows[0]["expires_at"]
-        days_until_expiry = (expires_at.date() - _today()).days
-        # Allow 6-8 days to handle edge cases around midnight
-        assert 6 <= days_until_expiry <= 8
+    rows = await pool.fetch(
+        "SELECT expires_at FROM insight_candidates WHERE category = 'stale-contact'"
+    )
+    assert len(rows) == 1
+    expires_at = rows[0]["expires_at"]
+    days_until_expiry = (expires_at.date() - _today()).days
+    # Allow 6-8 days to handle edge cases around midnight
+    assert 6 <= days_until_expiry <= 8
 
 
 # ---------------------------------------------------------------------------
@@ -1014,136 +850,131 @@ async def test_insight_scan_stale_contact_expires_7_days_from_now(
 
 
 async def test_insight_scan_pending_gift_with_upcoming_date_priority_60(
-    provisioned_postgres_pool,
+    jobs_pool,
 ):
     """Pending gift (idea/purchased) with upcoming date gets priority 60."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=5)
-        contact_id = await _insert_contact(pool, first_name="Olivia")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
-        await _insert_gift_fact(pool, contact_id=contact_id, description="flowers", status="idea")
+    target = _today() + timedelta(days=5)
+    contact_id = await _insert_contact(pool, first_name="Olivia")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
+    await _insert_gift_fact(pool, contact_id=contact_id, description="flowers", status="idea")
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT priority, category, dedup_key FROM insight_candidates"
-            " WHERE category = 'pending-gift'"
-        )
-        assert len(rows) == 1
-        assert rows[0]["priority"] == 60
+    rows = await pool.fetch(
+        "SELECT priority, category, dedup_key FROM insight_candidates"
+        " WHERE category = 'pending-gift'"
+    )
+    assert len(rows) == 1
+    assert rows[0]["priority"] == 60
 
 
-async def test_insight_scan_pending_gift_no_upcoming_date_excluded(provisioned_postgres_pool):
+async def test_insight_scan_pending_gift_no_upcoming_date_excluded(jobs_pool):
     """Pending gift without upcoming contact date is not surfaced."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(pool, first_name="Paul")
-        # No upcoming dates for this contact
-        await _insert_gift_fact(pool, contact_id=contact_id, description="wine", status="idea")
+    contact_id = await _insert_contact(pool, first_name="Paul")
+    # No upcoming dates for this contact
+    await _insert_gift_fact(pool, contact_id=contact_id, description="wine", status="idea")
 
-        await run_insight_scan(pool)
-        rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'pending-gift'")
-        assert len(rows) == 0
+    await run_insight_scan(pool)
+    rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'pending-gift'")
+    assert len(rows) == 0
 
 
-async def test_insight_scan_pending_gift_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_pending_gift_dedup_key_format(jobs_pool):
     """Pending gift dedup_key follows relationship:pending-gift:{gift-id} format."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=3)
-        contact_id = await _insert_contact(pool, first_name="Quinn")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
-        gift_id = await _insert_gift_fact(
-            pool, contact_id=contact_id, description="chocolate", status="purchased"
-        )
+    target = _today() + timedelta(days=3)
+    contact_id = await _insert_contact(pool, first_name="Quinn")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
+    gift_id = await _insert_gift_fact(
+        pool, contact_id=contact_id, description="chocolate", status="purchased"
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'pending-gift'"
-        )
-        assert len(rows) == 1
-        dedup_key = rows[0]["dedup_key"]
-        assert dedup_key == f"relationship:pending-gift:{gift_id}"
+    rows = await pool.fetch(
+        "SELECT dedup_key FROM insight_candidates WHERE category = 'pending-gift'"
+    )
+    assert len(rows) == 1
+    dedup_key = rows[0]["dedup_key"]
+    assert dedup_key == f"relationship:pending-gift:{gift_id}"
 
 
-async def test_insight_scan_gift_given_status_excluded(provisioned_postgres_pool):
+async def test_insight_scan_gift_given_status_excluded(jobs_pool):
     """Gifts with status 'given' or 'thanked' are excluded."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=3)
-        contact_id = await _insert_contact(pool, first_name="Riley")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
-        # Given gift — should not generate insight
-        await _insert_gift_fact(pool, contact_id=contact_id, description="book", status="given")
+    target = _today() + timedelta(days=3)
+    contact_id = await _insert_contact(pool, first_name="Riley")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
+    # Given gift — should not generate insight
+    await _insert_gift_fact(pool, contact_id=contact_id, description="book", status="given")
 
-        await run_insight_scan(pool)
-        rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'pending-gift'")
-        assert len(rows) == 0
+    await run_insight_scan(pool)
+    rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'pending-gift'")
+    assert len(rows) == 0
 
 
-async def test_insight_scan_pending_gift_expires_at_upcoming_date(provisioned_postgres_pool):
+async def test_insight_scan_pending_gift_expires_at_upcoming_date(jobs_pool):
     """Pending gift candidate expires_at matches the associated upcoming date."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        target = _today() + timedelta(days=7)
-        contact_id = await _insert_contact(pool, first_name="Sam")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=target.month,
-            day=target.day,
-        )
-        await _insert_gift_fact(pool, contact_id=contact_id, description="scarf", status="idea")
+    target = _today() + timedelta(days=7)
+    contact_id = await _insert_contact(pool, first_name="Sam")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=target.month,
+        day=target.day,
+    )
+    await _insert_gift_fact(pool, contact_id=contact_id, description="scarf", status="idea")
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT expires_at FROM insight_candidates WHERE category = 'pending-gift'"
-        )
-        assert len(rows) == 1
-        expires_at = rows[0]["expires_at"]
-        assert expires_at.date() == target
+    rows = await pool.fetch(
+        "SELECT expires_at FROM insight_candidates WHERE category = 'pending-gift'"
+    )
+    assert len(rows) == 1
+    expires_at = rows[0]["expires_at"]
+    assert expires_at.date() == target
 
 
 # ---------------------------------------------------------------------------
@@ -1151,117 +982,111 @@ async def test_insight_scan_pending_gift_expires_at_upcoming_date(provisioned_po
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_milestone_100th_interaction(provisioned_postgres_pool):
+async def test_insight_scan_milestone_100th_interaction(jobs_pool):
     """100th interaction with a contact generates a milestone insight."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        contact_id = await _insert_contact(pool, first_name="Taylor")
-        # Insert exactly 100 interaction facts
-        for i in range(100):
-            await _insert_interaction_fact(
-                pool,
-                contact_id=contact_id,
-                occurred_at=_utcnow() - timedelta(days=i),
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT priority, dedup_key, cooldown_days FROM insight_candidates"
-            " WHERE category = 'milestone'"
-        )
-        milestone_rows = [r for r in rows if "count-100" in r["dedup_key"]]
-        assert len(milestone_rows) == 1
-        assert milestone_rows[0]["priority"] == 30
-        assert milestone_rows[0]["cooldown_days"] == 30
-
-
-async def test_insight_scan_milestone_dedup_key_format(provisioned_postgres_pool):
-    """Milestone dedup_key follows relationship:milestone:{contact-id}:{milestone-type} format."""
-    from butlers.jobs._roster.relationship_jobs import run_insight_scan
-
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
-
-        contact_id = await _insert_contact(pool, first_name="Uma")
-        for i in range(10):
-            await _insert_interaction_fact(
-                pool,
-                contact_id=contact_id,
-                occurred_at=_utcnow() - timedelta(days=i),
-            )
-
-        await run_insight_scan(pool)
-
-        rows = await pool.fetch(
-            "SELECT dedup_key FROM insight_candidates WHERE category = 'milestone'"
-        )
-        count_rows = [r for r in rows if "count-10" in r["dedup_key"]]
-        assert len(count_rows) == 1
-        dedup_key = count_rows[0]["dedup_key"]
-        assert dedup_key.startswith("relationship:milestone:")
-        assert contact_id in dedup_key
-
-
-async def test_insight_scan_milestone_non_notable_count_excluded(provisioned_postgres_pool):
-    """Non-notable interaction counts (e.g., 7) do not generate milestones."""
-    from butlers.jobs._roster.relationship_jobs import run_insight_scan
-
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
-
-        contact_id = await _insert_contact(pool, first_name="Victor")
-        for i in range(7):
-            await _insert_interaction_fact(
-                pool,
-                contact_id=contact_id,
-                occurred_at=_utcnow() - timedelta(days=i),
-            )
-
-        await run_insight_scan(pool)
-        rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'milestone'")
-        assert len(rows) == 0
-
-
-async def test_insight_scan_first_interaction_anniversary(provisioned_postgres_pool):
-    """1-year anniversary of first interaction generates a milestone insight."""
-    from butlers.jobs._roster.relationship_jobs import run_insight_scan
-
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
-
-        today = _today()
-        contact_id = await _insert_contact(pool, first_name="Wendy")
-        # First interaction exactly 1 year ago (same month/day)
-        one_year_ago = datetime(today.year - 1, today.month, today.day, 12, 0, 0, tzinfo=UTC)
+    contact_id = await _insert_contact(pool, first_name="Taylor")
+    # Insert exactly 100 interaction facts
+    for i in range(100):
         await _insert_interaction_fact(
             pool,
             contact_id=contact_id,
-            occurred_at=one_year_ago,
+            occurred_at=_utcnow() - timedelta(days=i),
         )
-        # Add a few more recent interactions so count != notable milestone
-        for i in range(1, 4):
-            await _insert_interaction_fact(
-                pool,
-                contact_id=contact_id,
-                occurred_at=_utcnow() - timedelta(days=i),
-            )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch(
-            "SELECT dedup_key, message FROM insight_candidates WHERE category = 'milestone'"
+    rows = await pool.fetch(
+        "SELECT priority, dedup_key, cooldown_days FROM insight_candidates"
+        " WHERE category = 'milestone'"
+    )
+    milestone_rows = [r for r in rows if "count-100" in r["dedup_key"]]
+    assert len(milestone_rows) == 1
+    assert milestone_rows[0]["priority"] == 30
+    assert milestone_rows[0]["cooldown_days"] == 30
+
+
+async def test_insight_scan_milestone_dedup_key_format(jobs_pool):
+    """Milestone dedup_key follows relationship:milestone:{contact-id}:{milestone-type} format."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
+
+    contact_id = await _insert_contact(pool, first_name="Uma")
+    for i in range(10):
+        await _insert_interaction_fact(
+            pool,
+            contact_id=contact_id,
+            occurred_at=_utcnow() - timedelta(days=i),
         )
-        anniversary_rows = [r for r in rows if "first-interaction-anniversary" in r["dedup_key"]]
-        assert len(anniversary_rows) >= 1
-        assert "anniversary" in anniversary_rows[0]["message"].lower()
+
+    await run_insight_scan(pool)
+
+    rows = await pool.fetch("SELECT dedup_key FROM insight_candidates WHERE category = 'milestone'")
+    count_rows = [r for r in rows if "count-10" in r["dedup_key"]]
+    assert len(count_rows) == 1
+    dedup_key = count_rows[0]["dedup_key"]
+    assert dedup_key.startswith("relationship:milestone:")
+    assert contact_id in dedup_key
+
+
+async def test_insight_scan_milestone_non_notable_count_excluded(jobs_pool):
+    """Non-notable interaction counts (e.g., 7) do not generate milestones."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
+
+    contact_id = await _insert_contact(pool, first_name="Victor")
+    for i in range(7):
+        await _insert_interaction_fact(
+            pool,
+            contact_id=contact_id,
+            occurred_at=_utcnow() - timedelta(days=i),
+        )
+
+    await run_insight_scan(pool)
+    rows = await pool.fetch("SELECT id FROM insight_candidates WHERE category = 'milestone'")
+    assert len(rows) == 0
+
+
+async def test_insight_scan_first_interaction_anniversary(jobs_pool):
+    """1-year anniversary of first interaction generates a milestone insight."""
+    from butlers.jobs._roster.relationship_jobs import run_insight_scan
+
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
+
+    today = _today()
+    contact_id = await _insert_contact(pool, first_name="Wendy")
+    # First interaction exactly 1 year ago (same month/day)
+    one_year_ago = datetime(today.year - 1, today.month, today.day, 12, 0, 0, tzinfo=UTC)
+    await _insert_interaction_fact(
+        pool,
+        contact_id=contact_id,
+        occurred_at=one_year_ago,
+    )
+    # Add a few more recent interactions so count != notable milestone
+    for i in range(1, 4):
+        await _insert_interaction_fact(
+            pool,
+            contact_id=contact_id,
+            occurred_at=_utcnow() - timedelta(days=i),
+        )
+
+    await run_insight_scan(pool)
+
+    rows = await pool.fetch(
+        "SELECT dedup_key, message FROM insight_candidates WHERE category = 'milestone'"
+    )
+    anniversary_rows = [r for r in rows if "first-interaction-anniversary" in r["dedup_key"]]
+    assert len(anniversary_rows) >= 1
+    assert "anniversary" in anniversary_rows[0]["message"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1269,53 +1094,51 @@ async def test_insight_scan_first_interaction_anniversary(provisioned_postgres_p
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_early_exit_verbosity_off(provisioned_postgres_pool):
+async def test_insight_scan_early_exit_verbosity_off(jobs_pool):
     """Early exit when verbosity=off: job returns early_exit=True."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        # Set verbosity to 'off'
-        await pool.execute("""
-            INSERT INTO insight_settings (id, verbosity)
-            VALUES (1, 'off')
-            ON CONFLICT (id) DO UPDATE SET verbosity = 'off'
-        """)
+    # Set verbosity to 'off'
+    await pool.execute("""
+        INSERT INTO insight_settings (id, verbosity)
+        VALUES (1, 'off')
+        ON CONFLICT (id) DO UPDATE SET verbosity = 'off'
+    """)
 
-        today = _today()
-        contact_id = await _insert_contact(pool, first_name="Xavier")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=today.month,
-            day=today.day,
-        )
+    today = _today()
+    contact_id = await _insert_contact(pool, first_name="Xavier")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=today.month,
+        day=today.day,
+    )
 
-        result = await run_insight_scan(pool)
+    result = await run_insight_scan(pool)
 
-        assert result["early_exit"] is True
-        assert result["candidates_filtered"] >= 1
-        assert result["candidates_accepted"] == 0
+    assert result["early_exit"] is True
+    assert result["candidates_filtered"] >= 1
+    assert result["candidates_accepted"] == 0
 
 
-async def test_insight_scan_stats_keys_present(provisioned_postgres_pool):
+async def test_insight_scan_stats_keys_present(jobs_pool):
     """Result dict always contains all expected statistics keys."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        result = await run_insight_scan(pool)
+    result = await run_insight_scan(pool)
 
-        assert "candidates_proposed" in result
-        assert "candidates_accepted" in result
-        assert "candidates_filtered" in result
-        assert "candidates_errored" in result
-        assert "early_exit" in result
+    assert "candidates_proposed" in result
+    assert "candidates_accepted" in result
+    assert "candidates_filtered" in result
+    assert "candidates_errored" in result
+    assert "early_exit" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1323,30 +1146,29 @@ async def test_insight_scan_stats_keys_present(provisioned_postgres_pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_origin_butler_is_relationship(provisioned_postgres_pool):
+async def test_insight_scan_origin_butler_is_relationship(jobs_pool):
     """All generated candidates are tagged with origin_butler='relationship'."""
     from butlers.jobs._roster.relationship_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        await _setup_relationship_schema(pool)
-        await _setup_insight_tables(pool)
+    pool = jobs_pool
+    await _setup_insight_tables(pool)
 
-        today = _today()
-        contact_id = await _insert_contact(pool, first_name="Yara")
-        await _insert_important_date(
-            pool,
-            contact_id=contact_id,
-            label="birthday",
-            month=today.month,
-            day=today.day,
-        )
+    today = _today()
+    contact_id = await _insert_contact(pool, first_name="Yara")
+    await _insert_important_date(
+        pool,
+        contact_id=contact_id,
+        label="birthday",
+        month=today.month,
+        day=today.day,
+    )
 
-        await run_insight_scan(pool)
+    await run_insight_scan(pool)
 
-        rows = await pool.fetch("SELECT origin_butler FROM insight_candidates")
-        assert len(rows) >= 1
-        for row in rows:
-            assert row["origin_butler"] == "relationship"
+    rows = await pool.fetch("SELECT origin_butler FROM insight_candidates")
+    assert len(rows) >= 1
+    for row in rows:
+        assert row["origin_butler"] == "relationship"
 
 
 # ---------------------------------------------------------------------------

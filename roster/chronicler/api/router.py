@@ -194,9 +194,7 @@ async def _numeric_snapshot(
             pending = await pending_numeric_repair_dates(
                 conn, start_date=start_date, end_date=end_date
             )
-            rollups = await list_daily_rollups_range(
-                conn, start_date=start_date, end_date=end_date
-            )
+            rollups = await list_daily_rollups_range(conn, start_date=start_date, end_date=end_date)
             flags = await list_daily_rollup_flags_range(
                 conn, start_date=flag_start_date, end_date=flag_end_date
             )
@@ -2028,9 +2026,7 @@ async def get_rollups(
             # when the labeling pass has not run — a legitimate absence, not an
             # error, so ``rollups_source_error`` is unaffected.
             day_narrative = (
-                day_rollups[0].narrative
-                if status == "materialized" and day_rollups
-                else None
+                day_rollups[0].narrative if status == "materialized" and day_rollups else None
             )
 
             days.append(
@@ -2114,7 +2110,6 @@ async def get_daily_balance(
     ``feeder_dark``-marks-lane-unavailable cross-reference.
     """
     baseline_start = balance_date - timedelta(days=lookback_days)
-    baseline_end = balance_date - timedelta(days=1)
 
     _tracer = trace.get_tracer("butlers.chronicler")
     with _tracer.start_as_current_span("chronicler.balance") as span:
@@ -2353,7 +2348,9 @@ async def get_trends(
                 days=lane_series[lane],
                 streak_days=(
                     None
-                    if any(start_date <= pending_day <= resolved_end for pending_day in pending_dates)
+                    if any(
+                        start_date <= pending_day <= resolved_end for pending_day in pending_dates
+                    )
                     else compute_lane_streak(lane_daily_seconds[lane])
                 ),
             )

@@ -25,6 +25,7 @@ from butlers.api.read_models.calendar_workspace import (
 )
 from butlers.core.temporal.conflicts import ConflictEventRef, DetectedIssue
 from butlers.jobs import calendar_overcommitment as job
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -249,14 +250,6 @@ async def test_dedup_store_outage_is_reported_on_the_scan(down: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _Db:
-    def __init__(self, pools: dict[str, Any]) -> None:
-        self._pools = pools
-
-    def pool(self, name: str) -> Any:
-        return self._pools[name]
-
-
 @pytest.fixture
 def check(monkeypatch):
     """Patch the check's three seams; return their mocks."""
@@ -276,7 +269,7 @@ async def test_complete_scan_of_the_owner_local_window_resolves_by_omission(chec
     now = datetime(2026, 7, 1, 20, 0, tzinfo=UTC)  # 04:00 on 2 July in Singapore
 
     result = await job.run_calendar_overcommitment_check(
-        _Db({"switchboard": pool}), lookahead_days=3, now=now
+        db_manager({"switchboard": pool}), lookahead_days=3, now=now
     )
 
     assert result["reconciled"] is True
@@ -295,7 +288,7 @@ async def test_complete_scan_of_the_owner_local_window_resolves_by_omission(chec
 async def test_partial_scan_confirms_what_it_saw_but_never_resolves(check) -> None:
     check["scan"].return_value = _scan(_overlap(), available=False)
 
-    result = await job.run_calendar_overcommitment_check(_Db({"switchboard": object()}))
+    result = await job.run_calendar_overcommitment_check(db_manager({"switchboard": object()}))
 
     assert result["reconciled"] is True
     kwargs = check["reconcile"].await_args.kwargs
@@ -315,7 +308,7 @@ async def test_unmeasurable_tick_never_reconciles(check, failure) -> None:
     else:
         check["scan"].return_value = CalendarConflictScan(issues=[], dedup_available=False)
 
-    result = await job.run_calendar_overcommitment_check(_Db(pools))
+    result = await job.run_calendar_overcommitment_check(db_manager(pools))
 
     assert result["reconciled"] is False
     check["reconcile"].assert_not_awaited()
@@ -335,7 +328,7 @@ async def test_reconciliation_failure_never_kills_the_loop(check, monkeypatch) -
 
     with pytest.raises(asyncio.CancelledError):
         await job.run_calendar_overcommitment_loop(
-            _Db({"switchboard": object()}), interval_s=1, lookahead_days=7
+            db_manager({"switchboard": object()}), interval_s=1, lookahead_days=7
         )
 
     assert ticks == [True, False]

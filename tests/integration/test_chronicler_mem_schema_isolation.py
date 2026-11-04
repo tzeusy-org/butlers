@@ -38,6 +38,7 @@ from butlers.background import dispatch_scheduled_task
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.modules.memory.storage import store_fact
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
@@ -57,24 +58,6 @@ _MEMORY_TABLES = {
     "memory_events",
 }
 _MEMORY_ONLY_TABLES = {"episode_tombstones", "facts", "rules", "memory_links", "memory_events"}
-
-
-class _SchemaAwareSinglePoolDB:
-    """Dashboard reader double whose domain and memory schemas intentionally differ."""
-
-    butler_names = ["chronicler"]
-
-    def __init__(self, pool: object) -> None:
-        self._pool = pool
-
-    def pool(self, name: str) -> object:
-        if name != "chronicler":
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
-
-    def memory_schema_for_butler(self, name: str) -> str:
-        assert name == "chronicler"
-        return "chronicler_mem"
 
 
 @pytest.fixture(scope="module")
@@ -228,7 +211,9 @@ async def test_memory_link_api_reads_chronicler_mem_not_domain_schema(isolated_d
             episode_id,
         )
         app = create_app()
-        app.dependency_overrides[get_db] = lambda: _SchemaAwareSinglePoolDB(pool)
+        app.dependency_overrides[get_db] = lambda: db_manager(
+            {"chronicler": pool}, memory_schemas={"chronicler": "chronicler_mem"}
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:

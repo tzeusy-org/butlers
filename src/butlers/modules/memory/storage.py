@@ -554,10 +554,11 @@ async def _cascade_catalog_disownment(
     transaction so the canonical disownment and the catalog never diverge).
 
     Explicit ``source_schema`` must match the schema used by the canonical
-    mutation. Dashboard callers can qualify private memory relations while
-    using a domain-schema pool. Only unqualified legacy callers resolve
+    mutation. Dashboard callers may target private memory relations while using
+    a domain-schema pool. Only legacy unqualified callers resolve
     ``current_schema()`` on this same connection; never resolve it inside a
-    function with a pinned search path.
+    function with a pinned search path. If no matching projection exists, the
+    invalidation primitive is a no-op for that projection.
     """
     if source_schema is not None:
         if not _SQL_IDENTIFIER_PATTERN.fullmatch(source_schema):

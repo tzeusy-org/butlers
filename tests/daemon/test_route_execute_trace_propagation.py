@@ -4,16 +4,16 @@ Verifies that:
 - Trace context from route.execute is propagated to spawner
 - Butler sessions spawned via routing share the same trace_id as parent
 - Sessions triggered without trace context create independent traces
+
+Each test boots a real daemon (``booted_daemon``) and calls route.execute over MCP;
+the routed session runs through the real route inbox and spawner, and the spans
+come from the production instrumentation.
 """
 
 from __future__ import annotations
 
-import asyncio
-import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from opentelemetry import trace
@@ -23,17 +23,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.core.telemetry import inject_trace_context
-from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 
-pytestmark = pytest.mark.unit
-
-
-class _NoopLeaseHeartbeat:
-    async def __aenter__(self) -> asyncio.Event:
-        return asyncio.Event()
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
 def _reset_otel_global_state():
@@ -43,8 +35,10 @@ def _reset_otel_global_state():
 
 
 @pytest.fixture
-def otel_provider():
+def otel_provider(monkeypatch: pytest.MonkeyPatch):
     """Set up an in-memory TracerProvider for every test, then tear down."""
+    # Startup's init_telemetry then reuses this provider instead of exporting.
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
     _reset_otel_global_state()
     exporter = InMemorySpanExporter()
     resource = Resource.create({"service.name": "butler-test"})
@@ -54,183 +48,6 @@ def otel_provider():
     yield exporter
     provider.shutdown()
     _reset_otel_global_state()
-
-
-def _toml_value(v: Any) -> str:
-    if isinstance(v, str):
-        return f'"{v}"'
-    if isinstance(v, list):
-        items = ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in v)
-        return f"[{items}]"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
-
-
-def _make_butler_toml(
-    tmp_path: Path,
-    *,
-    butler_name: str = "test-butler",
-    port: int = 9100,
-    modules: dict[str, dict] | None = None,
-) -> Path:
-    modules = modules or {}
-    toml_lines = [
-        "[butler]",
-        f'name = "{butler_name}"',
-        f"port = {port}",
-        'description = "A test butler"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        f'schema = "{butler_name}"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    for mod_name, mod_cfg in modules.items():
-        toml_lines.append(f"\n[modules.{mod_name}]")
-        for k, v in mod_cfg.items():
-            toml_lines.append(f"{k} = {_toml_value(v)}")
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
-
-
-def _patch_infra():
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    transaction_depth = 0
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def _transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        try:
-            yield
-        finally:
-            transaction_depth -= 1
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-    mock_pool.fetchval.return_value = None
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patch("butlers.lifecycle.init_telemetry", return_value=trace.get_tracer("butlers")),
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
 
 
 def _route_request_context(
@@ -253,115 +70,70 @@ def _route_request_context(
     return ctx
 
 
-@pytest.fixture(autouse=True)
-def _mock_route_inbox(monkeypatch):
-    """Patch route_inbox DB calls so tests don't need a real DB pool."""
-    fake_inbox_id = uuid.uuid4()
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_insert",
-        AsyncMock(return_value=fake_inbox_id),
+async def _route(booted_daemon, tmp_path: Path, **arguments: Any):
+    """Route one request through a booted daemon and wait for its session."""
+    booted = await booted_daemon(write_butler_config(tmp_path))
+    result = await booted.call_tool(
+        "route.execute",
+        {
+            "schema_version": "route.v1",
+            "request_context": _route_request_context(),
+            "input": {"prompt": "Run health check."},
+            **arguments,
+        },
     )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_claim_processing",
-        AsyncMock(return_value=uuid.uuid4()),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
-    )
-    monkeypatch.setattr(
-        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processed",
-        AsyncMock(),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_errored",
-        AsyncMock(),
-    )
+    assert result["status"] == "accepted"
+    await booted.runtime.wait_for_invocations(1)
+    # The session span ends after the runtime returns; shutdown drains it.
+    await booted.shutdown()
+    return booted
+
+
+def _spans(exporter: InMemorySpanExporter, name: str) -> list:
+    return [span for span in exporter.get_finished_spans() if span.name == name]
 
 
 class TestRouteExecuteTracePropagation:
     """Verify trace context propagates through route.execute to spawner."""
 
     async def test_trace_context_propagated_to_spawner(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
+        self, booted_daemon, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
         """route.execute span is a child of the switchboard's trace."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-        # Create a parent span and inject trace context
         tracer = trace.get_tracer("test")
         with tracer.start_as_current_span("switchboard.route") as parent_span:
             parent_trace_id = parent_span.get_span_context().trace_id
             parent_span_id = parent_span.get_span_context().span_id
             trace_context = inject_trace_context()
 
-        # Call route.execute with trace_context
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-            trace_context=trace_context,
-        )
+        await _route(booted_daemon, tmp_path, trace_context=trace_context)
 
-        assert result["status"] == "accepted"
-
-        # Background task runs asynchronously; wait briefly for it to complete
-        await asyncio.sleep(0.05)
-        daemon.spawner.trigger.assert_awaited_once()
-
-        # Verify route.execute created a span under the switchboard's trace
-        spans = otel_provider.get_finished_spans()
-        route_spans = [s for s in spans if s.name == "butler.tool.route.execute"]
-        assert len(route_spans) == 1
-        route_span = route_spans[0]
+        (route_span,) = _spans(otel_provider, "butler.tool.route.execute")
         assert route_span.context.trace_id == parent_trace_id
         assert route_span.parent.span_id == parent_span_id
+        # The routed session joins the switchboard's trace too.
+        (session_span,) = _spans(otel_provider, "butler.llm_session")
+        assert session_span.context.trace_id == parent_trace_id
 
     async def test_no_trace_context_creates_independent_trace(
-        self, tmp_path: Path, otel_provider: InMemorySpanExporter
+        self, booted_daemon, tmp_path: Path, otel_provider: InMemorySpanExporter
     ) -> None:
-        """Sessions without trace_context create independent traces."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
+        """Sessions without trace_context create independent traces.
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-        daemon.spawner.trigger = AsyncMock(return_value=mock_trigger_result)
+        With no routed trace_context there is no Switchboard trace to join: the
+        route span descends only from the MCP server's own span for this request,
+        and the session stays in that request's trace.
+        """
+        await _route(booted_daemon, tmp_path)
 
-        # Call route.execute without trace_context
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_route_request_context(),
-            input={"prompt": "Run health check."},
-        )
-
-        assert result["status"] == "accepted"
-
-        # Background task runs asynchronously; wait briefly for it to complete
-        await asyncio.sleep(0.05)
-        daemon.spawner.trigger.assert_awaited_once()
-
-        # Verify parent_context is None
-        call_args = daemon.spawner.trigger.call_args
-        assert call_args is not None
-        parent_ctx_arg = call_args.kwargs.get("parent_context")
-        assert parent_ctx_arg is None
+        (route_span,) = _spans(otel_provider, "butler.tool.route.execute")
+        # Client and server both record a "tools/call" span; the server's is the
+        # local child of the remote client span.
+        (server_span,) = [
+            span
+            for span in _spans(otel_provider, "tools/call route.execute")
+            if span.parent is not None and span.parent.is_remote
+        ]
+        assert route_span.parent.span_id == server_span.context.span_id
+        (session_span,) = _spans(otel_provider, "butler.llm_session")
+        assert session_span.context.trace_id == route_span.context.trace_id

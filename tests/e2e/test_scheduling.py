@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 import pytest
 from fastmcp import Client as MCPClient
 
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 
 if TYPE_CHECKING:
     from asyncpg.pool import Pool

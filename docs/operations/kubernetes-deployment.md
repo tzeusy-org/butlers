@@ -106,7 +106,9 @@ resource or credential action is part of source retirement.
 
 ## Ingress
 
-The host's `tailscale serve` mappings stay the public entry point, so the dashboard URL, OAuth
+The host's `tailscale serve` mappings stay the tailnet entry point for the dashboard and API
+(the only internet-reachable Butlers workload is the planned RFC 0039 public MCP server, through
+the owner's gateway), so the dashboard URL, OAuth
 redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `butlers.example.ts.net`)
 do not change. Only the local targets move from the compose ports to the NodePorts:
 

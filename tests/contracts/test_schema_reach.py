@@ -451,6 +451,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "chronicler.point_events",
     ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
     (
+        "roster/relationship/tests/test_whatsapp_reconciliation.py",
+        "chronicler.source_adapter_state",
+    ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
+    (
         "roster/relationship/tools/contacts.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed contact child table tuple; local ownership not statically visible in SQL; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -1046,10 +1050,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/testing/recall_bench.py",
         "<dynamic:{table}>",
     ): "dynamic-local: benchmark-selected memory table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "src/butlers/testing/schema_standins.py",
-        "<dynamic:{qualified}>",
-    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
 }
 
 
