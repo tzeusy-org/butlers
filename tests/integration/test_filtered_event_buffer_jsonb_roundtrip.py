@@ -1001,7 +1001,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         )
         await runtime._refresh_policy_tier_assigner()
         assert any(
-            record.name == "butlers.connectors.gmail_policy"
+            record.name == "butlers.connectors.known_contact_snapshot"
             and "DB refresh failed" in record.getMessage()
             for record in caplog.records
         ), "The actual first contact query must reach its DB exception path"
@@ -1268,6 +1268,68 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
     finally:
         await registry_pool.close()
         await buffer_pool.close()
+
+
+@pytest.mark.pg_clock
+@pytest.mark.parametrize(
+    ("connector_type", "channel", "endpoint"),
+    [
+        ("whatsapp_user_client", "whatsapp_user_client", "whatsapp:+12025551234"),
+        ("google_drive", "google_drive", "google_drive:user:user@example.com"),
+    ],
+)
+async def test_whatsapp_and_drive_drops_count_unknown_and_not_applicable_honestly(
+    buffer_pool: asyncpg.Pool, connector_type: str, channel: str, endpoint: str
+) -> None:
+    """bu-q7vx1q.42: marked WhatsApp/Drive rows count; unknown ones raise uncertain_drops;
+    not_applicable rows (group chat, owner-only file) do neither."""
+    from butlers.core.ingestion_events import ingestion_classification_uncertainty
+    from butlers.core.known_contact_state import KnownContactSnapshot, not_applicable_classification
+
+    now = datetime.now(UTC)
+    loaded = KnownContactSnapshot(
+        state="loaded", reason="none", generation=1, last_success_at=now
+    ).historical(now)
+    unloaded = KnownContactSnapshot().historical(now)
+    buf = FilteredEventBuffer(connector_type=connector_type, endpoint_identity=endpoint)
+    for message_id, marked, classification in [
+        ("known", True, loaded),
+        ("stranger", False, loaded),
+        ("unknown", False, unloaded),
+        ("unclassified", False, None),
+        ("not-applicable", False, not_applicable_classification(now)),
+    ]:
+        buf.record(
+            external_message_id=message_id,
+            source_channel=channel,
+            sender_identity="friend",
+            subject_or_preview=None,
+            filter_reason=FilteredEventBuffer.reason_policy_rule(
+                "connector_rule", "block", "sender_domain"
+            ),
+            full_payload=FilteredEventBuffer.full_payload(
+                channel=channel,
+                provider=connector_type,
+                endpoint_identity=endpoint,
+                external_event_id=message_id,
+                external_thread_id=None,
+                observed_at=now.isoformat(),
+                sender_identity="friend",
+                raw={},
+                important_dropped_basis="known_contact" if marked else None,
+                classification=classification,
+            ),
+        )
+    await buf.flush(buffer_pool)
+
+    window = {"from_dt": now - timedelta(hours=1)}
+    summary = await ingestion_dropped_known_summary(buffer_pool, **window)
+    uncertain = await ingestion_classification_uncertainty(
+        buffer_pool, **window, to_dt=now + timedelta(1)
+    )
+
+    assert summary == {"dropped": 1, "episodes": 1}
+    assert uncertain == 2  # unloaded + never classified; not_applicable is certain
 
 
 @pytest.mark.pg_clock

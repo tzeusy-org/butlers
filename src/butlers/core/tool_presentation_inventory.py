@@ -24,6 +24,7 @@ def _declare(
     presentable: bool = True,
     posture: str = "deferred",
     namespace: str | None = None,
+    approval_mode: str = "default",
     **authorization: object,
 ) -> tuple[ToolPresentation, ...]:
     # Provider/cache responses retain their external provenance even on writes.
@@ -51,6 +52,7 @@ def _declare(
             namespace=f"{module}.{namespace or group}",
             llm_presentable=presentable,
             load_posture=posture,  # type: ignore[arg-type]
+            approval_policy={"mode": approval_mode},
             **authorization,
         )
         for name in names.split()

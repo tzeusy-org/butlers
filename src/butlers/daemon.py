@@ -79,6 +79,7 @@ from butlers.core.tool_catalog import (
     ToolCatalog,
     ToolCatalogError,
     build_tool_catalog,
+    declared_approval_mode,
     validate_tool_metadata,
 )
 from butlers.core.utils import generate_uuid7_string
@@ -1539,6 +1540,14 @@ class ButlerDaemon:
                         f"tool presentation metadata conflicts with central inventory for "
                         f"{tool_name!r}: {', '.join(mismatches)}"
                     )
+            try:
+                approval_mode = declared_approval_mode(presentation.approval_policy)
+                if presentation.approval_policy != {"mode": approval_mode}:
+                    raise ToolCatalogError("declarations may supply only approval_policy.mode")
+            except ToolCatalogError as exc:
+                raise ToolCatalogError(
+                    f"invalid approval_policy declaration for {tool_name!r}: {exc}"
+                ) from exc
             resolved[tool_name] = ToolMeta(
                 arg_sensitivities=dict(sensitivity.arg_sensitivities),
                 canonical_name=presentation.canonical_name,
@@ -1553,7 +1562,7 @@ class ButlerDaemon:
                     if field_name not in {"owner_domain", "approval_policy"}
                 },
                 owner_domain=self.config.name,
-                approval_policy={},
+                approval_policy={"mode": approval_mode},
                 read_stores=presentation.read_stores,
                 write_stores=presentation.write_stores,
                 unknown_output_source=presentation.unknown_output_source,
@@ -1562,6 +1571,7 @@ class ButlerDaemon:
             if policy is not None:
                 gate = policy.gated_tools.get(tool_name)
                 resolved[tool_name].approval_policy = {
+                    "mode": approval_mode,
                     "enabled": policy.enabled,
                     "configured_gate": gate is not None,
                     "expiry_hours": policy.get_effective_expiry(tool_name),
@@ -1571,7 +1581,10 @@ class ButlerDaemon:
             # Explicit new declarations cannot silently contradict the inventory.
             for field_name in AUTHORIZATION_FIELDS:
                 supplied = getattr(sensitivity, field_name, None)
-                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                canonical = getattr(resolved[tool_name], field_name)
+                if field_name == "approval_policy" and supplied is not None:
+                    canonical = {"mode": approval_mode}
+                if supplied is not None and supplied != canonical:
                     raise ToolCatalogError(
                         f"tool authorization metadata conflicts with central inventory for "
                         f"{tool_name!r}: {field_name}"

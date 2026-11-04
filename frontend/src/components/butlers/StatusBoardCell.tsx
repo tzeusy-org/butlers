@@ -207,7 +207,7 @@ export function StatusBoardCell({
   // renders so screen-reader users get the same truthful relative label.
   const lastRunLabel = lastRunISO ? formatRelativeCompact(new Date(lastRunISO)) : "unknown"
   const spokenStatus = heartbeatUnavailable ? "heartbeat unavailable" : eligibility === "stale" ? "stale health observation" : activity
-  const ariaLabel = `${name}, ${spokenStatus}, last run ${lastRunLabel}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : hourlyTotal} sessions in 24h`
+  const ariaLabel = `${name}, ${spokenStatus}, last run ${lastRunLabel}, ${hourlyStripeLoading ? sessions24h : hourlyStripeError ? "unknown" : (hourlyTotal ?? "unknown")} sessions in 24h`
 
   // Cron-expectation tooltip on the chip -- "silent 3d, expected daily"
   // instead of a flat OVERDUE/IDLE that means the same thing regardless of
@@ -317,7 +317,7 @@ export function StatusBoardCell({
             ) : hourlyStripeError ? (
               "—"
             ) : (
-              hourlyTotal
+              hourlyTotal ?? "—"
             )
           }
         />

@@ -81,6 +81,23 @@ unknown authority yields `mixed`). Steering memory is gated on that stamp:
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
+- **Facts** from `third_party` or `mixed` authority are *held* while live and not
+  vouched for: they stay recallable as attributed reports (never Profile Facts), and
+  the owner can vouch for one from the dashboard (fact detail, **Vouch**) or with
+  `POST /api/memory/facts/{id}/vouch`; `GET /api/memory/facts?held=true` lists them.
+  Vouching is owner-only and is not an MCP tool, so a session cannot do it. It is
+  additive: `endorsed_at`/`endorsed_by` are set and authority and taint are unchanged,
+  so clearing `endorsed_at` restores the prior state. A retracted or superseded fact
+  returns 409; a repeat returns the same receipt and writes one audit event
+  (`fact_vouched`) in total. Legacy (NULL) and `system` facts are not held. The
+  dashboard Confirm action records `owner` as its actor in `memory_events`; the MCP
+  `memory_confirm` tool records `session`. The re-asserted catalog entry keeps the
+  fact's original `content_authority`, so catalog readers still attribute it. Rollback:
+  withdraw the route and the dashboard action; `fact_vouched` events stay in
+  `memory_events`. Un-vouching one fact is clearing its two stamps; downgrading
+  `mem_016` drops both columns (every vouch is lost, the audit trail is kept). Neither
+  path touches authority or promotes a fact to owner-class. Not yet built: Telegram vouch cards and
+  vouched facts joining Profile Facts, which wait on the goal-runtime work (RFC 0038).
 - **Profile Facts** admit only owner-class, durable facts. Event and transaction
   predicates (purchases, doses, meals, sleep sessions, interactions) are excluded
   even when owner-authored; they stay stored and recallable. A fact is event-class
@@ -277,9 +294,17 @@ The row is inserted as the daemon's own `butler_<name>_rw` role; the table is
 append-only for runtime roles (SELECT and INSERT, no UPDATE or DELETE; core_308).
 
 The partitions stop new laundering; they do not reclassify facts consolidated
-before this change. A historical demotion mechanism (operator-only, default
-dry-run, evidence-manifest gated) is separate, not yet built work, and no live
-dry-run, demotion or restore has been run or authorized.
+before this change. The historical demotion the owner adopted (bu-7ry1sy q1) is an
+operator-only job, `scripts/memory_authority_demotion.py` over
+`butlers.modules.memory.authority_demotion`. It is never scheduled or exposed as a
+tool or API. It reads one memory schema plus an operator-supplied evidence manifest,
+classifies owner-class facts and rules as candidate, excluded, unchanged, UNKNOWN or
+endorsement anomaly, and by default writes nothing. An apply bound to an exact
+approved dry run changes only `content_authority` to `mixed`, disowns the catalog row
+and appends a `content_authority_demoted` receipt per row, atomically per schema.
+Missing historical evidence is UNKNOWN and blocks apply. No live dry-run, demotion or
+restore has been run or authorized; see the
+[authority demotion runbook](../operations/memory-authority-demotion.md).
 
 The dashboard owner can recover an eligible dead-letter episode with
 `POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF

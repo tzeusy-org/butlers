@@ -201,6 +201,47 @@ const TREND_CHART_GUARD_PLUGIN = {
   },
 }
 
+// bu-s11n0s.5.1: a zero-filled array is how a count strip fabricates "measured
+// zero" for buckets nobody reported, and how positional placement starts
+// (`counts[23 - i] = ...`). Count strips key each bucket by its start instant
+// through lib/bucket-series.ts (buildBucketSeries), where an unreported slot is
+// null. The rule reads syntax only, so it covers every non-test source file; a
+// genuine numeric table that is not a chart (an LCS matrix, an accumulator)
+// takes a line-level `eslint-disable-next-line count-bucket/no-zero-fill -- why`.
+const isZero = (node) => node?.type === 'Literal' && node.value === 0
+const returnsZero = (fn) => fn && /Function/.test(fn.type) && (isZero(fn.body) ||
+  (fn.body.type === 'BlockStatement' && fn.body.body.length === 1 &&
+    fn.body.body[0].type === 'ReturnStatement' && isZero(fn.body.body[0].argument)))
+const COUNT_BUCKET_GUARD_PLUGIN = {
+  rules: {
+    'no-zero-fill': {
+      meta: {
+        type: 'problem',
+        schema: [],
+        messages: {
+          zeroFill: 'Zero-filled arrays fabricate measured zeros for unreported buckets ' +
+            '(bu-s11n0s.5.1). Key chart buckets by start time with buildBucketSeries ' +
+            '(lib/bucket-series.ts), where an unreported slot is null.',
+        },
+      },
+      create(context) {
+        const property = (callee) => callee.type === 'MemberExpression' &&
+          (callee.computed ? callee.property.value : callee.property.name)
+        return {
+          CallExpression(node) {
+            const name = property(node.callee)
+            if ((name === 'fill' && isZero(node.arguments[0])) ||
+                (name === 'from' && node.callee.object.name === 'Array' &&
+                 returnsZero(node.arguments[1]))) {
+              context.report({ node, messageId: 'zeroFill' })
+            }
+          },
+        }
+      },
+    },
+  },
+}
+
 // Keyboard handling belongs to the app-wide shell map and the page-scoped shortcut
 // registry; a third listener would drift from their editable-field/dialog protections.
 const KEYDOWN_LISTENER_SELECTORS = [{
@@ -325,6 +366,12 @@ export default defineConfig([
     ignores: ['src/components/ui/**'],
     plugins: { 'trend-chart': TREND_CHART_GUARD_PLUGIN },
     rules: { 'trend-chart/no-raw-import': 'error' },
+  },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    ignores: ['**/*.test.{ts,tsx}'],
+    plugins: { 'count-bucket': COUNT_BUCKET_GUARD_PLUGIN },
+    rules: { 'count-bucket/no-zero-fill': 'error' },
   },
   {
     files: ['**/*.{ts,tsx}'],

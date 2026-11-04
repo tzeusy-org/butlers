@@ -142,6 +142,12 @@ def test_complete_route_and_openapi_snapshot(tmp_path, monkeypatch):
     assert {"/api/confirms", "/api/confirms/callback", "/api/confirms/{confirm_id}/answer"} <= set(
         snapshot["openapi"]["paths"]
     )
+    assert {
+        "/api/general/capture-intake-context",
+        "/api/general/captures",
+        "/api/general/captures/{capture_id}",
+        "/api/general/capture-chat",
+    } <= set(snapshot["openapi"]["paths"])
     assert not any(
         row["path"] == "/api/healing/attempts/{attempt_id}/retry" for row in snapshot["routes"]
     )

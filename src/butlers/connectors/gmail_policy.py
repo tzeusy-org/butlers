@@ -12,19 +12,19 @@ Three-layer pipeline (applied in order):
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
-import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from email.utils import parseaddr
 from typing import TYPE_CHECKING, Any, Literal
 
 from prometheus_client import Counter
 
-from butlers.core.known_contact_state import KnownContactSnapshot
+from butlers.connectors.known_contact_snapshot import (
+    PRIORITY_CONTACTS_TTL,
+    PriorityContactSnapshotSource,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -562,17 +562,18 @@ def parse_label_list(raw: str | None) -> list[str]:
 # ---------------------------------------------------------------------------
 
 #: TTL in seconds for the DB-backed priority contacts cache.
-_PRIORITY_CONTACTS_TTL = 900  # 15 minutes
+_PRIORITY_CONTACTS_TTL = PRIORITY_CONTACTS_TTL
 
 
-class GmailPolicyEvaluator:
+class GmailPolicyEvaluator(PriorityContactSnapshotSource):
     """DB-backed priority contact evaluator with 15-minute TTL cache.
 
     Loads the global priority-contact set from ``public.priority_contacts``
     joined to ``relationship.entity_facts`` to resolve email addresses (migration
     bead bu-hjo3i).  ``priority_contacts`` is butler-agnostic (bu-gx13h dropped the
     ``butler`` dimension).  The cache refreshes automatically when it is older than
-    15 minutes.
+    15 minutes. The snapshot state machine lives in
+    :class:`~butlers.connectors.known_contact_snapshot.PriorityContactSnapshotSource`.
 
     If the DB is unreachable during a cache refresh, the evaluator retains its
     previous cache and logs a warning.  On the very first call, if the DB is
@@ -586,88 +587,14 @@ class GmailPolicyEvaluator:
         db_pool: asyncpg.Pool | None = None,
         ttl: float = _PRIORITY_CONTACTS_TTL,
     ) -> None:
-        self._db_pool = db_pool
-        self._ttl = ttl
-        self._cache: frozenset[str] = frozenset()
-        # float('-inf') ensures the cache is always expired on the very first call,
-        # regardless of how long the process has been running. Using 0.0 caused a
-        # subtle bug: on freshly-booted CI runners (uptime < TTL seconds), the
-        # expression `time.monotonic() - 0.0 < ttl` evaluated to False, silently
-        # skipping the first DB refresh and returning an empty frozenset.
-        self._cache_loaded_at: float = float("-inf")
-        self._snapshot = KnownContactSnapshot()
-        self._refresh_lock = asyncio.Lock()
-
-    def _cache_expired(self) -> bool:
-        return (time.monotonic() - self._cache_loaded_at) >= self._ttl
-
-    def _transition(self, state: str, reason: str, *, success: datetime | None = None) -> None:
-        self._snapshot = KnownContactSnapshot(
-            contacts=self._cache,
-            state=state,
-            reason=reason,
-            generation=self._snapshot.generation + 1,
-            last_success_at=success if success is not None else self._snapshot.last_success_at,
+        super().__init__(
+            db_pool,
+            ttl,
+            predicate="has-email",
+            normalize=_normalize_email,
+            label="GmailPolicyEvaluator",
+            provider="Gmail",
         )
-
-    def peek_snapshot(self) -> KnownContactSnapshot:
-        """Read one atomic generation, aging it without initiating a query."""
-        if self._snapshot.state == "loaded" and self._cache_expired():
-            self._transition("stale", "ttl_expired")
-        return self._snapshot
-
-    async def get_snapshot(
-        self,
-        observer: Callable[[], Awaitable[None]] | None = None,
-    ) -> KnownContactSnapshot:
-        """Refresh atomically; publication never changes the query's truth.
-
-        The optional observer owns a bounded publication path. Cancellation of
-        an unfinished query is unknown; cancellation after its success leaves
-        that success intact and propagates to the owning caller.
-        """
-
-        async def notify() -> None:
-            if observer is not None:
-                try:
-                    await observer()
-                except Exception:
-                    logger.warning("Gmail classification publication unavailable")
-
-        async with self._refresh_lock:
-            if not self._cache_expired():
-                return self.peek_snapshot()
-            self._transition("unloaded", "refreshing")
-            try:
-                await notify()
-                if self._db_pool is None:
-                    self._transition("unloaded", "no_pool")
-                else:
-                    rows = await self._db_pool.fetch(
-                        """
-                        SELECT DISTINCT ef.object AS value
-                        FROM public.priority_contacts pc
-                        JOIN relationship.entity_facts ef ON ef.subject = pc.entity_id
-                        WHERE ef.predicate = 'has-email'
-                          AND ef.object_kind = 'literal'
-                          AND ef.validity = 'active'
-                          AND ef.object IS NOT NULL
-                          AND pc.entity_id IS NOT NULL
-                        """
-                    )
-                    self._cache = frozenset(_normalize_email(row["value"]) for row in rows)
-                    self._cache_loaded_at = time.monotonic()
-                    self._transition("loaded", "none", success=datetime.now(UTC))
-            except asyncio.CancelledError:
-                self._transition("failed", "refresh_cancelled")
-                raise
-            except Exception:
-                self._transition("failed", "refresh_failed")
-                # Never log DB error tails or contact identities.
-                logger.warning("GmailPolicyEvaluator: DB refresh failed; retaining previous cache")
-            # Deliberately outside the query exception/cancellation boundary.
-            await notify()
-            return self.peek_snapshot()
 
     async def get_known_contacts(self) -> frozenset[str]:
         """Compatible contact-set read, retaining cached positives on failure."""

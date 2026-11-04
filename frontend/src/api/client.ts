@@ -174,6 +174,7 @@ import type {
   EpisodeParams,
   Fact,
   FactParams,
+  FactVouch,
   MemoryActivity,
   MemoryInspectParams,
   MemoryInspectResult,
@@ -2588,6 +2589,7 @@ function factSearchParams(params?: FactParams): URLSearchParams {
     sp.set("importance_min", String(params.importance_min));
   if (params?.source_episode_id)
     sp.set("source_episode_id", params.source_episode_id);
+  if (params?.held != null) sp.set("held", String(params.held));
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;
@@ -2674,6 +2676,18 @@ export function getFact(factId: string): Promise<ApiResponse<Fact>> {
 export function confirmFact(factId: string): Promise<ApiResponse<Fact>> {
   return apiFetch<ApiResponse<Fact>>(
     `/memory/facts/${encodeURIComponent(factId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Vouch for a held fact: the owner stands behind a claim a non-owner made.
+ * POST /api/memory/facts/{id}/vouch (bu-jv1moa.14). Owner only; additive, so the
+ * fact keeps its original authority. Idempotent.
+ */
+export function vouchFact(factId: string): Promise<ApiResponse<FactVouch>> {
+  return apiFetch<ApiResponse<FactVouch>>(
+    `/memory/facts/${encodeURIComponent(factId)}/vouch`,
     { method: "POST" },
   );
 }
@@ -4425,6 +4439,7 @@ import type {
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
+  ListeningState,
   PipelineStats,
 } from "./types.ts";
 
@@ -4448,6 +4463,7 @@ export type {
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
+  ListeningState,
   PipelineStats,
 };
 
@@ -4497,10 +4513,8 @@ export interface _BackendStatsRow {
   messages_failed: number;
   /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
   messages_filtered: number;
-  heartbeat_count: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+  /** Heartbeat-derived listening state (bu-s11n0s.5); absent on older responses. */
+  listening?: ListeningState;
   uptime_pct?: number | null;
 }
 
@@ -4545,7 +4559,8 @@ function _toConnectorSummary(entry: _ConnectorDetailPayload): ConnectorSummary {
       messages_failed: entry.today_messages_failed,
       uptime_pct: null,
     },
-    hourly_events: entry.hourly_events ?? Array(24).fill(0),
+    // Absent counts are unreported (bu-s11n0s.5.1), never 24 fabricated zeros.
+    hourly_events: entry.hourly_events ?? [],
   };
 }
 
@@ -4585,6 +4600,7 @@ function _toConnectorStats(
   endpointIdentity: string,
   period: IngestionPeriod,
   hourlyEventsAvailable: boolean,
+  listeningAvailable: boolean,
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
     bucket: (r.hour ?? r.day ?? ""),
@@ -4592,9 +4608,8 @@ function _toConnectorStats(
     messages_failed: r.messages_failed,
     // ?? 0 guards older cached backend rows that predate the filtered series.
     messages_filtered: r.messages_filtered ?? 0,
-    healthy_count: r.healthy_count,
-    degraded_count: r.degraded_count,
-    error_count: r.error_count,
+    // Absent (older backend) is "cannot say", never "listening".
+    listening: r.listening ?? "unknown",
   }));
 
   const totalIngested = timeseries.reduce((s, r) => s + r.messages_ingested, 0);
@@ -4620,6 +4635,7 @@ function _toConnectorStats(
     summary,
     timeseries,
     hourly_events_available: hourlyEventsAvailable,
+    listening_available: listeningAvailable,
   };
 }
 
@@ -4653,6 +4669,7 @@ export async function getConnectorStats(
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
   const hourlyEventsAvailable = resp.meta?.hourly_events_available !== false;
+  const listeningAvailable = resp.meta?.listening_available !== false;
   return {
     ...resp,
     data: _toConnectorStats(
@@ -4661,6 +4678,7 @@ export async function getConnectorStats(
       endpointIdentity,
       period,
       hourlyEventsAvailable,
+      listeningAvailable,
     ),
   };
 }
@@ -6256,6 +6274,11 @@ export interface SystemConditionsParams {
   source?: string;
   /** "open" | "aging" | "resolved" */
   state?: string;
+  /**
+   * "work" | "personal" | "undeclared" -- owner ledger only (400 otherwise).
+   * Narrows to commitments by the sphere the owner declared.
+   */
+  sphere?: string;
   offset?: number;
   limit?: number;
 }
@@ -6279,6 +6302,7 @@ export function getSystemConditions(
   if (params.ledger) query.set("ledger", params.ledger);
   if (params.source) query.set("source", params.source);
   if (params.state) query.set("state", params.state);
+  if (params.sphere) query.set("sphere", params.sphere);
   if (params.offset !== undefined) query.set("offset", String(params.offset));
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   const qs = query.toString();

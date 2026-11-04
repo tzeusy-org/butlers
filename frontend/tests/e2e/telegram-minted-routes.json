@@ -1,0 +1,60 @@
+{
+  "$comment": "Every dashboard route a Telegram message may link to. pattern is a full-match regex over path+query. A link builder that produces a path no entry matches fails tests/core/test_dashboard_links.py. phone_walk is 'covered' when phone-entry-routes.ts walks the route at phone width, otherwise 'pending' (tracked by the bead named in phone_walk_owner). posture_owner is a bead that owns the route's phone layout and removes the field when done.",
+  "routes": [
+    {
+      "name": "approvals queue",
+      "pattern": "/approvals",
+      "example": "/approvals",
+      "payload_selector": "[data-testid=rail-item]",
+      "phone_walk": "covered"
+    },
+    {
+      "name": "approval dossier",
+      "pattern": "/approvals/[0-9a-f-]{36}",
+      "example": "/approvals/11111111-1111-4111-8111-111111111111",
+      "payload_selector": "button:has-text('Approve')",
+      "posture_owner": "bu-h40h2b.10",
+      "phone_walk": "covered"
+    },
+    {
+      "name": "secrets passport",
+      "pattern": "/secrets\\?focus=[A-Za-z0-9%._-]+",
+      "example": "/secrets?focus=u%3Agoogle",
+      "payload_selector": "[data-direction-passport=true]",
+      "posture_owner": "bu-h40h2b.10",
+      "phone_walk": "covered"
+    },
+    {
+      "name": "system status",
+      "pattern": "/system",
+      "example": "/system",
+      "payload_selector": "main h1",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-z0b0ah.3"
+    },
+    {
+      "name": "spend fleet-halt drawer",
+      "pattern": "/spend\\?openDrawer=fleet-halt",
+      "example": "/spend?openDrawer=fleet-halt",
+      "payload_selector": "[data-testid=fleet-halt-attention]",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-z0b0ah.3"
+    },
+    {
+      "name": "spend quota skips",
+      "pattern": "/spend\\?outcome=quota_skip",
+      "example": "/spend?outcome=quota_skip",
+      "payload_selector": "main h1",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-z0b0ah.3"
+    },
+    {
+      "name": "model catalog row",
+      "pattern": "/settings/models\\?highlight=[0-9a-f-]{36}",
+      "example": "/settings/models?highlight=11111111-1111-4111-8111-111111111111",
+      "payload_selector": "[data-highlighted=true]",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-z0b0ah.3"
+    }
+  ]
+}

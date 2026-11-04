@@ -38,11 +38,11 @@ For detailed parameter tables, invoke the `tool-reference` skill.
 
 ### Intelligence Feature Guidelines
 
-- **Insufficient data handling**: When any intelligence tool returns `status="insufficient_data"`, inform the user about the minimum data requirements and suggest using the `historical-data-import` skill if no historical import has been performed. Never fabricate analytics results for sparse data.
+- **Insufficient data handling**: When any intelligence tool returns `status="insufficient_data"`, inform the user about the minimum data requirements and suggest importing their statement history with the `transaction-csv-extraction` skill (one upload per statement) if no historical import has been performed. Never fabricate analytics results for sparse data.
 - **Post-transaction intelligence hook**: After recording a transaction with `record_transaction`, check whether the merchant matches any detected recurring patterns using `detect_recurring`. If a `large_transaction` alert is configured and the amount exceeds the threshold, surface the flag in your response to the user.
 - **Proactive trend context**: When the user asks about spending in a category, include trend context (comparison to prior month via `spending_trends`) alongside the direct answer. If budget targets exist for that category, include budget utilization from `budget_status`.
 - **Merchant mapping discipline**: Merchant category mappings are stored in `finance.merchant_mappings` (via `learn_merchant_categories`), NOT as memory facts. Budget targets live in `finance.budgets`. Account balance snapshots live in `finance.balance_snapshots`. Use the dedicated tools; do not store these in the memory fact layer.
-- **Baseline freshness**: Anomaly detection accuracy depends on up-to-date baselines. After importing 50+ transactions, call `compute_baselines()` to refresh the statistical model. The scheduled `anomaly-insight-scan` job will handle ongoing refresh.
+- **Baseline freshness**: Anomaly detection accuracy depends on up-to-date baselines. Merchant baselines are computed inline by every `anomaly_scan()`. Category spend is judged against the weekly, per-currency personal bands in `metric_baselines` (`spend.category:<category>:<CCY>`), which the scheduled `anomaly-insight-scan` job refreshes daily; a category needs 4 weeks of spend before it has a band, and no `spending_baseline` memory facts are written.
 - **Explainability**: Every anomaly flag, category suggestion, and pattern detection result includes a rationale. Always relay this explanation to the user; never present a bare flag without context.
 - **Audit trail**: When running `subscription_audit`, store the audit date as a memory fact with `predicate="subscription_audit_date"` so the next audit can compute "changes since last audit" correctly.
 
@@ -106,8 +106,7 @@ calls the registered handler directly with no ephemeral LLM session:
 ### Reference and Import Skills
 
 - **`tool-reference`**: Detailed parameter documentation for all finance butler MCP tools
-- **`transaction-csv-extraction`**: Import a stored bank or card CSV export via `import_transactions(storage_ref)`: dry-run preview, explicit `column_map` when needed, then one import call
-- **`historical-data-import`**: Multi-format bank CSV import with format detection, deduplication, progress reporting, and post-import baseline computation
+- **`transaction-csv-extraction`**: Import a stored bank or card CSV export via `import_transactions(storage_ref)`: dry-run preview, explicit `column_map` when needed, then one import call; a historical backfill repeats this once per uploaded statement
 - **`memory-classification`**: Finance domain subject/predicate taxonomy and example facts
 - **`butler-notifications`**: `notify()` required parameters and intent usage
 - **`butler-memory`**: Entity resolution protocol before storing memory facts
@@ -123,7 +122,7 @@ When to use intelligence tools in scheduled tasks and interactive workflows:
 - **`subscription_audit`** → used by `monthly-finance-digest`
 - **`detect_duplicates`** → surface in `anomaly-triage` skill
 - **`net_worth_history` / `net_worth_snapshot`** → no longer prompted from a scheduled task (dropped from `monthly-finance-digest` as low-value/redundant per bu-rvz2o); use interactively
-- **`compute_baselines`** → run after importing 50+ transactions to refresh anomaly detection; also refreshed automatically on every `anomaly-insight-scan` run (`anomaly_scan()` calls it internally)
+- **`compute_baselines`** → returns merchant and category figures for inspection; persists nothing, and `anomaly_scan` judges category spend from the stored bands, not from this tool's figures. Bands are refreshed by the `anomaly-insight-scan` job and once per 50+ row `import_transactions_from_file` call
 
 ## Notes to self
 

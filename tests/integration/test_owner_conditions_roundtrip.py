@@ -667,3 +667,46 @@ class TestResolutionReasonSingleLocation:
         assert superseded["metadata"]["resolution_reason"] == "superseded_by_identity_version_bump"
         assert "resolution_reason" not in superseded["metadata"]["identity_payload"]
         assert superseded["metadata"]["identity_payload"]["successor"]["fingerprint"] == new_fp
+
+
+class TestListConditionsMetadataPredicate:
+    """The sphere filter's SQL (bu-q7vx1q.64) against the real JSONB column."""
+
+    async def test_equals_and_missing_partition_commitments_by_declared_sphere(
+        self, raw_pool: asyncpg.Pool
+    ) -> None:
+        pool = raw_pool  # metadata is bound as JSON text with an explicit ::jsonb cast
+        source = f"relationship:sphere-{uuid.uuid4().hex[:8]}"
+        rows = {
+            "work": {"class": "commitment", "sphere": "work"},
+            "personal": {"class": "commitment", "sphere": "personal"},
+            "undeclared": {"class": "commitment"},
+            "not-a-commitment": {"class": "bill", "sphere": "work"},
+            "no-metadata": None,
+        }
+        for name, metadata in rows.items():
+            await pool.execute(
+                """
+                INSERT INTO public.owner_conditions
+                    (source, fingerprint, episode, metadata)
+                VALUES ($1, $2, 1, $3::jsonb)
+                """,
+                source,
+                name,
+                None if metadata is None else json.dumps(metadata),
+            )
+
+        async def fingerprints(**kwargs) -> set[str]:
+            total, found = await list_conditions(pool, source=source, **kwargs)
+            assert total == len(found)
+            return {r["fingerprint"] for r in found}
+
+        commitment = {"class": "commitment"}
+        assert await fingerprints(metadata_equals={**commitment, "sphere": "work"}) == {"work"}
+        assert await fingerprints(metadata_equals={**commitment, "sphere": "personal"}) == {
+            "personal"
+        }
+        assert await fingerprints(metadata_equals=commitment, metadata_missing=["sphere"]) == {
+            "undeclared"
+        }
+        assert await fingerprints() == set(rows)
