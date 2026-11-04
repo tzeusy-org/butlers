@@ -41,15 +41,20 @@ three root `conftest.py` fixtures:
 - `db`: an async factory for other chains, for example
   `await db("core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard")`.
 - `fresh_db`: a sync factory returning a URL, for migration-subject tests, for example
-  `fresh_db("core", revisions={"core": "core_170"})`.
+  `fresh_db("core", revisions={"core": "core_170"})`. Call it from sync fixtures and tests only:
+  on a cold template it migrates with `asyncio.run`, which fails inside an async fixture.
 - `db.open(url, schema=...)`: a pool on a `fresh_db` URL, for tests that need both the pool and
   the URL (raw `asyncpg.connect` sessions, admin connections); it closes at teardown too.
 
 Each xdist worker migrates once per distinct chain request into a template database; every
 test then gets its own `CREATE DATABASE ... TEMPLATE` clone, so isolation stays per test while
 the migration cost is paid once. The fixtures run on the session event loop, so async tests
-that use them carry `pytest.mark.asyncio(loop_scope="session")`. Do not add a per-file `pool` or `migrated_db_url` fixture or
-hand-written `CREATE TABLE` DDL: `scripts/check_test_db_fixtures.py` (run by
+that use them carry `pytest.mark.asyncio(loop_scope="session")`. Code that takes a dashboard
+`DatabaseManager` gets `butlers.testing.db_manager.db_manager({"general": pool}, ...)`: the real
+manager over the test's pools, with production lookups, `KeyError` refusals and fan-out.
+
+Do not add a per-file `pool` or `migrated_db_url` fixture, a hand-written fake manager with its
+own `pool` method, or hand-written `CREATE TABLE` DDL: `scripts/check_test_db_fixtures.py` (run by
 `tests/scripts/test_check_test_db_fixtures.py`) freezes the existing ones per file in
 `scripts/test-db-fixtures-baseline.json` and fails on any new one (bu-rvgzmf.1). After removing
 some, lower the baseline with `python3 scripts/check_test_db_fixtures.py --update-baseline`.

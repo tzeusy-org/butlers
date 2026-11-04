@@ -6,11 +6,15 @@
 
 Moved verbatim from `AGENTS.md` (Test traps). `AGENTS.md` keeps the three cross-cutting rules.
 
-- A test needing another butler's table builds it from `src/butlers/testing/schema_standins.py`
-  (e.g. `CONNECTOR_REGISTRY.ddl(schema="switchboard")`), never a local `CREATE TABLE`: a hand-copied
-  column list goes stale and the route degrades far from the cause.
-  `tests/config/test_schema_standin_parity.py` enforces it (`# schema-standin-exempt: <why>` opts a
-  non-query fixture out).
+- A test needing another butler's table migrates that butler's chain through the `db` factory
+  (e.g. `await db("core", "switchboard", schemas={"switchboard": "switchboard"})`), never a local
+  `CREATE TABLE`: a hand-copied column list goes stale and the route degrades far from the cause.
+  `scripts/check_test_db_fixtures.py` ratchets hand DDL and per-file `pool` fixtures out of test
+  files. A dashboard route or job under test takes `butlers.testing.db_manager.db_manager(...)`,
+  the real `DatabaseManager` over the test's pools, not a hand-written fake manager.
+- Call `fresh_db` only from sync fixtures and tests. On a cold template it migrates with
+  `asyncio.run`, which fails inside a running event loop (an async fixture); use `await db(...)`
+  there.
 - Test counts: always state the scope beside the number (`tests/` and `tests/ roster/` differ by
   thousands). Anchor the grep as `^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+test_` to exclude
   commented-out and in-string matches.

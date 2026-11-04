@@ -262,7 +262,7 @@ async def _provision_prerequisites(pool) -> None:
             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    # schema-standin-exempt: a deliberately minimal pre-rel_021 registry for
+    # Hand DDL on purpose: a deliberately minimal pre-rel_021 registry for
     # testing rel_021's upgrade; it must not include cardinality, and current-
     # chain constraints are intentionally outside this migration fixture.
     await pool.execute("""
