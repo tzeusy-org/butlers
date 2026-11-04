@@ -10310,7 +10310,7 @@ STORE_WRITERS = MappingProxyType(
         "deferred_notifications": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.core.scheduler._tick_deferred_notification_pass",
+                "butlers.core.scheduler.deferred_pass._tick_deferred_notification_pass",
                 "butlers.core.temporal.delivery_db.cancel_deferred_notification",
                 "butlers.core.temporal.delivery_db.cancel_pending_notifications_matching_line",
                 "butlers.core.temporal.delivery_db.insert_deferred_notification",
@@ -10452,7 +10452,7 @@ STORE_WRITERS = MappingProxyType(
         "event_chains": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.core.scheduler._fire_chain",
+                "butlers.core.scheduler.chain_pass._fire_chain",
                 "butlers.core.temporal.event_chains_db.event_chain_create",
                 "butlers.core.temporal.event_chains_db.event_chain_delete",
                 "butlers.core.temporal.event_chains_db.event_chain_update",
@@ -11556,17 +11556,17 @@ STORE_WRITERS = MappingProxyType(
         "scheduled_tasks": StoreWriters(
             record_capabilities=("paperwork_deadline_set", "receive_domain_event"),
             native_writers=(
-                "butlers.core.scheduler._defer_cron_for_allowance",
-                "butlers.core.scheduler._fire_chain",
-                "butlers.core.scheduler._record_deadline_threshold",
-                "butlers.core.scheduler._tick_deadline_pass",
-                "butlers.core.scheduler.ensure_module_default_schedule",
-                "butlers.core.scheduler.schedule_create",
-                "butlers.core.scheduler.schedule_delete",
-                "butlers.core.scheduler.schedule_toggle",
-                "butlers.core.scheduler.schedule_update",
-                "butlers.core.scheduler.sync_schedules",
-                "butlers.core.scheduler.tick",
+                "butlers.core.scheduler.claim._defer_cron_for_allowance",
+                "butlers.core.scheduler.chain_pass._fire_chain",
+                "butlers.core.scheduler.deadline_pass._record_deadline_threshold",
+                "butlers.core.scheduler.deadline_pass._tick_deadline_pass",
+                "butlers.core.scheduler.crud.ensure_module_default_schedule",
+                "butlers.core.scheduler.crud.schedule_create",
+                "butlers.core.scheduler.crud.schedule_delete",
+                "butlers.core.scheduler.update.schedule_toggle",
+                "butlers.core.scheduler.update.schedule_update",
+                "butlers.core.scheduler.sync.sync_schedules",
+                "butlers.core.scheduler.dispatch.tick",
                 "butlers.core.temporal.deadlines_db.deadline_create",
                 "butlers.core.temporal.deadlines_db.deadline_delete",
                 "butlers.core.temporal.deadlines_db.deadline_update",

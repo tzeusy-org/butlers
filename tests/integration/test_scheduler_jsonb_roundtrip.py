@@ -82,7 +82,8 @@ from datetime import UTC, date, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.core.scheduler import _fire_chain, tick
+from butlers.core.scheduler.chain_pass import _fire_chain
+from butlers.core.scheduler.dispatch import tick
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

@@ -122,7 +122,7 @@ class TestEventChainsDB:
         historical_row = await get_chain_by_id(db_pool, historical_id, butler_name=butler)
         assert historical_row is not None
         assert historical_row["trigger_type"] == "calendar_event_end"
-        from butlers.core.scheduler import _tick_event_chain_pass
+        from butlers.core.scheduler.chain_pass import _tick_event_chain_pass
 
         assert await _tick_event_chain_pass(db_pool, None, datetime.now(UTC)) == 0
         assert (
