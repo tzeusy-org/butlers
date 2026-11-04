@@ -290,15 +290,6 @@ def test_pep_723_command_can_import_the_repository_package(tmp_path: Path) -> No
 @pytest.mark.integration
 @pytest.mark.faketime_fragile
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-# On the real core_243 ledger (FKs to public.entities) the merge's own
-# entity_rebind_log receipt reads as a reference to the source, so the apply
-# stops at postcondition_failed. The FK-free stand-in used before hid it.
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bu-rvgzmf.8: apply postcondition treats the merge's own entity_rebind_log receipt "
-    "as a reference to the source",
-)
 async def test_pep_723_apply_path_runs_with_only_declared_dependencies(fresh_db) -> None:
     """The isolated operator environment must reach and complete the real merge path."""
     # Relationship's real layout, keyed like the reconciliation suite's template.
