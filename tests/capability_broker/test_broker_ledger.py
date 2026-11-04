@@ -468,12 +468,13 @@ async def test_stop_cancels_parked_effects_and_a_late_approval_never_dispatches(
         )
         committed = await w.broker.call(goal, token, NOTIFY.identity, ruled)
         assert committed.status == "committed"
+        dispatched = len(w.forwarder.calls)
         await w.owner.execute("UPDATE switchboard.goals SET status = 'stopped' WHERE id = $1", goal)
         # An approval that arrives after Stop, before cancellation ran, is not dispatched.
         late = await _refused(
             w.broker.execute_approved(goal, first.effect_id, first.approval_ref, args)
         )
-        assert late.reason is Reason.GOAL and w.forwarder.calls == []
+        assert late.reason is Reason.GOAL and len(w.forwarder.calls) == dispatched
         assert (await w.effect(first.effect_id))["status"] == "cancelled"
         assert await w.broker.cancel_parked(goal) == 1
         for parked in (first, second):
