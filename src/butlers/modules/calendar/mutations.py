@@ -11,7 +11,10 @@ import asyncpg
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.core.audit import write_audit_entry
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION, require_permission
-from butlers.modules.approvals.execution_context import get_approval_execution_context
+from butlers.modules.approvals.execution_context import (
+    approval_tool_args_digest,
+    get_approval_execution_context,
+)
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -23,6 +26,7 @@ from .constants import (
     SOURCE_KIND_PROVIDER,
 )
 from .models import AttendeeInfo, CalendarEvent, CalendarEventCreate
+from .party import calendar_party_binding
 
 
 class MutationsMixin:
@@ -277,6 +281,58 @@ class MutationsMixin:
                     "error": error or "Mutation failed",
                     "idempotent_replay": True,
                 }
+            if (
+                status == MUTATION_STATUS_PENDING
+                and isinstance(existing_result, dict)
+                and "party_binding" in existing_result
+            ):
+                # Only our new complete party receipts use this path. The durable
+                # queue row, current owning account and reconstructed call all agree.
+                changed = {
+                    "status": "request_changed",
+                    "message": "The queued invitation no longer matches this request.",
+                }
+                try:
+                    action_id = uuid.UUID(existing_result["action_id"])
+                    row = await self._db.pool.fetchrow(
+                        "SELECT tool_name, tool_args, status FROM pending_actions WHERE id=$1",
+                        action_id,
+                    )
+                    if row is None:
+                        return idempotency_key, changed
+                    stored_args = row["tool_args"]
+                    if isinstance(stored_args, str):
+                        import json
+
+                        stored_args = json.loads(stored_args)
+                    if (
+                        row["tool_name"] != existing_result["tool_name"]
+                        or approval_tool_args_digest(stored_args) != existing_result["args_digest"]
+                    ):
+                        return idempotency_key, changed
+                    if row["status"] in {"executed", "rejected", "expired"}:
+                        return idempotency_key, {"status": row["status"], "idempotent_replay": True}
+                    binding = await calendar_party_binding(self, tool_args["calendar_id"])
+                    if (
+                        tool_name != existing_result["tool_name"]
+                        or action_type != existing_result["action_type"]
+                        or approval_tool_args_digest(tool_args) != existing_result["args_digest"]
+                        or binding != existing_result["party_binding"]
+                    ):
+                        return idempotency_key, changed
+                    context = get_approval_execution_context(
+                        tool_name=tool_name, tool_args=tool_args
+                    )
+                    if context is not None and context.action_id != action_id:
+                        return idempotency_key, changed
+                    if row["status"] == "approved" and context is not None:
+                        pass  # Continue only inside this exact action's executor.
+                    elif row["status"] == "pending" and context is None:
+                        return idempotency_key, {**existing_result, "idempotent_replay": True}
+                    else:
+                        return idempotency_key, {"status": row["status"], "idempotent_replay": True}
+                except Exception:
+                    return idempotency_key, changed
             # A pending row resumes only under the approvals executor's
             # context for this exact tool call; any other caller is told it
             # is still queued.

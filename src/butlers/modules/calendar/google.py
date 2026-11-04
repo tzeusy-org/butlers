@@ -624,7 +624,8 @@ class _GoogleProvider(CalendarProvider):
         Sends a DELETE request to the Google Calendar API.  A 404 response is
         treated as success (the event was already deleted).  For events with
         attendees, pass ``send_updates="all"`` to send cancellation
-        notifications; the default (``None`` / ``"none"``) suppresses emails.
+        notifications. ``"none"`` explicitly suppresses notifications; ``None``
+        omits the provider flag and is not evidence of silence.
 
         For recurring events, v1 always operates on the full series: the
         ``event_id`` must be the base recurring-event ID, not an instance ID.

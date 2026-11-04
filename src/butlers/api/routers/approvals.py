@@ -3541,6 +3541,8 @@ async def approve_owning_action(
     db_mgr: DatabaseManager,
     mcp_mgr: MCPClientManager,
     expected_tool_args: dict[str, Any] | None = None,
+    expected_tool_name: str = "calendar_respond",
+    promotion_eligible: bool = True,
     check_presented_digests: bool = False,
     displayed_call: DisplayedApprovalCall | None = None,
     require_displayed_call: bool = False,
@@ -3590,7 +3592,8 @@ async def approve_owning_action(
             if (
                 edits
                 or action_row is None
-                or action_row["tool_name"] != "calendar_respond"
+                or expected_tool_name not in {"calendar_respond", "calendar_create_event"}
+                or action_row["tool_name"] != expected_tool_name
                 or action_row["tool_args"] != expected_tool_args
             ):
                 raise HTTPException(status_code=409, detail="response_approval_binding_changed")
@@ -3621,6 +3624,7 @@ async def approve_owning_action(
             action_id=action_id,
             actor_id=actor_id,
             create_rule=create_rule,
+            promotion_eligible=promotion_eligible,
             # A pool-backed writer uses a separate transaction. Defer it until
             # this approval, optional standing rule and audit have committed.
             decision_memory_writer=None,

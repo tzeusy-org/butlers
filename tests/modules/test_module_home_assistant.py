@@ -1580,3 +1580,57 @@ async def test_promoted_approval_context_is_exact(mock_mcp, monkeypatch):
         finally:
             reset_approval_execution_context(token)
         _assert_parked(case, args, result, case_id)
+
+
+@pytest.mark.parametrize(
+    "domain,service,target",
+    [
+        ("notify", "mobile_app_guest", None),
+        ("tts", "speak", {"entity_id": "media_player.shared_speaker"}),
+    ],
+)
+async def test_message_audience_is_classified_independently_of_physical_risk(
+    mock_mcp, monkeypatch, domain, service, target
+):
+    args = {
+        "domain": domain,
+        "service": service,
+        "target": target,
+        "data": {"message": "Synthetic announcement"},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    resolver = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolver
+    )
+    outcome = await case.tool(**args)
+    assert outcome["status"] == "pending_approval"
+    assert outcome["risk"] == "protected"  # The physical boundary is conserved.
+    resolver.assert_awaited()
+    assert outcome["communication"] == {"effect_class": "communicate", "owner_only": False}
+    assert "non-owner communication" in case.park.await_args.kwargs["why"]
+    assert case.park.await_args.kwargs["tool_args"] == args
+    case.client.post.assert_not_awaited()
+    case.client.get.assert_not_awaited()
+
+
+async def test_owner_notification_keeps_its_independent_protected_gate(mock_mcp, monkeypatch):
+    args = {
+        "domain": "notify",
+        "service": "mobile_app_owner",
+        "target": None,
+        "data": {"message": "Synthetic owner message", "title": "Synthetic"},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    resolver = AsyncMock(return_value=SimpleNamespace(roles=["owner"]))
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolver
+    )
+    result = await case.tool(**args)
+    resolver.assert_awaited_once_with(case.pool, "other", "home_assistant:notify:mobile_app_owner")
+    assert result["communication"] == {"effect_class": "communicate", "owner_only": True}
+    assert result["risk"] == "protected"
+    assert result["status"] == "pending_approval"
+    assert "non-owner communication" not in case.park.await_args.kwargs["why"]
+    assert case.park.await_args.kwargs["tool_args"] == args
+    case.client.post.assert_not_awaited()

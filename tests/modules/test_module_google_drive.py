@@ -146,3 +146,305 @@ class TestOnStartup:
                 db=MagicMock(pool=MagicMock()),
                 credential_store=AsyncMock(resolve=AsyncMock(return_value=None)),
             )
+
+
+@pytest.mark.parametrize("operation", ["write", "folder", "move"])
+@pytest.mark.parametrize(
+    "audience,enabled",
+    [("owner", True), ("guest", True), ("group", True), ("unknown", True), ("guest", False)],
+)
+async def test_destination_audience_precedes_every_drive_write(
+    monkeypatch, operation, audience, enabled
+):
+    from types import SimpleNamespace
+
+    def response(data, status=200):
+        return SimpleNamespace(status_code=status, json=lambda: data, text="synthetic response")
+
+    async def get(path, **kwargs):
+        if path.endswith("/permissions"):
+            permission = (
+                {
+                    "id": "group-permission",
+                    "role": "reader",
+                    "type": "group",
+                    "emailAddress": "group@example.test",
+                }
+                if audience == "group"
+                else {
+                    "id": "user-permission",
+                    "role": "writer",
+                    "type": "user",
+                    "emailAddress": audience + "@example.test",
+                }
+            )
+            return response({"permissions": [permission]})
+        if path.endswith("source-file"):
+            return response({"id": "source-file", "name": "sample", "parents": ["old-parent"]})
+        return response({"id": "destination", "mimeType": "application/vnd.google-apps.folder"})
+
+    module = GoogleDriveModule()
+    module._db = SimpleNamespace(pool=object())
+    module._client = SimpleNamespace(
+        get=AsyncMock(side_effect=get),
+        post=AsyncMock(return_value=response({"id": "new", "name": "sample"}, 201)),
+        patch=AsyncMock(return_value=response({"id": "source-file", "name": "sample"})),
+    )
+    enqueuer = AsyncMock(return_value="drive-action")
+    module._approval_enqueuer = enqueuer if enabled else None
+
+    async def resolve(pool, channel, identifier):
+        assert channel == "email"
+        if identifier == "unknown@example.test":
+            return None
+        return SimpleNamespace(roles=["owner"] if identifier == "owner@example.test" else [])
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolve
+    )
+    if operation == "write":
+        result = await module._drive_write_file(
+            "sample", "Synthetic content", folder_id="destination"
+        )
+    elif operation == "folder":
+        result = await module._drive_create_folder("sample", parent_id="destination")
+    else:
+        result = await module._drive_move_file("source-file", "destination")
+    if audience == "owner":
+        assert module._client.post.await_count + module._client.patch.await_count == 1
+        enqueuer.assert_not_awaited()
+    else:
+        module._client.post.assert_not_awaited()
+        module._client.patch.assert_not_awaited()
+        assert result["status"] == ("approval_required" if enabled else "approval_unavailable")
+        assert enqueuer.await_count == int(enabled)
+        if enabled:
+            args = enqueuer.await_args.args[1]
+            assert (
+                args[
+                    {"write": "folder_id", "folder": "parent_id", "move": "new_parent_id"}[
+                        operation
+                    ]
+                ]
+                == "destination"
+            )
+
+
+@pytest.mark.parametrize("owner", [False, True])
+async def test_default_bootstrap_approves_only_the_missing_folder_before_content(
+    monkeypatch, owner
+):
+    import asyncio
+    import uuid
+    from types import SimpleNamespace
+
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+
+    created = False
+
+    def response(data, status=200):
+        return SimpleNamespace(status_code=status, json=lambda: data, text="synthetic")
+
+    async def get(path, **kwargs):
+        if path == "files":
+            root = "name='butlers'" in kwargs["params"]["q"]
+            return response(
+                {
+                    "files": [{"id": "parent-root"}]
+                    if root
+                    else ([{"id": "butler-folder"}] if created else [])
+                }
+            )
+        if path.endswith("/permissions"):
+            return response(
+                {
+                    "permissions": [
+                        {
+                            "id": "bootstrap-permission",
+                            "role": "writer",
+                            "type": "user",
+                            "emailAddress": "owner@example.test" if owner else "guest@example.test",
+                        }
+                    ]
+                }
+            )
+        return response(
+            {"id": path.split("/")[-1], "mimeType": "application/vnd.google-apps.folder"}
+        )
+
+    async def post(path, **kwargs):
+        nonlocal created
+        if kwargs.get("json", {}).get("mimeType") == "application/vnd.google-apps.folder":
+            created = True
+            return response({"id": "butler-folder", "name": "butler"}, 201)
+        return response({"id": "uploaded", "name": "sample"}, 201)
+
+    module = GoogleDriveModule()
+    module._db = SimpleNamespace(pool=object())
+    module._client = SimpleNamespace(
+        get=AsyncMock(side_effect=get), post=AsyncMock(side_effect=post)
+    )
+    module._get_cached_folder_id = AsyncMock(return_value=None)
+    module._cache_folder_id = AsyncMock()
+    enqueuer = AsyncMock(return_value="bootstrap-action")
+    module._approval_enqueuer = enqueuer
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"] if owner else [])),
+    )
+    first = await module._drive_write_file("sample", "Private synthetic body")
+    if owner:
+        assert first["file_id"] == "uploaded"
+        assert module._client.post.await_count == 2
+        enqueuer.assert_not_awaited()
+        return
+    module._client.post.assert_not_awaited()
+    assert first["status"] == "bootstrap_approval_required"
+    assert first["operation_complete"] is False
+    tool_name, stored, _ = enqueuer.await_args.args
+    assert tool_name == "drive_create_folder"
+    assert {k: v for k, v in stored.items() if k != "destination_audience_digest"} == {
+        "name": "butler",
+        "parent_id": "parent-root",
+    }
+    assert len(stored["destination_audience_digest"]) == 64
+    assert "Private synthetic body" not in str(stored)
+    task = asyncio.current_task()
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name=tool_name,
+            tool_args_digest=approval_tool_args_digest(stored),
+            authorized_task=task,
+        )
+    )
+    try:
+        approved = await module._drive_create_folder(**stored)
+    finally:
+        reset_approval_execution_context(token)
+    assert approved["folder_id"] == "butler-folder"
+    assert module._client.post.await_count == 1
+    second = await module._drive_write_file("sample", "Private synthetic body")
+    assert second["status"] == "approval_required"
+    assert enqueuer.await_args.args[0] == "drive_write_file"
+    assert enqueuer.await_args.args[1]["folder_id"] == "butler-folder"
+    assert module._client.post.await_count == 1
+
+
+@pytest.mark.parametrize("operation", ["write", "folder", "move"])
+@pytest.mark.parametrize(
+    "change", ["none", "role", "identity", "inherited", "visibility", "destination", "partial"]
+)
+async def test_approved_drive_call_revalidates_frozen_destination_audience(
+    monkeypatch, operation, change
+):
+    import asyncio
+    import uuid
+    from types import SimpleNamespace
+
+    from butlers.modules.approvals.execution_context import (
+        ApprovalExecutionContext,
+        approval_tool_args_digest,
+        reset_approval_execution_context,
+        set_approval_execution_context,
+    )
+
+    permission = {
+        "id": "guest-permission",
+        "type": "user",
+        "role": "writer",
+        "emailAddress": "guest@example.test",
+    }
+    unavailable = False
+
+    def response(data, status=200):
+        return SimpleNamespace(status_code=status, json=lambda: data, text="synthetic")
+
+    async def get(path, **kwargs):
+        if path.endswith("/permissions"):
+            return response({"permissions": [dict(permission)]}, 403 if unavailable else 200)
+        if path.endswith("source-file"):
+            return response({"id": "source-file", "parents": ["old"], "name": "sample"})
+        return response(
+            {"id": path.split("/")[-1], "mimeType": "application/vnd.google-apps.folder"}
+        )
+
+    module = GoogleDriveModule()
+    module._db = SimpleNamespace(pool=object())
+    module._client = SimpleNamespace(
+        get=AsyncMock(side_effect=get),
+        post=AsyncMock(return_value=response({"id": "new", "name": "sample"}, 201)),
+        patch=AsyncMock(return_value=response({"id": "source-file", "name": "sample"})),
+    )
+    enqueue = AsyncMock(return_value="frozen-drive-action")
+    module._approval_enqueuer = enqueue
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=[])),
+    )
+    calls = {
+        "write": (
+            module._drive_write_file,
+            {"name": "sample", "content": "Synthetic", "folder_id": "destination"},
+        ),
+        "folder": (module._drive_create_folder, {"name": "sample", "parent_id": "destination"}),
+        "move": (
+            module._drive_move_file,
+            {"file_id": "source-file", "new_parent_id": "destination"},
+        ),
+    }
+    call, initial = calls[operation]
+    assert (await call(**initial))["status"] == "approval_required"
+    tool_name, parked, _ = enqueue.await_args.args
+    # Knowing the fingerprint is not authority. Even exact supplied args park.
+    assert (await call(**parked))["status"] == "approval_required"
+    assert enqueue.await_count == 2
+    replay = dict(parked)
+    if change == "role":
+        permission["role"] = "reader"
+    elif change == "identity":
+        permission["id"] = "different-guest"
+    elif change == "inherited":
+        permission["permissionDetails"] = [
+            {"permissionType": "file", "inherited": True, "inheritedFrom": "other-parent"}
+        ]
+    elif change == "visibility":
+        permission["allowFileDiscovery"] = True
+    elif change == "destination":
+        replay[
+            {"write": "folder_id", "folder": "parent_id", "move": "new_parent_id"}[operation]
+        ] = "another-folder"
+    elif change == "partial":
+        unavailable = True
+    task = asyncio.current_task()
+    token = set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name=tool_name,
+            tool_args_digest=approval_tool_args_digest(parked),
+            authorized_task=task,
+        )
+    )
+    try:
+        result = await call(**replay)
+    finally:
+        reset_approval_execution_context(token)
+    if change == "none":
+        assert module._client.post.await_count + module._client.patch.await_count == 1
+        assert result.get("status") != "approval_required"
+    else:
+        module._client.post.assert_not_awaited()
+        module._client.patch.assert_not_awaited()
+        assert result["status"] == (
+            "approval_unavailable" if change == "partial" else "destination_changed"
+        )
+    assert enqueue.await_count == 2

@@ -630,3 +630,20 @@ the contact timestamp.
   (source) DO UPDATE`)
 - **AND** a health-recording failure SHALL be logged and SHALL NOT raise into
   the caller's connect/poll flow
+
+### Requirement: Communication Audience Classification
+
+Notify, TTS, persistent-notification and messaging/announcement calls SHALL
+additionally classify as communication, separating recipient selectors from
+content-bearing service data. Every target SHALL resolve uniquely to the owner
+through the existing identity resolver or require owner approval. This SHALL
+not weaken physical risk or standing-rule restrictions.
+
+#### Scenario: Unresolved announcement audience
+- **WHEN** notify reaches a guest device or TTS reaches a shared or unresolved speaker
+- **THEN** the complete target and data call SHALL park before an HA request
+- **AND** its receipt SHALL identify non-owner communication independently of physical risk
+
+#### Scenario: Owner communication still has physical risk
+- **WHEN** every target resolves to the owner but the physical pair is protected
+- **THEN** the call SHALL still require per-event owner approval

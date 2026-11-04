@@ -97,7 +97,8 @@ class CalendarProvider(abc.ABC):
         """Delete (or cancel) an event.
 
         ``send_updates`` controls attendee notification:
-        - ``None`` / ``"none"`` — no notifications (default for butler-managed events).
+        - ``"none"`` — explicitly suppress notifications.
+        - ``None`` — provider default; no silence guarantee is assumed.
         - ``"all"`` — notify all attendees (sends cancellation emails).
         - ``"externalOnly"`` — notify only non-organizer-domain attendees.
         """

@@ -27,6 +27,7 @@ from .models import (
     EventStatus,
     EventVisibility,
 )
+from .party import gate_calendar_party_mutation
 
 if TYPE_CHECKING:
     from . import CalendarModule
@@ -145,6 +146,22 @@ def register_event_tools(
             lane="user",
             calendar_id=resolved_calendar_id,
         )
+
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_create_event",
+            tool_args=overlap_args,
+            attendees=attendees or [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_create",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=None,
+        )
+        if party_gate is not None:
+            return party_gate
 
         try:
             create_payload = CalendarEventCreate(
@@ -506,6 +523,22 @@ def register_event_tools(
             )
             return not_found_result
 
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_update_event",
+            tool_args=overlap_args,
+            attendees=[a.email for a in existing_event.attendees] + (attendees or []),
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_update",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+        )
+        if party_gate is not None:
+            return party_gate
+
         gate = await module._maybe_gate_recurrence_impact(
             tool_name="calendar_update_event",
             action_type="workspace_user_update",
@@ -776,8 +809,9 @@ def register_event_tools(
         """Delete or cancel a calendar event.
 
         For events with attendees, pass send_updates="all" to send
-        cancellation notifications.  By default (send_updates=None),
-        no notification emails are sent.
+        cancellation notifications. ``send_updates="none"`` explicitly suppresses
+        notifications. The omitted provider policy is treated as unknown and
+        requires approval when the event has non-owner attendees.
 
         ``recurrence_scope`` controls how a recurring event is deleted:
         ``series`` (default) removes the whole series; ``this`` removes only
@@ -887,6 +921,22 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
             )
             return result
+
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_delete_event",
+            tool_args=approval_args,
+            attendees=[a.email for a in existing_event.attendees] if send_updates != "none" else [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_delete",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+        )
+        if party_gate is not None:
+            return party_gate
 
         gate = await module._maybe_gate_recurrence_impact(
             tool_name="calendar_delete_event",

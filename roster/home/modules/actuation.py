@@ -344,3 +344,41 @@ __all__ = [
     "target_entity_ids",
     "verify_post_condition",
 ]
+
+
+def communication_parties(
+    domain: str, service: str, target: dict[str, Any] | None, data: dict[str, Any] | None
+) -> tuple[bool, list[tuple[str, str]] | None]:
+    """Separate recipient selectors from content without inferring device ownership.
+
+    Existing identity handles use the ``other`` channel and fully qualified HA
+    handles. Missing/area/group targets remain unresolved; a service name is not
+    evidence of owner control. This adds no device-ownership registry.
+    """
+    communicates = domain in {"notify", "tts", "persistent_notification"} or service in {
+        "send_message",
+        "announce",
+        "speak",
+    }
+    if not communicates:
+        return False, []
+    parties = []
+    if domain == "notify":
+        parties.append(("other", f"home_assistant:notify:{service}"))
+    selectors = dict(target or {})
+    for key in ("entity_id", "device_id", "media_player_entity_id"):
+        if key in (data or {}):
+            if key in selectors:
+                return True, None
+            selectors[key] = data[key]
+    for key, values in selectors.items():
+        if key not in {"entity_id", "device_id", "media_player_entity_id"}:
+            return True, None
+        values = [values] if isinstance(values, str) else values
+        if not isinstance(values, list) or not values:
+            return True, None
+        for value in values:
+            if not isinstance(value, str) or not value.strip() or value == "all":
+                return True, None
+            parties.append(("other", f"home_assistant:{key}:{value}"))
+    return True, parties or None

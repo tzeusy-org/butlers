@@ -1083,3 +1083,31 @@ Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programma
 - RFC 0006 (Database schema isolation)
 - RFC 0010 (Cross-Butler Briefing Exception)
 - RFC 0014 (Chronicler Time Butler) §D3 Adapter Contract
+
+### Requirement: Calendar Writes Reaching Non-Owner Parties Require Owner Approval
+
+ID: REQ-module-calendar-030
+
+Calendar create and update operations SHALL resolve every explicit and inherited
+attendee before reaching non-owner parties. Notifying delete and occurrence
+mutations SHALL enforce the same boundary. Omitted notification policy SHALL
+not be treated as proof of silence; explicit provider-supported no-update
+behavior remains available. A missing approvals producer SHALL refuse such
+calls without provider writes. Exact approved replay and existing owner-only,
+permission, recurrence and idempotency behavior SHALL remain intact.
+
+#### Scenario: Mixed owner and guest invitation
+- **WHEN** a create call contains an owner and another or unresolved attendee
+- **THEN** it SHALL park the complete concrete-calendar call before creation
+- **AND** one owner address SHALL NOT authorize the other attendees
+
+#### Scenario: Authenticated dashboard guest create
+- **WHEN** the owner submits a guest create on the surviving dashboard surface
+- **THEN** the same calendar/account owner SHALL park and decide that exact call
+- **AND** the locked owning approval SHALL reject a changed call
+- **AND** this self-submission SHALL NOT contribute autonomy promotion history
+
+#### Scenario: Retired dashboard actions stay retired
+- **WHEN** a caller requests dashboard update, delete or mutation undo
+- **THEN** the create-only contract adopted by bu-kf3n4i=A and PR4901 SHALL remain
+- **AND** MCP update/delete and occurrence mutations SHALL retain their party gates
