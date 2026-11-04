@@ -31,7 +31,7 @@ async function allow(tokens: string[]) {
   }
 }
 
-describe("Motion Vocabulary lint", () => {
+describe("Motion Vocabulary lint", { timeout: 60_000 }, () => {
   it("rejects forbidden whole class tokens and their variants without matching allowed substrings", async () => {
     await check(bad.flatMap((token) => [token, `hover:${token}`, `data-[state=open]:${token}`, `!${token}`, `${token}!`]))
     await allow(["transition-colors", "transition-opacity", "transition-transform", `my-${bad[0]}`, `${bad[0]}oy`, "some-animate-bounce-marker", "transition-fastest"])

@@ -31,7 +31,12 @@ from butlers.api.briefing.glance import (
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_butler_configs, get_db, get_mcp_manager, get_pricing
-from butlers.api.projection_grants import ProjectionGrant, new_token, token_digest
+from butlers.api.projection_grants import (
+    ProjectionGrant,
+    liveness_attention_items,
+    new_token,
+    token_digest,
+)
 from butlers.api.routers.dashboard_briefing import get_cache
 from tests.api.auth_helpers import _DomainOwnerState
 
@@ -79,6 +84,14 @@ class MemoryGrantStore:
             return None
         self.grants[projection_id] = replace(grant, revoked_at=datetime.now(UTC))
         return self.grants[projection_id]
+
+    async def rotate(self, projection_id):
+        grant = await self.get_active(projection_id)
+        if grant is None:
+            return None
+        token = new_token()
+        self.grants[projection_id] = replace(grant, token_digest=token_digest(token))
+        return self.grants[projection_id], token
 
     async def record_fetch(self, projection_id, status):
         self.fetches.append((projection_id, status))
@@ -280,6 +293,45 @@ async def test_glance_matches_briefing_class_without_a_model_call(harness, items
         assert llm.await_count == (expected != "degraded")
     assert glance.json()["data"]["state_class"] == expected
     assert briefing.json()["data"]["state_class"] == expected
+
+
+async def test_rotate_swaps_the_token_in_one_owner_verb(harness):
+    client, store = harness
+    minted = await _mint(client)
+    url = f"/api/projections/{minted['id']}/rotate"
+    assert (await client.post(url)).status_code == 401
+    assert (
+        await client.post(url, headers={"x-projection-token": minted["token"]})
+    ).status_code == 401
+    rotated = await client.post(url, headers={"x-api-key": KEY})
+    assert rotated.status_code == 200
+    data = rotated.json()["data"]
+    assert data["token"] != minted["token"] and data["path"] == minted["path"]
+    assert data["id"] == minted["id"] and data["label"] == minted["label"]
+    assert store.grants[uuid.UUID(minted["id"])].token_digest == token_digest(data["token"])
+    with _seed()[0]:
+        old = await client.get(minted["path"], headers={"x-projection-token": minted["token"]})
+        new = await client.get(minted["path"], headers={"x-projection-token": data["token"]})
+    assert (old.status_code, new.status_code) == (404, 200)
+    await client.delete(f"/api/projections/{minted['id']}", headers={"x-api-key": KEY})
+    gone = await client.post(url, headers={"x-api-key": KEY})
+    assert gone.status_code == 404
+    missing = await client.post(
+        f"/api/projections/{uuid.uuid4()}/rotate", headers={"x-api-key": KEY}
+    )
+    assert missing.status_code == 404
+
+
+def test_liveness_clause_links_to_the_projections_page():
+    row = {
+        "id": uuid.uuid4(),
+        "label": "Hall",
+        "expected_fetch_interval": timedelta(minutes=5),
+        "created_at": datetime.now(UTC) - timedelta(hours=1),
+        "last_fetch_at": None,
+    }
+    (item,) = liveness_attention_items([row], datetime.now(UTC))
+    assert item["link"] == "/settings/projections"
 
 
 async def test_lapsed_surface_opens_one_clause_until_its_next_fetch(harness):

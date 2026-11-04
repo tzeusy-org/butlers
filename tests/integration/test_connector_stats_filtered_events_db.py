@@ -182,6 +182,28 @@ async def _ensure_filtered_partition(pool: asyncpg.Pool, reference_ts: datetime)
     )
 
 
+async def _seed_heartbeat(
+    pool: asyncpg.Pool,
+    *,
+    received_at: datetime,
+    connector_type: str,
+    endpoint_identity: str,
+) -> None:
+    await pool.execute(
+        "SELECT switchboard_connector_heartbeat_log_ensure_partition($1)", received_at
+    )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_heartbeat_log (
+            connector_type, endpoint_identity, state, received_at
+        ) VALUES ($1, $2, 'healthy', $3)
+        """,
+        connector_type,
+        endpoint_identity,
+        received_at,
+    )
+
+
 async def _seed_ingestion_event(
     pool: asyncpg.Pool,
     *,
@@ -281,6 +303,9 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     Events planted 21h and 3h before the current hour land at slots 2 and 20 by
     ``hour``; the sparse response this replaces returned only occupied hours,
     which the detail histogram then right-justified into the wrong slots.
+
+    Heartbeats in every closed hour but slots 5-7 make those three ``deaf``;
+    the open current hour, with no heartbeat yet, stays ``unknown``.
     """
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     for offset_h in (21, 3):
@@ -310,6 +335,21 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
             connector_type="gmail",
             endpoint_identity="user@example.com",
         )
+    heartbeat_offsets = [30] + [23 - slot for slot in range(23) if slot not in (5, 6, 7)]
+    for offset_h in heartbeat_offsets:
+        await _seed_heartbeat(
+            switchboard_pool,
+            received_at=now - timedelta(hours=offset_h, minutes=-10),
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
+        )
+    # A sibling endpoint's heartbeats never stand in for this one's.
+    await _seed_heartbeat(
+        switchboard_pool,
+        received_at=now - timedelta(hours=17, minutes=-10),
+        connector_type="gmail",
+        endpoint_identity="sibling@example.com",
+    )
 
     result = await ingestion_connectors._connector_stats_from_db(
         connector_type="gmail",
@@ -326,6 +366,10 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     # The current hour keeps the two series DISTINCT.
     assert result.data[23].messages_filtered == 3
     assert sum(r.messages_filtered for r in result.data) == 3
+    assert [r.listening for r in result.data] == (
+        ["live"] * 5 + ["deaf"] * 3 + ["live"] * 15 + ["unknown"]
+    )
+    assert result.meta.listening_available is True
 
 
 async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
