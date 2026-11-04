@@ -100,7 +100,8 @@ above depends on it:
 ```
 1. PostgreSQL primary
    └── 2. Migrations, then butlers public-mcp reconcile (publication + replicated digest)
-       └── 3. Owner step, run by the owner as superuser (butlers public-mcp owner-sql):
+       └── 3. Owner step as superuser (butlers public-mcp owner-sql; run by every
+              make deploy-dev after step 2, by the owner elsewhere):
               pre-created slot and publisher grants on the primary, subscriber DDL, the
               same-instance subscription
               (initial copy), purge on narrowing, applied digest

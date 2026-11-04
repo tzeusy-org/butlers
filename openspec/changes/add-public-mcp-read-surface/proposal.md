@@ -10,11 +10,12 @@ server that serves that context to those clients, with defense in depth past
 Cloudflare, and one owner-gated write: `propose_fact`.
 
 The design contract is RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`,
-D1 to D17). The owner decisions it rests on (OD1 to OD15, recorded 2026-11-04)
+D1 to D17). The owner decisions it rests on (OD1 to OD21, recorded 2026-11-04)
 are authoritative; the doctrine exception, the owner's answers to the four
-items the conformance review returned (OD10 to OD13), and OD14 and OD15,
+items the conformance review returned (OD10 to OD13), OD14 and OD15,
 recorded after homelab PR Tzeusy/homelab#40 applied the CNPG owner acts to
-`postgres-dev`, are in
+`postgres-dev`, OD16 to OD18, which answer the RFC's open questions, and
+OD19 to OD21, which follow from OD17, are in
 `about/legends-and-lore/decisions/2026-11-04-doctrine-public-mcp-read-surface.md`,
 written in this change.
 
@@ -29,17 +30,34 @@ written in this change.
   database on the existing cluster `postgres-<env>` (OD10), fed one way by
   PostgreSQL 17 logical replication from one checked-in allowlist manifest.
   Ordered `pg_hba` reject lines and grants keep its roles out of every other
-  database. The migration Job owns the publication; the owner runs the slot
-  and subscription work as one generated, idempotent owner step
-  (`butlers public-mcp owner-sql`, OD14), and the server refuses with
+  database. The migration Job owns the publication; the slot and
+  subscription work is one generated, idempotent owner step
+  (`butlers public-mcp owner-sql`, OD14), which every dev deploy runs after
+  its migrations (OD20) and the owner runs elsewhere, and the server refuses with
   `projection_apply_pending` until that step has applied the manifest it
   ships with. The publisher has no credential: it logs in only by local peer
   authentication inside the instance pods (OD14).
   Credentials, `butler_secrets`, `entity_info` and connector tokens are never
   published, no JSONB column is ever published, and a contract test asserts
   that the publication equals the manifest. Fields held only in JSONB (entity
-  flags, finance overlays, health values) are published through
-  trigger-maintained plain columns or tables (D2, D3, D4, D9).
+  flags, finance overlays, health values, and the finance and health JSON
+  fields) are published through trigger-maintained plain columns or tables
+  (D2, D3, D4, D9).
+- **Finance and health at full breadth (OD17).** Finance and health publish
+  everything they hold except credentials: account names, `last_four`,
+  balances, notes, descriptions, clinicians, allergies and visits included.
+  A two-tier column denylist keeps credential names out of every domain and
+  breadth names out of the other domains; the identifier and personal-contact
+  DLP rules do not run on finance and health results. This rests on the
+  owner's assumption that only the owner can reach the surface; a security
+  audit of ingress and egress is future work (D4, D15). The owner accepted the
+  two records tools and the JSON-field materialization this needs (OD19).
+- **Facts about other people (OD21).** Facts whose subject is someone other
+  than the owner are published, `relationship`-schema memory facts
+  (interactions, life events, notes) and family-kind relationship facts
+  included. Credentials and contact- and identity-kind predicates (phone,
+  email, address, birthday and similar) stay out, by literal predicate
+  allowlists that graph edges also use (D2, D4).
 - **Authorization past Cloudflare.** A filter-proxy hop bearer, plus a
   Worker-signed Ed25519 assertion on every `tools/call`, bound to user, client,
   method, tool, query string, body digest and a single-use `jti`, verified at
@@ -48,12 +66,12 @@ written in this change.
   from the `butlers` filter-proxy release; egress goes only to the PostgreSQL
   port of `postgres-<env>` and to DNS. That instance also serves the primary,
   so `pg_hba` and grants, not the network, separate the two (D3, D8).
-- **17 tools on one server**, finance and health included, each in a
+- **19 tools on one server**, finance and health included, each in a
   kill-switch domain: `search` and `fetch` in the exact ChatGPT contract,
   `search_filtered`, `entity_lookup`, `entity_profile`, `graph_neighbors`,
   `graph_path`, `timeline`, `time_use`, `trips`, `describe`, `finance_summary`,
-  `finance_ledger`, `finance_obligations`, `health_series`, `health_profile` and
-  `propose_fact` (D5, D10, D11).
+  `finance_ledger`, `finance_obligations`, `finance_records`, `health_series`,
+  `health_profile`, `health_records` and `propose_fact` (D5, D10, D11).
 - **Response safety.** A DLP scan, canaries, per-tool budgets, a structured audit
   line per call, fixed error codes and refusal when the projection is more than
   15 minutes stale (D15, D16, D17). Alerts are Prometheus rules collapsed into
@@ -134,6 +152,8 @@ written in this change.
   `episodes_public` and `rollups_public`, the `public.entities` flag columns
   (`merged_into`, `deleted`, `unidentified`), the finance `display_merchant`
   and `display_category` columns, the health `*_public` tables,
+  `finance.json_fields_public` and `health.json_fields_public`,
+  the `public.entity_graph_edges.publish_key` column and the per-source
   `public.entity_graph_withheld_counts`, each trigger-maintained with a parity
   test, the `mcp_surface` schema, `relationship.external_fact_proposals`, and
   projection-side `mcp_read` views, `mcp_inbox.proposals` and the
@@ -144,8 +164,10 @@ written in this change.
   `butlers-<env>`; a reconcile step in the migration Job for the publication
   and the replicated digest only; the owner step, which pre-creates the
   replication slot and creates the subscription with `create_slot = false`
-  (same-instance replication, D3); the alert rules and the two flag recording
-  rules.
+  (same-instance replication, D3), and `scripts/k8s/public-mcp-owner-step.sh`,
+  which `make deploy-dev` runs after the release, whatever it returned, so
+  the dev owner step is automatic (OD20), followed by the public chart at
+  the same tag; the alert rules and the two flag recording rules.
 - **Dependencies.** None new: `cryptography`, `rfc8785` and `fastmcp` are
   already present. The assertion verifier reuses the
   `butlers.core.runtime_probe_control` codec.
@@ -156,10 +178,11 @@ written in this change.
   `10.42.0.0/24` with three reject lines, the `local` `pg_ident` line for the
   publisher, `max_slot_wal_keep_size = 10GB`, and the password Secrets; no
   `postgres-<env>` NetworkPolicy, because none selects the instance pods.
-  The namespace is now the chart's. Still open: rerunning `init-db.sql` with
-  the publisher grants and `statement_timeout`; the owner step at first sync
-  and then once per manifest change and per slot invalidation (the one recurring
-  owner act); the Worker signing key and its deploy; the `mcp` filter-proxy
+  The namespace is now the chart's. The `init-db.sql` rerun with the publisher
+  grants and `statement_timeout`, and the owner step at first sync, per
+  manifest change and per slot invalidation, are automatic on dev
+  (`make deploy-dev`, OD20) and manual elsewhere. Still open: the Worker
+  signing key and its deploy; the `mcp` filter-proxy
   release with the dev ExternalSecret; the `MCP_SERVERS` entry; two Uptime
   Kuma `json-query` monitors on the flags (a precondition of
   `public-mcp-authorization` REQ-014); client connection and consent. They do
@@ -171,6 +194,19 @@ written in this change.
   materializations (`design.md` S1 and S7) is accepted. OD14 adopts the
   no-credential publisher and the single owner step, with the server failing
   closed while it is pending; OD15 keeps `mcp_subscription_owner` as created.
+- **Owner answers (OD16 to OD18).** OD16 leaves `mcp_subscription_owner`
+  without a `pg_hba` reject line, an accepted risk. OD17 shares all finance and
+  health data except credentials, on the owner's assumption that only the
+  owner can reach the surface. OD18 defers prod rollout for the foreseeable
+  future.
+- **Owner answers (OD19 to OD21).** OD19 accepts the records tools and the
+  JSON-field materialization as adopted contract. OD20 makes the dev deploy
+  run the owner step after its migrations, failing loudly and rolling nothing
+  back; RFC 0039 D3 runs it whatever the release returned, lets its guard
+  decide, and then upgrades the public chart at the same tag, so no manual
+  step remains on dev. OD21 publishes facts about people other than the
+  owner, short of contact, identity and credential data. In finance and
+  health OD17 wins (OD22): those domains share everything except credentials.
 - **No effect on the live system's availability.** No Butlers daemon depends on
   the public server, the projection or the gateway. The projection shares the
   primary's instance, volume, WAL and backups, so it goes down with the primary,
@@ -189,9 +225,9 @@ written in this change.
   bounded offline batch, never on the MCP request path. It is blocked by
   `bu-u5euwb.3` and `bu-u5s4w8`. This change specifies only that nothing but
   the owner's per-event approval applies a proposal.
-- **Interactions and `relationship`-schema memory facts** in the projection.
-  They hold contact details and email-derived summaries; v1 does not publish
-  them, so `entity_profile` has no interaction section.
+- **Contact- and identity-kind facts** about anyone (phone, email, address,
+  handle, website, birthday, nickname), in any domain but finance and health,
+  and override-kind relationship predicates (OD21).
 - **Separate tier servers** (`butlers-finance`, `butlers-health`), per-client
   tiers, and any manual, time-boxed or passkey unlock or elevation step (OD3).
 - **An LLM, sampling, elicitation or a butler fronting any request** (OD8), and
@@ -205,8 +241,9 @@ written in this change.
   favour of lower upkeep, OD10) and **a new Alertmanager receiver** (OD11).
 - **More than one replica.** The replay set is in memory, so v1 runs
   `replicas: 1`.
-- **Prod rollout.** v1 targets `dev`, which is the live system. Prod waits for a
-  separate owner act.
+- **Prod rollout.** v1 targets `dev`, which is the live system. Prod rollout is
+  deferred for the foreseeable future (OD18); the design stays written for
+  `<env>` as the deferred prod plan.
 - **Successor work, filed blocked:** taint and S1 `external` principal labels on
   applied facts (`bu-pkuny2`, `bu-dhloi1.6`); a proposals card that conforms to
   the D19 dossier (`bu-vvsfi8`).
@@ -218,7 +255,10 @@ The owner recorded decisions OD1 to OD9 on 2026-11-04 and accepted the doctrine
 change (OD2), then answered the four items the conformance review returned
 (OD10 to OD13) the same day, and recorded OD14 and OD15 after the homelab
 apply, and OD16 (no `pg_hba` reject line for `mcp_subscription_owner`, an
-accepted risk) after that. Under the owner's standing rule, text that
+accepted risk) after that, then OD17 (share all finance and health data
+except credentials) and OD18 (prod deferred), then OD19 (the OD17 records
+tools and JSON fields accepted), OD20 (the dev deploy runs the owner step)
+and OD21 (facts about other people published). Under the owner's standing rule, text that
 conforms to those decisions is adopted once the PR's independent conformance
 review passes; text that goes beyond them returns to the owner. The spec-level choices in
 `design.md` § Spec-level decisions are listed for that review. Implementation is

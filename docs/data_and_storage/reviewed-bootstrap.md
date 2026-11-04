@@ -67,6 +67,15 @@ When the managed bootstrap surface changes, update the finite profile and this
 operator instruction in the same change. A partial profile cannot be waived by
 an unrelated migrated revision or an old completion comment.
 
+The planned public MCP projection (RFC 0039, not yet built) adds to this script
+the grants for the CNPG-managed projection roles: the publisher's `CONNECT` and
+publication-table grants on `butlers`, and `statement_timeout` for
+`mcp_public_ro`. Those statements will do nothing where the roles are absent.
+They are not the whole setup: the second database `butlers_public`, the roles
+and `pg_hba` come from homelab, and the subscription comes from a separate owner
+step, which on dev `make deploy-dev` runs after the migrations, never before
+them. See [Public MCP Read Surface](../operations/public-mcp-read-surface.md).
+
 Bootstrap reserves the recovery role and installs its privileged control plane;
 it does not enable the restore executor, provide its secret or activate a drill.
 Ordinary dev keeps base-only services. Direct `Database.connect()` development

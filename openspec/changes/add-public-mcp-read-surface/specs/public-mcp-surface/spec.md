@@ -26,15 +26,15 @@ Scope: v1-mandatory
 - **THEN** the import-ban contract check SHALL fail and name the import chain
 
 ### Requirement: Static pinned tool catalogue
-The server SHALL register exactly the 17 tools of RFC 0039 D10 (`search`, `fetch`, `search_filtered`, `entity_lookup`, `entity_profile`, `graph_neighbors`, `graph_path`, `timeline`, `time_use`, `trips`, `describe`, `finance_summary`, `finance_ledger`, `finance_obligations`, `health_series`, `health_profile`, `propose_fact`) and no generic `query`, `sql` or `invoke` tool. `tools/list` SHALL be identical regardless of kill-switch state or caller. Every tool SHALL declare `title`, `readOnlyHint`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false` annotations (`readOnlyHint: false` for `propose_fact` only) and an `outputSchema`. Every success result SHALL be returned as `structuredContent` and as the same object in one JSON text block. A call with an unknown argument or an argument outside its declared type, enum or length SHALL return `invalid_argument`, and text arguments SHALL be NFC-normalized before validation.
+The server SHALL register exactly the 19 tools of RFC 0039 D10 (`search`, `fetch`, `search_filtered`, `entity_lookup`, `entity_profile`, `graph_neighbors`, `graph_path`, `timeline`, `time_use`, `trips`, `describe`, `finance_summary`, `finance_ledger`, `finance_obligations`, `finance_records`, `health_series`, `health_profile`, `health_records`, `propose_fact`) and no generic `query`, `sql` or `invoke` tool. `tools/list` SHALL be identical regardless of kill-switch state or caller. Every tool SHALL declare `title`, `readOnlyHint`, `destructiveHint: false`, `idempotentHint: true` and `openWorldHint: false` annotations (`readOnlyHint: false` for `propose_fact` only) and an `outputSchema`. Every success result SHALL be returned as `structuredContent` and as the same object in one JSON text block. A call with an unknown argument or an argument outside its declared type, enum or length SHALL return `invalid_argument`, and text arguments SHALL be NFC-normalized before validation.
 
 ID: REQ-public-mcp-surface-002
-Source: RFC 0039 D5 and D10; RFC 0027 (no meta-tools); craft-and-care/interfaces-and-dependencies.md Interface Hygiene
+Source: RFC 0039 D5 and D10; owner decision OD17 (the two records tools); RFC 0027 (no meta-tools); craft-and-care/interfaces-and-dependencies.md Interface Hygiene
 Scope: v1-mandatory
 
 #### Scenario: The catalogue matches the pinned list
 - **WHEN** `tools/list` is called
-- **THEN** it SHALL return exactly the 17 named tools, with names and schema digests equal to the pinned catalogue
+- **THEN** it SHALL return exactly the 19 named tools, with names and schema digests equal to the pinned catalogue
 
 #### Scenario: A disabled domain does not change the list
 - **WHEN** the `finance` domain is disabled and `tools/list` is called
@@ -97,7 +97,7 @@ Scope: v1-mandatory
 - **AND** it SHALL contain no subject, predicate, object, note, evidence URL or submitter identity
 
 ### Requirement: Source envelope, deep links and freshness on every item
-Every record item returned by a typed tool (an entity, fact, edge, timeline item, trip, ledger row, obligation, medication or condition) SHALL carry `source: {kind, uri, as_of, content_authority}`, where `uri` is `butlers://<domain>/<kind>/<id>`, `as_of` is the projection replication time read once per request, and `content_authority` is the source row's value or `null`. An aggregate output (`time_use`, `finance_summary`, `health_series`) SHALL carry one response-level `source` with `kind`, a `uri` naming the domain and tool, and `as_of`. Any `url` SHALL be a dashboard deep link built from a configured base URL that requires an owner dashboard session and carries no token, argument echo or query secret. When replication is between 2 and 15 minutes old, results SHALL still be served with `as_of`, and tools whose output has `sources_degraded` SHALL list each affected domain with reason `"lagging"`.
+Every record item returned by a typed tool (an entity, fact, edge, timeline item, trip, ledger row, obligation, medication, condition, profile entry, or finance or health record) SHALL carry `source: {kind, uri, as_of, content_authority}`, where `uri` is `butlers://<domain>/<kind>/<id>`, `as_of` is the projection replication time read once per request, and `content_authority` is the source row's value or `null`. An aggregate output (`time_use`, `finance_summary`, `health_series`) SHALL carry one response-level `source` with `kind`, a `uri` naming the domain and tool, and `as_of`. Any `url` SHALL be a dashboard deep link built from a configured base URL that requires an owner dashboard session and carries no token, argument echo or query secret. When replication is between 2 and 15 minutes old, results SHALL still be served with `as_of`, and tools whose output has `sources_degraded` SHALL list each affected domain with reason `"lagging"`.
 
 ID: REQ-public-mcp-surface-005
 Source: RFC 0039 D10 rules and D17 (freshness); module-dashboard-read source envelope precedent
@@ -144,10 +144,10 @@ Scope: v1-mandatory
 - **THEN** `describe` SHALL report `domains.finance` as `disabled` and every other domain as `stale`
 
 ### Requirement: Entity and graph tools
-`entity_lookup` SHALL return at most 10 matches `{entity_id, name, type, match, score}`, where `match` is `exact`, `alias` or `trigram`, SHALL resolve a merged entity to its surviving entity rather than return the merged one, and SHALL never return a deleted or unidentified entity. `entity_profile` SHALL accept `entity_id` and an optional `sections` subset of `facts` and `edges` (default both), SHALL return `{entity, facts, edges: {known, withheld}, coverage}` with the entity's published relational facts and edge counts split into `known` and `withheld`, and SHALL never return a contact-kind (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`) or override-kind fact. Interactions SHALL not be offered in v1. `graph_neighbors` (1 to 2 hops, at most 200 results) and `graph_path` (at most 4 hops) SHALL match the behavior of REQ-entity-graph-003, -005, -006 and -009 over the replicated edges, including count-only withheld stubs.
+`entity_lookup` SHALL return at most 10 matches `{entity_id, name, type, match, score}`, where `match` is `exact`, `alias` or `trigram`, SHALL resolve a merged entity to its surviving entity rather than return the merged one, and SHALL never return a deleted or unidentified entity, or one still named by its unknown-sender placeholder (REQ-public-mcp-projection-007). `entity_profile` SHALL accept `entity_id` and an optional `sections` subset of `facts` and `edges` (default both), SHALL return `{entity, facts, edges: {known, withheld}, coverage}` with the entity's published relationship facts and its published `relationship` memory facts (interactions, life events, notes, gifts, loans, tasks and reminders, each with its predicate and `valid_at`), whoever their subject is (owner decision OD21), and edge counts split into `known` and `withheld`, and SHALL never return a contact-kind (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`), override-kind or memory contact- or identity-kind fact. `graph_neighbors` (1 to 2 hops, at most 200 results) and `graph_path` (at most 4 hops) SHALL match the behavior of REQ-entity-graph-003, -005, -006 and -009 over the replicated edges, including count-only withheld stubs, where the replicated edges and counts are only those REQ-public-mcp-projection-012 publishes, and an edge or count whose fact source's domain is disabled SHALL be dropped.
 
 ID: REQ-public-mcp-surface-007
-Source: RFC 0039 D4 (relationship row) and D10; RFC 0031; REQ-entity-graph-003, -005, -006 and -009
+Source: RFC 0039 D2 (graph publish key and withheld counts), D4 (relationship row; people other than the owner) and D10; owner decision OD21; RFC 0031; REQ-entity-graph-003, -005, -006 and -009
 Scope: v1-mandatory
 
 #### Scenario: A merged name resolves to the survivor
@@ -159,8 +159,16 @@ Scope: v1-mandatory
 - **THEN** no returned fact SHALL have a contact-kind predicate and no email address SHALL appear in the result
 
 #### Scenario: Withheld edges are counted, not shown
-- **WHEN** an entity has 3 edges with sensitivity `pii` and 2 with `normal`
+- **WHEN** an entity has 3 withheld stubs from `pii` `general` memory facts and 2 `normal` edges with allowlisted predicates
 - **THEN** `graph_neighbors` SHALL return the 2 normal edges with receipts and report 3 withheld, with no withheld edge's endpoint, predicate or payload
+
+#### Scenario: Interactions appear as profile facts
+- **WHEN** `entity_profile` is called for a contact who has an `interaction` memory fact and a `contact_email` memory fact
+- **THEN** `facts` SHALL include the interaction with its predicate and `valid_at`, and SHALL not include the email fact
+
+#### Scenario: Edges from a disabled domain are dropped
+- **WHEN** `knowledge` is disabled and an entity has a published edge from a `general` memory fact
+- **THEN** `graph_neighbors` SHALL not return that edge
 
 #### Scenario: Profile sections narrow the result
 - **WHEN** `entity_profile` is called with `sections: ["edges"]`
@@ -174,12 +182,16 @@ Scope: v1-mandatory
 `timeline` SHALL return `{items: [{at, end, kind, title, domain, source}], next_cursor, sources_degraded}` between `start` and `end` (a span of at most 92 days, at most 200 per page) from the published Chronicler episodes and trip legs. `time_use` SHALL return `{series: [{bucket_start, group, minutes}]}` (a span of at most 366 days, at most 400 points, bucket `day`, `week` or `month`, grouped by `category` or `kind`) from published rollups. `trips` SHALL return trips with legs, city-level places, carrier, status and travel-document expiry dates, and SHALL never return confirmation codes, document numbers, raw booking content or location fixes.
 
 ID: REQ-public-mcp-surface-008
-Source: RFC 0039 D4 (time and travel rows) and D10; bu-s11n0s.7 location retention
+Source: RFC 0039 D2 (Chronicler `sensitive` episodes published) and D4 (time and travel rows) and D10; owner decisions OD17 and OD21; bu-s11n0s.7 location retention
 Scope: v1-mandatory
 
 #### Scenario: Restricted episodes are absent from the timeline
 - **WHEN** the owner has restricted an episode through a Chronicler override and replication has caught up
 - **THEN** `timeline` over that period SHALL not return the episode
+
+#### Scenario: Sensitive episodes are on the timeline
+- **WHEN** a `sensitive` workout episode and a `sensitive` Home Assistant presence episode fall in the requested period
+- **THEN** `timeline` SHALL return both, with title, kind and times only
 
 #### Scenario: Oversized span is refused
 - **WHEN** `timeline` is called with a 120-day span
@@ -190,10 +202,10 @@ Scope: v1-mandatory
 - **THEN** the result SHALL include the passport expiry date and SHALL include no document number or booking confirmation code
 
 ### Requirement: Finance tools
-`finance_summary` SHALL return totals per currency, never converted, with a `count`, grouped by `category`, `merchant` or `month` over a span of at most 366 days (at most 500 groups). `finance_ledger` SHALL return rows `{date, amount, currency, direction, merchant, category, account_label, source}` with `amount` as a decimal string, at most 500 per page with a cursor, excluding soft-deleted transactions, where `merchant` is the published `display_merchant` (the normalized-merchant overlay, else the raw merchant name), `category` is the published `display_category` (the inferred-category overlay, else the raw category), and `account_label` is the account's institution and type, or `null` when the transaction has no account. `finance_obligations` SHALL accept `horizon_days` from 1 to 90 and SHALL return `{items: [{payee, kind, amount, currency, cadence, next_due, source}]}`, where `kind` is `bill` (from bills, `next_due` = `due_date`) or `subscription` (from active subscriptions, `next_due` = `next_renewal`), `amount` is a decimal string, and at most 200 items are returned. No finance tool SHALL return an account name, account number, `last_four`, balance, raw description, memo, `source_message_id`, `external_ref`, receipt URL, payment method, metadata or cancellation URL.
+`finance_summary` SHALL return totals per currency, never converted, with a `count`, grouped by `category`, `merchant` or `month` over a span of at most 366 days (at most 500 groups). `finance_ledger` SHALL return rows `{id, date, amount, currency, direction, merchant, category, description, notes, payment_method, receipt_url, external_ref, tags, account_label, account, source}` with `amount` as a decimal string, at most 500 per page with a cursor, excluding soft-deleted transactions, where `merchant` is the published `display_merchant` (the normalized-merchant overlay, else the raw merchant name), `category` is the published `display_category` (the inferred-category overlay, else the raw category), `account_label` is the account's institution and type, and `account` is `{id, institution, type, name, last_four}`; both are `null` when the transaction has no account. `finance_obligations` SHALL accept `horizon_days` from 1 to 90 and SHALL return `{items: [{payee, kind, amount, currency, cadence, next_due, status, payment_method, autopay, cancellation_url, notice_period_days, cancel_by, source}]}`, where `kind` is `bill` (from bills, `next_due` = `due_date`) or `subscription` (from active subscriptions, `next_due` = `next_renewal`), `amount` is a decimal string, a field the item's table lacks is `null`, and at most 200 items are returned. Finance tools SHALL return every published finance field they read, account names, `last_four` and balances included, and SHALL never return a credential-tier column or JSON path.
 
 ID: REQ-public-mcp-surface-009
-Source: RFC 0039 D2 (finance overlays), D4 (finance row) and D10; owner decision OD3
+Source: RFC 0039 D2 (finance overlays), D4 (finance row; finance and health breadth) and D10; owner decisions OD3 and OD17
 Scope: v1-mandatory
 
 #### Scenario: Mixed currencies are not summed together
@@ -208,9 +220,9 @@ Scope: v1-mandatory
 - **WHEN** a transaction has `deleted_at` set and replication has caught up
 - **THEN** `finance_ledger` and `finance_summary` SHALL exclude it
 
-#### Scenario: Account identifiers never leave
-- **WHEN** any finance tool returns rows for an account that has `name` and `last_four` recorded
-- **THEN** no field of the result SHALL contain the account name, account number, `last_four` or a balance, and `account_label` SHALL be built from institution and type only
+#### Scenario: Account identifiers are shared
+- **WHEN** `finance_ledger` returns a row for an account that has `name` and `last_four` recorded
+- **THEN** the row's `account` SHALL carry that name and `last_four` unredacted, and `account_label` SHALL be built from institution and type
 
 #### Scenario: Raw merchant is shown without an overlay
 - **WHEN** a transaction has no normalized-merchant overlay
@@ -225,19 +237,23 @@ Scope: v1-mandatory
 - **THEN** the result SHALL be `invalid_argument`
 
 ### Requirement: Health tools
-`health_series` SHALL accept a `metric` from an enum generated from the published `health.measurements_public` metric names, `start`, `end` (a span of at most 366 days) and a bucket of `raw`, `day` or `week`, and SHALL return `{unit, points: [{t, value}], source}` with numeric values only and at most 2,000 points; a `day` or `week` bucket SHALL return the arithmetic mean of the bucket's values, in the unit unchanged. `health_profile` SHALL accept an optional `sections` subset of `medications` and `conditions` (default both) and SHALL return `{medications: [{name, dose, frequency, schedule, status, since, source}], conditions: [{name, status, since, source}]}`, where a medication's `status` is `active` or `stopped` and `since` is when it was recorded, and a condition's `since` is its diagnosis date or `null`. No health tool SHALL return free-text notes, clinicians, providers, visit notes or documents.
+`health_series` SHALL accept a `metric` from an enum generated from the published `health.measurements_public` metric names, `start`, `end` (a span of at most 366 days) and a bucket of `raw`, `day` or `week`, and SHALL return `{unit, points: [{t, value}], source}` with numeric values only and at most 2,000 points; a `day` or `week` bucket SHALL return the arithmetic mean of the bucket's values, in the unit unchanged. `health_profile` SHALL accept an optional `sections` subset of `medications`, `conditions`, `allergies` and `providers` (default all) and SHALL return `{medications: [{name, dose, frequency, schedule, status, since, notes, source}], conditions: [{name, status, since, notes, source}], allergies: [{text, predicate, since, fields, source}], providers: [{text, predicate, entity_id, fields, source}]}`, where a medication's `status` is `active` or `stopped` and `since` is when it was recorded, a condition's `since` is its diagnosis date or `null`, allergies are the active `allergy` and `food_allergy` facts, providers are the active `doctor_name`, `doctor_primary_care` and `pharmacy` facts, `text` is the fact's content and `fields` its published JSON fields, with at most 200 entries per section. Health tools SHALL return notes, clinicians and providers, and SHALL never return a credential-tier column or JSON path.
 
 ID: REQ-public-mcp-surface-010
-Source: RFC 0039 D2 (health values), D4 (health row) and D10; owner decision OD3
+Source: RFC 0039 D2 (health values), D4 (health row; finance and health breadth) and D10; owner decisions OD3 and OD17; [Observed] roster/health/.agents/skills/memory-taxonomy/SKILL.md (allergy and provider predicates)
 Scope: v1-mandatory
 
 #### Scenario: Unknown metric is refused
 - **WHEN** `health_series` is called with a metric that is not in the generated enum
 - **THEN** the result SHALL be `invalid_argument`
 
-#### Scenario: Profile omits notes
+#### Scenario: Profile carries notes
 - **WHEN** a medication fact carries a free-text note
-- **THEN** `health_profile` SHALL return the medication's name, dose, schedule and status without the note
+- **THEN** `health_profile` SHALL return the medication's name, dose, schedule, status and note
+
+#### Scenario: Allergies and providers are in the profile
+- **WHEN** the owner has an active `allergy` fact "allergic to penicillin" and an active `doctor_primary_care` fact
+- **THEN** `health_profile` SHALL list the allergy under `allergies` and the physician under `providers`, each with its `source`
 
 #### Scenario: Day buckets return the mean
 - **WHEN** `health_series` is called with `bucket: day` for a day with weight readings 70.0 and 71.0 kg
@@ -245,7 +261,7 @@ Scope: v1-mandatory
 
 #### Scenario: Profile sections narrow the result
 - **WHEN** `health_profile` is called with `sections: ["conditions"]`
-- **THEN** the result SHALL carry conditions and an empty `medications` list
+- **THEN** the result SHALL carry conditions and empty `medications`, `allergies` and `providers` lists
 
 #### Scenario: Too many raw points are refused
 - **WHEN** a `raw` request would return more than 2,000 points
@@ -329,10 +345,37 @@ Scope: v1-mandatory
 - **THEN** data tools SHALL return `unavailable` with `retryable: true`
 - **AND** the primary database and butler daemons SHALL be unaffected
 
+### Requirement: Finance and health records tools
+`finance_records` and `health_records` SHALL make every published table of their domain readable. Each SHALL accept `kind` (a closed enum generated from the manifest's tables of that domain, `facts` included), optional `since` and `until` applied to the time column the manifest declares for that kind (a span of at most 366 days; a kind with no declared time column SHALL refuse them with `invalid_argument`), optional `predicate` and `query` (at most 256 characters, ranked lexically over `search_vector`) for `facts` only, an optional `cursor` and a `limit` of at most 200, and SHALL return `{items: [{kind, id, fields, json_fields, source}], next_cursor}`, where `id` is the value of the key column the manifest declares for that kind (REQ-public-mcp-projection-013), rendered as text and used as the `<id>` of the source uri, `fields` maps each published column of that kind to its value, with NUMERIC values as decimal strings, and `json_fields` maps each published JSON path of the row (REQ-public-mcp-projection-013) to its value. They SHALL read one table per call, accept no query language, and return no unpublished column or path. Each is a single-domain tool of its domain.
+
+ID: REQ-public-mcp-surface-014
+Source: RFC 0039 D4 (finance and health breadth) and D10 (records tools); owner decision OD17; RFC 0027 (no meta-tools)
+Scope: v1-mandatory
+
+#### Scenario: Balance snapshots are readable
+- **WHEN** `finance_records` is called with `kind: "balance_snapshots"` and a 90-day window
+- **THEN** the result SHALL list each snapshot in the window with its `account_id`, `balance` as a decimal string, `currency` and `as_of_date`
+
+#### Scenario: Visits are readable
+- **WHEN** `health_records` is called with `kind: "calendar_events"` for a period with one appointment on Health's calendar
+- **THEN** the result SHALL list the appointment with its title, description, location and times
+
+#### Scenario: A kind outside the manifest is refused
+- **WHEN** `finance_records` is called with `kind: "butler_secrets"` or `kind: "sessions"`
+- **THEN** the result SHALL be `invalid_argument` and no projection query SHALL run
+
+#### Scenario: Fact filters apply only to facts
+- **WHEN** `health_records` is called with `kind: "visit_briefs"` and a `predicate`
+- **THEN** the result SHALL be `invalid_argument`
+
+#### Scenario: A disabled domain refuses its records tool
+- **WHEN** `health` is disabled and `health_records` is called with valid arguments
+- **THEN** the result SHALL be `domain_disabled` naming `health`
+
 ## Source References
 
 - Non-Negotiable Rule 2 (modules only add tools), Rule 3 (cross-domain access; RFC 0039 is a named exception), Rule 4 (deterministic infrastructure) and Rule 7 (transport is an edge responsibility), `about/heart-and-soul/vision.md`.
-- RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`), D1, D4, D5, D10 to D14 and D17; owner decisions OD3, OD6 and OD8.
+- RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`), D1, D4, D5, D10 to D14 and D17; owner decisions OD3, OD6, OD8 and OD17.
 - RFC 0031 (public entity graph projection) and `openspec/specs/entity-graph/spec.md` REQ-entity-graph-003, -005, -006 and -009.
 - RFC 0027 (tool surface discovery: no meta-tools).
 - `openspec/specs/module-dashboard-read/spec.md`, source-envelope precedent (its live-view data source is not reused).

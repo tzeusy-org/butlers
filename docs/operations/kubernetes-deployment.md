@@ -103,7 +103,8 @@ resource or credential action is part of source retirement.
 
 The host's `tailscale serve` mappings stay the tailnet entry point for the dashboard and API
 (the only internet-reachable Butlers workload is the planned RFC 0039 public MCP server, through
-the owner's gateway), so the dashboard URL, OAuth
+the owner's gateway; its setup, including the second database `butlers_public`, is
+[Public MCP Read Surface](public-mcp-read-surface.md)), so the dashboard URL, OAuth
 redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `butlers.example.ts.net`)
 do not change. Only the local targets move from the compose ports to the NodePorts:
 
@@ -201,11 +202,32 @@ reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
 - It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
   `kubectl exec`, so no superuser password is involved.
 - It takes the normal connecting login from the `butlers-bws` Secret, without printing it.
+- Once the public MCP projection lands (`bu-y66o00.4`), this rerun also applies its
+  `init-db.sql` grants (RFC 0039 owner act 9).
 
-Without this step, a tag whose migrations need a newer bootstrap surface fails in the
+Without the bootstrap step, a tag whose migrations need a newer bootstrap surface fails in the
 `migrations` initContainer after the old pods are gone. `core_277` did this on 2026-10-27
 (bu-8jtq10). Prod has no privileged bootstrap configured here: `bootstrap-prod` only prints a
-reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
+reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`.
+
+Once the projection lands, `deploy-*` also runs the projection's owner step (RFC 0039 owner act
+10, owner decision OD20) as a second command after `record-deploy.sh`, whatever that returned,
+and exits with the first non-zero status. It cannot run in `bootstrap-dev`: the step needs the
+publication that `butlers public-mcp reconcile` writes in the `migrations` initContainer. A
+release can fail after reconcile (a later rollout or the readiness wait), so the step still runs
+then; when the migrations did not reconcile, its guard refuses and changes nothing.
+`scripts/k8s/public-mcp-owner-step.sh dev <tag>` picks the `dashboard-api` pod running `<tag>`,
+captures `butlers public-mcp owner-sql` from it, and only then pipes it to `psql` as the same
+CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
+After it succeeds, the same target upgrades the public chart `deploy/helm/butlers-public-mcp` at
+the same tag. If it fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
+nothing rolls back, and the release and its deployments row stand. After a manifest change the
+public server refuses with `projection_apply_pending` until a rerun succeeds; with an unchanged
+manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_OWNER_STEP_dev :=
+off` in `deploy/helm/butlers/makefile` switches the step and the public chart off for a teardown.
+Prod stays manual. See [Public MCP Read Surface](public-mcp-read-surface.md).
+
+`dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
 pods never overlap. The image installs dependencies before copying `src/`, so a commit that touches
 only source rebuilds and pulls a few tens of MB (measured: `ship-dev` about 2.5 minutes, the API
 unavailable for about 70 seconds, every pod ready after about 3 minutes); a `uv.lock` or `Dockerfile.base` change rebuilds
