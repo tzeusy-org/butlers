@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .contracts import LaunchRequest, Refused
+from .opencode import CONFIG_NAME, OpenCodeSettings
 
 
 class StagingCleanupFailed(Refused):
@@ -30,6 +31,41 @@ class InvocationMaterial:
     _device: int = field(repr=False)
     _inode: int = field(repr=False)
     content_hashes: dict[str, str] = field(default_factory=dict, repr=False)
+
+    _request: LaunchRequest | None = field(default=None, repr=False)
+
+    def prepare_opencode(self, settings: OpenCodeSettings) -> None:
+        """Create only the closed native file inside this existing owner.
+
+        Failure leaves any partial file in the directory already owned by
+        InvocationOwner; its settlement/discard/quarantine rules still apply.
+        """
+        if (
+            type(settings) is not OpenCodeSettings
+            or type(self._request) is not LaunchRequest
+            or self._request.runtime != "opencode"
+            or self._request.model != settings.model
+        ):
+            raise Refused("invalid_opencode_material")
+        content = settings.render(self._request.broker, self._request.model_credential)
+        if len(content) > 65536 or CONFIG_NAME in self.content_hashes:
+            raise Refused("invalid_opencode_material")
+        directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(directory)
+            if (metadata.st_dev, metadata.st_ino) != (self._device, self._inode):
+                raise Refused("stage_identity_changed")
+            descriptor = os.open(
+                CONFIG_NAME,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+            self.content_hashes[CONFIG_NAME] = hashlib.sha256(content).hexdigest()
+        finally:
+            os.close(directory)
 
     @classmethod
     def stage(cls, root: Path, request: LaunchRequest) -> InvocationMaterial:
@@ -50,7 +86,7 @@ class InvocationMaterial:
             raise Refused("unsafe_stage_root")
         directory = Path(tempfile.mkdtemp(prefix="invocation-", dir=root))
         metadata = directory.stat()
-        material = cls(directory, metadata.st_dev, metadata.st_ino)
+        material = cls(directory, metadata.st_dev, metadata.st_ino, _request=request)
         try:
             payloads = {
                 "model-credential": request.model_credential,

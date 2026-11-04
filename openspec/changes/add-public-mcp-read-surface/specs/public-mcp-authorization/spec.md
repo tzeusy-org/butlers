@@ -167,15 +167,15 @@ Scope: v1-mandatory
 - **THEN** assertions signed with it SHALL be refused as unauthorized
 
 ### Requirement: Network confinement of the public server
-The public server SHALL run only in namespace `butlers-public-<env>`, never in `butlers-<env>`, under NetworkPolicies that deny all ingress and egress except: ingress on the MCP port from pods in namespace `mcp` that carry the `butlers` filter-proxy release label; ingress on a separate metrics port from the monitoring namespace; egress to the projection database pods on port 5432; and egress to cluster DNS on port 53. The pod SHALL run as non-root with a read-only root filesystem, no service-account token, and `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. No Butlers Service SHALL be a traefik route target; the only path from the gateway SHALL be the filter-proxy upstream.
+The public server SHALL run only in namespace `butlers-public-<env>`, never in `butlers-<env>`; its chart `deploy/helm/butlers-public-mcp` SHALL create that namespace and the ExternalSecret that reads the Bitwarden item `MCP_PUBLIC_RO_DB_PASSWORD`, and SHALL mount no other database credential. It SHALL run under NetworkPolicies that deny all ingress and egress except: ingress on the MCP port from pods in namespace `mcp` that carry the `butlers` filter-proxy release label; ingress on a separate metrics port from the monitoring namespace; egress on port 5432 to the `postgres-<env>` instance pods, which hold the projection database and also serve the primary; and egress to cluster DNS on port 53. The pod SHALL run as non-root with a read-only root filesystem, no service-account token, and `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`. No Butlers Service SHALL be a traefik route target; the only path from the gateway SHALL be the filter-proxy upstream.
 
 ID: REQ-public-mcp-authorization-008
-Source: RFC 0039 D8 and D14 (no network route to a model); owner decision OD3
+Source: RFC 0039 D3, D8 and D14 (no network route to a model); owner decisions OD3 and OD10
 Scope: v1-mandatory
 
-#### Scenario: The primary database is unreachable from the pod
-- **WHEN** the public server's pod attempts a TCP connection to the primary database
-- **THEN** the connection SHALL fail at the network layer, even with valid primary credentials
+#### Scenario: The primary database refuses the pod
+- **WHEN** the public server's pod connects to a `postgres-<env>` instance on 5432 and requests database `butlers`, even with valid primary credentials
+- **THEN** the login SHALL be refused by `pg_hba` (REQ-public-mcp-projection-008); the network layer is not the boundary for this case
 
 #### Scenario: Internet egress is blocked
 - **WHEN** the pod attempts an outbound HTTPS connection to any model provider or public address
@@ -190,7 +190,7 @@ Scope: v1-mandatory
 - **THEN** the chart contract check SHALL fail
 
 #### Scenario: A policy outside the chart is detected
-- **WHEN** a NetworkPolicy or cluster-wide policy object that the chart did not render selects pods in `butlers-public-<env>` or the projection's namespace
+- **WHEN** a NetworkPolicy or cluster-wide policy object that the chart did not render selects pods in `butlers-public-<env>`, or a policy in `postgres-<env>` admits the public server's namespace to any pod or port other than the instance pods on 5432
 - **THEN** the live policy check, run after each deploy and on a schedule, SHALL fail and name the object
 
 ### Requirement: Per-domain kill switches without tiers or unlock
@@ -327,27 +327,39 @@ Scope: v1-mandatory
 - **THEN** the bearer-refusal counter SHALL increase by one and no log line SHALL contain the presented bearer
 
 ### Requirement: Alerting independent of Butlers
-Alerts for the public surface SHALL be routed from Prometheus to Alertmanager and on to a receiver outside Butlers, and SHALL never be sent through the Switchboard, notify or any Butlers daemon. Critical alerts SHALL fire on a canary hit, on replication-slot retained WAL above 50 % of `max_slot_wal_keep_size`, and on any replication slot on the primary other than the subscription's or whose plugin is not `pgoutput`. Warning alerts SHALL fire on any DLP drop, more than 20 redactions in an hour, more than 10 assertion failures in 5 minutes, more than 20 bearer refusals in 5 minutes, more than 2,000 finance or health rows served in an hour, one `(sub, cid)` reading more than 25 % of a domain's published rows in a day, replication lag above 10 minutes, a slot inactive for more than 10 minutes, more than 500 undrained inbox rows, and any proposal reaching `apply_failed`. Thresholds SHALL be configuration.
+Prometheus alerting rules SHALL be the single source of every alert condition for the public surface. Two recording rules SHALL collapse them into flags: `butlers_public_mcp:critical_ok` and `butlers_public_mcp:warning_ok`, each 1 when no rule of its severity is firing and 0 when any is. The owner's existing Uptime Kuma SHALL deliver them: one `json-query` monitor per flag polls Prometheus' query API for `<flag> == bool 1` with `jsonPath = "data.result[0].value[1]"` and `expectedValue = "1"`, so a 0, an empty result or an unreachable Prometheus turns the monitor DOWN, and Kuma's existing Telegram notification delivers the alert. Alerts SHALL never be sent through the Switchboard, notify or any Butlers daemon, and no ingress into `butlers-public-<env>` SHALL be added for alerting. Kuma's poll interval bounds detection latency, so the critical monitor SHOULD poll every 60 seconds. Critical alerts SHALL fire on a canary hit and while the canary latch holds, on replication-slot retained WAL above 50 % of `max_slot_wal_keep_size`, on any logical replication slot on the primary other than the subscription's slot and its current table-sync slots, or any logical slot whose plugin is not `pgoutput` (REQ-database-security-016 defines the allowance; physical slots never trigger it), and when `butlers_public_mcp_owner_step_pending{change="narrowing"}` has been 1 for more than 24 hours. Warning alerts SHALL fire while `butlers_public_mcp_owner_step_pending` is 1 with either label (REQ-public-mcp-projection-015), on any DLP drop, more than 20 redactions in an hour, more than 10 assertion failures in 5 minutes, more than 20 bearer refusals in 5 minutes, more than 2,000 finance or health rows served in an hour, one `(sub, cid)` reading more than 25 % of a domain's published rows in a day, replication lag above 10 minutes, a slot inactive for more than 10 minutes, more than 500 undrained inbox rows, and any proposal reaching `apply_failed`. Thresholds SHALL be configuration.
 
 ID: REQ-public-mcp-authorization-014
-Source: RFC 0039 D16 (alerting), D15 (steered clients) and D9 (slot safety); craft-and-care/observability-and-operations.md When Observability Work Is Mandatory
+Source: RFC 0039 D16 (alerting; owner-step pending), D15 (steered clients), D9 (slot safety) and D17 (owner step pending); owner decisions OD11 (Uptime Kuma polls a flag; no new Alertmanager receiver) and OD14 (fail closed while the owner step is pending); craft-and-care/observability-and-operations.md When Observability Work Is Mandatory
 Scope: v1-mandatory
 
-#### Scenario: Assertion failure burst raises a warning
+#### Scenario: A narrowing left pending becomes critical
+- **WHEN** `butlers_public_mcp_owner_step_pending{change="narrowing"}` has been 1 for 24 hours and one minute
+- **THEN** `butlers_public_mcp:critical_ok` SHALL be 0 and the critical Kuma monitor SHALL deliver its Telegram notification
+
+#### Scenario: A widening left pending stays a warning
+- **WHEN** `butlers_public_mcp_owner_step_pending{change="widening"}` has been 1 for 48 hours and no other condition holds
+- **THEN** `butlers_public_mcp:warning_ok` SHALL be 0 and `butlers_public_mcp:critical_ok` SHALL stay 1
+
+#### Scenario: Assertion failure burst lowers the warning flag
 - **WHEN** 11 calls fail assertion checks within 5 minutes
-- **THEN** a warning alert SHALL fire through Alertmanager
+- **THEN** the warning alert rule SHALL fire, `butlers_public_mcp:warning_ok` SHALL be 0, and the warning Kuma monitor SHALL go DOWN
 
 #### Scenario: Alerts survive a Butlers outage
 - **WHEN** every butler daemon is down and a canary hit occurs
-- **THEN** the critical alert SHALL still be delivered
+- **THEN** `butlers_public_mcp:critical_ok` SHALL be 0 and the critical Kuma monitor SHALL deliver its Telegram notification
+
+#### Scenario: A silent alert path is itself an alarm
+- **WHEN** Prometheus is unreachable or returns an empty result for a flag query
+- **THEN** that flag's Kuma monitor SHALL go DOWN and notify
 
 #### Scenario: A bulk read raises a warning
 - **WHEN** one `(sub, cid)` receives 2,001 finance rows within an hour
-- **THEN** a warning alert SHALL fire naming the domain and the client label, with no row content
+- **THEN** `butlers_public_mcp:warning_ok` SHALL be 0, and the underlying alert SHALL carry the domain and the client label, with no row content
 
 ## Source References
 
 - Non-Negotiable Rule 1 (owner sovereignty: owner-operated edge is not tenancy), Rule 3 (RFC 0039 named exception) and Rule 7 (transport and auth live in the edge process), `about/heart-and-soul/vision.md`.
-- RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`), D5 to D8 and D14 to D17; owner decisions OD3 and OD5.
+- RFC 0039 (`about/legends-and-lore/rfcs/0039-public-mcp-read-surface.md`), D3, D5 to D8 and D14 to D17; owner decisions OD3, OD5, OD10 and OD11.
 - `about/heart-and-soul/security.md`, partially trusted parties and deployment principles, as amended by the RFC 0039 doctrine sweep.
 - `openspec/changes/add-ambient-projection-grants`, REQ-ambient-projections-001 and -002 (digest-only secrets, constant-time comparison, non-disclosing refusal).

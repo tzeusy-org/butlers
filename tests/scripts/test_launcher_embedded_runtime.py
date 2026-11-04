@@ -250,6 +250,14 @@ def test_actual_embedded_preflight_refuses_before_privilege(tmp_path, mutation):
         destination = tmp_path / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((SOURCE_ROOT / name).read_bytes())
+    # This is a synthetic checkout of current bytes, not the historical S13ca tree.
+    # Bind its expected byte map before applying the adversarial mutation below.
+    env["PROBE_SOURCES_JSON"] = json.dumps(
+        {
+            name: hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
+            for name in report["identity"]["sources"]
+        }
+    )
     # Controlled git read seam: no Git refs mutated, exact real code still executes.
     binary = tmp_path / "bin"
     binary.mkdir()

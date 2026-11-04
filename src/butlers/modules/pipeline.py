@@ -1205,6 +1205,15 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _identity_cause_class(exc: BaseException) -> str | None:
+    """Return the content-blind inner class of an identity query failure only."""
+    from butlers.identity import IdentityResolutionQueryError
+
+    if isinstance(exc, IdentityResolutionQueryError):
+        return exc.failure_class
+    return None
+
+
 class MessagePipeline:
     """Connects input modules to the switchboard classification and routing.
 
@@ -3160,12 +3169,17 @@ class MessagePipeline:
                                         extra={
                                             "source_channel": source,
                                             "failure_class": type(exc).__name__,
+                                            "cause_class": _identity_cause_class(exc),
                                         },
                                     )
                                 else:
                                     logger.warning(
                                         "pipeline.identity_resolution_failed",
-                                        extra={"failure_class": type(exc).__name__},
+                                        extra={
+                                            "failure_class": type(exc).__name__,
+                                            # Content-blind inner class (bu-n7zmbp.20).
+                                            "cause_class": _identity_cause_class(exc),
+                                        },
                                     )
 
                     if _decomp_messages is not None:
