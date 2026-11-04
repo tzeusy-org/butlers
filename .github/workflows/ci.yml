@@ -550,6 +550,8 @@ jobs:
 
     env:
       CI_COVERAGE: '0'
+      BUTLERS_TEST_STORAGE_EVIDENCE: ${{ matrix.group == 6 && '1' || '0' }}
+      BUTLERS_STORAGE_GROUP: ${{ matrix.group }}
 
     steps:
       - uses: actions/checkout@v6
@@ -558,10 +560,14 @@ jobs:
         uses: ./.github/actions/ci-python-environment
 
       - name: Free disk space before testcontainers
+        env:
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
         # Runner disk capacity varies. Preserve the cleanup that eliminated
         # no-space/asyncpg failures on small runners, but do not spend minutes
         # deleting 20+ GiB of tools when the runner already has a safe floor.
         run: |
+          mkdir -p "${TEST_EVIDENCE_DIR}"
+          uv run --no-sync python -B -m butlers.testing.storage before_cleanup
           echo "Disk usage before cleanup:"
           df -h /
           MIN_FREE_GB=30
@@ -588,12 +594,19 @@ jobs:
           fi
           echo "Disk usage after cleanup decision:"
           df -h /
+          uv run --no-sync python -B -m butlers.testing.storage after_cleanup
 
       - name: Integration tests (group ${{ matrix.group }})
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/ci_lanes.py run --lane integration --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}"
+
+      - name: Summarize bounded integration storage metadata
+        env:
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
+        if: always() && matrix.group == 6
+        run: uv run --no-sync python -B -m butlers.testing.storage inventory
 
       - name: Prepare integration group ${{ matrix.group }} duration evidence
         if: always()
@@ -614,6 +627,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/storage-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true

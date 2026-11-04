@@ -60,6 +60,8 @@ from urllib.parse import quote, urlparse
 import asyncpg
 from sqlalchemy import Connection, create_engine, text
 
+from butlers.testing.storage import note as _storage_note
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 _MODULE_REGISTRATION_LOCK = threading.RLock()
@@ -494,7 +496,11 @@ def _migrated_template(
             return template
         name = f"tmpl_{key}_{uuid.uuid4().hex[:6]}"
         db_url = create_migration_db(postgres_container, name)
-        _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+        try:
+            _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+        except Exception:
+            _storage_note("create_failed", postgres_container)
+            raise
         admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
         engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
         try:
@@ -515,6 +521,7 @@ def _migrated_template(
             engine.dispose()
         template = _Template(name=name, db_url=db_url)
         _TEMPLATES[key] = template
+        _storage_note("template_created", postgres_container)
         return template
 
 
@@ -599,8 +606,14 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
                     f"clone {db_name} database privileges {sorted(actual)} differ from "
                     f"template {template.name} {sorted(expected)}"
                 )
+    except Exception as error:
+        _storage_note("create_failed", postgres_container)
+        if getattr(getattr(error, "orig", None), "pgcode", None) == "53100":
+            _storage_note("storage_error", postgres_container)
+        raise
     finally:
         engine.dispose()
+    _storage_note("clone_created", postgres_container)
     parsed = urlparse(template.db_url)
     return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()
 

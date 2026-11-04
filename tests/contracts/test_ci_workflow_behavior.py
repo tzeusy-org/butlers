@@ -121,7 +121,11 @@ def _run_cleanup_script(
         '#!/usr/bin/env bash\nprintf "called\\n" > "$SUDO_SENTINEL"\nexit 99\n',
         encoding="utf-8",
     )
-    for command in (fake_bin / "df", fake_bin / "sudo"):
+    (fake_bin / "uv").write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "${@: -1}" >> "$STORAGE_PHASES"\n',
+        encoding="utf-8",
+    )
+    for command in (fake_bin / "df", fake_bin / "sudo", fake_bin / "uv"):
         command.chmod(0o755)
 
     result = subprocess.run(
@@ -135,6 +139,8 @@ def _run_cleanup_script(
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "DF_AVAILABLE_KIB": available_kib,
             "SUDO_SENTINEL": str(sentinel),
+            "TEST_EVIDENCE_DIR": str(tmp_path / "evidence"),
+            "STORAGE_PHASES": str(tmp_path / "storage-phases"),
         },
     )
     return result, sentinel
@@ -152,6 +158,10 @@ def test_ci_cleanup_skips_reclamation_when_each_runner_has_safe_free_space(
         assert result.returncode == 0, result.stderr
         assert "Skipping disk cleanup:" in result.stdout
         assert not sentinel.exists()
+        assert (sentinel.parent / "storage-phases").read_text().splitlines() == [
+            "before_cleanup",
+            "after_cleanup",
+        ]
 
 
 def test_ci_cleanup_reclaims_when_each_runner_is_below_the_safe_floor(tmp_path: Path) -> None:
@@ -164,6 +174,7 @@ def test_ci_cleanup_reclaims_when_each_runner_is_below_the_safe_floor(tmp_path: 
         assert result.returncode == 99
         assert "Cleaning disk:" in result.stdout
         assert sentinel.exists()
+        assert (sentinel.parent / "storage-phases").read_text().splitlines() == ["before_cleanup"]
 
 
 @pytest.mark.parametrize("available_kib", ["", "-1", "30.5", "N/A", "abc"])
@@ -372,3 +383,17 @@ def test_python_jobs_share_one_interpreter_identity_and_no_ambient_database() ->
     for name, job in jobs.items():
         assert "postgres" not in job.get("services", {}), name
         assert "DATABASE_URL" not in job.get("env", {}), name
+
+
+def test_storage_evidence_is_opt_in_group_six_and_inventory_survives_test_failure() -> None:
+    job = _ci_workflow()["jobs"]["check-integration"]
+    assert job["env"]["BUTLERS_TEST_STORAGE_EVIDENCE"] == "${{ matrix.group == 6 && '1' || '0' }}"
+    inventory = _workflow_step(job=job, name="Summarize bounded integration storage metadata")
+    assert inventory["if"] == "always() && matrix.group == 6"
+    assert shlex.split(inventory["run"])[-2:] == ["butlers.testing.storage", "inventory"]
+    uploads = [
+        step
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/upload-artifact@")
+    ]
+    assert any("storage-*.json" in step["with"]["path"] for step in uploads)

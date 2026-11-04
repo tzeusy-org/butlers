@@ -382,3 +382,36 @@ BUTLERS_UPDATE_ROUTE_SNAPSHOT=1 uv run pytest tests/api/test_router_registry.py 
 ```
 
 On a merge conflict in the snapshot, rerun the refresh instead of hand-editing hashes.
+
+
+### Integration-six storage measurements
+
+Hosted integration group 6 opts into closed storage metadata via
+`BUTLERS_TEST_STORAGE_EVIDENCE=1`; ordinary pytest runs and the other shards do not.
+`butlers.testing.storage` records root and Docker bytes/inodes immediately before and after the
+existing runner cleanup, then samples each shared session-fixture PostgreSQL server every 30 seconds and
+before its existing teardown. Exact factory create counters and aggregate database/prefix-bucket sizes, WAL bytes and
+cumulative PostgreSQL temporary bytes accompany the owned server identity; database names,
+credentials, SQL rows and raw command errors are excluded. Temporary bytes are a lifetime counter,
+not currently allocated temporary space. `test_named_*` includes fresh migration-subject and legacy
+databases as well as clones; `template_named_*` is also a naming bucket. Current actual clone
+bytes remain explicitly UNKNOWN (`unknown_untracked`), not inferred from a name or create count. Docker sizes are rounded CLI aggregates, not exact
+per-layer physical allocation. PGDATA `df` measures its containing filesystem, not directory size.
+
+Each worker has at most 73 samples and a 128 KiB atomic receipt. The always-run inventory binds the
+expected workers and both host phases to the checkout/run/attempt and records UNKNOWN for missing,
+truncated, unavailable or mismatched evidence. The default three workers plus host/inventory
+receipts use at most 768 KiB. The fixed global bound is 35 files (32 admitted worker identities,
+two host phases and the inventory), or 4,587,520 bytes (4.375 MiB). Invalid expected worker counts
+or extra known worker files yield UNKNOWN; the sampler never changes actual worker selection. Diagnostic
+failures never replace pytest's verdict. These measurements do not change clone retention,
+container teardown, workers, selection, disk cleanup or the 30 GiB runner free-space floor.
+Separately started legacy containers have no individual PGDATA/database sample; Docker totals
+include them, so this increment does not yet attribute every byte of the full job.
+
+The initial instrumentation provides attribution data, not a demonstrated DiskFull fix. Compare
+source- and attempt-bound failing and successful hosted samples before changing resource policy;
+keep the complete real-PostgreSQL population and repeated normal-load source/protected gates.
+
+Actual observer overhead must be measured from natural hosted execution; no speed or capacity
+improvement is claimed from adding these diagnostics.

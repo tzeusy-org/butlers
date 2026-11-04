@@ -668,7 +668,11 @@ def postgres_container() -> Iterator[PostgresContainer]:
     # Equivalent to ``with container`` (stop also runs after a failed start),
     # except that the volume decision is explicit rather than always-delete.
     try:
-        yield container.start()
+        started = container.start()
+        from butlers.testing.storage import observe
+
+        with observe(started):
+            yield started
     finally:
         container.stop(delete_volume=_delete_session_data_volume(os.environ))
 
