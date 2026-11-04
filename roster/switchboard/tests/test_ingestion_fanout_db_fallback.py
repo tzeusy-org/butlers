@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib
 import os
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -64,6 +65,11 @@ def _fanout_db(fan_out_result: dict):
     return manager
 
 
+def _fan_out(manager) -> AsyncMock:
+    """The fan-out mock :func:`_fanout_db` installed."""
+    return cast(AsyncMock, manager.fan_out_with_status)
+
+
 # ---------------------------------------------------------------------------
 # Tests: DB fallback is used when Prometheus is absent
 # ---------------------------------------------------------------------------
@@ -77,9 +83,9 @@ async def test_db_fallback_used_when_no_prometheus_url():
     mod = _load_router("_sw_fanout_nourl_db")
     await mod.get_ingestion_fanout(period="24h", db=db)
 
-    assert db.fan_out_with_status.await_count == 1, "fan_out must be called for DB fallback"
-    assert "public.ingestion_events" in db.fan_out_with_status.await_args.args[0]
-    assert "sessions" in db.fan_out_with_status.await_args.args[0]
+    assert _fan_out(db).await_count == 1, "fan_out must be called for DB fallback"
+    assert "public.ingestion_events" in _fan_out(db).await_args_list[-1].args[0]
+    assert "sessions" in _fan_out(db).await_args_list[-1].args[0]
 
 
 async def test_db_fallback_empty_when_no_sessions():
@@ -224,7 +230,7 @@ async def test_db_fallback_prometheus_error_triggers_db():
             mod = _load_router("_sw_fanout_prom_err")
             result = await mod.get_ingestion_fanout(period="24h", db=db)
 
-    assert db.fan_out_with_status.await_count == 1, "fan_out must be called after Prometheus error"
+    assert _fan_out(db).await_count == 1, "fan_out must be called after Prometheus error"
     assert len(result.data) == 1
     row = result.data[0]
     assert row.connector_type == "gmail"
@@ -238,7 +244,7 @@ async def test_db_fallback_exception_returns_empty():
     os.environ.pop("PROMETHEUS_URL", None)
 
     db = _fanout_db({})
-    db.fan_out_with_status.side_effect = RuntimeError("DB connection failed")
+    _fan_out(db).side_effect = RuntimeError("DB connection failed")
     mod = _load_router("_sw_fanout_exc")
     result = await mod.get_ingestion_fanout(period="24h", db=db)
 
@@ -253,13 +259,13 @@ async def test_db_fallback_query_contains_hours_interval():
     mod = _load_router("_sw_fanout_interval")
     await mod.get_ingestion_fanout(period="7d", db=db)
 
-    assert db.fan_out_with_status.await_count == 1
-    sql = db.fan_out_with_status.await_args.args[0]
+    assert _fan_out(db).await_count == 1
+    sql = _fan_out(db).await_args_list[-1].args[0]
     # Parameterized query: interval is passed via $1 arg, not interpolated
     assert "$1" in sql, f"Expected parameterized '$1' in SQL, got: {sql}"
     # 7d = 168 hours — must be passed as the first arg
-    assert db.fan_out_with_status.await_args.kwargs["args"] == (168,), (
-        f"Expected args=(168,), got: {db.fan_out_with_status.await_args.kwargs['args']}"
+    assert _fan_out(db).await_args_list[-1].kwargs["args"] == (168,), (
+        f"Expected args=(168,), got: {_fan_out(db).await_args_list[-1].kwargs['args']}"
     )
 
 

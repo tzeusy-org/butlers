@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from butlers.api.routers import ingestion_connectors
@@ -55,7 +56,7 @@ def _load_router():
 # filtered_events UNION); fetchrow/fetchval stay unconfigured so they refuse.
 
 
-def _db_with_rows(rows: list[dict]):
+def _db_with_rows(rows: list[Any]):
     return db_manager({"switchboard": fake_pool(fetch=rows)})
 
 
