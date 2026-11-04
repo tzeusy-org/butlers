@@ -89,7 +89,9 @@ unknown authority yields `mixed`). Steering memory is gated on that stamp:
   additive: `endorsed_at`/`endorsed_by` are set and authority and taint are unchanged,
   so clearing `endorsed_at` restores the prior state. A retracted or superseded fact
   returns 409; a repeat returns the same receipt and writes one audit event
-  (`fact_vouched`) in total. Legacy (NULL) and `system` facts are not held. The
+  (`fact_vouched`) in total. Vouch uses the shared `is_fact_held` predicate: live
+  legacy (NULL), `system`, and owner-class facts return the unchanged receipt without
+  changing endorsement stamps, audit events, or catalog rows. The
   dashboard Confirm action records `owner` as its actor in `memory_events`; the MCP
   `memory_confirm` tool records `session`. The re-asserted catalog entry keeps the
   fact's original `content_authority`, so catalog readers still attribute it. Rollback:

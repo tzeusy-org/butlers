@@ -77,12 +77,22 @@ def _events(conn):
     return [c for c in conn.calls if "INSERT INTO memory_events" in c[0]]
 
 
-async def test_an_owner_class_fact_needs_no_vouch():
-    conn = _Conn(_row(content_authority="owner"))
+@pytest.mark.parametrize("authority", ["owner", "owner_device", None, "system"])
+async def test_a_non_held_fact_needs_no_vouch(authority):
+    conn = _Conn(_row(content_authority=authority))
+    before = dict(conn.row)
 
     receipt = await endorse_fact(_Pool(conn), conn.row["id"], endorsed_by=_OWNER)
 
-    assert receipt["changed"] is False
+    assert receipt == {
+        "fact_id": before["id"],
+        "content_authority": authority,
+        "endorsed_at": None,
+        "endorsed_by": None,
+        "changed": False,
+    }
+    assert conn.row == before
+    assert len(conn.calls) == 1 and "FOR UPDATE" in conn.calls[0][0]
     assert _events(conn) == []
 
 

@@ -31,6 +31,7 @@ from butlers.core.tool_call_capture import (
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import (
     ContentAuthority,
+    is_fact_held,
     is_owner_class,
     resolve_content_authority,
     validate_authority,
@@ -3355,8 +3356,9 @@ async def endorse_fact(
     re-assert the fact's discovery-catalog entry.  Vouching is additive: the fact keeps its
     original ``content_authority`` and ``authority_entity_id``, so clearing ``endorsed_at``
     restores the prior state exactly.  Idempotent: an already-vouched fact returns its
-    original receipt with ``changed=False`` and writes nothing, as does a fact that already
-    carries owner-class authority.
+    original receipt with ``changed=False`` and writes nothing. Every other live fact outside
+    the shared :func:`is_fact_held` predicate is also a no-op, including legacy NULL,
+    system and owner-class authority.
 
     Returns the receipt dict, or ``None`` when the fact does not exist.
 
@@ -3387,7 +3389,7 @@ async def endorse_fact(
                 raise FactNotEndorsableError(
                     "retracted, superseded or expired facts cannot be vouched for"
                 )
-            if is_owner_class(row["content_authority"]):
+            if not is_fact_held(row["content_authority"], row["endorsed_at"], row["validity"]):
                 return receipt
 
             endorsed = await conn.fetchrow(
