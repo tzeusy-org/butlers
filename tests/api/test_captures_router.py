@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import asyncpg
 import pytest
@@ -31,6 +32,7 @@ from butlers.api.deps import get_db_optional
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.routers import captures
 from butlers.core.capture import CaptureReceipt, CaptureUnavailable, rotate_epoch
+from butlers.testing.db_manager import db_manager
 
 _HOST = "butlers.example.test"
 _ORIGIN = f"https://{_HOST}"
@@ -100,32 +102,23 @@ class _Conn:
         return []
 
 
-class _Manager:
-    """Dashboard DB manager seam counting General pool requests."""
-
-    def __init__(self, conn: _Conn | None = None) -> None:
+class _ConnPool:
+    def __init__(self, conn: _Conn) -> None:
         self.conn = conn
-        self.calls = 0
 
-    def pool(self, _name: str):
-        self.calls += 1
-        if self.conn is None:
-            raise KeyError("synthetic unavailable")
-        conn = self.conn
-
-        class _Pool:
-            @asynccontextmanager
-            async def acquire(self):
-                yield conn
-
-        return _Pool()
-
-    def credential_shared_pool(self):
-        return SimpleNamespace(fetchval=_exists)
+    @asynccontextmanager
+    async def acquire(self):
+        yield self.conn
 
 
 async def _exists(_sql, conversation_id):
     return 1 if conversation_id == _CONVERSATION else None
+
+
+def _manager(conn: _Conn | None = None):
+    """Dashboard DB manager whose General pool yields *conn* (no General pool when None)."""
+    pools = {} if conn is None else {"general": _ConnPool(conn)}
+    return db_manager(pools, credential_pool=SimpleNamespace(fetchval=_exists))
 
 
 _CONVERSATION = uuid.UUID("00000000-0000-4000-8000-0000000c0a7e")
@@ -135,7 +128,10 @@ _CONVERSATION = uuid.UUID("00000000-0000-4000-8000-0000000c0a7e")
 def seams(monkeypatch, tmp_path):
     monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", _ORIGIN)
     monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", _HOST)
-    observed = SimpleNamespace(manager=_Manager(), audits=[], epoch_path=tmp_path / "epoch.json")
+    manager = _manager()
+    # Count General pool requests: refused contexts must never reach the pool seam.
+    monkeypatch.setattr(manager, "pool", Mock(wraps=manager.pool))
+    observed = SimpleNamespace(manager=manager, audits=[], epoch_path=tmp_path / "epoch.json")
     rotate_epoch(observed.epoch_path)
 
     async def record(_db_manager, **fields) -> None:
@@ -275,7 +271,7 @@ async def test_refusals_read_no_body_and_acquire_no_general_connection(seams, do
             "CAPTURE_INTAKE_CONTEXT_REQUIRED",
             0,
         )
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
 
     # A context minted before an epoch rotation (restore) cannot authorize a retry.
     rotate_epoch(seams.epoch_path)
@@ -287,7 +283,7 @@ async def test_refusals_read_no_body_and_acquire_no_general_connection(seams, do
         "CAPTURE_INTAKE_CONTEXT_REQUIRED",
         0,
     )
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
     operation = captures.AUDIT_OPERATIONS[door]
     assert [a["operation"] for a in seams.audits] == [operation] * (len(context_cases) + 1)
     assert {a["outcome"]["category"] for a in seams.audits} == {"intake_context_refused"}
@@ -303,7 +299,7 @@ async def test_refusals_read_no_body_and_acquire_no_general_connection(seams, do
         [*_owner_key(), (b"x-capture-intake", fresh.encode())],
     )
     assert (status, response["error"]["code"]) == (503, "CAPTURE_UNAVAILABLE")
-    assert received >= 1 and seams.manager.calls == 1
+    assert received >= 1 and seams.manager.pool.call_count == 1
 
 
 @pytest.mark.unit
@@ -443,7 +439,7 @@ async def test_sentinel_matrix_exposes_no_intake_on_any_outcome(
     traced, seams, caplog, door, path, behavior, body, status_code, code, category
 ):
     conn = _Conn()
-    seams.manager.conn = conn
+    seams.manager = _manager(conn)
     _FakeService.behavior = behavior
     context = await _context(seams.app, door)
     logging.getLogger("capture_privacy_control").warning("capture-log-live-control")
@@ -480,7 +476,7 @@ async def test_sentinel_matrix_exposes_no_intake_on_any_outcome(
 @pytest.mark.asyncio
 async def test_neutralized_no_body_policy_is_detected(traced, seams, caplog, monkeypatch):
     """Mutation control: without the server-owned policy the generic audit keeps the body."""
-    seams.manager.conn = _Conn()
+    seams.manager = _manager(_Conn())
     _FakeService.behavior = "held"
     monkeypatch.setattr(dashboard_audit_middleware, "_capture_operation", lambda *_: None)
     context = await _context(seams.app)
@@ -504,7 +500,7 @@ async def test_cancellation_propagates_after_cleanup_and_fixed_audit(
     """A request cancelled mid-admission propagates; nothing is synthesized as success."""
     monkeypatch.setattr(captures, "REQUEST_TIMEOUT_S", 30)
     conn = _Conn()
-    seams.manager.conn = conn
+    seams.manager = _manager(conn)
     _FakeService.behavior = "cancelled"
     _FakeService.started = asyncio.Event()
     context = await _context(seams.app, door)
@@ -534,11 +530,11 @@ async def test_reads_are_unavailable_never_false_empty(seams):
     app = seams.app
     paths = ["/api/general/captures", f"/api/general/captures/{uuid.uuid4()}"]
     for conn in (None, _Conn(role="dashboard_api")):
-        seams.manager.conn = conn
+        seams.manager = _manager(conn)
         for path in paths:
             status, body, _ = await _raw(app, "GET", path, headers=_owner_key())
             assert (status, body["error"]["code"]) == (503, "CAPTURE_UNAVAILABLE")
-    seams.manager.conn = _Conn()
+    seams.manager = _manager(_Conn())
     status, body, _ = await _raw(app, "GET", paths[0], headers=_owner_key())
     assert (status, body) == (
         200,

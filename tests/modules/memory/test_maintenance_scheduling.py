@@ -447,7 +447,9 @@ class TestRegisterDefaultMaintenanceSchedules:
         async def _fake_ensure(pool, **kwargs):
             calls.append(kwargs)
 
-        monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+        monkeypatch.setattr(
+            "butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure
+        )
 
         module = MemoryModule()
         fake_db = AsyncMock()
@@ -474,7 +476,9 @@ class TestRegisterDefaultMaintenanceSchedules:
         async def _fake_ensure(pool, **kwargs):
             calls.append(kwargs)
 
-        monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+        monkeypatch.setattr(
+            "butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure
+        )
 
         module = MemoryModule()
         legacy_db = SimpleNamespace(
@@ -501,7 +505,9 @@ class TestRegisterDefaultMaintenanceSchedules:
             if kwargs["name"] == "memory_decay_sweep":
                 raise RuntimeError("scheduled_tasks not migrated yet")
 
-        monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _flaky_ensure)
+        monkeypatch.setattr(
+            "butlers.core.scheduler.crud.ensure_module_default_schedule", _flaky_ensure
+        )
 
         module = MemoryModule()
         fake_db = AsyncMock()
@@ -577,7 +583,8 @@ async def _scheduler_pool_for(db_url: str) -> asyncpg.Pool:
 async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cadence(
     core_scheduler_db_url: str,
 ) -> None:
-    from butlers.core.scheduler import ensure_module_default_schedule, sync_schedules
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
+    from butlers.core.scheduler.sync import sync_schedules
 
     pool = await _scheduler_pool_for(core_scheduler_db_url)
     try:
@@ -673,7 +680,7 @@ async def test_ensure_module_default_schedule_idempotent_and_toml_overrides_cade
 async def test_ensure_module_default_schedule_rejects_invalid_cron(
     core_memory_db_url: str,
 ) -> None:
-    from butlers.core.scheduler import ensure_module_default_schedule
+    from butlers.core.scheduler.crud import ensure_module_default_schedule
 
     pool = await _pool_for(core_memory_db_url)
     try:

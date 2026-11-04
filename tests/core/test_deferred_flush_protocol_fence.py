@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.scheduler import _PARTIAL_DEFERRED, _tick_deferred_notification_pass
+from butlers.core.scheduler.deferred_pass import _PARTIAL_DEFERRED, _tick_deferred_notification_pass
 
 pytestmark = pytest.mark.unit
 

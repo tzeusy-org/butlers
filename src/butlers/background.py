@@ -276,7 +276,7 @@ async def scheduler_loop(
     butler_name:
         Butler name (used as stagger key and for logging).
     tick_fn:
-        Tick implementation (normally ``butlers.core.scheduler.tick``).
+        Tick implementation (normally ``butlers.core.scheduler.dispatch.tick``).
     get_switchboard_client:
         Zero-argument callable that returns the current switchboard MCP client
         (or ``None``).  Called lazily per deferred-notification delivery so that

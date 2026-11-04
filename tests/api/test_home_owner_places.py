@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import asyncpg
 import httpx
@@ -20,9 +21,11 @@ import pytest_asyncio
 
 from butlers.api import dashboard_audit_middleware
 from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db_optional
 from butlers.db import register_jsonb_codec
 from butlers.owner_places import load_active_owner_places
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 from tests.migrations.test_qa_publication_operations_migration import _bootstrap_rerun
@@ -54,23 +57,12 @@ def _place(**overrides) -> dict:
     return place
 
 
-class _Manager:
-    """Dashboard DB-manager seam that counts pool requests; no pool means unavailable."""
-
-    def __init__(self, pool: asyncpg.Pool | None = None) -> None:
-        self.serving = pool
-        self.calls = 0
-
-    def pool(self, _name: str) -> asyncpg.Pool:
-        self.calls += 1
-        if self.serving is None:
-            raise KeyError("synthetic unavailable")
-        return self.serving
-
-
 @pytest.fixture
 def seams(monkeypatch):
-    observed = SimpleNamespace(manager=_Manager(), generic=[])
+    # No home pool means unavailable; counting requests proves refusals never reach it.
+    manager = db_manager({})
+    monkeypatch.setattr(manager, "pool", Mock(wraps=manager.pool))
+    observed = SimpleNamespace(manager=manager, generic=[])
 
     async def record_generic(_db_manager, **fields) -> None:
         observed.generic.append(fields)
@@ -80,7 +72,7 @@ def seams(monkeypatch):
     return observed
 
 
-def _mounted(manager: _Manager, app=None):
+def _mounted(manager: DatabaseManager, app=None):
     app = app if app is not None else create_authenticated_domain_app()
     app.dependency_overrides[get_db_optional] = lambda: manager
     return app
@@ -155,13 +147,13 @@ async def test_owner_control_refuses_before_body_pool_or_generic_audit(
     ]:
         status, response, received = await _raw(app, method, path, body, headers)
         assert (status, response["error"]["code"], received) == (*expected, 0)
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
     assert seams.generic == []
 
     # Positive control: the owner credential reaches the pool seam, which is unavailable.
     status, response, _ = await _raw(configured, method, path, body, owner)
     assert (status, response["error"]["code"]) == (503, "PLACES_UNAVAILABLE")
-    assert seams.manager.calls == 1
+    assert seams.manager.pool.call_count == 1
     assert seams.generic == []
 
 
@@ -208,7 +200,7 @@ async def test_malformed_place_is_one_content_blind_refusal_before_the_pool(
             "details": None,
         }
     }
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
     assert seams.generic == []
 
 
@@ -218,7 +210,7 @@ async def test_oversized_body_stops_at_sixteen_kib(seams) -> None:
     app = _mounted(seams.manager)
     status, response, _ = await _raw(app, "POST", _ROUTE, b" " * 16_385, [])
     assert (status, response["error"]["code"]) == (413, "REQUEST_BODY_TOO_LARGE")
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +239,7 @@ async def places_pool(places_db):
 @pytest_asyncio.fixture(loop_scope="session")
 async def client(places_pool, seams):
     await places_pool.execute("TRUNCATE public.owner_places")
-    seams.manager.serving = places_pool
+    seams.manager = db_manager({"home": places_pool})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_mounted(seams.manager)), base_url=_ORIGIN
     ) as http:

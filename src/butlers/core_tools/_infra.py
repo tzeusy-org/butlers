@@ -16,7 +16,7 @@ from butlers.core.corrections import (
     handle_memory_deletion,
     handle_misroute,
 )
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext

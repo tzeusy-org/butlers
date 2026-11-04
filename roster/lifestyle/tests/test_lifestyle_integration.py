@@ -774,7 +774,7 @@ class TestLifestyleMemoryMaintenanceSchedule:
         """All module-default memory maintenance schedules dispatch as jobs.
 
         ``ensure_module_default_schedule`` always inserts with
-        ``dispatch_mode='job'`` (see ``src/butlers/core/scheduler.py``) — this
+        ``dispatch_mode='job'`` (see ``src/butlers/core/scheduler/``) — this
         is not configurable per schedule, unlike the old toml blocks.
         """
         memory_jobs = [

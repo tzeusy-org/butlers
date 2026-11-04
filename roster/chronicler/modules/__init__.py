@@ -184,7 +184,7 @@ class ChroniclerModule(Module):
         """
         if db is None:
             return
-        from butlers.core.scheduler import ensure_module_default_schedule
+        from butlers.core.scheduler.crud import ensure_module_default_schedule
 
         owner_butler = getattr(db, "owner_butler", None) or getattr(db, "schema", None)
         # Legacy per-butler databases use their unqualified public schema.

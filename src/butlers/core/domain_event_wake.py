@@ -82,7 +82,7 @@ from typing import Any
 import asyncpg
 
 from butlers.core.domain_event_reactions import record_reaction
-from butlers.core.scheduler import schedule_create
+from butlers.core.scheduler.crud import schedule_create
 
 logger = logging.getLogger(__name__)
 

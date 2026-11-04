@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from butlers.core.scheduler import schedule_always_in_quiet_window
+from butlers.core.scheduler.timing import schedule_always_in_quiet_window
 
 pytestmark = pytest.mark.unit
 

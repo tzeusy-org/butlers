@@ -601,7 +601,7 @@ def test_notification_due_expiry_and_delivery_result():
 @pytest.mark.asyncio
 async def test_event_chain_pass_skips_calendar_projection_when_event_chains_table_missing():
     """A missing migrated event-chain table faults without querying legacy calendar data."""
-    from butlers.core.scheduler import _tick_event_chain_pass
+    from butlers.core.scheduler.chain_pass import _tick_event_chain_pass
 
     class FakePool:
         def __init__(self) -> None:
@@ -644,7 +644,7 @@ async def test_event_chain_pass_skips_malformed_deadline_trigger_references(capl
     """Malformed deadline trigger refs must not abort the scheduler tick."""
     import logging
 
-    from butlers.core.scheduler import _tick_event_chain_pass
+    from butlers.core.scheduler.chain_pass import _tick_event_chain_pass
 
     class FakePool:
         def __init__(self) -> None:
@@ -759,7 +759,7 @@ class TestTickIntegration:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
@@ -829,7 +829,7 @@ class TestTickIntegration:
         """paperwork_deadline_set upserts on (document, kind) without overriding an owner
         disable; a due threshold runs the fixed notice job with threshold context and no
         prompt, and stays unfired until the notice is delivered; prompt deadlines are untouched."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
         from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
         from butlers.core.temporal.deadlines_db import deadline_create
         from butlers.core.temporal.document_deadlines import (
@@ -931,7 +931,7 @@ class TestTickIntegration:
         threshold stays unfired and fires once delivery recovers."""
         from unittest.mock import AsyncMock, MagicMock
 
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
         from butlers.core.temporal.document_deadlines import (
             document_deadline_set,
             plan_document_deadline,
@@ -997,7 +997,7 @@ class TestTickIntegration:
     ):
         """A later notice from the same issuer and kind disables older ones but keeps them,
         and keeps an owner's disable; an earlier or far-later date keeps both; caps refuse."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
         from butlers.core.temporal import document_deadlines as dd
         from butlers.core.temporal.deadlines_db import deadline_list
 
@@ -1152,7 +1152,7 @@ class TestTickIntegration:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
@@ -1276,7 +1276,7 @@ class TestTickIntegration:
         """N due notifications for the same (channel, recipient) compose into
         ONE notify_fn call instead of N separate sends, and all N rows are
         marked delivered together."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         now = datetime.now(UTC)
         due = now - timedelta(minutes=5)
@@ -1322,7 +1322,7 @@ class TestTickIntegration:
     ):
         """Two due notifications for DIFFERENT recipients must never be folded
         into one composed message — each is delivered on its own."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         now = datetime.now(UTC)
         due = now - timedelta(minutes=5)
@@ -1354,7 +1354,7 @@ class TestTickIntegration:
     async def test_tick_deferred_notification_coalesced_failure_keeps_all_pending(self, tick_pool):
         """A failed composed-digest send must leave EVERY row in the group
         pending for retry — no partial delivery within a coalesced group."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         now = datetime.now(UTC)
         due = now - timedelta(minutes=5)
@@ -1392,7 +1392,7 @@ class TestTickIntegration:
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
         from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         exporter = InMemorySpanExporter()
         provider = TracerProvider()
@@ -1585,7 +1585,7 @@ class TestTickIntegration:
         """A missing migrated event-chain table is visible; historical rows stay untouched."""
         import asyncpg
 
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         now = datetime.now(UTC)
 
@@ -1614,7 +1614,8 @@ class TestTickIntegration:
 
     async def test_tick_cron_and_sync_schedules(self, tick_pool):
         """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; the spec requires them."""
-        from butlers.core.scheduler import sync_schedules, tick
+        from butlers.core.scheduler.dispatch import tick
+        from butlers.core.scheduler.sync import sync_schedules
 
         await tick_pool.execute(
             """
@@ -1682,7 +1683,7 @@ class TestTickIntegration:
     async def test_tick_deadline_seasonal_context_injection(self, tick_pool):
         """tick() injects active_seasons into deadline prompt when butler_name provided;
         no seasons in prompt without butler_name."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         butler = "seasonal-deadline-butler"
         await tick_pool.execute(

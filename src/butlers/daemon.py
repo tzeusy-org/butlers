@@ -67,7 +67,7 @@ from butlers.config import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
