@@ -170,9 +170,14 @@ butler's schema even though all schemas live in one database.
   surface's projection by logical replication. The publication's column lists
   and row filters limit what the projection receives, not what the role can
   read: the publisher role holds `REPLICATION`, which in PostgreSQL can decode
-  every change in the database regardless of grants. Its credential is
-  therefore primary-read-all material and is guarded as such. No runtime role,
-  session or internet-facing process holds it (see Public Read Surface).
+  every change in the database regardless of grants, so it is
+  primary-read-all. It therefore has no credential at all: no password or
+  certificate exists, it logs in only by local peer authentication inside the
+  database instance pods, every network login as it is refused, and no role
+  is a member of it. No runtime role, session or internet-facing process can
+  act as it. What remains are the permissions that are already
+  superuser-equivalent; the publisher adds none of them (see Public Read
+  Surface).
 
 **Limitations:**
 
@@ -238,12 +243,14 @@ server gets a write, send or spend effect (`bu-mzvel0`) is unchanged.
   allowlist manifest. `butler_secrets`, secured `entity_info` rows, connector
   and OAuth tokens, and private-custody content are never published, and a
   contract test holds the publication equal to the manifest. The server holds
-  no login to the primary database and no network route to butler daemons,
-  the dashboard API or the Switchboard, and it never holds the publisher's
-  credential.
+  no login to the primary database (the projection is a second database on
+  the same cluster, and `pg_hba` admits the server's role to it alone), no
+  network route to butler daemons, the dashboard API or the Switchboard, and
+  the publisher has no credential to hold.
 - **No Butlers model runs on the request path.** The server starts no session,
   imports no spawner, runtime, model SDK or Switchboard client, has no egress
-  beyond its projection, and offers no sampling or elicitation.
+  beyond the PostgreSQL port that serves its projection, and offers no
+  sampling or elicitation.
 - **Writes are proposals the owner gates.** `propose_fact` only inserts into a
   quarantined inbox. An inbox row is not an effect: it writes no domain store,
   goal or schedule. A deterministic domain job parks each valid proposal as an
@@ -273,6 +280,13 @@ process-bound deployment control key.
 - Automatic approval of proposals is not admitted. It would turn outside
   content into a write without a per-event tap, so it needs its own owner
   decision.
+- Several permissions on the database cluster are already
+  superuser-equivalent, and each reaches primary-read-all with or without the
+  publisher: exec, attach or debug access to the instance pods, creating pods
+  beside them, reading the cluster's Secrets (which hold the replication
+  role's client certificate), writing the cluster's configuration, and access
+  to its node or disk. They stay with the owner. The publisher adds none of
+  them.
 
 ## Credential Management
 

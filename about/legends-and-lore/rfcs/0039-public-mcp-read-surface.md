@@ -1,16 +1,21 @@
 # RFC 0039: Public MCP Read Surface
 
 **Status:** Accepted (2026-11-04) on the owner decisions recorded in
-[Owner decisions](#owner-decisions) (OD1 to OD9). Under the owner's standing
+[Owner decisions](#owner-decisions) (OD1 to OD15). Under the owner's standing
 rule, text that conforms to those decisions is adopted once the PR's independent
 conformance review passes; the owner does not sign off exact wording. Text that
-goes beyond OD1 to OD9 returns to the owner. Four items do, and are written
-here as recommendations pending the owner, not as adopted contract: the
-separate CNPG cluster for the projection (D3, open question 1), the alert
-receiver (D16), accepting live data in `dev` from the first connection (owner
-act 8), and the upkeep of the source-owned materializations in D2. The
+goes beyond OD1 to OD15 returns to the owner. The conformance review returned
+four items beyond OD1 to OD9, and the owner answered all four on 2026-11-04:
+the projection is a second database on the existing cluster (OD10, D3), alerts
+reach the owner through the existing Uptime Kuma (OD11, D16), live data in
+`dev` from the first connection is accepted (OD12, owner act 8), and the upkeep
+of the source-owned materializations in D2 is accepted (OD13). After homelab
+PR Tzeusy/homelab#40 applied the CNPG owner acts to `postgres-dev`, the owner
+also adopted a publisher with no credential, whose slot and subscription work
+is one owner step (OD14, D3, D9), and kept `mcp_subscription_owner` as created
+(OD15, D9). The
 [decision record](../decisions/2026-11-04-doctrine-public-mcp-read-surface.md)
-lists them. Implementation has not started.
+records them. Implementation has not started.
 **Author:** Claude (th-projects project-feature-request run), for the owner (tze)
 **Date:** 2026-11-04
 **Number:** provisional; `bu-bda935` (post-switch corpus rewrite) may renumber it.
@@ -47,7 +52,9 @@ Cloudflare gateway at `mcp.tze.how`. The rules of the surface:
   Ed25519 assertion signed by the Worker and verified at home, plus the
   filter-proxy hop bearer. The pod runs in a default-deny namespace with
   ingress only from that filter-proxy release and egress only to the
-  projection; its role is read-only except INSERT on a proposals inbox.
+  PostgreSQL port of the cluster that holds the projection, where `pg_hba`
+  admits its role to the projection database alone; that role is read-only
+  except INSERT on a proposals inbox.
 - **One server for all domains**, finance and health included (OD3), with
   per-domain kill switches for incidents and no unlock step.
 - **The only write is `propose_fact`.** A triple lands in an inbox; a
@@ -89,8 +96,10 @@ written as Obsidian prose would never reach the registry.
 **Why now.** [Observed] The gateway already has OAuth 2.1 with PKCE, a
 GitHub-id allowlist, per-server audiences and Worker-set identity headers,
 and dev Postgres (CNPG `postgres-dev`, PG 17.8) already runs with
-`wal_level=logical`. What remains is Butlers-side work plus a short list of
-owner acts ([Rollout](#rollout-and-owner-acts)).
+`wal_level=logical`. Homelab PR Tzeusy/homelab#40 has applied the CNPG side of
+the owner acts to `postgres-dev` [Observed: homelab report, 2026-11-04]. What
+remains is Butlers-side work plus a short list of owner acts
+([Rollout](#rollout-and-owner-acts)).
 
 ## Vocabulary
 
@@ -99,12 +108,16 @@ owner acts ([Rollout](#rollout-and-owner-acts)).
 | Public server | The `butlers-public-mcp` Deployment that runs `butlers.mcp_public`. |
 | Gateway | The owner's Cloudflare Worker (OAuth, allowlist, assertion signing), then `cloudflared`, `traefik-mcp`, then the `butlers` filter-proxy release in namespace `mcp`. |
 | Primary | The live Butlers database (`butlers` on CNPG `postgres-<env>`). |
-| Projection | The `butlers_public` database, fed only by logical replication from the primary. It also holds the proposals inbox. Recommended placement is its own CNPG cluster, `postgres-public-<env>`, pending the owner (D3). |
+| Projection | The `butlers_public` database, fed only by logical replication from the primary. It also holds the proposals inbox. It is a second database on the primary's CNPG cluster `postgres-<env>` (D3, OD10). |
 | Manifest | `src/butlers/knowledge_read/projection.toml`: the one checked-in list of published tables, columns, row filters, domains and tool sources. |
 | Assertion | The Worker's Ed25519 signature over one forwarded MCP request (D7). It is unrelated to the RFC 0038 broker assertion and never accepted in its place. |
 | Hop bearer | `UPSTREAM_BEARER`, which filter-proxy injects into every forwarded request (D6). |
 | Domain | A kill-switch unit: `knowledge`, `relationship`, `time`, `travel`, `finance`, `health`, `proposals`. |
 | Proposal | One `propose_fact` call. It is stored in the inbox and has no effect until the owner approves it. |
+| Owner step | The one idempotent SQL file that `butlers public-mcp owner-sql` emits for a manifest, which the owner runs as the CNPG superuser through `kubectl exec`. It creates the slot and the subscription, converges the subscriber side and records the applied digest (D3, OD14). |
+| Applied digest | The manifest digest the last complete owner step recorded in `butlers_public`. The public server serves only while it equals the digest the server ships with (D17). |
+| Publisher | `butlers_projection_publisher`, the `REPLICATION` role the subscription connects as. It has no password or certificate and logs in only by local peer authentication inside the instance pods (D9, OD14). |
+| Migration Job | The step that applies Butlers migrations as the migration user, today the `dashboard-api` `migrations` initContainer that runs `db migrate` (`deploy/helm/butlers/templates/dashboard-api.yaml`). `butlers public-mcp reconcile` runs in it after Alembic (D4). OD14 calls it the migration Job; it is not a separate Kubernetes Job. |
 
 ## Topology
 
@@ -116,24 +129,31 @@ flowchart LR
         TR --> FP["filter-proxy release 'butlers'<br/>injects hop bearer; FIXES off"]
     end
     MCP["ns butlers-public-&lt;env&gt; (default-deny):<br/>butlers-public-mcp"]
-    PROJ[("ns postgres-public-&lt;env&gt;: butlers_public<br/>mirrored tables, read views, inbox")]
-    subgraph Main["ns postgres-&lt;env&gt; / butlers-&lt;env&gt;"]
-        PRI[("primary 'butlers'<br/>publication butlers_public_v1")]
+    subgraph PG["ns postgres-&lt;env&gt;: CNPG cluster postgres-&lt;env&gt;"]
+        PRI[("database 'butlers' (primary)<br/>publication butlers_public_v1")]
+        PROJ[("database butlers_public (projection)<br/>mirrored tables, read views, inbox")]
+    end
+    subgraph Main["ns butlers-&lt;env&gt;"]
         REL["butlers-up pod (Relationship)<br/>job: public_mcp_proposal_import"]
         APR["dashboard approvals<br/>(passkey owner session)"]
     end
     W -->|"VPC binding"| CFD
     FP -->|"only allowed ingress"| MCP
-    MCP -->|"only allowed egress: 5432"| PROJ
-    PRI -->|"logical replication, one way"| PROJ
+    MCP -->|"only allowed egress: 5432;<br/>pg_hba admits butlers_public only"| PROJ
+    PRI -->|"logical replication, one way,<br/>same instance, publisher by local peer auth"| PROJ
+    OWN["owner step (OD14): owner-sql file,<br/>kubectl exec psql -U postgres"] -->|"slot, publisher grants"| PRI
+    OWN -->|"subscription, purge,<br/>applied digest"| PROJ
     REL -->|"pull inbox (SELECT, DELETE)"| PROJ
     REL -->|"park relationship_assert_fact"| APR
 ```
 
-The public server has no route to the primary, to butler daemons, to
-dashboard-api, to the Switchboard, to any model provider or to the internet.
-The only paths from the outside into Butlers state are the replicated read
-data and the inbox, which the importer pulls on Butlers' own schedule.
+The public server has no login to the primary database and no route to butler
+daemons, dashboard-api, the Switchboard, any model provider or the internet.
+Its one network path is the PostgreSQL port of `postgres-<env>`, the instance
+that also serves the primary, so the boundary between projection and primary
+is `pg_hba` and grants, not the network (D3). The only paths from the outside
+into Butlers state are the replicated read data and the inbox, which the
+importer pulls on Butlers' own schedule.
 
 ## Doctrine relationship
 
@@ -150,10 +170,10 @@ stops holding, the exception lapses.
 | `vision.md:52-54` | "not a platform for third-party developers" | Unchanged. The RFC states that the surface is not a developer API: one owner, two named client families, no public registration. |
 | `architecture.md:39-40` | "Client-to-butler: … through their MCP endpoints." | Note that the public server is a client of the projection database, not of butler endpoints. |
 | `architecture.md:58-67` exception mechanism | "…read-only at the database level, batch-oriented… Write operations and interactive queries must always go through the Switchboard." | Add the RFC 0039 departure. Reads are interactive, but they hit a replicated copy, not the live store. The single write is an inbox INSERT that only the owner can turn into an effect. Same shape as RFC 0030's "Departure from RFC 0010's Batch criterion". |
-| `architecture.md:419-420` anti-pattern | "Running multiple PostgreSQL instances for isolation that schema separation already provides" | Add the boundary: schema separation does not isolate against a compromise of an internet-facing process; a separate cluster does (D3). |
+| `architecture.md:419-420` anti-pattern | "Running multiple PostgreSQL instances for isolation that schema separation already provides" | Add the boundary: schema separation does not isolate against a compromise of an internet-facing process; a separate database behind `pg_hba` does (D3). |
 | `security.md:30-46` partially trusted | Covers LLM API providers and sessions only. | Add "Owner-operated edge and the owner's external AI clients". Cloudflare terminates TLS and sees response payloads. ChatGPT and claude.ai are models: they get only published projection data, and anything they send back is third-party content. |
 | `security.md:47-54` untrusted senders | "…never becomes steering memory… requires owner authority… or explicit owner endorsement." | Unchanged. An applied proposal is owner-endorsed but keeps `content_authority=third_party`, and it never becomes a rule or an owner-profile fact (D13). |
-| `security.md:162` | "Cross-butler data access goes through MCP and the Switchboard, not direct SQL." | Name the replication role and the projection as the one guarded exception (D2, D9). State that a `REPLICATION` role can decode every change in the database regardless of grants, so the publisher's credential is primary-read-all material and is guarded as such. |
+| `security.md:162` | "Cross-butler data access goes through MCP and the Switchboard, not direct SQL." | Name the replication role and the projection as the one guarded exception (D2, D9). State that a `REPLICATION` role can decode every change in the database regardless of grants, so the publisher is primary-read-all. It has no credential (OD14): it logs in only by local peer authentication inside the instance pods, and no role is a member of it. The permissions that reach primary-read-all (exec, attach and debug on the instance pods, pod creation, Secret read and `Cluster` writes in `postgres-<env>`, node access) are superuser-equivalent already, and the publisher adds none (D9). |
 | `security.md:184-198` approval gates | The exact stored call executes; timeouts deny. | Unchanged, and applied to proposals (D13). |
 | `security.md:404-410` deployment principles | "Bind to localhost… Tailscale serve handles external HTTPS exposure." | Add a Kubernetes principle: every Butlers namespace default-denies ingress; the only internet-reachable Butlers workload is the public server, reached only through the gateway. |
 | `v1.md:3-4` | "If a capability is not named here, it waits." | Name the public read surface and `propose_fact` in the v1 capabilities list. Name the auto-approval batch as not v1. |
@@ -202,6 +222,9 @@ tap. That is why it needs its own owner decision (D13).
 ## Owner decisions
 
 The owner recorded these on 2026-11-04. They are authoritative for this RFC.
+OD10 to OD13 answer the four items the conformance review returned to the
+owner. OD14 and OD15 followed the homelab apply of the CNPG owner acts to
+`postgres-dev` (homelab PR Tzeusy/homelab#40).
 
 | | Decision |
 |---|---|
@@ -214,6 +237,12 @@ The owner recorded these on 2026-11-04. They are authoritative for this RFC.
 | OD7 | Excel is deferred. Assume MCP is enabled in claude.ai and ChatGPT. |
 | OD8 | No LLM in the loop: no butler fronts a request, no recursive LLM-to-LLM call. |
 | OD9 | Dedupe the work; queue behind RFC 0038 only where a real dependency exists. |
+| OD10 | The projection is a second database on the existing cluster `postgres-<env>`, not a separate CNPG cluster. The owner weighed a separate cluster's stronger isolation against its upkeep and chose lower upkeep (D3). |
+| OD11 | Alerts reach the owner through the existing homelab Uptime Kuma, which polls flag series in Prometheus and notifies on its Telegram notification. No new Alertmanager receiver (D16). |
+| OD12 | Live `dev` data from the first client connection is accepted. Kill switches remain the incident control (D16, owner act 8). |
+| OD13 | The upkeep of the trigger-maintained source-owned materializations is accepted, with the parity tests and CI drift checks as its mitigation (D2). |
+| OD14 | The publisher has no credential. It logs in only by local peer authentication through the CNPG `local` `pg_ident` map; no password or certificate exists, and every TCP login as the publisher is rejected. The slot, the subscription (created by the superuser with `password_required = false`, `create_slot = false` and conninfo on the local socket, then owned by `mcp_subscription_owner`), `REFRESH PUBLICATION` and the narrowing purge become one owner step: Butlers generates one idempotent SQL file per manifest change, and the owner pipes it through the same `kubectl exec ... psql -U postgres` path as `init-db.sql`. Publication DDL in `butlers` stays with the migration user in the migration Job. The public server fails closed while the owner step is pending, so a narrowed manifest never keeps serving rows that should have been purged (D3, D4, D9, D17). |
+| OD15 | `mcp_subscription_owner` is kept as created: `LOGIN`, with its three password copies. No Butlers workflow needs it to log in (D9). |
 
 ## Decisions
 
@@ -259,8 +288,8 @@ daemon's or dashboard-api's MCP.
 **Contract.** The primary has exactly one publication, `butlers_public_v1`,
 with per-table column lists and row filters generated from the manifest
 (D4). The projection has one subscription, `butlers_public_sub`. DDL is
-never replicated: reconcile (D4) creates the subscriber tables first, with
-the published columns only. Subscriber-side extras (GIN trigram and tsvector
+never replicated: the owner step (D3) creates the subscriber tables first,
+with the published columns only. Subscriber-side extras (GIN trigram and tsvector
 indexes, read views in schema `mcp_read`, the local inbox table) never exist
 on the primary.
 
@@ -345,8 +374,9 @@ same kind uses the same pattern:
 source, one parity test each, and a sweep only where the source is an overlay
 (Chronicler). Triggers fire on every write path, so a new writer needs no
 change. A source migration that renames a JSONB key the trigger reads fails
-the parity test in its own PR. This is upkeep beyond "one manifest", so it is
-listed for the owner (Status line).
+the parity test in its own PR. This is upkeep beyond "one manifest". The owner
+accepted it (OD13), with the parity tests and the D4 drift checks as its
+mitigation.
 
 **Why.** OD1. [Observed] On the primary, `butler_secrets` stores
 `secret_value TEXT` in every schema (`src/butlers/core/credential_store.py:148-163`).
@@ -366,49 +396,235 @@ drift; kept only for sources that cannot be row-filtered. *Whole-schema
 replication*: `FOR TABLES IN SCHEMA` cannot narrow columns and would publish
 every future table by default.
 
-### D3. Projection placement (pending the owner)
+### D3. Projection placement: a second database on the existing cluster
 
-**Contract (pending owner act, open question 1).** The projection is the
-separate database `butlers_public`, never the primary database. Under either
-placement, a connection to the primary database as `mcp_public_ro` fails
-(REQ-public-mcp-projection-008 is the normative text and holds for both). It
-needs no backups: every mirrored table rebuilds from the publication, and the
-inbox is transient (D13), so losing undrained proposals is an accepted loss.
+**Contract (OD10).** The projection is the separate database `butlers_public`
+on the primary's CNPG cluster `postgres-<env>`, never the primary database
+`butlers`. A connection to `butlers` as `mcp_public_ro` fails
+(REQ-public-mcp-projection-008 is the normative text). The boundary between
+the two databases is the database layer, not the network:
 
-- **Recommended:** a dedicated, single-instance CNPG cluster,
-  `postgres-public-<env>`, in namespace `postgres-public-<env>`. This goes
-  beyond OD5, which names a namespace and the replication role but not a second
-  cluster, so it returns to the owner.
-- **Fallback:** a second database on `postgres-<env>`, under the conditions in
-  "Rejected" below.
+1. **`pg_hba`.** CNPG orders its fixed rules first, then the user rules, then
+   its catch-all. The user rules admit each projection login to
+   `butlers_public` only, then reject it everywhere else, and reject every
+   TCP login as the publisher. As applied on `postgres-dev` [Observed:
+   `pg_hba_file_rules`, homelab PR #40]:
 
-**Why.** [Inferred] On a shared cluster, isolation would depend on role
-authentication and `pg_hba` alone. Roles are cluster-global, and `CONNECT`
-on a database is granted to PUBLIC by default. On a separate cluster, the
-public pod's egress NetworkPolicy can select only the projection cluster's
-pods. The pod then cannot open a TCP connection to the primary at all, even
-with stolen credentials. That is the layer the owner asked for when they
-asked whether Cloudflare plus OAuth would otherwise be "our only layer of
-defense" (OD3).
+   ```text
+   local   all            all                           peer map=local     (CNPG fixed)
+   hostssl postgres/replication streaming_replica ... cert                 (CNPG fixed)
+   hostssl all            cnpg_pooler_pgbouncer ... cert                   (CNPG fixed)
+   hostssl butlers_public mcp_public_ro           10.42.0.0/24 scram-sha-256
+   hostssl butlers_public mcp_proposals_reader    10.42.0.0/24 scram-sha-256
+   host    all            mcp_public_ro           all reject
+   host    all            mcp_proposals_reader    all reject
+   host    all            butlers_projection_publisher all reject
+   host    all            all                     all scram-sha-256        (CNPG catch-all)
+   ```
 
-**Fallback conditions.** *A second database on `postgres-<env>`* is cheaper
-by one CNPG cluster, and is the documented fallback if the owner prefers it.
-It weakens condition 1's network argument: the pod's egress must then reach
-the shared cluster's pods, so a stolen password is stopped only by `pg_hba`,
-not by the network. The fallback therefore requires:
+   Roles are cluster-global, so without the reject lines the catch-all could
+   admit either projection role to `butlers`, `postgres` or `template1`. A
+   contract test connects as each role to those three databases and expects
+   refusal.
 
-1. `pg_hba` lines ordered before CNPG's defaults:
-   `hostssl butlers_public mcp_public_ro <public pod CIDR> scram-sha-256`,
-   then `host all mcp_public_ro all reject`, so the cluster-global role
-   reaches no `butlers`, `postgres` or `template1` database. A contract test
-   connects as `mcp_public_ro` to each and expects refusal.
-2. The network-isolation scenario of REQ-public-mcp-authorization-008 is
-   replaced by that `pg_hba` test.
-3. The owner of `mcp_read.replication_as_of()` holds no `pg_read_all_stats`:
-   on a shared cluster that role would expose every primary session's query
-   text, which can carry secret literals.
+   **The address range does not separate pods.** [Observed] The cluster is
+   one node whose pod range is `10.42.0.0/24`, so the public pod and the
+   `butlers-<env>` pods share it. Roles do the separating: of the workload
+   namespaces, only `butlers-public-<env>` holds the `mcp_public_ro`
+   password and only `butlers-<env>` holds the `mcp_proposals_reader`
+   password (D9). A second node would give its pods a range outside
+   `10.42.0.0/24`, so a projection login from it fails closed until the
+   owner widens the rule.
+2. **Grants.** `CONNECT` and `TEMPORARY` on `butlers_public` are revoked from
+   PUBLIC (D9). Neither role is granted `CONNECT` on any other database, is a
+   member of any primary role, or owns anything outside `butlers_public`.
+3. **No monitoring role.** The owner of `mcp_read.replication_as_of()` never
+   holds `pg_read_all_stats`: on the shared instance that role would expose
+   every primary session's query text, which can carry secret literals.
 
-*A Postgres outside CNPG*: more upkeep, no gain.
+**Network.** The public server's egress targets the `postgres-<env>` instance
+pods on 5432 (D8). Those pods also serve the primary, so the network layer
+cannot separate the projection from the primary: a stolen `mcp_public_ro`
+password reaches a socket that also fronts `butlers`, and `pg_hba` plus grants
+are what refuse it. The importer needs no new network path, because the
+`butlers-up` pod already reaches the cluster for the primary.
+
+**Same-instance subscription.** The publication and the subscription live on
+one instance. [Observed: PostgreSQL docs, CREATE SUBSCRIPTION notes] A
+subscription that connects to its own cluster can be created only if its
+replication slot is not created by the same command; otherwise
+`CREATE SUBSCRIPTION` hangs. The slot is created separately with
+`pg_create_logical_replication_slot` and the `pgoutput` plugin, and the
+subscription with `create_slot = false`.
+
+**The owner step (OD14).** The publisher has no password (D9), so the
+subscription's conninfo names the local socket and carries no secret.
+PostgreSQL then requires `password_required = false` on the subscription,
+which only a superuser can set. [Inferred: PostgreSQL 16+
+`subscriptioncmds.c`] A non-superuser also cannot `ALTER` (including
+`REFRESH PUBLICATION`) or `DROP` a subscription whose `password_required` is
+false. Creating, refreshing and dropping the subscription, and creating the
+slot, are therefore superuser work, and they form one owner step:
+
+- **The file.** `butlers public-mcp owner-sql` prints one SQL file computed
+  from the manifest alone. It opens no database connection, holds no secret,
+  and the same manifest always yields the same bytes. The owner runs it from
+  a checkout at the deployed revision through the same path as
+  `scripts/init-db.sql`:
+  `butlers public-mcp owner-sql > owner-step.sql`, then
+  `kubectl exec -i -n postgres-<env> <instance> -- psql -X -U postgres -d butlers -f - < owner-step.sql`.
+  That is peer authentication over the instance's local socket.
+- **Control flow.** The file sets `ON_ERROR_STOP`, so the first failure ends
+  it. It moves between the two databases with psql `\connect` (to
+  `butlers_public` and back to `butlers`) and branches with `\gset` and
+  `\if`. Every query feeding `\gset` returns exactly one row (`SELECT
+  EXISTS (...) AS x`, `count(*)` or an aggregate), because psql treats a
+  `\gset` query that returns zero rows or several as a failed command, which
+  `ON_ERROR_STOP` would turn into an abort on the first sync [Observed: psql
+  `\gset` semantics]. `REFRESH PUBLICATION` and `DROP SUBSCRIPTION` of a
+  subscription that has a slot cannot run inside a transaction block
+  [Inferred: PostgreSQL 17 docs, ALTER SUBSCRIPTION and DROP SUBSCRIPTION],
+  so those two are never put in a `DO` block. A `DO` block is allowed for
+  statements that may run in a transaction, such as the bounded wait for a
+  slot to be released in step 4.
+- **Order.**
+  1. *Guard, in `butlers`.* Stop unless the current user is a superuser,
+     `mcp_surface.manifest_state` carries the file's digest, and the
+     publication itself matches the manifest: the file embeds the expected
+     `pg_publication_tables` rows (schema, table, attnames and rowfilter) and
+     stops on any difference. The digest row alone is not trusted, because
+     the check on the publication is what proves that the migration Job
+     reconciled it for this manifest (D4). Then run the database half of the
+     no-credential check (D9 control 2) and stop if it fails.
+  2. *Slot state, in `butlers`.* Note whether the slot `butlers_public_sub`
+     exists and whether it is invalidated (`wal_status = 'lost'`).
+  3. *Rebuild decision, in `butlers_public`.* A rebuild is needed when no
+     applied record exists (the first sync, or an earlier run that stopped
+     midway), when the slot is invalidated, or when any table already
+     applied has a changed or removed manifest entry (columns, row filter or
+     the table itself), compared entry by entry with the manifest recorded
+     by the last owner step. A table that is only added needs no rebuild.
+  4. *Rebuild, when needed.* Each action runs only if its object exists.
+     Delete the applied record first, so the public server refuses from this
+     point on (D17). Note the subscription's oid with `\gset`, then disable
+     the subscription, set its `slot_name` to `NONE`, drop it, and truncate
+     every mirrored table. In `butlers`, terminate any `active_pid` still
+     holding the old slot `butlers_public_sub` or a table-sync slot named
+     `pg_<old oid>_sync_%`, wait a bounded time until each is inactive, then
+     drop each of them. After `slot_name = NONE`, `DROP SUBSCRIPTION` leaves
+     both the slot and any unfinished table-sync slots on the primary
+     [Observed: PostgreSQL 17 docs, DROP SUBSCRIPTION], and the walsender
+     releases a slot asynchronously [Inferred], so a drop without the wait
+     could fail and stop the run. On the first sync these find nothing to
+     do. [Inferred] PostgreSQL has no command that re-copies one table of a
+     live subscription, so a narrowing purge rebuilds the whole subscription;
+     the projection is a small subset of the primary, so a full re-copy is
+     cheap.
+  5. *Slot, in `butlers`.* Create it if absent, with
+     `pg_create_logical_replication_slot('butlers_public_sub', 'pgoutput')`.
+  6. *Publisher grants, in `butlers`.* Sync the publisher's `USAGE` to
+     exactly the schemas and its `SELECT` to exactly the tables of
+     `butlers_public_v1` as `pg_publication_tables` lists them, revoking both
+     everywhere else. This is the same sync that `scripts/init-db.sql` runs
+     (D9), so a manifest change needs no `init-db.sql` rerun. The initial
+     copy runs `COPY (SELECT ...)` as the publisher, which needs `USAGE` on
+     each source schema as well as `SELECT` on the table; [Observed:
+     `postgres-dev`, 2026-11-04] the publisher holds `USAGE` on no Butlers
+     schema today.
+  7. *Subscriber DDL, in `butlers_public`, under `SET ROLE
+     mcp_projection_owner`.* Converge the subscriber side to the manifest,
+     acting only where the catalog differs: drop removed tables and columns,
+     create added ones with the published columns only, replace an
+     `mcp_read` view with `CREATE OR REPLACE VIEW` only when its definition
+     changed (a view is dropped only when its table leaves the manifest), and
+     re-apply the projection bootstrap and grants (D9). Then `RESET ROLE`.
+     `SET ROLE` changes the current user that the superuser check reads, so
+     without the reset step 8 would run as `mcp_projection_owner` and fail.
+  8. *Subscription.* Check again that the current user is a superuser and
+     stop if not. If the subscription is absent, `CREATE SUBSCRIPTION
+     butlers_public_sub CONNECTION 'host=/controller/run dbname=butlers
+     user=butlers_projection_publisher' PUBLICATION butlers_public_v1 WITH
+     (connect = false, create_slot = false, slot_name =
+     'butlers_public_sub', enabled = false, password_required = false)`,
+     so the command never waits on a slot. Then `ALTER SUBSCRIPTION
+     butlers_public_sub OWNER TO mcp_subscription_owner`, `ENABLE`, and
+     `REFRESH PUBLICATION`, which registers the published tables and starts
+     the initial copy of every table not yet copied.
+  9. *Record, last.* When the applied row already carries this manifest's
+     digest and canonical text, keep it. Otherwise replace the row of
+     `mcp_local.manifest_applied` in `butlers_public` with the manifest's
+     digest, its canonical text and the time. Nothing after a failed
+     statement runs, so a step that stops midway never records a digest.
+- **Rerun.** With an unchanged manifest and a healthy slot, a second run
+  finds the slot, the subscription and every table in place. It rebuilds
+  nothing, truncates nothing, replaces no view, leaves the subscription, the
+  slot and the applied record unchanged, and exits successfully. Idempotent
+  `GRANT`, `REVOKE`, `OWNER TO`, `ENABLE` and `REFRESH PUBLICATION`
+  statements still run and change nothing.
+- **Cadence.** The owner runs the step once at the first sync, once after
+  each manifest change the migration Job has applied, and once after each
+  slot invalidation (D9), when the step rebuilds the slot and the
+  subscription. That is the owner's one recurring upkeep for the projection,
+  and it is small because manifest changes are deliberate and rare (OD1).
+  Until it runs after the first sync or a manifest change, the public server
+  refuses every tool except `describe` with `projection_apply_pending` (D17)
+  and the warning flag is down (D16). An invalidated slot surfaces
+  differently: the applied record still matches, so the server refuses with
+  `projection_stale` once replication is 15 minutes old, and the slot and
+  lag alerts fire (D16, D17).
+
+**Shared fate and capacity.** The projection shares the primary's instance,
+storage volume, WAL, backups and restore drill.
+
+- A `postgres-<env>` outage takes the projection down with the primary (D17).
+- The slot's retained WAL and the projection's tables and indexes both use the
+  primary's volume. `max_slot_wal_keep_size = 10GB` caps only the WAL that
+  slots hold back (D9 slot safety). [Inferred] Two more terms sit outside that
+  cap: logical-decoding spill files under `pg_replslot/<slot>/` for
+  transactions larger than `logical_decoding_work_mem` (with the PG17
+  subscription default `streaming = off`, a large transaction is spilled in
+  full), and the extra WAL that the same-instance apply and initial copy
+  write into the same `pg_wal`, which also counts against `max_wal_size`.
+  `streaming = on` would not help here: it moves the spill to the
+  subscriber, which is the same instance and the same disk.
+- **Shared disk.** [Observed: homelab report, 2026-11-04] The data
+  directories of `postgres-dev` and `postgres-prod` share one 1.4T disk,
+  which is 90 % full with 144G free. Dev holds 24G of data and 577M of WAL.
+  The 80Gi and 350Gi PVC sizes are not enforced, so neither cluster is held
+  to its claim. The 10GB slot cap is about 7 % of the free space. A full disk
+  stops dev and prod together, whatever fills it, so the projection's tables,
+  the slot's retained WAL, any spill files and the apply WAL add to a risk
+  that is already shared. The
+  retained-WAL alert at 50 % of the cap (D16) is the Butlers-side bound; host
+  disk headroom stays the owner's.
+- The projection needs no backups of its own: every mirrored table rebuilds
+  from the publication, and the inbox is transient (D13), so losing undrained
+  proposals is an accepted loss. CNPG's cluster backups include
+  `butlers_public` anyway. Nothing restores from that copy, and the restore
+  drill tolerates or drops it: a restored instance drops `butlers_public` or
+  keeps its subscription disabled, so a restored copy never replicates from a
+  live primary [Inferred].
+- [Inferred] Public reads share the instance's CPU and connections.
+  `mcp_public_ro` carries a connection limit of 10 [Observed] and the
+  2-second `statement_timeout` (D9), which bound the load a compromised
+  public pod can put on the primary.
+- [Observed: homelab report] Prod (`postgres-prod`) is also PG 17.8 with
+  `wal_level=logical`, one instance and no standbys, so the same placement
+  works there when a separate owner act enables it.
+
+**Why.** OD10. [Inferred] The second database keeps the isolation that
+condition 1 rests on: the public role connects only to a database that never
+received the primary's secrets, PUBLIC-granted definer functions or runtime
+grants (D2 Why). It costs no second cluster to run, back up, upgrade and give
+its own policy set.
+
+**Rejected.** *A separate CNPG cluster, `postgres-public-<env>`*: stronger
+isolation, because the public pod's egress could then select only the
+projection cluster's pods, and a stolen password would never reach a socket
+that fronts the primary. It adds a second cluster to run, upgrade and police
+with its own NetworkPolicy set. The owner weighed that upkeep against the
+isolation and chose the second database (OD10). *A Postgres outside CNPG*:
+more upkeep, no gain.
 
 ### D4. One allowlist manifest, with generated DDL and drift checks
 
@@ -430,30 +646,58 @@ uri      = "butlers://relationship/fact/{id}"
 ```
 
 Column names in the example follow `relationship/migrations/013`; `src` is
-deliberately not published, because it may name a source system. The two
+deliberately not published, because it may name a source system. The
 generated artifacts, the primary-side `CREATE/ALTER PUBLICATION` statements
-and the subscriber DDL, are never checked in.
-`butlers public-mcp reconcile` computes both from the manifest. It is
-idempotent and runs in the migration Job after Alembic. It also writes the
-manifest's SHA-256 into `mcp_surface.manifest_state` on the primary, and
-that row replicates. The pod refuses tools when its built-in manifest digest
-differs from the replicated one (D17).
+and the owner-step file with its subscriber DDL, are never checked in. The
+work is split by who may do it (OD14):
+
+- **`butlers public-mcp reconcile`** runs in the migration Job after Alembic,
+  as the migration user, and is idempotent. In `butlers` it creates or alters
+  the publication `butlers_public_v1` to equal the manifest, and writes the
+  manifest's SHA-256 into `mcp_surface.manifest_state`, which replicates. The
+  publication statements and the digest write run in one transaction, so the
+  subscriber receives the new digest in the same commit as the publication
+  change. Only the migration user can write `manifest_state` (D9). Reconcile
+  touches no slot, no subscription and nothing in `butlers_public`.
+- **`butlers public-mcp owner-sql`** prints the owner-step file (D3): the
+  slot, the subscriber DDL, the subscription, the purge and re-copy, and the
+  applied digest. The owner runs it as the superuser.
+
+The pod refuses tools when its built-in manifest digest differs from the
+replicated one (deploy skew), and when it differs from the applied digest the
+last owner step recorded (owner step pending). Both refusals are in D17.
 
 **Narrowing purges.** Removing a table, removing a column or tightening a
 row filter changes only future changes: rows and column values already copied
 stay on the subscriber, and a tightened filter does not delete rows that never
-change again. When reconcile narrows a table it therefore, in order: drops the
-removed subscriber columns, truncates the affected subscriber table, re-copies
-it from the publication (a table resync), and re-runs the canary probe (D15)
-before tools serve that domain again. The leak runbook is: kill switch,
-narrow the manifest, reconcile purge, probe clean, re-enable (D16).
+change again. The migration Job narrows the publication, and the owner step
+purges the subscriber: any changed or removed entry makes it delete the
+applied record, drop and truncate, and re-copy from the publication (D3 step
+4). The canary probe (D15) then runs before tools serve again (D17).
+Narrowing on the publisher side may run before the owner's purge. A pod
+shipping the new manifest fails closed in that window: the applied digest no
+longer matches, so it serves no tool but `describe` until the owner step has
+purged and re-copied. A pod still shipping the old manifest refuses with
+`projection_version_mismatch` once the new digest replicates; until then,
+for at most the replication lag, which the 15-minute stale rule caps, it
+serves the old rows (D17). The leak runbook therefore starts with the kill
+switch. It is: kill switch, narrow the manifest,
+migration Job reconcile, owner-step purge, probe clean, re-enable (D16).
+
+[Inferred] A widening that adds a column to a table already subscribed can
+stop the apply worker until the owner step adds the
+subscriber column, because the subscriber table lacks a column the
+publication now sends. Replication then stalls for every table, so the slot
+retains WAL meanwhile, bounded by `max_slot_wal_keep_size`. The pending-step
+warning (D16) and the slot alerts cover the window, and the surface already
+refuses.
 
 **Drift checks (CI, on a PG17 testcontainer with all migrations applied):**
 1. Every manifest table and column exists; filter columns are `NOT NULL`;
    the replica-identity index exists and matches.
-2. After reconcile, `pg_publication_tables` (attnames, rowfilter) equals the
-   manifest exactly, and the subscriber tables have exactly the published
-   columns plus declared local extras.
+2. After reconcile and the owner-step file, `pg_publication_tables`
+   (attnames, rowfilter) equals the manifest exactly, and the subscriber
+   tables have exactly the published columns plus declared local extras.
 3. Denylist: no table is `butler_secrets`, `entity_info`, `credentials`,
    `oauth_*`, `*_tokens`, `pending_actions`, `approval_events`, a
    private-custody table, a raw message table or location fixes; no published
@@ -481,8 +725,10 @@ events are adding data on purpose (one manifest edit, plus a
 replica-identity migration if it is row-filtered) and a source migration
 that touches a published column, which the drift check flags in its own PR.
 This is the owner's maintenance concern (OD1), met by having one file and no
-generated code to keep in sync. The one addition is the source-owned
-materializations of D2, whose upkeep is listed there.
+generated code to keep in sync. Two additions remain: the source-owned
+materializations of D2, whose upkeep is listed there, and the owner step
+(D3), which the owner runs once at the first sync, once per manifest change
+and once per slot invalidation.
 
 **Initial contents (v1 defaults, conservative, reversible by manifest edit).**
 
@@ -500,7 +746,8 @@ materializations of D2, whose upkeep is listed there.
 Each published table belongs to exactly one domain, and memory facts take the
 domain of their source schema (`travel` memory facts are domain `travel`).
 `mcp_surface` belongs to no domain and is read by `describe` and the switch
-evaluator.
+evaluator. `mcp_local.manifest_applied`, which the owner step writes, is a
+subscriber-local table, never published.
 
 [Inferred] Dropping the `relationship` memory schema and filtering the other
 schemas by a predicate allowlist matters because sensitivity labels come from
@@ -689,23 +936,38 @@ ingress in `butlers-<env>` today [Observed], so header trust is unsafe.
 **Contract.**
 1. The public server runs in a dedicated namespace, `butlers-public-<env>`,
    from its own Helm chart, `deploy/helm/butlers-public-mcp`. It never runs
-   in `butlers-<env>`.
+   in `butlers-<env>`. The chart creates the namespace, following the
+   homelab convention that the owning chart creates its namespace, and an
+   ExternalSecret that reads the Bitwarden item `MCP_PUBLIC_RO_DB_PASSWORD`
+   for the `mcp_public_ro` password [Observed: homelab report; the namespace
+   does not exist yet].
 2. Default-deny ingress and egress in that namespace. The only allows are:
    ingress on the MCP port from pods in namespace `mcp` with the `butlers`
    filter-proxy release label; ingress on a separate metrics port from the
-   monitoring namespace; egress to `postgres-public-<env>` pods on 5432; and
-   egress to kube-dns on 53.
-3. `postgres-public-<env>` (or, in the fallback, the policy for the shared
-   cluster's pods) has exactly this allow set and no other rule. Ingress: the
-   public pod on 5432; the `butlers-up` pod in `butlers-<env>` on 5432 (the
-   importer); the CNPG operator on its status port (8000) and 5432; its own
-   instances. Egress: the kube-apiserver endpoints on 6443 and 443, which the
-   CNPG instance manager needs; kube-dns on 53; the primary's pods on 5432,
-   for the subscription. [Observed] Production `butlers up` runs every roster
-   butler in one Deployment (`deployment.md`), so the network boundary here
-   is pod-level: a NetworkPolicy admits the whole `butlers-up` pod, not
-   Relationship alone. What limits the importer's access is the
-   `mcp_proposals_reader` grant (D9), not the network.
+   monitoring namespace; egress to the `postgres-<env>` instance pods on
+   5432; and egress to kube-dns on 53.
+3. On the `postgres-<env>` side, the only change is an allow from the public
+   server pod to the instance pods on 5432, added without widening anything
+   else. NetworkPolicies are additive, and a policy that selects pods no
+   policy selected before isolates them. If a default-deny ingress policy
+   selects the instance pods, the owner adds one allow policy that selects
+   only the instance pods and admits only the public server pod (by namespace
+   and pod label) on 5432. If none does, ingress is already open and no policy
+   is added, because a new one would cut off every other client of the
+   primary. [Observed: homelab report, 2026-11-04] No NetworkPolicy selects
+   the `postgres-dev` pods, and there is no cluster-wide or CNI policy, so on
+   dev this resolves to "no policy added". The allow is added only if a policy
+   later selects the instance pods, and the live check (item 6) watches for
+   that. No other peer, port or egress rule
+   changes, and no rule exists for the CNPG operator or the instances on the
+   projection's behalf: they are the primary's own. The importer and the
+   subscription need no new path: the `butlers-up` pod already reaches the
+   cluster, and the subscription runs inside the instance. The network cannot
+   tell the projection from the primary, so `pg_hba` and grants are the
+   boundary (D3). [Observed] Production `butlers up` runs every roster butler
+   in one Deployment (`deployment.md`), so what limits the importer's access
+   is the `mcp_proposals_reader` grant and its `pg_hba` line (D3, D9), not the
+   network.
 4. Only the filter-proxy pod carries `mcp.tze.how/exposed=true`. No Butlers
    namespace joins traefik-mcp's watch list, and traefik never routes to a
    Butlers Service; the cross-namespace hop is only filter-proxy's
@@ -713,13 +975,16 @@ ingress in `butlers-<env>` today [Observed], so header trust is unsafe.
 5. Non-root, read-only root filesystem, no service-account token,
    `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
 6. **Live policy check.** The rendered-chart check covers only the policies
-   the chart renders. The owner creates the namespaces (owner act 1), and
+   the chart renders. The chart creates `butlers-public-<env>`, but
    homelab-generated or cluster-wide policies (namespace defaults, policy
    engines, CNI cluster-wide CRDs) could widen the union without the chart
    knowing. A live contract check, run after each deploy and on a schedule,
    lists every NetworkPolicy and every cluster-wide policy object that selects
-   pods in `butlers-public-<env>` or `postgres-public-<env>`, and fails if the
-   set differs from the chart's.
+   pods in `butlers-public-<env>` and fails if the set differs from the
+   chart's. It also fails if any policy in `postgres-<env>` admits the public
+   server's namespace to a pod or port other than the instance pods on 5432,
+   and it reports when a policy starts selecting the instance pods, because
+   the public pod's allow (item 3) must then be added.
 
 **Why `butlers-<env>` is ruled out.** [Observed] `butlers-tracker-egress`
 selects every pod (`podSelector: {}`) and allows egress to all namespaces and
@@ -742,44 +1007,125 @@ allow rule points into Butlers. The importer's connection is egress only.
 
 | Role | Attributes and grants | Notes |
 |---|---|---|
-| `butlers_projection_publisher` | `LOGIN REPLICATION NOINHERIT`. SELECT on exactly the published tables (needed for the initial copy). No schema CREATE. Not a member of `_all_runtime_roles`, not granted to the migration user. | A named exception to the `NOREPLICATION` normalization in `scripts/init-db.sql:235,264` and to the restore-drill guards (`bu-viat6h.9`, `bu-mc01y5.7`, `bu-kqnum.17`). Each guard keeps refusing `REPLICATION` on every other Butlers-managed role. A test asserts that it is the only role with `REPLICATION` apart from the CNPG superuser `postgres` and the CNPG-managed `streaming_replica` [Observed in the conformance review: CNPG creates both with `rolreplication = true`]. Declared in the `bu-dss7he.6` grant manifest once that lands. |
-| migration user | Gains `CREATE ON DATABASE` so it can own the publication. It already owns the published tables, which `ALTER PUBLICATION … ADD TABLE` requires [Observed: `init-db.sql:239-242`]. Writes `mcp_surface` through `reconcile` and the `butlers public-mcp disable\|enable` CLI. | `reconcile` runs as this user in the migration Job. |
-| `mcp_surface` schema | Tables `controls`, `manifest_state`. Writable only by the migration user and by the dashboard API's database role (for its owner route; the route's passkey check is the human gate). The Relationship runtime role gets `USAGE` and `SELECT` on `controls` only, so the importer can honour the `proposals` and `all` switches. Every other runtime role is revoked, and no runtime role can write. | Kept out of `public`, because `public` default privileges make new tables writable by every butler (`init-db.sql:477-486`). |
+| `butlers_projection_publisher` | `LOGIN REPLICATION NOINHERIT`, no password (a CNPG managed role [Observed: homelab PR #40]). `scripts/init-db.sql`, which the owner runs as the superuser, grants it `CONNECT` on `butlers` and syncs its `USAGE` to exactly the schemas and its `SELECT` to exactly the tables of `butlers_public_v1` as `pg_publication_tables` lists them, revoking both everywhere else (the initial copy runs `COPY (SELECT ...)` as the publisher, which needs both); the owner step repeats that sync (D3 step 6). [Observed: `postgres-dev`, 2026-11-04] Today it has no `CONNECT` on `butlers` and `USAGE` on no Butlers schema. No schema CREATE. Not a member of `_all_runtime_roles`, and no role is a member of it: it is granted to no role, the migration user included, because a member could `SET ROLE` to it over TCP and decode WAL through the SQL slot functions, which check the current user's `REPLICATION` attribute [Observed: PostgreSQL 17 `CheckSlotPermissions`]. | A named exception to the `NOREPLICATION` normalization in `scripts/init-db.sql:235,264` and to the restore-drill guards (`bu-viat6h.9`, `bu-mc01y5.7`, `bu-kqnum.17`). Each guard keeps refusing `REPLICATION` on every other Butlers-managed role. A test asserts that it is the only role with `REPLICATION` apart from the CNPG superuser `postgres` and the CNPG-managed `streaming_replica` [Observed in the conformance review: CNPG creates both with `rolreplication = true`]. Declared in the `bu-dss7he.6` grant manifest once that lands. |
+| migration user | Gains `CREATE ON DATABASE` so it can own the publication. It already owns the published tables, which `ALTER PUBLICATION … ADD TABLE` requires [Observed: `init-db.sql:239-242`]. Writes `mcp_surface` through `reconcile` and the `butlers public-mcp disable\|enable` CLI. Holds no `REPLICATION` and creates no slot or subscription (OD14). | `reconcile` runs as this user in the migration Job, for the publication and `mcp_surface.manifest_state` only (D4). |
+| `mcp_surface` schema | Tables `controls`, `manifest_state`. `manifest_state` is writable only by the migration user, through `reconcile`, because the owner step's guard reads it (D3 step 1). `controls` is writable only by the migration user and by the dashboard API's database role (for its owner route; the route's passkey check is the human gate), which gets no write on `manifest_state`. The publisher gets `USAGE` and `SELECT` through its sync, because both tables are published. The Relationship runtime role gets `USAGE` and `SELECT` on `controls` only, so the importer can honour the `proposals` and `all` switches. Every other runtime role is revoked, and no runtime role can write. | Kept out of `public`, because `public` default privileges make new tables writable by every butler (`init-db.sql:477-486`). |
 
-**The publisher credential is primary-read-all material.** [Observed:
-PostgreSQL semantics] A role with `REPLICATION` can create a logical slot with
-any output plugin (for example `test_decoding`, which contrib ships
-[Inferred: present in the CNPG images]) and decode every change in the
-database, regardless of its table grants: new `butler_secrets` rows,
+**The publisher is primary-read-all, and it has no credential (OD14).**
+[Observed: PostgreSQL semantics] A role with `REPLICATION` can create a
+logical slot with any output plugin (for example `test_decoding`, which
+[Observed: homelab report] ships in the CNPG image) and decode every change
+in the database, regardless of its table grants: new `butler_secrets` rows,
 `entity_info` and OAuth tokens included. A `replication` entry in `pg_hba`
 would also allow a base backup of the whole cluster. The publication's
 column lists and row filters therefore limit what the subscription receives,
 not what the role can read. Four controls follow:
 
-1. **`pg_hba`.** The primary admits the publisher only as
-   `hostssl butlers butlers_projection_publisher <projection pod CIDR> cert`
-   (or `scram-sha-256` where CNPG cannot present a client certificate), and
-   no entry names the `replication` pseudo-database for it. Logical
-   replication connections match on the database name, so the subscription
-   works and physical replication does not. A contract test asserts this.
-2. **Custody.** The publisher's client certificate (or password) lives only in
-   a Secret in `postgres-public-<env>`, never in `butlers-public-<env>`, so
-   the public pod never holds it.
+1. **Local peer login only.** The publisher logs in only over the instance's
+   local socket (`/controller/run`) with peer authentication, through the
+   CNPG `local` `pg_ident` map, which holds exactly `local postgres
+   postgres` and `local postgres butlers_projection_publisher` [Observed:
+   homelab PR #40]. So only OS user `postgres` inside an instance pod can
+   log in as the publisher; the apply worker of the subscription is such a
+   process. `host all butlers_projection_publisher all reject` precedes
+   CNPG's catch-all, so every TCP login as the publisher is refused, and no
+   entry names the `replication` pseudo-database for it. Logical replication
+   connections match on the database name, so the subscription works and
+   physical replication does not.
+2. **No credential exists, and no role can become it.** The publisher has no
+   password, and no `pg_hba` rule admits it by certificate, so a client
+   certificate for it would be refused even if someone minted one. The proof
+   rests on database facts, which a contract test and a live check assert:
+   `rolpassword` is NULL; the only `pg_hba` rule that can admit the
+   publisher is the CNPG `local ... peer map=local` line; the reject line
+   precedes the catch-all; no rule names `replication` for it; the `local`
+   map holds exactly the two lines above; and `pg_auth_members` has no row
+   whose `roleid` is the publisher, so no role can `SET ROLE` to it. Reading
+   `pg_hba_file_rules`, `pg_ident_file_mappings` and `pg_authid` needs the
+   superuser, so the database half of the live check runs inside the owner
+   step (D3 step 1) and after each `init-db.sql` run. The Kubernetes half is
+   limited to what it can check without reading Secret data: the CNPG
+   `Cluster` resource's managed-role entry for the publisher names no
+   `passwordSecret`, and no ExternalSecret spec in `butlers-<env>` or
+   `butlers-public-<env>` names the publisher. It does not list Secrets in
+   `postgres-<env>`, because a Secret listing returns Secret data, which
+   there includes primary-read-all material (see the residual risk below).
 3. **Slot alert.** A critical alert fires when `pg_replication_slots` on the
-   primary holds any slot other than the subscription's, or any slot whose
-   plugin is not `pgoutput`.
-4. **Headroom.** `max_replication_slots` and `max_wal_senders` keep headroom
-   for one more slot than CNPG and the subscription use; the value is
-   documented with the owner act.
+   primary holds a logical slot that is neither the subscription's slot
+   `butlers_public_sub` nor one of its table-sync slots (named
+   `pg_<suboid>_sync_<relid>_<sysid>` for the current subscription's oid,
+   present only while a table is not yet in state `r`), or a logical slot of
+   either kind whose plugin is not `pgoutput`. Every initial copy creates
+   table-sync slots [Observed: PostgreSQL 14+ tablesync], so without that
+   allowance the alert would fire on each first sync and rebuild. Only
+   logical slots count: physical slots that CNPG manages for its own
+   standbys are excluded by `slot_type = 'physical'`.
+4. **Headroom.** [Observed: homelab report] `max_replication_slots = 32`
+   and `max_wal_senders = 10`, with 0 slots in use before the projection,
+   leave headroom for the subscription's slot, its table-sync slots and one
+   more.
 
-**Projection** (`butlers_public` on `postgres-public-<env>`):
+**Residual risk: superuser-equivalent access to the instance.** Whoever can
+`kubectl exec` into a `postgres-<env>` instance pod can already run `psql -U
+postgres` by peer authentication, which is the superuser [Observed: that is
+how the owner runs `scripts/init-db.sql`]. The publisher's peer mapping adds
+no access path beyond that. Several permissions already reach
+primary-read-all, with or without the publisher, and all of them stay with
+the owner [Inferred: CNPG Secret naming; an RWO volume binds per node, not
+per pod]:
+
+- `pods/exec`, `pods/attach` and `pods/ephemeralcontainers` (`kubectl
+  debug`) on the instance pods;
+- creating pods in `postgres-<env>`, since a pod on the same node can mount
+  the instance's node-local data volume;
+- reading Secrets in `postgres-<env>`: the CNPG `streaming_replica` role
+  holds `REPLICATION`, the applied `pg_hba` admits it by client certificate
+  (D3), and its key sits in a Secret there, so it is a credential that
+  allows a physical base backup of the whole cluster;
+- writing the CNPG `Cluster` resource, which can change `pg_hba`,
+  `pg_ident`, managed-role `passwordSecret`s or superuser access;
+- access to the node or its disk (`/dev/sdb2`).
+
+The publisher adds none of these. [Inferred] The migration Job no longer
+needs the `REPLICATION` attribute or any publisher credential, so it can no
+longer decode WAL.
+
+**Projection** (`butlers_public` on `postgres-<env>`):
 
 | Role | Grants |
 |---|---|
-| `mcp_projection_owner` (NOLOGIN) | Owns the mirrored tables, the `mcp_read` views and the inbox. Runs reconcile DDL on the subscriber. |
-| `mcp_public_ro` (LOGIN, NOINHERIT) | Starts from `REVOKE ALL` on every schema, table, sequence and function, `REVOKE CONNECT, TEMPORARY ON DATABASE butlers_public FROM PUBLIC`, and `REVOKE CREATE ON SCHEMA public FROM PUBLIC`, so it can create neither tables nor temporary tables. Then: `CONNECT`; `USAGE` on `mcp_read`; `SELECT` on `mcp_read` views only (never the mirrored base tables); `INSERT (columns…)` on `mcp_inbox.proposals`; `EXECUTE` on `mcp_read.replication_as_of()` only. Role setting `statement_timeout = 2s`. |
-| `mcp_proposals_reader` (LOGIN) | `SELECT, DELETE` on `mcp_inbox.proposals`. Used only by the importer; its password is file-mounted in `butlers-<env>`, never stored in `butler_secrets`. The importer reads the kill switches on the primary, not here (D16). |
-| subscription owner | CNPG-managed (`pg_create_subscription`). |
+| `mcp_projection_owner` (NOLOGIN) | Owns `butlers_public` [Observed], the mirrored tables, the `mcp_read` views, the inbox and `mcp_local.manifest_applied`. The owner step runs the subscriber DDL under `SET ROLE` to this role, so it owns what the step creates (D3). |
+| `mcp_public_ro` (LOGIN, NOINHERIT, connection limit 10) | Starts from `REVOKE ALL` on every schema, table, sequence and function, `REVOKE CONNECT, TEMPORARY ON DATABASE butlers_public FROM PUBLIC`, and `REVOKE CREATE ON SCHEMA public FROM PUBLIC`, so it can create neither tables nor temporary tables. Then: `CONNECT`; `USAGE` on `mcp_read`; `SELECT` on `mcp_read` views only (never the mirrored base tables), including `mcp_read.manifest_applied`, which shows the applied digest and manifest and whether the initial copy is complete (D17); `INSERT (columns…)` on `mcp_inbox.proposals`; `EXECUTE` on `mcp_read.replication_as_of()` only. Role setting `statement_timeout = 2s`, set by `scripts/init-db.sql` with `ALTER ROLE mcp_public_ro SET statement_timeout = '2s'`, because CNPG role specs cannot set it [Observed: homelab report]. The connection limit of 10 [Observed] bounds its load on the shared instance (D3). `pg_hba` admits it to `butlers_public` only (D3). |
+| `mcp_proposals_reader` (LOGIN) | `SELECT, DELETE` on `mcp_inbox.proposals`. Used only by the importer; its password is file-mounted in `butlers-<env>`, never stored in `butler_secrets`. `pg_hba` admits it to `butlers_public` only (D3). The importer reads the kill switches on the primary, not here (D16). |
+| `mcp_subscription_owner` (LOGIN; member of `pg_create_subscription` and `mcp_projection_owner`) | Owns the subscription. The superuser creates it in the owner step and then runs `ALTER SUBSCRIPTION butlers_public_sub OWNER TO mcp_subscription_owner` (D3). The apply worker runs as the subscription owner and switches to each table's owner, which needs membership in `mcp_projection_owner` [Inferred: PostgreSQL 16+ logical-replication security]. Per OD15 the role keeps `LOGIN` and its password copies, at the owner's choice. No Butlers workload mounts or uses that credential, and no Butlers workflow logs in as it. [Inferred: PostgreSQL 16+ `subscriptioncmds.c`] It cannot `ALTER` or `DROP` the subscription, because `password_required` is false; the `pg_create_subscription` membership is unused, since the superuser creates the subscription. |
+
+Credential custody, names only [Observed: homelab report; keys `username` and
+`password`]:
+
+| Credential | Kubernetes Secrets | Bitwarden (dev) | Mounted by |
+|---|---|---|---|
+| `mcp_public_ro` | `postgres-mcp-public-ro-user` in `postgres-dev` (the CNPG `passwordSecret`); the public chart's ExternalSecret in `butlers-public-dev` | `MCP_PUBLIC_RO_DB_PASSWORD` | the public server only |
+| `mcp_proposals_reader` | `postgres-mcp-proposals-reader-user` in `postgres-dev` (the CNPG `passwordSecret`) and in `butlers-dev` | `MCP_PROPOSALS_READER_DB_PASSWORD` | the importer in `butlers-up` only |
+| `mcp_subscription_owner` | `postgres-mcp-subscription-owner-user` in `postgres-dev` and in `butlers-dev` | `MCP_SUBSCRIPTION_OWNER_DB_PASSWORD` | nothing (OD15 keeps the copies) |
+| `butlers_projection_publisher` | none | none | nothing: no credential exists (OD14) |
+
+The subscription owner's password is still projection-write material. Its
+login is not rejected in `pg_hba`, so CNPG's catch-all `scram-sha-256` line
+admits it over TCP to any database whose `CONNECT` it holds. [Observed:
+`postgres-dev` `has_database_privilege`, 2026-11-04] That is `butlers_public`
+and `postgres`, not `butlers`: the `butlers` ACL grants `CONNECT` to named
+roles only, with no PUBLIC entry, while `butlers_public` and `postgres` still
+have the default ACL. Once the projection bootstrap revokes `CONNECT` on
+`butlers_public` from PUBLIC, the role keeps it through its membership in the
+database owner `mcp_projection_owner`. [Inferred] Through that membership a
+TCP login can rewrite or drop projection tables, which the public server
+then serves, and can write `mcp_local.manifest_applied`, so it could forge
+an applied digest and defeat the D17 fail-closed rule. Its custody is
+therefore listed above, and a rendered-chart check asserts that no Butlers
+chart mounts `postgres-mcp-subscription-owner-user`. The D17 guarantee
+assumes that password stays unused; a `host all mcp_subscription_owner all
+reject` line would make it hold without that assumption. Whether to add the
+line is open question 5.
 
 - The projection has exactly two `SECURITY DEFINER` functions:
   `mcp_read.replication_as_of()` (returning only
@@ -789,8 +1135,8 @@ not what the role can read. Four controls follow:
   only schema-qualified references, so no object a session creates can shadow
   a name inside them. The owner of `replication_as_of()` holds only what
   reading that column needs. [Unknown] Whether PG17 shows `latest_end_time`
-  to an ordinary role; if it does, the owner holds no extra role. In the
-  shared-cluster fallback it never holds `pg_read_all_stats` (D3). Nothing is granted to
+  to an ordinary role; if it does, the owner holds no extra role. It never
+  holds `pg_read_all_stats` (D3). Nothing is granted to
   PUBLIC, so the primary's PUBLIC-granted definer functions have no
   counterpart here.
 - Session settings such as `default_transaction_read_only` are conveniences;
@@ -800,14 +1146,17 @@ not what the role can read. Four controls follow:
   outside `pg_catalog` and `information_schema` except `replication_as_of()`;
   INSERT only on the inbox columns; UPDATE, DELETE and SELECT on the inbox
   refused; `CREATE TEMP TABLE` refused; both definer functions have the pinned
-  `search_path` (a lint over `pg_proc.proconfig`); a connection to the
-  primary as `mcp_public_ro` fails.
-- **Slot safety (owner act).** [Observed] `max_slot_wal_keep_size` is unset
-  on `postgres-dev` (unlimited), so a stalled slot could fill the primary's
-  disk. Set it, and alert when retained WAL passes 50 % of the cap or the
-  slot is inactive for 10 minutes (D16). An invalidated slot means rebuilding
-  the projection from a fresh copy; the primary is never put at risk to save
-  the projection.
+  `search_path` (a lint over `pg_proc.proconfig`); a connection to
+  `butlers`, `postgres` or `template1` as `mcp_public_ro` or
+  `mcp_proposals_reader` is refused by `pg_hba` (D3); `mcp_public_ro` has
+  `rolconnlimit = 10` and `statement_timeout = 2s` in its role settings.
+- **Slot safety (owner act, done on dev).** [Observed: homelab PR #40,
+  verified live] `max_slot_wal_keep_size = 10GB` on `postgres-dev`, so a
+  stalled slot cannot retain more than 10GB of WAL. The disk it shares with
+  prod has 144G free (D3, shared disk). Alert when retained WAL passes 50 %
+  of the cap or the slot is inactive for 10 minutes (D16). An invalidated
+  slot means rebuilding the projection from a fresh copy by rerunning the
+  owner step (D3); the primary is never put at risk to save the projection.
 
 ### D10. Tool contract
 
@@ -1062,11 +1411,11 @@ These hold by construction, not by convention. Each one has a test.
    `butlers.core.runtimes`, `butlers.modules.memory.embedding`, `anthropic`,
    `openai`, `google.genai`, `claude_agent_sdk`, `sentence_transformers`,
    `transformers`, or a switchboard, notify, route or delegate client.
-2. **No network route to a model.** Egress allows only the projection and
-   DNS (D8).
+2. **No network route to a model.** Egress allows only the PostgreSQL port
+   of the instance that holds the projection, and DNS (D8).
 3. **No write route that wakes reasoning.** The role cannot write
    `route_inbox`, `goal_inbox`, schedules, `ingestion_events` or captures; it
-   lives in another database, and its one writable table is read only by a
+   can connect only to another database (D3), and its one writable table is read only by a
    deterministic job. Its contents reach no model context: `pending_actions`
    holds only the client label and a digest of the evidence URL (D13 step
    3). [Observed: grep] No LISTEN/NOTIFY wake path exists.
@@ -1164,23 +1513,66 @@ response; the rest need no replication):
 | Scale the Deployment to 0, or delete the namespace's allow policy | Owner, `kubectl` | The surface is unreachable | No |
 | Worker `MAINTENANCE`, or remove `butlers` from `MCP_SERVERS` | Owner (homelab) | The gateway answers 503 or 404 | No |
 
-**Leak runbook.** For a canary hit or a wrongly published column: disable
-the domain (or `all`), narrow the manifest, let reconcile purge and re-copy
-the affected tables (D4), confirm the canary probe is clean, then re-enable.
+The owner accepted live `dev` data from the first client connection (OD12),
+so these switches are the incident control from the first call.
 
-**Alerting.** Prometheus, then Alertmanager, then a receiver outside
-Butlers; never the Switchboard or Messenger, because alerts must survive a
-Butlers outage and must never start a model. Critical: a canary hit; slot
-retained WAL over 50 % of `max_slot_wal_keep_size`; any replication slot on
-the primary other than the subscription's, or any slot whose plugin is not
-`pgoutput` (D9). Warning: any DLP drop or more than 20 redactions per hour;
-more than 10 assertion failures in 5 minutes; more than 20 bearer refusals in
-5 minutes; more than 2,000 finance or health rows served in an hour, or one
-`(sub, cid)` reading more than 25 % of a domain's published rows in a day;
-replication lag over 10 minutes; slot inactive over 10 minutes; inbox
-undrained above 500; any `apply_failed`. [Unknown] Which receiver the homelab
-Alertmanager has. A Telegram receiver is the suggestion; the choice returns
-to the owner (owner act 7).
+**Leak runbook.** For a canary hit or a wrongly published column: disable
+the domain (or `all`), narrow the manifest, let the migration Job's reconcile
+narrow the publication, run the owner step to purge and re-copy (D3, D4),
+confirm the canary probe is clean, then re-enable. The surface refuses from
+the moment the publication narrows until the owner step completes (D17).
+
+**Alerting (OD11).** Alerts never go through the Switchboard or Messenger,
+because they must survive a Butlers outage and must never start a model.
+
+- **Conditions.** Prometheus alerting rules are the single source of every
+  condition, and keep their labels (domain, client label, slot name) for
+  diagnosis. Critical: a canary hit, and the canary latch while it holds;
+  slot retained WAL over 50 % of `max_slot_wal_keep_size`; any
+  logical slot on the primary other than the subscription's slot and its
+  table-sync slots, or any logical slot whose plugin is not `pgoutput`
+  (D9 control 3, which defines the allowance); an owner step pending after a
+  narrowing for more
+  than 24 hours. Warning: an owner step pending, of either direction, from
+  the moment the server sees it (D17); any DLP drop or more than 20 redactions per
+  hour; more than 10 assertion failures in 5 minutes; more than 20 bearer
+  refusals in 5 minutes; more than 2,000 finance or health rows served in an
+  hour, or one `(sub, cid)` reading more than 25 % of a domain's published
+  rows in a day; replication lag (the `as_of` age) over 10 minutes; slot
+  inactive over 10 minutes; inbox undrained above 500; any `apply_failed`.
+- **Owner-step pending.** The server exports a gauge,
+  `butlers_public_mcp_owner_step_pending`, labelled `change="narrowing"` or
+  `change="widening"`, that is 1 while it refuses with
+  `projection_apply_pending` (D17). The warning rule fires on either label.
+  The critical rule fires on `change="narrowing"` held for 24 hours. The bound
+  is a choice: the surface already refuses, so what remains is rows sitting
+  in `butlers_public` that the manifest no longer allows, which a stolen
+  `mcp_public_ro` password could still read through the views. A day leaves
+  room for a manual step without letting it be forgotten.
+- **Flags.** Two recording rules collapse the conditions into one series per
+  severity: `butlers_public_mcp:critical_ok` and
+  `butlers_public_mcp:warning_ok`, each 1 when no rule of its severity is
+  firing and 0 when any is.
+- **Delivery.** The owner's existing homelab Uptime Kuma polls each flag with
+  one `json-query` monitor, declared in the homelab's
+  `ansible/roles/proxmox/files/uptimekuma-monitors.toml` and synced by
+  Ansible, and its existing Telegram notification delivers. Each monitor
+  follows the homelab's established pattern: a Prometheus query URL ending in
+  `query=<flag> == bool 1`, `jsonPath = "data.result[0].value[1]"` and
+  `expectedValue = "1"`. An empty result or an unreachable Prometheus also
+  turns the monitor DOWN and notifies, so each monitor doubles as a dead-man
+  check on the alert path.
+- **Latency.** Kuma's poll interval bounds detection latency, on top of each
+  rule's own window. The critical monitor uses `interval = 60`; the warning
+  monitor may poll less often.
+- **No new ingress.** Nothing is added to `butlers-public-<env>` for alerting:
+  Prometheus serves the flags from what it scrapes on the server's metrics
+  port, which the D8 monitoring allow already admits. [Inferred] That
+  Prometheus scrapes the Butlers namespaces is not verified from this
+  repository: the `butlers` chart ships scrape annotations
+  and an opt-in PodMonitor (`deploy/helm/butlers/values.yaml`,
+  `connectorMetrics`), and the public chart declares its metrics port the
+  same way.
 
 ### D17. Freshness, failure modes and the error shape
 
@@ -1189,7 +1581,40 @@ request. Between 2 and 15 minutes old, results are served with `as_of` and,
 where the output shape allows, `sources_degraded: [{domain, reason:
 "lagging"}]`. Older than 15 minutes, every domain reports `stale` and the
 tools refuse (`describe` still answers), so a kill switch never goes unseen
-for more than 15 minutes even if replication stalls.
+for more than 15 minutes even if replication stalls. A NULL
+`replication_as_of()`, as when the subscription is missing or has never
+confirmed a position, counts as stale.
+
+**Owner step pending: fail closed (OD14).** The server ships with its
+manifest and that manifest's digest. Once per request it reads
+`mcp_read.manifest_applied`, which shows the digest and canonical manifest
+the last complete owner step recorded and whether the initial copy is
+complete. The copy counts as complete only when the subscription
+`butlers_public_sub` exists and is enabled and the set of its relations in
+state `r` (`pg_subscription_rel.srsubstate`) equals the applied manifest's
+table set, so a missing, disabled or empty subscription is never complete.
+The owner step is pending when no applied record exists, when the applied
+digest differs from the shipped one in either direction (widening or
+narrowing), or when the copy is not complete. While it is pending, every tool except
+`describe` refuses with `projection_apply_pending`, and the
+`butlers_public_mcp_owner_step_pending` gauge is 1 (D16). The server labels
+the change by comparing the applied manifest with its own, using the same
+deterministic function that the owner step uses for its rebuild decision: it
+is `narrowing` when any applied table, column or row-filter value is absent
+from the shipped manifest, or the shipped manifest filters a column the
+applied one did not, and `widening` otherwise. When the digests match again
+and the copy is complete, the server runs the projection canary probe (D15)
+once and serves only if it is clean. A pod shipping a narrowed manifest
+therefore never serves rows the owner step has not purged, even when the
+migration Job has already narrowed the publication. Two limits remain. A pod
+still shipping the old manifest serves the old rows until the new digest
+replicates and turns its refusal into `projection_version_mismatch`;
+reconcile writes the digest in the same transaction as the publication
+change (D4), so that window is the replication lag, capped by the 15-minute
+stale rule, and the leak runbook starts with the kill switch (D16). And the
+guarantee assumes that no one writes `mcp_local.manifest_applied` but the
+owner step: the `mcp_subscription_owner` password could forge the applied
+digest over TCP (D9, open question 5).
 
 **Error shape.** A tool-level failure is an MCP tool result with
 `isError: true` and `structuredContent`:
@@ -1201,29 +1626,36 @@ for more than 15 minutes even if replication stalls.
 ```
 
 The codes are `domain_disabled`, `projection_stale`,
-`projection_version_mismatch`, `budget_exhausted`, `invalid_argument`,
-`not_found`, `too_large`, `blocked` (DLP or canary) and `unavailable`. Auth
-failures are JSON-RPC `-32001`, so they never look like tool data. Messages
-are fixed strings that never echo arguments.
+`projection_version_mismatch`, `projection_apply_pending`,
+`budget_exhausted`, `invalid_argument`, `not_found`, `too_large`, `blocked`
+(DLP or canary) and `unavailable`. `projection_apply_pending` is
+`retryable: true` with `retry_after_s: null`, because it clears only when the
+owner acts. Auth failures are JSON-RPC `-32001`, so they never look like tool
+data. Messages are fixed strings that never echo arguments.
 
 **Precedence.** When several refusals apply, the first in this order wins:
 `blocked` (the canary latch), `invalid_argument`, `budget_exhausted`,
-`unavailable`, `projection_version_mismatch`, `projection_stale`,
-`domain_disabled`, then `not_found` and `too_large`. In `describe.domains`, a
-domain that any switch layer the pod can see disables reports `disabled`;
+`unavailable`, `projection_version_mismatch`, `projection_apply_pending`,
+`projection_stale`, `domain_disabled`, then `not_found` and `too_large`.
+Deploy skew wins over a pending owner step because the owner step's guard
+refuses to run until the migration Job has reconciled (D3).
+In `describe.domains`, a domain that any switch layer the pod can see
+disables reports `disabled`;
 otherwise a stale projection reports `stale`.
 
 | Failure | Behavior | Primary affected? |
 |---|---|---|
-| Projection cluster down | `unavailable`; `describe` still answers | No |
+| `postgres-<env>` down | The projection is down with the primary (D3): `unavailable`; `describe` still answers | Yes: it is the primary's own outage |
+| Projection database alone unavailable (connection limit reached, or the database dropped and re-created) | `unavailable`; `describe` still answers | No |
 | Replication lagging | Served with `as_of` and degraded entries | No |
 | Replication stalled | `projection_stale` after 15 minutes; WAL alert | Only WAL growth, bounded by the cap |
-| Slot invalidated by the cap | `projection_stale`; owner rebuilds the subscription | No |
+| Slot invalidated by the cap | The applied record still matches, so `projection_stale` after 15 minutes, with the slot and lag alerts; the owner reruns the owner step, which rebuilds the slot and the subscription and re-copies (D3), and `projection_apply_pending` holds from the moment it deletes the applied record until the copy completes | No |
 | Manifest digest mismatch (deploy skew) | `projection_version_mismatch` on every tool | No |
+| Owner step pending (first sync, manifest change, a rebuild the owner step has started, or a run that stopped midway) | `projection_apply_pending` on every tool except `describe`; warning flag down; critical after 24 hours if narrowing | No |
 | Source migration breaks a published column | CI fails in that PR; at runtime, replication errors and goes stale | No |
 | Gateway down | Clients cannot connect | No |
 | Importer down | Proposals stay `received`; inbox alert | No |
-| Public pod compromised | It can read published projection data and insert capped inbox rows. Nothing else: it holds no publisher credential (D9). | No |
+| Public pod compromised | It can read published projection data and insert capped inbox rows. It reaches the shared instance's PostgreSQL port, where `pg_hba` refuses every database but `butlers_public` (D3), and no publisher credential exists to hold (D9). | Shares the instance's CPU and connections, bounded by the connection limit and the 2-second timeout |
 | Client steered by injected content | Validly signed calls read enabled domains; budgets, volume alerts, audit and kill switches bound and detect it (D15) | No |
 
 No Butlers daemon depends on the public surface, the projection or the
@@ -1296,27 +1728,40 @@ accept query-string tokens.
 | Phase | Work | Gate to the next phase |
 |---|---|---|
 | P0 Preconditions | Default-deny ingress in `butlers-<env>` (new bead, child of `bu-viat6h`); this RFC, the doctrine sweep and the OpenSpec change; the RFC 0038 amendment | Merged; ingress contract test green |
-| P1 Projection | Manifest, `reconcile`, replica-identity migrations, Chronicler `*_public` tables, the `mcp_surface` schema, roles and init-db exceptions, drift and grant contract tests | Initial sync matches the manifest in dev; canaries absent |
+| P1 Projection | Manifest, `reconcile`, `owner-sql`, replica-identity migrations, Chronicler `*_public` tables, the `mcp_surface` schema, roles and init-db exceptions and grants, drift and grant contract tests, the no-credential publisher checks | Owner acts 9 and 10 run; initial sync matches the manifest in dev; canaries absent |
 | P2 Dark server | `butlers.knowledge_read`, `capability_host`, `mcp_public`, the chart and the namespace policies. Smoke test from a test pod in `mcp` with a test keyring. | Assertion, bearer, DLP and kill-switch tests green; import-ban test green |
-| P3 Gateway | Owner acts 1-8 below; connect claude.ai, then ChatGPT | First real calls audited; alerts proven by a test fire; live NetworkPolicy check green |
+| P3 Gateway | Owner acts 4-8 below (1 is the chart's; 2 and 3 are done on dev); connect claude.ai, then ChatGPT | First real calls audited; each flag forced to 0 turns its Kuma monitor DOWN and the Telegram notification arrives; live NetworkPolicy check green |
 | P4 Finance and health tools | Same server, enabled on deploy (OD3) | DLP false-positive rate reviewed after one week |
 | P5 Proposals | Inbox, importer job, typed approvals card, apply | An end-to-end proposal reaches `applied` and `owner_rejected` in dev |
 | P6 Successors | Taint and labels; the D19 card; the auto-approval decision | See [Dependencies](#dependencies-and-queueing) |
 
-**Owner acts (homelab side, OD5):**
-1. Create namespaces `butlers-public-<env>` and `postgres-public-<env>`
-   (unless orca is granted rights to).
-2. CNPG `postgres-<env>`: set `max_slot_wal_keep_size`; check
-   `max_replication_slots` and `max_wal_senders` headroom; add the managed
-   role `butlers_projection_publisher` (REPLICATION); add exactly this
-   `pg_hba` line and no `replication` entry for the role:
-   `hostssl butlers butlers_projection_publisher <projection pod CIDR> cert`
-   (or `scram-sha-256` if a client certificate is not possible), with the
-   credential in a Secret in `postgres-public-<env>` only (D9).
-3. Decide the projection placement (open question 1). Recommended: create
-   CNPG cluster `postgres-public-<env>` with database `butlers_public` and a
-   declarative subscription. Fallback: a second database on `postgres-<env>`
-   with the D3 `pg_hba` lines.
+**Owner acts (homelab side, OD5).** Numbers are stable, because other
+documents cite them. Acts 2 and 3 are done on dev by homelab PR
+Tzeusy/homelab#40 [Observed: homelab report, 2026-11-04].
+1. *Moved to the chart.* The Butlers chart `deploy/helm/butlers-public-mcp`
+   creates namespace `butlers-public-<env>` and the ExternalSecret that
+   reads `MCP_PUBLIC_RO_DB_PASSWORD` (D8 item 1). No owner act remains here.
+2. *Done on dev.* CNPG `postgres-<env>` (D3, D9; no new cluster, OD10):
+   - database `butlers_public`, owned by `mcp_projection_owner`;
+   - the managed roles `mcp_projection_owner` (NOLOGIN), `mcp_public_ro`
+     (LOGIN NOINHERIT, connection limit 10), `mcp_proposals_reader`,
+     `mcp_subscription_owner` (LOGIN, member of `pg_create_subscription` and
+     `mcp_projection_owner`) and `butlers_projection_publisher` (LOGIN
+     REPLICATION NOINHERIT, no password), none of them superuser, `CREATEDB`
+     or `CREATEROLE`;
+   - the D3 `pg_hba` lines for `mcp_public_ro` and `mcp_proposals_reader` on
+     `10.42.0.0/24`, with the three reject lines including the publisher's,
+     and no `replication` entry for the publisher;
+   - the `local` `pg_ident` map line `local postgres
+     butlers_projection_publisher`, so the publisher logs in by local peer
+     authentication only (D9, OD14);
+   - `max_slot_wal_keep_size = 10GB`; `max_replication_slots` (32) and
+     `max_wal_senders` (10) left unchanged with headroom;
+   - the password Secrets and Bitwarden items named in D9.
+3. *Done on dev (nothing to add).* NetworkPolicy on `postgres-<env>`: only if
+   a default-deny ingress policy selects the instance pods, add one allow for
+   the public server pod on 5432 and nothing else (D8 item 3). None selects
+   the `postgres-dev` pods, so no policy was added.
 4. Worker: generate the Ed25519 key pair (private key as a Worker secret);
    add assertion signing (sign the forwarded bytes, never streamed bodies;
    `path` is the query string only); deploy; hand the public key and `kid` to
@@ -1328,11 +1773,26 @@ accept query-string tokens.
    `mcp.tze.how/exposed=true`, egress only to the public pod's port.
 6. Add `butlers` to `MCP_SERVERS`, keep `KNOWN_CLIENT_DOMAINS` at
    `claude.ai,chatgpt.com`, redeploy the Worker.
-7. Choose and configure an Alertmanager receiver outside Butlers for the D16
-   alerts (a Telegram receiver is the suggestion; this returns to the owner).
+7. Uptime Kuma (OD11): add two `json-query` monitors to
+   `ansible/roles/proxmox/files/uptimekuma-monitors.toml`, one per D16 flag
+   (`butlers_public_mcp:critical_ok` with `interval = 60`, and
+   `butlers_public_mcp:warning_ok`), on the existing Telegram notification,
+   and let Ansible sync them.
 8. Connect and consent in claude.ai and ChatGPT. This exposes live data from
    the first connection, because `butlers-dev` is the live system
-   [Observed]; accepting that returns to the owner.
+   [Observed]. The owner accepted that (OD12); the D16 kill switches remain
+   the incident control.
+9. Rerun `scripts/init-db.sql` through `kubectl exec -i -n postgres-<env>
+   <instance> -- psql -X -U postgres -d butlers -f -` once it carries the
+   publisher's `CONNECT` and `SELECT` grants and `ALTER ROLE mcp_public_ro
+   SET statement_timeout = '2s'` (D9).
+10. The owner step (D3, OD14), through the same path: once at the first
+    sync, once after each manifest change the migration Job has applied, and
+    once after each slot invalidation. This is the one recurring owner act.
+    Until it runs after the first sync or a manifest change, the public
+    server refuses with `projection_apply_pending` and the warning flag is
+    down; after an invalidation it refuses with `projection_stale` (D16,
+    D17).
 
 ## Dependencies and queueing
 
@@ -1393,23 +1853,35 @@ the umbrella `bu-4c7nvp`, `bu-bda935`, `bu-krc9su` adoption, or
 
 Genuine questions only. Every other choice above is decided and reversible.
 
-1. **Projection placement (owner).** D3 recommends a separate CNPG cluster;
-   the owner may prefer a second database on the existing cluster for lower
-   upkeep, with the D3 fallback conditions and weaker network isolation. An
-   owner act either way.
-2. **Finance breadth.** `last_four` and balance snapshots are excluded by
+1. **Finance breadth.** `last_four` and balance snapshots are excluded by
    default; widening is a one-line manifest edit.
-3. **Health profile breadth.** Medications and conditions without notes or
+2. **Health profile breadth.** Medications and conditions without notes or
    clinicians is the default; allergies and visits wait until asked for.
-4. **Alert receiver (owner).** [Unknown] Which Alertmanager receiver exists;
-   Telegram is the suggestion.
-5. **Prod.** [Unknown] prod PG version and `wal_level`. Rollout targets
-   `dev` (the live system); prod waits for a separate owner act.
-6. **Knowledge predicate allowlist.** The v1 allowlist is written from the
+3. **Prod rollout.** Rollout targets `dev` (the live system); prod waits for
+   a separate owner act. Prod's version is no longer open (closed below).
+4. **Knowledge predicate allowlist.** The v1 allowlist is written from the
    predicate registry at implementation time (D4); the owner may widen it.
+5. **Subscription-owner login path (OD15).** `mcp_subscription_owner` keeps
+   `LOGIN` and three password copies, and no `pg_hba` line rejects it.
+   [Observed: `postgres-dev`, 2026-11-04] Its password reaches
+   `butlers_public` and `postgres` over TCP, not `butlers`, which grants it
+   no `CONNECT`. On `butlers_public` it acts as the database owner's member,
+   so it can rewrite the projection and forge the applied digest that the
+   D17 fail-closed rule trusts (D9). A `host all mcp_subscription_owner all
+   reject` line would close the TCP path without removing the role, and
+   would let the D17 guarantee hold without assuming the password stays
+   unused. That is a homelab choice beyond OD15, so it returns to the owner,
+   with the reject line recommended.
 
-The Chronicler materialization shape is decided: source-owned
-`episodes_public` and `rollups_public` tables (D2).
+Closed on 2026-11-04: projection placement (a second database on the existing
+cluster, OD10, D3) and the alert path (Uptime Kuma polling Prometheus flags,
+OD11, D16). The Chronicler materialization shape is decided: source-owned
+`episodes_public` and `rollups_public` tables (D2). Prod's PostgreSQL version
+is closed [Observed: homelab report]: prod is PG 17.8 with
+`wal_level=logical`, one instance and no standbys, like dev (D3). The
+publisher credential is closed by OD14: there is none (D9). Whether a
+NetworkPolicy selects the `postgres-dev` pods is closed [Observed]: none
+does (D8 item 3).
 
 ## Traceability
 
@@ -1419,6 +1891,8 @@ The Chronicler materialization shape is decided: source-owned
 | D5, D6, D7, D8, D15 | `public-mcp-authorization` |
 | D16 | `public-mcp-authorization`; ADDED `dashboard-settings-console` REQ-001 and MODIFIED Settings Console Page (REQ-002) |
 | D2, D3, D4, D9 | `public-mcp-projection` |
+| D3 owner step, D4 reconcile split, D17 apply digest (OD14) | `public-mcp-projection` REQ-003 and ADDED REQ-015; `public-mcp-surface` REQ-013 (`projection_apply_pending`); `public-mcp-authorization` REQ-014 (pending-step alerts) |
+| D9 publisher with no credential (OD14), subscription owner (OD15) | `database-security` REQ-016; `public-mcp-projection` REQ-008 and REQ-009 |
 | D13 | `public-mcp-proposals`; ADDED `module-approvals` REQ-010, `dashboard-approvals` REQ-904, `relationship-facts` REQ-011 |
 | D8 precondition | `deployment-hardening` ADDED REQ-013 |
 | D9 | `database-security` ADDED REQ-016 |

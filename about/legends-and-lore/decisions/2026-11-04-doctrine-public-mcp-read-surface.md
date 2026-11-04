@@ -2,9 +2,11 @@
 
 **Status:** Doctrine change accepted by the owner on 2026-11-04 (OD2). The
 design is [RFC 0039](../rfcs/0039-public-mcp-read-surface.md); conforming text
-is adopted once the PR's independent conformance review passes. Items listed
-under [Returns to the owner](#returns-to-the-owner) are not adopted by this
-record.
+is adopted once the PR's independent conformance review passes. The four
+items the conformance review returned to the owner were answered the same day
+(OD10 to OD13) and are adopted with the rest. OD14 and OD15, recorded after
+homelab PR Tzeusy/homelab#40 applied the CNPG owner acts to `postgres-dev`,
+are adopted the same way.
 **Date:** 2026-11-04
 **Baseline:** `9f723b9468`
 **OpenSpec change:** `add-public-mcp-read-surface`
@@ -15,9 +17,10 @@ Butlers admits one deterministic, internet-reachable, read-only MCP server
 through which the owner's own outside AI clients (ChatGPT, including its Dots
 agent, and claude.ai) read Butlers data on demand. The server reads only a
 separate projection database that one-way PostgreSQL logical replication fills
-from one checked-in allowlist manifest. Its only write is `propose_fact`, an
-inbox row that changes nothing until the owner approves it per event on the
-dashboard approvals page. It is a third named exception to vision.md
+from one checked-in allowlist manifest; the projection is a second database
+on the existing cluster, behind `pg_hba` and grants (OD10). Its only write is
+`propose_fact`, an inbox row that changes nothing until the owner approves it
+per event on the dashboard approvals page. It is a third named exception to vision.md
 Non-Negotiable Rule 3. It does not generalize.
 
 ## Owner decisions (verbatim)
@@ -53,6 +56,90 @@ Recorded by the owner (tze) on 2026-11-04:
    LLM-to-LLM, to avoid runaway costs.
 9. **Dedupe and queue:** queue after super-butler (RFC 0038) work only where a real dependency exists.
 
+Recorded by the owner (tze) later on 2026-11-04, answering the four items the
+conformance review returned (see [Answered owner items](#answered-owner-items)):
+
+10. **Projection placement: a second database on the existing cluster `postgres-<env>`, not a separate CNPG
+    cluster.** The owner weighed a separate cluster's stronger isolation against its extra upkeep and chose
+    the second database. Isolation rests on the database layer (`pg_hba` and grants), not the network.
+11. **Alert delivery: the existing homelab Uptime Kuma polls a flag; no new Alertmanager receiver.** Prometheus
+    rules stay the single source of the conditions and collapse into flag series; Kuma `json-query` monitors
+    (declared in homelab `uptimekuma-monitors.toml`, synced by Ansible) poll them and notify on Kuma's
+    existing Telegram notification.
+12. **Live dev data from the first client connection: accepted.** Kill switches remain the incident control.
+13. **Upkeep of the five source-owned materializations: accepted** (four trigger-maintained, plus
+    Chronicler's writer and sweep), with the parity tests and CI drift checks as the mitigation.
+
+Recorded by the owner (tze) later on 2026-11-04, after a homelab session applied homelab PR
+Tzeusy/homelab#40 to `postgres-dev` and reported the result (see [Homelab facts](#homelab-facts)):
+
+14. **Adopt the no-credential publisher.** The publisher (`butlers_projection_publisher`) logs in only
+    by local peer authentication through the CNPG `local` `pg_ident` map. No password or certificate
+    exists, and TCP logins as the publisher are rejected. The slot, the subscription (created by the
+    superuser with `password_required = false`, `create_slot = false` and conninfo on the local socket,
+    then owned by `mcp_subscription_owner`), `ALTER SUBSCRIPTION ... REFRESH PUBLICATION` and the
+    narrowing purge on the subscriber become one owner step. Butlers generates one idempotent SQL file
+    for it per manifest change, and the owner pipes that file through the same
+    `kubectl exec ... psql -U postgres` path as `init-db.sql`. Publication DDL in `butlers` stays with
+    the migration user in the migration Job. The public server must fail closed while the owner step
+    is pending, so a narrowed manifest can never keep serving rows that should have been purged.
+15. **Keep `mcp_subscription_owner` as created** (`LOGIN`, with its three password copies). The owner
+    chose to keep it, though OD14 means no Butlers workflow needs it to log in.
+
+## Homelab facts
+
+Reported by the homelab session for homelab PR Tzeusy/homelab#40 (applied with
+`make helm_install_dev`), and partly re-checked by read-only queries on
+`postgres-dev-1`. RFC 0039 cites them where they apply.
+
+- Dev and prod are both PG 17.8 with `wal_level=logical`, one instance and
+  no standbys. This closes the RFC's open question on prod's version.
+- `max_slot_wal_keep_size = 10GB` (verified live); `max_replication_slots`
+  (32) and `max_wal_senders` (10) are unchanged.
+- Dev and prod share one 1.4T disk, 90 % full with 144G free; the PVC sizes
+  are not enforced.
+- `pg_hba` admits `mcp_public_ro` and `mcp_proposals_reader` to
+  `butlers_public` only, from the single-node pod range `10.42.0.0/24`, and
+  rejects them and the publisher on every other TCP path (verified live).
+- The CNPG `local` `pg_ident` map holds exactly `local postgres postgres` and
+  `local postgres butlers_projection_publisher` (verified live), so OS user
+  `postgres` inside an instance pod can log in as the publisher over the
+  local socket (`/controller/run`) by peer authentication. No password or
+  certificate exists for the publisher, and every TCP login as it is
+  rejected. This is the fact OD14 rests on.
+- No NetworkPolicy selects the `postgres-dev` pods, so none was added.
+- Database `butlers_public` exists, owned by `mcp_projection_owner`.
+- CNPG managed roles, all reconciled, none superuser, none with `CREATEDB` or
+  `CREATEROLE`: `mcp_projection_owner` (`NOLOGIN`); `mcp_public_ro` (`LOGIN
+  NOINHERIT`, connection limit 10); `mcp_proposals_reader` (`LOGIN`);
+  `mcp_subscription_owner` (`LOGIN`, member of `pg_create_subscription` and
+  `mcp_projection_owner`); `butlers_projection_publisher` (`LOGIN
+  REPLICATION NOINHERIT`, no password, no `CONNECT` on `butlers` yet).
+- CNPG role specs cannot set `statement_timeout`, so `scripts/init-db.sql`
+  sets it for `mcp_public_ro`.
+- Secrets, with keys `username` and `password`: in `postgres-dev`,
+  `postgres-mcp-public-ro-user`, `postgres-mcp-proposals-reader-user` and
+  `postgres-mcp-subscription-owner-user` (the first two are the CNPG
+  `passwordSecret`s); in `butlers-dev`, `postgres-mcp-proposals-reader-user`
+  and `postgres-mcp-subscription-owner-user`. Bitwarden dev items:
+  `MCP_PUBLIC_RO_DB_PASSWORD`, `MCP_PROPOSALS_READER_DB_PASSWORD` and
+  `MCP_SUBSCRIPTION_OWNER_DB_PASSWORD`.
+- The superuser path is `kubectl exec -i -n postgres-dev postgres-dev-1 --
+  psql -X -U postgres -d butlers -f - < scripts/init-db.sql`, peer
+  authentication over the local socket with no password; it still works
+  after the change (verified live).
+- Namespace `butlers-public-dev` does not exist; the Butlers chart creates it.
+
+Re-checked by the Butlers session on 2026-11-04 with read-only queries on
+`postgres-dev-1`, during the conformance review of OD14:
+
+- The `butlers` database ACL grants `CONNECT` to named roles only, with no
+  PUBLIC entry, so the publisher, `mcp_public_ro` and
+  `mcp_subscription_owner` have no `CONNECT` on `butlers`. `butlers_public`
+  and `postgres` still have the default ACL.
+- The publisher holds `USAGE` on no Butlers schema, and no role is a member
+  of it. `mcp_subscription_owner` inherits `mcp_projection_owner`.
+
 ## Conditions of the exception
 
 The exception holds only while all four conditions hold. If any condition
@@ -79,7 +166,7 @@ Numbered rules keep their identifiers; existing citations do not move.
 | `vision.md`, Rule 3 | A third named exception paragraph, placed after the identity-projection paragraph. It restates the four conditions and the lapse clause, points to RFC 0039 and this record, and ends "These three named carve-outs do not create a general class of on-demand exceptions." The earlier "These two…" sentence is removed. |
 | `architecture.md`, exception mechanism; client-to-butler; single-PostgreSQL anti-pattern | The RFC 0039 departure from the batch criterion; the public server is a client of the projection, not of butler endpoints; a separate database is the boundary against an internet-facing compromise. |
 | `security.md`, partially trusted parties | The owner's edge and outside AI clients. |
-| `security.md`, Schema Isolation | The publisher role is the one guarded exception, and its credential is primary-read-all material. |
+| `security.md`, Schema Isolation | The publisher role is the one guarded exception. It is primary-read-all, has no credential (OD14) and has no members. What reaches primary-read-all without it (exec, attach and debug on the instance pods, pod creation, Secret read and cluster-configuration writes in `postgres-<env>`, node access) is already superuser-equivalent, and the publisher adds none of it. |
 | `security.md`, Public Read Surface (new section) | Guarantees, defense in depth past Cloudflare, and limitations including client-side prompt injection. |
 | `security.md`, Deployment principles and anti-patterns | Default-deny ingress on Kubernetes; no OAuth layer or internet route in front of a butler daemon or the dashboard API. |
 | `v1.md` | Names the public read surface and `propose_fact` as v1; names automatic approval as not v1. |
@@ -87,24 +174,33 @@ Numbered rules keep their identifiers; existing citations do not move.
 | RFC 0010, MUST NOT item 3 | Three named on-demand carve-outs, adding RFC 0039. |
 | RFC 0038, D5, D6, D7 and D13 | Amended in place: the surface admits no goal and calls no domain capability; applied proposals keep third-party authority; non-goal domain jobs may park; no standing rule approves the importer's actions. |
 
-## Returns to the owner
+## Answered owner items
 
-The conformance review found these items beyond OD1 to OD9. They are written
-as recommendations, not adopted contract, until the owner decides them:
+The conformance review found four items beyond OD1 to OD9 and returned them to
+the owner. The owner answered each on 2026-11-04, and the answers are adopted
+contract:
 
-1. **A separate CNPG cluster for the projection** (`postgres-public-<env>`,
-   RFC 0039 D3 and open question 1). OD5 names a namespace and the replication
-   role, not a second cluster, and OD1 asks for low upkeep. The fallback is a
-   second database on the existing cluster, with weaker isolation (D3).
-2. **The alert receiver** (RFC 0039 D16). The specs require only an
-   Alertmanager receiver outside Butlers; a Telegram receiver is a suggestion.
+1. **Projection placement** (RFC 0039 D3; formerly open question 1). The draft
+   recommended a separate CNPG cluster, `postgres-public-<env>`. OD10 chose a
+   second database, `butlers_public`, on the existing `postgres-<env>`, and
+   the separate cluster is now the rejected alternative: stronger isolation,
+   more upkeep. Isolation rests on ordered `pg_hba` reject lines and grants.
+   The public pod's egress reaches the instance that also serves the primary,
+   so the network no longer separates the two. The projection shares the
+   primary's volume, WAL, backups and restore drill, and goes down with it.
+2. **The alert path** (RFC 0039 D16). The draft required an Alertmanager
+   receiver outside Butlers. OD11 replaced it: Prometheus rules collapse into
+   the flags `butlers_public_mcp:critical_ok` and
+   `butlers_public_mcp:warning_ok`, and the owner's Uptime Kuma polls them and
+   notifies on Telegram. No ingress into `butlers-public-<env>` is added.
 3. **Live data in `dev` from the first connection** (RFC 0039 owner act 8).
    `butlers-dev` is the live system, so connecting a client exposes live data
-   immediately.
+   immediately. OD12 accepts that; kill switches remain the incident control.
 4. **Extra upkeep from source-owned materializations** (RFC 0039 D2, design
    S7). Fields that live only in JSONB (finance overlays, health values,
    entity flags) need trigger-maintained columns or tables, each with a parity
-   test. That is the OD1 fallback, but it adds upkeep the owner should see.
+   test. OD13 accepts that upkeep, with the parity tests and CI drift checks as
+   its mitigation.
 
 Automatic approval of proposals (OD4) is not decided here. It needs its own
 owner decision, blocked by `bu-u5euwb.3` and `bu-u5s4w8`.
@@ -118,3 +214,12 @@ owner decision, blocked by `bu-u5euwb.3` and `bu-u5s4w8`.
   blockers and further major and minor findings. The fixes were applied to
   RFC 0039, the doctrine sweep and the OpenSpec change in the same PR; the
   four items above were split out for the owner.
+- Later on 2026-11-04 the owner answered the four items (OD10 to OD13). RFC
+  0039, the decision record, the OpenSpec change and the topology docs were
+  amended in the same PR to match.
+- After homelab PR Tzeusy/homelab#40 applied the CNPG owner acts to
+  `postgres-dev`, the owner recorded OD14 and OD15. RFC 0039 (D3, D4, D8, D9,
+  D16, D17, owner acts and open questions), this record, the OpenSpec change
+  and the topology docs were amended to match the homelab facts above. One
+  item beyond OD15 returns to the owner as RFC 0039 open question 5: whether
+  to add a `pg_hba` reject line for `mcp_subscription_owner`.

@@ -290,10 +290,10 @@ Scope: v1-mandatory
 - **THEN** the response SHALL be at most 256 KiB and SHALL carry `truncated: true`
 
 ### Requirement: Fixed error shape and freshness refusal
-A tool-level failure SHALL be an MCP tool result with `isError: true` and `structuredContent` `{error: {code, domain, retryable, retry_after_s, message}}`, where `code` is one of `domain_disabled`, `projection_stale`, `projection_version_mismatch`, `budget_exhausted`, `invalid_argument`, `not_found`, `too_large`, `blocked` and `unavailable`, and `message` is a fixed string per code that never echoes an argument. When replication is more than 15 minutes old, every tool except `describe` SHALL return `projection_stale`. When the server's built-in manifest digest differs from the replicated digest, every tool except `describe` SHALL return `projection_version_mismatch`. When the projection is unreachable, tools SHALL return `unavailable` with `retryable: true`. When several refusals apply, the first in this order SHALL be returned: `blocked` (the canary latch), `invalid_argument`, `budget_exhausted`, `unavailable`, `projection_version_mismatch`, `projection_stale`, `domain_disabled`, then `not_found` and `too_large`.
+A tool-level failure SHALL be an MCP tool result with `isError: true` and `structuredContent` `{error: {code, domain, retryable, retry_after_s, message}}`, where `code` is one of `domain_disabled`, `projection_stale`, `projection_version_mismatch`, `projection_apply_pending`, `budget_exhausted`, `invalid_argument`, `not_found`, `too_large`, `blocked` and `unavailable`, and `message` is a fixed string per code that never echoes an argument. When replication is more than 15 minutes old, or `mcp_read.replication_as_of()` is NULL, every tool except `describe` SHALL return `projection_stale`. When the server's built-in manifest digest differs from the replicated digest, every tool except `describe` SHALL return `projection_version_mismatch`. While the owner step is pending (REQ-public-mcp-projection-015), every tool except `describe` SHALL return `projection_apply_pending` with `retryable: true` and `retry_after_s: null`. When the projection is unreachable, tools SHALL return `unavailable` with `retryable: true`. When several refusals apply, the first in this order SHALL be returned: `blocked` (the canary latch), `invalid_argument`, `budget_exhausted`, `unavailable`, `projection_version_mismatch`, `projection_apply_pending`, `projection_stale`, `domain_disabled`, then `not_found` and `too_large`.
 
 ID: REQ-public-mcp-surface-013
-Source: RFC 0039 D4 (manifest digest) and D17 (precedence)
+Source: RFC 0039 D4 (manifest digest; reconcile split) and D17 (owner step pending; precedence); owner decision OD14
 Scope: v1-mandatory
 
 #### Scenario: Staleness wins over a disabled domain
@@ -312,12 +312,20 @@ Scope: v1-mandatory
 - **WHEN** the server was built from a manifest whose digest differs from `mcp_surface.manifest_state` on the projection
 - **THEN** every tool except `describe` SHALL return `projection_version_mismatch`
 
+#### Scenario: A pending owner step wins over staleness and switches
+- **WHEN** the owner step is pending, replication is 16 minutes old and `finance` is disabled, and `finance_ledger` is called with valid arguments
+- **THEN** the result SHALL be `projection_apply_pending`
+
+#### Scenario: Deploy skew wins over a pending owner step
+- **WHEN** the server's digest differs from both the replicated digest and the applied digest
+- **THEN** every tool except `describe` SHALL return `projection_version_mismatch`
+
 #### Scenario: Error messages never echo input
 - **WHEN** `entity_lookup` is refused with `invalid_argument` for a 500-character name
 - **THEN** the error `message` SHALL be the fixed `invalid_argument` string and SHALL contain no part of the name
 
 #### Scenario: Projection outage is retryable
-- **WHEN** the projection database refuses connections
+- **WHEN** the projection database refuses connections while the primary database keeps serving (for example because the connection limit is reached)
 - **THEN** data tools SHALL return `unavailable` with `retryable: true`
 - **AND** the primary database and butler daemons SHALL be unaffected
 
