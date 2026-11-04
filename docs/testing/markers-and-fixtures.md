@@ -94,6 +94,9 @@ await booted.shutdown()                           # optional; teardown shuts dow
   invocation), then `"ok"`. Work that runs in the background, such as a routed
   session after `route.execute` accepts, is awaited with
   `await booted.runtime.wait_for_invocations(n)`, which fails loudly on timeout.
+- Set `booted.runtime.supports_resume = True` to exercise provider-session resume:
+  each turn then reports a fresh `provider_session_id` (`fake-session-<n>`), and
+  each invocation records the `resume_session_id` the spawner passed.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
   sets environment seams: file logs under a temp root, MCP warmup off (it is an

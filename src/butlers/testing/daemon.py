@@ -73,12 +73,18 @@ class FakeRuntime(RuntimeAdapter):
     once the script runs out. An entry is the output text, an exception to raise
     (a runtime failure), or a callable that gets the recorded invocation and
     returns the text.
+
+    Set ``supports_resume = True`` to act as a resume-capable adapter (Claude's):
+    each turn then reports a fresh ``provider_session_id`` (``fake-session-<n>``)
+    in :attr:`last_process_info`, and invocations record the ``resume_session_id``
+    the spawner passed.
     """
 
     reply: str = "ok"
 
     def __init__(self, **_: Any) -> None:
         self.invocations: list[dict[str, Any]] = []
+        self._last_process_info: dict[str, Any] | None = None
         self._script: deque[Reply] = deque()
         self._invoked = asyncio.Condition()
 
@@ -106,6 +112,10 @@ class FakeRuntime(RuntimeAdapter):
     def binary_name(self) -> str:
         return sys.executable
 
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        return self._last_process_info
+
     async def invoke(
         self,
         prompt: str,
@@ -117,16 +127,23 @@ class FakeRuntime(RuntimeAdapter):
         runtime_args: list[str] | None = None,
         cwd: Path | None = None,
         timeout: int | None = None,  # noqa: ASYNC109 - RuntimeAdapter signature
+        resume_session_id: str | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         invocation = {
             "prompt": prompt,
             "system_prompt": system_prompt,
             "model": model,
             "mcp_servers": mcp_servers,
+            "resume_session_id": resume_session_id,
         }
         async with self._invoked:
             self.invocations.append(invocation)
             self._invoked.notify_all()
+        self._last_process_info = (
+            {"provider_session_id": f"fake-session-{len(self.invocations)}"}
+            if self.supports_resume
+            else None
+        )
         reply = self._script.popleft() if self._script else self.reply
         if isinstance(reply, BaseException):
             raise reply

@@ -162,6 +162,34 @@ async def test_fake_runtime_reply_can_depend_on_the_invocation() -> None:
     assert await _invoke(runtime, "echo") == "ECHO"
 
 
+async def test_fake_runtime_without_resume_reports_no_provider_session() -> None:
+    runtime = FakeRuntime()
+
+    await _invoke(runtime, "turn")
+
+    assert runtime.supports_resume is False
+    assert runtime.last_process_info is None
+    assert runtime.invocations[0]["resume_session_id"] is None
+
+
+async def test_resumable_fake_runtime_mints_a_session_per_turn_and_records_resumes() -> None:
+    # Like the Claude adapter: each successful turn reports a fresh provider session
+    # id, which the spawner stores as the handle the next turn resumes from.
+    runtime = FakeRuntime()
+    runtime.supports_resume = True
+
+    await _invoke(runtime, "first")
+    first = runtime.last_process_info
+    await runtime.invoke("second", "system", {}, {}, resume_session_id="fake-session-1")
+
+    assert first == {"provider_session_id": "fake-session-1"}
+    assert runtime.last_process_info == {"provider_session_id": "fake-session-2"}
+    assert [call["resume_session_id"] for call in runtime.invocations] == [
+        None,
+        "fake-session-1",
+    ]
+
+
 async def test_wait_for_invocations_returns_once_enough_have_happened() -> None:
     runtime = FakeRuntime()
 
