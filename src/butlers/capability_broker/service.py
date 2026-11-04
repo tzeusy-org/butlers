@@ -23,6 +23,7 @@ from butlers.core.capability_json import (
 )
 from butlers.core.goal_admission import Grant
 
+from .actuation import rfc0028_actuation_risk
 from .assertions import LIFETIME_SECONDS, AssertionSigner
 from .catalog import CatalogSource
 from .contracts import (
@@ -46,10 +47,6 @@ ActuationRiskMap = Callable[[Capability, dict[str, Any]], ActuationRisk]
 
 # A domain action's terminal decision and the parked effect state it ends in.
 _PARKED_END = {"rejected": "rejected", "expired": "expired", "cancelled": "cancelled"}
-
-
-def _unknown_risk(capability: Capability, args: dict[str, Any]) -> ActuationRisk:
-    return "unknown"
 
 
 def _in_scope(capability: Capability, grant: Grant, args: dict[str, Any]) -> bool:
@@ -81,7 +78,7 @@ class Broker:
         domains: Domains | None,
         signer: AssertionSigner | None,
         *,
-        actuation_risk: ActuationRiskMap = _unknown_risk,
+        actuation_risk: ActuationRiskMap = rfc0028_actuation_risk,
         clock: Callable[[], float] = time.time,
         transaction_timeout: float = 5,
         forward_timeout: float = 30,

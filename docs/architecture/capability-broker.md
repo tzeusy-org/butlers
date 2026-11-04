@@ -14,6 +14,7 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `catalog.py` | Per-call read of the published fleet catalog on the call's own connection |
 | `recipients.py` | Owner rule 2: classify each `recipient_params` party (UUID, email, Telegram, WhatsApp) with the core-notify owner-resolution rule |
 | `policy.py` | Dispatch, park or refuse from effect class, exposure, park-only, approval mode and approval policy |
+| `actuation.py` | RFC 0028 risk map adapter: the tier of an `actuate` call (`ha_call_service`, `ha_activate_scene`) |
 | `ledger.py` | SQL over the sw_047 goal ledger; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
@@ -72,6 +73,21 @@ live entities share, and a failed lookup are non-owner, as are all
 unknown and undeterminable parties. A call naming nobody is owner
 communication only through notify's declared Telegram send/insight branch.
 Unrecognised forms can only over-park.
+
+## Actuation risk (RFC 0028)
+
+An `actuate` call's tier comes from the Home butler's RFC 0028 map
+(`roster/home/modules/actuation.py`, read through `actuation.rfc0028_actuation_risk`,
+the `Broker` default). `ha_call_service` is classified by its domain, service,
+target and data, and `ha_activate_scene` as `scene.turn_on`. Safe and reversible
+calls inside the automatic subset are `safe` and follow the tool's approval
+policy (dispatch, or a rule-eligible park when the tool is gated or names a
+non-owner party). Consequential and protected calls, including any service the
+map does not declare, park for per-event approval. A capability outside the
+map, or a call whose arguments the map cannot read, is `unknown` and parks the
+same way. The broker has no entity unit cache, so climate set-points park.
+Today's catalog declares `ha_call_service` recipients undeterminable, so even
+a safe call parks rule-eligible instead of dispatching.
 
 ## Parking and approved execution (D13)
 
