@@ -112,6 +112,13 @@ await booted.shutdown()                           # optional; teardown shuts dow
 - `booted_daemon(config_dir, chain_schemas={"relationship": "relationship"})`
   migrates other butlers' chains into their own schemas, for cross-butler reads
   under production grants (for example `relationship.entity_facts`).
+- `tool_host` is for tests whose subject is a tool's SQL rather than the boot
+  (about 0.5 s per host, against about 2.3 s per boot).
+  - `host = await tool_host(config_dir)` clones the template, connects the
+    butler's pool under its production role, and registers the core tools on a
+    fresh FastMCP. No lifecycle phase runs or is patched.
+  - `await host.call("remind", ...)` runs a handler in process.
+  - Tests that need the spawner, the Switchboard or module startup boot instead.
 - `shared_booted_daemon` shares one boot per module and configuration among tests
   that only read daemon state (rejections, tool listings, status):
   `booted = await shared_booted_daemon("general", registered=True)` takes the same
