@@ -633,17 +633,16 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
 def _delete_session_data_volume(environ: Mapping[str, str]) -> bool:
     """Whether session teardown should delete the container's anonymous PGDATA volume.
 
-    By the end of a shard each worker's session container holds hundreds of
-    test databases, and ``docker rm -v`` unlinks every one of their files
-    synchronously. On GitHub-hosted runners that took 25-60+ s per worker,
-    concurrently, while the shard's last test file was still running: the
-    worker-last tests inflated from 0.2-12 s to 43-67 s, the removal call hit
-    docker-py's 60 s read timeout, and the step-up restore test's own
-    ``docker run`` clients stalled past their 120 s budget (bu-pj05nc).
+    CI has observed 25-60+ s volume-removal calls and concurrent restore-client
+    timeouts. Avoiding anonymous-volume deletion on disposable hosted VMs is
+    a contention mitigation; these observations do not establish the timeout's
+    cause or guarantee the ordering of test bodies and worker teardown.
 
-    A hosted runner's VM is discarded after the job, so deleting the volume
-    there buys nothing. Everywhere else (developer machines, any self-hosted
-    runner) the volume is still deleted so sessions never accumulate data.
+    Hosted VMs are discarded after the job. Everywhere else (developer
+    machines and self-hosted runners), teardown still requests volume deletion
+    so retained hosts do not accumulate session data. Container-removal errors
+    retain the existing retry/warning behavior; this decision is not proof that
+    cleanup succeeded.
     """
     return environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
 

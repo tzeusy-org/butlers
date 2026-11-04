@@ -116,8 +116,8 @@ def test_offset_without_the_library_preloaded_is_not_forwarded() -> None:
     ],
 )
 def test_only_a_discarded_hosted_runner_keeps_the_session_data_volume(environ, expected) -> None:
-    # bu-pj05nc: deleting a shard's worth of test databases at session teardown
-    # stalled the Docker clients of the shard's last-running test.
+    # bu-pj05nc: avoid observed expensive teardown on disposable hosted VMs;
+    # the restore timeout's cause remains unproven.
     assert root_conftest._delete_session_data_volume(environ) is expected
 
 
@@ -439,3 +439,63 @@ async def test_provisioned_pool_terminates_native_initialization(monkeypatch, ca
     assert pools[0].is_closing()
     with pytest.raises(asyncpg.InterfaceError, match="closed"):
         await pools[0].acquire()
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "unit", "marker", "cleanup_timeout"),
+    [
+        (b"synthetic-private-stdout", b"synthetic-private-stderr", "bytes", False, False),
+        (b"[backup] start: synthetic-private-detail", b"", "bytes", True, False),
+        (None, None, "absent", False, False),
+        (b"", b"", "bytes", False, False),
+        ("synthetic-private-☃", "synthetic-private-error", "characters", False, False),
+        (None, None, "absent", False, True),
+    ],
+    ids=["private-bytes", "observed-marker", "absent", "empty", "unicode", "cleanup-timeout"],
+)
+def test_restore_client_timeout_keeps_only_closed_diagnostics(
+    monkeypatch, stdout, stderr, unit, marker, cleanup_timeout
+):
+    import json
+    import subprocess
+    from types import SimpleNamespace
+
+    from tests.integration import test_dashboard_stepup_restore as restore
+
+    timeout = subprocess.TimeoutExpired("synthetic-client", 120, output=stdout, stderr=stderr)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs["timeout"]))
+        if len(calls) == 1:
+            raise timeout
+        if cleanup_timeout:
+            raise subprocess.TimeoutExpired("synthetic-cleanup", 10)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(restore, "os", SimpleNamespace(environ={}))
+    monkeypatch.setattr(restore, "prepare_alias_on_hosted_runner", lambda image: None)
+    monkeypatch.setattr(restore.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        restore.client(None, "synthetic-command", "synthetic-password")
+
+    assert caught.value is timeout
+    assert calls[0][1] == 120
+    name = calls[0][0][calls[0][0].index("--name") + 1]
+    assert calls[1] == (["docker", "rm", "--force", name], 10)
+    assert len(calls) == 2
+    notes = "\n".join(timeout.__notes__)
+    assert "synthetic-private" not in notes
+    assert len(notes) < 1000
+    prefix = "client timeout diagnostics: "
+    assert len(timeout.__notes__) == 1 and notes.startswith(prefix)
+    diagnostic = json.loads(notes.removeprefix(prefix))
+    assert set(diagnostic) == {"execution_stage", "stdout", "stderr"}
+    assert diagnostic["execution_stage"] == "unknown"
+    for stream, output in (("stdout", stdout), ("stderr", stderr)):
+        assert diagnostic[stream] == {
+            "captured": output is not None,
+            "size": len(output) if output is not None else 0,
+            "unit": unit,
+            "backup_start_observed": marker if stream == "stdout" else False,
+        }
