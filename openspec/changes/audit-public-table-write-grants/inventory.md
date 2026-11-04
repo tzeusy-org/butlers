@@ -47,7 +47,7 @@ Static evidence shows the writers are in `api/` only, so a runtime-role revoke s
 | Table | Writers today | Risk if a runtime role writes it | Proposed |
 | --- | --- | --- | --- |
 | `permissions` | A: `api/routers/permissions.py:206` I | Grant itself permissions | M1: revoke I/U/D from runtime roles |
-| `approvals_policy` | A: `api/routers/approvals.py:2472` I. (`testing/approval_delivery_schema.py:19` is a test helper) | Weaken approval policy | M1 |
+| `approvals_policy` | A: `api/routers/approvals.py:2472` I. | Weaken approval policy | M1 |
 | `webhooks` | A: `api/routers/webhooks.py:383,598,729` U, `:486` I, `:655` D | Register or redirect a webhook | M1 |
 | `channel_defaults` | A: `api/routers/channel_defaults.py:213` I | Redirect default notification channels | M1 |
 | `model_catalog` | A: `api/routers/model_settings.py:728,814,897,941`; verify sweep uses the shared pool (`jobs/model_verify.py`, `api/routers/model_settings.py` `run_verify_all_models`) | Reroute model dispatch, tamper with verification state | none: INSUFFICIENT. Open question: does any daemon-side verify run write it? Settled by confirming `run_model_verify_sweep` runs on the shared login |
