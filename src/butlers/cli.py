@@ -880,6 +880,8 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
 
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
+    from contextlib import AsyncExitStack
+
     from butlers.daemon import ButlerDaemon
 
     daemons: list[ButlerDaemon] = []
@@ -895,83 +897,88 @@ async def _start_all(configs: dict[str, Path]) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Start daemons: priority butlers first, then alphabetical.
-    # Port conflicts retry up to _PORT_RETRY_MAX_ATTEMPTS before skipping.
-    # Transient DB-connect failures retry up to _DB_RETRY_MAX_ATTEMPTS — covers
-    # short-lived Tailscale/DB blips during startup.
-    for name, config_dir in _ordered_configs(configs):
-        started = False
-        port_attempt = 0
-        db_attempt = 0
-        while not started:
-            daemon = ButlerDaemon(config_dir)
-            try:
-                await daemon.start()
-                daemons.append(daemon)
-                click.echo(f"  started: {name}")
-                started = True
-            except Exception as exc:
-                # daemon.start() may have already pre-bound the MCP socket and
-                # launched the server task (lifecycle step 14) before a later
-                # step raised.  A failed start that is retried or skipped without
-                # releasing those resources leaves the port bound, so the next
-                # attempt collides with "port still in use".  Tear the failed
-                # daemon down before retrying/skipping.  shutdown() is fully
-                # guarded (every step is None-checked), so it is safe to call on
-                # a partially-started daemon; we still wrap it so a cleanup error
-                # never masks the original start failure or crashes the loop.
+    async with AsyncExitStack() as cleanup:
+        # Start daemons: priority butlers first, then alphabetical.
+        # Port conflicts retry up to _PORT_RETRY_MAX_ATTEMPTS before skipping.
+        # Transient DB-connect failures retry up to _DB_RETRY_MAX_ATTEMPTS — covers
+        # short-lived Tailscale/DB blips during startup.
+        for name, config_dir in _ordered_configs(configs):
+            started = False
+            port_attempt = 0
+            db_attempt = 0
+            while not started:
+                daemon = ButlerDaemon(config_dir)
                 try:
-                    await daemon.shutdown()
-                except Exception:
-                    logger.warning(
-                        "Error releasing resources for failed butler %s", name, exc_info=True
-                    )
-                if _is_port_conflict(exc) and port_attempt < _PORT_RETRY_MAX_ATTEMPTS:
-                    delay = min(_PORT_RETRY_BASE_DELAY * (2**port_attempt), _PORT_RETRY_MAX_DELAY)
-                    port_attempt += 1
-                    click.echo(
-                        f"  {name}: port in use, retrying in {delay:.0f}s"
-                        f" (attempt {port_attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
-                    )
-                    await asyncio.sleep(delay)
-                elif _is_port_conflict(exc):
-                    click.echo(
-                        f"  skipped: {name}: port still in use after"
-                        f" {_PORT_RETRY_MAX_ATTEMPTS} attempts"
-                    )
-                    break
-                elif _is_db_unreachable(exc) and db_attempt < _DB_RETRY_MAX_ATTEMPTS:
-                    delay = min(_DB_RETRY_BASE_DELAY * (2**db_attempt), _DB_RETRY_MAX_DELAY)
-                    db_attempt += 1
-                    click.echo(
-                        f"  {name}: DB unreachable ({exc}), retrying in {delay:.0f}s"
-                        f" (attempt {db_attempt}/{_DB_RETRY_MAX_ATTEMPTS})..."
-                    )
-                    await asyncio.sleep(delay)
-                elif _is_db_unreachable(exc):
-                    click.echo(
-                        f"  failed: {name}: DB unreachable after"
-                        f" {_DB_RETRY_MAX_ATTEMPTS} attempts: {exc}"
-                    )
-                    break
-                else:
-                    click.echo(f"  failed: {name}: {exc}")
-                    break
-        if not started:
-            logger.warning("Butler %s failed to start", name)
+                    await daemon.start()
+                    daemons.append(daemon)
+                    cleanup.push_async_callback(daemon.shutdown)
+                    click.echo(f"  started: {name}")
+                    started = True
+                except BaseException as exc:
+                    # daemon.start() may have already pre-bound the MCP socket and
+                    # launched the server task (lifecycle step 14) before a later
+                    # step raised.  A failed start that is retried or skipped without
+                    # releasing those resources leaves the port bound, so the next
+                    # attempt collides with "port still in use".  Tear the failed
+                    # daemon down before retrying/skipping.  shutdown() is fully
+                    # guarded (every step is None-checked), so it is safe to call on
+                    # a partially-started daemon; we still wrap it so a cleanup error
+                    # never masks the original start failure or crashes the loop.
+                    try:
+                        await daemon.shutdown()
+                    except Exception:
+                        logger.warning(
+                            "Error releasing resources for failed butler %s", name, exc_info=True
+                        )
+                    if not isinstance(exc, Exception):
+                        raise
+                    if _is_port_conflict(exc) and port_attempt < _PORT_RETRY_MAX_ATTEMPTS:
+                        delay = min(
+                            _PORT_RETRY_BASE_DELAY * (2**port_attempt), _PORT_RETRY_MAX_DELAY
+                        )
+                        port_attempt += 1
+                        click.echo(
+                            f"  {name}: port in use, retrying in {delay:.0f}s"
+                            f" (attempt {port_attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
+                        )
+                        await asyncio.sleep(delay)
+                    elif _is_port_conflict(exc):
+                        click.echo(
+                            f"  skipped: {name}: port still in use after"
+                            f" {_PORT_RETRY_MAX_ATTEMPTS} attempts"
+                        )
+                        break
+                    elif _is_db_unreachable(exc) and db_attempt < _DB_RETRY_MAX_ATTEMPTS:
+                        delay = min(_DB_RETRY_BASE_DELAY * (2**db_attempt), _DB_RETRY_MAX_DELAY)
+                        db_attempt += 1
+                        click.echo(
+                            f"  {name}: DB unreachable ({exc}), retrying in {delay:.0f}s"
+                            f" (attempt {db_attempt}/{_DB_RETRY_MAX_ATTEMPTS})..."
+                        )
+                        await asyncio.sleep(delay)
+                    elif _is_db_unreachable(exc):
+                        click.echo(
+                            f"  failed: {name}: DB unreachable after"
+                            f" {_DB_RETRY_MAX_ATTEMPTS} attempts: {exc}"
+                        )
+                        break
+                    else:
+                        click.echo(f"  failed: {name}: {exc}")
+                        break
+            if not started:
+                logger.warning("Butler %s failed to start", name)
 
-    if not daemons:
-        click.echo("No butlers started successfully")
-        return
+        if not daemons:
+            click.echo("No butlers started successfully")
+            return
 
-    await _record_deployment_boot(daemons, configured_count=len(configs))
+        from butlers.core.approval_delivery_authority import approval_delivery_composition
 
-    # Wait for shutdown signal
-    await shutdown_event.wait()
-
-    # Graceful shutdown
-    for daemon in reversed(daemons):
-        await daemon.shutdown()
+        # All registered dependencies must exist before any recovery worker starts.
+        # Its context exits before daemon callbacks retire their modules and pools.
+        async with approval_delivery_composition(daemons):
+            await _record_deployment_boot(daemons, configured_count=len(configs))
+            await shutdown_event.wait()
 
 
 async def _start_single(config_path: Path) -> None:

@@ -210,6 +210,12 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
+- Dashboard approval and Retry dispatch stored `notify` calls through Switchboard `deliver`
+  using a `notify.v1` envelope. The approved intent and delivery fields stay inside `delivery`,
+  with `request_context` on the envelope; the owning action schema supplies both `origin_butler`
+  and `source_butler`. The adapter never resolves or substitutes a recipient. This handoff runs
+  inside the shared executor's row lock, and failed envelope validation or delivery leaves the
+  action `approved` with a null execution result.
 - Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
   `src/butlers/modules/calendar_approval.py`) first checks the requested tool name and argument
   digest against the locked approved row; a mismatch refuses before dispatch. The executor then

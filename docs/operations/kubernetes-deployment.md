@@ -41,6 +41,17 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
 
+Dev source temporarily selects one cohosted `butlers-up` including Switchboard,
+with five shared session slots (`butlersControl.enabled=false`, owner decision
+2026-11-04). Explicit `true` still renders the separate control/domain pair at
+1+4; production defaults remain unsplit. The accepted RFC 0023 approval authority
+requires cohosting, but its admission/worker flags remain separately gated and
+default-off. For this live dev database, use the
+[exclusive cohosting and approval rollout runbook](approval-delivery-dev-rollout.md):
+build first, verify backup and bootstrap/migration compatibility, stop both old
+runtime roles and confirm their pods are gone, then run the standard pinned-tag
+deployment. A source render does not prove this transition has happened.
+
 ### Google Health target startup gate
 
 Google Health's `waitForHealthRoutes: true` adds `wait-for-health-routes` after its
@@ -196,7 +207,17 @@ bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images,
 an initContainer of `dashboard-api`, so every rollout runs `butlers db migrate` before the new API
 starts. Migrations only *check* the privileged bootstrap
 ([reviewed-bootstrap.md](../data_and_storage/reviewed-bootstrap.md)); they never create it. So on
-dev `deploy-*` first runs `bootstrap-dev` (`scripts/k8s/bootstrap-db.sh dev <tag>`). That target
+dev `deploy-*` first passes the read-only topology guard, then runs `bootstrap-dev`
+(`scripts/k8s/bootstrap-db.sh dev <tag>`). The same guard rechecks live state immediately before
+Helm in `record-deploy.sh`, including direct wrapper calls. Its exact Helm render determines the
+desired topology; live Deployment commands/selectors, observed generations/counters and all
+release runtime pods determine the current topology. Unknown or inconsistent state refuses even
+a same-topology rollout. Split/cohost changes require both roles at desired/observed zero and no
+old or terminating pods. A stopped leftover control object does not block a same-cohost release.
+The host needs `uv sync --dev` in this checkout; the guard never installs dependencies, scales
+roles, deletes pods or writes the DB. Hold competing automation throughout: API reads are not an
+atomic lock. See the [exclusive replacement runbook](approval-delivery-dev-rollout.md).
+The bootstrap target
 reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
 
 - It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
@@ -227,8 +248,9 @@ manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_O
 off` in `deploy/helm/butlers/makefile` switches the step and the public chart off for a teardown.
 Prod stays manual. See [Public MCP Read Surface](public-mcp-read-surface.md).
 
-`dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
-pods never overlap. The image installs dependencies before copying `src/`, so a commit that touches
+The new topology guard is dev-only. `dashboard-api`, `butlers-up` and the connectors use the
+Recreate strategy, which serializes each Deployment's replacement but cannot order two different
+runtime roles. The image installs dependencies before copying `src/`, so a commit that touches
 only source rebuilds and pulls a few tens of MB (measured: `ship-dev` about 2.5 minutes, the API
 unavailable for about 70 seconds, every pod ready after about 3 minutes); a `uv.lock` or `Dockerfile.base` change rebuilds
 the multi-GB dependency layer and takes about 12 minutes.
