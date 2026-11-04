@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from butlers.testing.daemon import FakeRuntime
+from butlers.core.model_capabilities import capability_baseline_of_adapter
+from butlers.core.runtimes import create_adapter, get_adapter, list_registered_runtime_types
+from butlers.testing.daemon import DaemonBooter, FakeRuntime
 
 pytestmark = pytest.mark.integration
 
@@ -53,6 +55,111 @@ async def test_booted_daemon_serves_a_tool_and_shuts_down_clean(booted_daemon, t
     await asyncio.sleep(0)
     leaked = _live_tasks() - before - {asyncio.current_task()}
     assert not leaked, sorted(task.get_name() for task in leaked)
+
+
+@session_loop
+async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
+    booted_daemon, tmp_path
+) -> None:
+    booted = await booted_daemon(_write_butler(tmp_path, "general"))
+
+    assert booted.daemon._identity_facts()["accepting_routes"] is False
+
+
+@session_loop
+async def test_registered_boot_accepts_routes(booted_daemon, tmp_path) -> None:
+    # Boot registration is the role-bound public.register_butler_boot, so the butler
+    # name must match the schema's runtime role (butler_general_rw).
+    booted = await booted_daemon(_write_butler(tmp_path, "general"), registered=True)
+
+    facts = booted.daemon._identity_facts()
+    assert facts["accepting_routes"] is True
+    assert facts["boot_epoch"] >= 1
+    assert booted.daemon._boot_registration_task is None
+
+
+@session_loop
+async def test_scripted_reply_comes_back_through_the_real_spawner(booted_daemon, tmp_path) -> None:
+    booted = await booted_daemon(_write_butler(tmp_path, "general"))
+    booted.runtime.script("scripted answer")
+
+    result = await booted.daemon.spawner.trigger(
+        prompt="say something", trigger_source="trigger", context="CONTEXT LINE"
+    )
+
+    assert result.success, result.error
+    assert result.output == "scripted answer"
+    (invocation,) = booted.runtime.invocations
+    assert invocation["prompt"].startswith("CONTEXT LINE\n\n")
+    assert invocation["prompt"].endswith("say something")
+
+
+@session_loop
+async def test_every_runtime_type_is_the_fake_until_close(
+    postgres_container, monkeypatch, tmp_path
+) -> None:
+    # The spawner builds a per-model adapter for whatever runtime type the catalog
+    # resolves, so faking only the default type would let a real CLI start.
+    production = {name: get_adapter(name) for name in list_registered_runtime_types()}
+    booter = DaemonBooter(postgres_container, monkeypatch, tmp_path)
+    try:
+        for name, adapter in production.items():
+            assert create_adapter(name) is booter.runtime, name
+            # Model resolution reads capabilities off the class, so the fake must
+            # declare what production does or resolution picks different models.
+            assert capability_baseline_of_adapter(
+                get_adapter(name)
+            ) == capability_baseline_of_adapter(adapter), name
+    finally:
+        await booter.close()
+
+    assert {name: get_adapter(name) for name in list_registered_runtime_types()} == production
+
+
+async def _invoke(runtime: FakeRuntime, prompt: str) -> str | None:
+    output, _, _ = await runtime.invoke(prompt, "system", {}, {})
+    return output
+
+
+async def test_fake_runtime_plays_its_script_in_order_then_the_default() -> None:
+    runtime = FakeRuntime()
+    runtime.script("first", RuntimeError("runtime down"), "third")
+
+    assert await _invoke(runtime, "a") == "first"
+    with pytest.raises(RuntimeError, match="runtime down"):
+        await _invoke(runtime, "b")
+    assert await _invoke(runtime, "c") == "third"
+    assert await _invoke(runtime, "d") == FakeRuntime.reply
+
+    assert [call["prompt"] for call in runtime.invocations] == ["a", "b", "c", "d"]
+    assert runtime.invocations[0]["system_prompt"] == "system"
+
+
+async def test_fake_runtime_reply_can_depend_on_the_invocation() -> None:
+    runtime = FakeRuntime()
+    runtime.script(lambda call: call["prompt"].upper())
+
+    assert await _invoke(runtime, "echo") == "ECHO"
+
+
+async def test_wait_for_invocations_returns_once_enough_have_happened() -> None:
+    runtime = FakeRuntime()
+
+    waiter = asyncio.create_task(runtime.wait_for_invocations(2))
+    await _invoke(runtime, "one")
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    await _invoke(runtime, "two")
+
+    calls = await asyncio.wait_for(waiter, timeout=1)
+    assert [call["prompt"] for call in calls] == ["one", "two"]
+
+
+async def test_wait_for_invocations_times_out_loudly() -> None:
+    runtime = FakeRuntime()
+
+    with pytest.raises(TimeoutError, match="1 invocation"):
+        await runtime.wait_for_invocations(1, timeout=0.01)
 
 
 @session_loop

@@ -83,10 +83,6 @@
     "create_table": 0,
     "fixtures": 2
   },
-  "roster/finance/tests/test_transaction_crud.py": {
-    "create_table": 9,
-    "fixtures": 1
-  },
   "roster/finance/tests/test_transactions.py": {
     "create_table": 2,
     "fixtures": 1

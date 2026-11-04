@@ -17,6 +17,7 @@ from uuid import uuid4
 import pytest
 
 from butlers.api.routers.sessions import get_butler_daily_activity
+from butlers.testing.db_manager import db_manager
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -41,14 +42,6 @@ class _NonUtcPool:
                 await conn.execute("RESET TIME ZONE")
 
 
-class _RealPoolDB:
-    def __init__(self, pool: Any):
-        self._pool = _NonUtcPool(pool)
-
-    def pool(self, name: str) -> Any:
-        return self._pool
-
-
 async def _seed(pool: Any, started_at: datetime) -> None:
     session_id = uuid4()
     await pool.execute(
@@ -62,7 +55,7 @@ async def _seed(pool: Any, started_at: datetime) -> None:
 
 async def test_daily_activity_is_a_dense_utc_window(db) -> None:
     pool = await db("core", schema="general")
-    route_db = _RealPoolDB(pool)
+    route_db = db_manager({"general": _NonUtcPool(pool)})
 
     # Empty table: still one measured-zero row per day of the window.
     empty = await get_butler_daily_activity("general", window_days=7, db=route_db)

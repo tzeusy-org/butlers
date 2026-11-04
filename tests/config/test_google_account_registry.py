@@ -191,8 +191,8 @@ class _MultiPool:
     def __init__(self, *conns):
         self._conns = list(conns)
         self._idx = -1
-        self._pool = MagicMock()
-        self._pool.acquire = MagicMock(side_effect=self._acquire)
+        self.pool = MagicMock()
+        self.pool.acquire = MagicMock(side_effect=self._acquire)
 
     def _acquire(self):
         self._idx += 1
@@ -201,10 +201,6 @@ class _MultiPool:
         ctx.__aenter__ = AsyncMock(return_value=conn)
         ctx.__aexit__ = AsyncMock(return_value=None)
         return ctx
-
-    @property
-    def pool(self):
-        return self._pool
 
 
 def _make_disconnect_conns(

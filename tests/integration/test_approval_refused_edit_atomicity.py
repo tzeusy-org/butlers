@@ -22,6 +22,7 @@ from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as routes
 from butlers.testing.db import open_pool
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
 
 pytestmark = [
@@ -52,20 +53,6 @@ async def databases(fresh_db):
                 "SELECT pg_backend_pid()"
             )
         yield owner, observer
-
-
-class _DbManager:
-    butler_names = ["home"]
-
-    def __init__(self, pool):
-        self._pool = pool
-
-    def pool(self, name):
-        assert name == "home"
-        return self._pool
-
-    def butlers_with_module(self, module):
-        return self.butler_names if module == "approvals" else []
 
 
 class _UnavailableDaemon:
@@ -104,7 +91,9 @@ async def test_owner_edit_requires_successful_decision(databases, monkeypatch, b
         OwnerAuthMiddleware, config=OwnerAuthConfig(origin=None, rp_id=None, api_key=key)
     )
     app.include_router(routes.router)
-    app.dependency_overrides[get_db] = lambda: _DbManager(owner)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"home": owner}, modules={"home": ["approvals"]}
+    )
     app.dependency_overrides[routes.get_mcp_manager] = lambda: daemon
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

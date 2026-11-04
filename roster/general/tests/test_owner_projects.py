@@ -17,6 +17,7 @@ import json
 import shutil
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import asyncpg
 import httpx
@@ -26,8 +27,10 @@ from sqlalchemy import create_engine, text
 from alembic import command
 from butlers.api import dashboard_audit_middleware
 from butlers.api.app import create_app
+from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db_optional
 from butlers.migrations import _build_alembic_config
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import assert_at_chain_head
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
@@ -67,21 +70,6 @@ def _create(**overrides) -> dict:
     return {"kind": "project", "idempotency_key": "move-1", **_charter(), **overrides}
 
 
-class _Manager:
-    """Dashboard DB-manager seam that counts pool requests; no pool means unavailable."""
-
-    def __init__(self, pool: asyncpg.Pool | None = None) -> None:
-        self.serving = pool
-        self.calls = 0
-
-    def pool(self, name: str) -> asyncpg.Pool:
-        assert name == "general"
-        self.calls += 1
-        if self.serving is None:
-            raise KeyError("synthetic unavailable")
-        return self.serving
-
-
 class _OwnerSession(_DomainOwnerState):
     """The owner's verified dashboard session (session digest present)."""
 
@@ -91,7 +79,10 @@ class _OwnerSession(_DomainOwnerState):
 
 @pytest.fixture
 def seams(monkeypatch):
-    observed = SimpleNamespace(manager=_Manager(), generic=[])
+    # No general pool means unavailable; counting requests proves refusals never reach it.
+    manager = db_manager({})
+    monkeypatch.setattr(manager, "pool", Mock(wraps=manager.pool))
+    observed = SimpleNamespace(manager=manager, generic=[])
 
     async def record_generic(_db_manager, **fields) -> None:
         observed.generic.append(fields)
@@ -101,7 +92,7 @@ def seams(monkeypatch):
     return observed
 
 
-def _mounted(manager: _Manager, app=None, *, session: bool = False):
+def _mounted(manager: DatabaseManager, app=None, *, session: bool = False):
     app = app if app is not None else create_authenticated_domain_app()
     if session:
         app.state.owner_auth_service = _OwnerSession(_OWNER_KEY)
@@ -131,7 +122,7 @@ async def test_non_owner_and_non_session_writers_are_refused_before_pool_or_body
         for method, path, body in [("GET", _ROUTE, None), *_WRITES]:
             response = await http.request(method, path, json=body)
             assert response.status_code == 401, (method, path)
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
 
     # An owner API key (a runtime, script or connector stand-in) has owner control
     # but no dashboard session: every write is refused before its body or pool.
@@ -142,11 +133,11 @@ async def test_non_owner_and_non_session_writers_are_refused_before_pool_or_body
                 403,
                 "OWNER_SESSION_REQUIRED",
             ), (method, path)
-        assert seams.manager.calls == 0
+        assert seams.manager.pool.call_count == 0
         # Positive control: the same caller can read, reaching the (unavailable) pool.
         listed = await http.get(_ROUTE)
     assert (listed.status_code, listed.json()["error"]["code"]) == (503, "PROJECTS_UNAVAILABLE")
-    assert seams.manager.calls == 1
+    assert seams.manager.pool.call_count == 1
 
 
 @pytest.mark.unit
@@ -170,7 +161,7 @@ async def test_crafted_or_invalid_create_is_refused_without_pool(seams, payload:
     async with _client(_mounted(seams.manager, session=True)) as http:
         response = await http.post(_ROUTE, json=payload)
     assert (response.status_code, response.json()["error"]["code"]) == (422, "INVALID_REQUEST")
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
 
 
 @pytest.mark.unit
@@ -199,7 +190,7 @@ async def test_links_take_typed_opaque_ids_only(
             f"{_ROUTE}/{_FIXED_ID}/links", json={"ref_kind": ref_kind, "ref_id": ref_id}
         )
     assert response.status_code == (503 if accepted else 422)
-    assert seams.manager.calls == (1 if accepted else 0)
+    assert seams.manager.pool.call_count == (1 if accepted else 0)
 
 
 class _DriveModule:
@@ -301,7 +292,7 @@ async def test_drive_file_reader_returns_name_and_type_only(
         assert "Unknown tool" not in response.text
     # A malformed id never reaches Drive; nothing touches the project pool.
     assert len(module.calls) == (0 if path_id == "a.b" or module.unreachable else 1)
-    assert seams.manager.calls == 0
+    assert seams.manager.pool.call_count == 0
 
     # A non-owner is refused before the Drive module is asked.
     no_owner = _mounted(seams.manager, create_app(api_key=_OWNER_KEY))
@@ -355,7 +346,7 @@ async def test_project_lifecycle_versions_links_and_no_side_effects(
         raise AssertionError("owner projects must make no outbound call")
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", no_network)
-    seams.manager.serving = pool
+    seams.manager = db_manager({"general": pool})
     before = await _row_counts(pool)
 
     async with _client(_mounted(seams.manager, session=True)) as http:
@@ -464,7 +455,7 @@ async def test_database_freezes_terminal_projects_and_edits_persist_due_expiry(
 ) -> None:
     """Below the API, a closed or expired project takes no version or link change."""
     pool = projects_pool
-    seams.manager.serving = pool
+    seams.manager = db_manager({"general": pool})
     async with _client(_mounted(seams.manager, session=True)) as http:
         closed = (await http.post(_ROUTE, json=_create(idempotency_key="c1"))).json()["data"]
         await http.post(

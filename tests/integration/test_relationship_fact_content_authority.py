@@ -136,7 +136,7 @@ async def env(postgres_container):
         parsed.username,
     )
 
-    async def pool(schema, role=None, *, database_url=url):
+    async def open_pool(schema, role=None, *, database_url=url):
         async def setup(conn):
             if role:
                 await conn.execute(f"SET ROLE {role}")
@@ -150,11 +150,11 @@ async def env(postgres_container):
             server_settings={"search_path": f"{schema},public"},
         )
 
-    admin = await pool("public")
+    admin = await open_pool("public")
     # Bootstrap already owns the disposable control login; no membership is
     # added to the normal migration login. The real service SET LOCAL ROLE
     # exercises only the existing dashboard_auth_api capability on every call.
-    auth = await pool(
+    auth = await open_pool(
         "public",
         database_url=urlparse(
             migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/"))
@@ -162,8 +162,8 @@ async def env(postgres_container):
         ._replace(scheme="postgresql")
         .geturl(),
     )
-    rel = await pool("relationship", "butler_relationship_rw")
-    switchboard = await pool("switchboard", "butler_switchboard_rw")
+    rel = await open_pool("relationship", "butler_relationship_rw")
+    switchboard = await open_pool("switchboard", "butler_switchboard_rw")
     owner = await admin.fetchval(
         "INSERT INTO public.entities(canonical_name,entity_type,roles) "
         "VALUES('Synthetic owner','person',ARRAY['owner']) RETURNING id"
