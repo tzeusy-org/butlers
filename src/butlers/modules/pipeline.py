@@ -3160,12 +3160,17 @@ class MessagePipeline:
                                         extra={
                                             "source_channel": source,
                                             "failure_class": type(exc).__name__,
+                                            "cause_class": getattr(exc, "failure_class", None),
                                         },
                                     )
                                 else:
                                     logger.warning(
                                         "pipeline.identity_resolution_failed",
-                                        extra={"failure_class": type(exc).__name__},
+                                        extra={
+                                            "failure_class": type(exc).__name__,
+                                            # Content-blind inner class (bu-n7zmbp.20).
+                                            "cause_class": getattr(exc, "failure_class", None),
+                                        },
                                     )
 
                     if _decomp_messages is not None:

@@ -48,7 +48,7 @@ _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
 _ROUTE_RECHECK_DEADLINE_S = PROBE_DEADLINE_S + 2.0
 
 
-async def _resolve_receiver_route_target(
+async def resolve_receiver_route_target(
     pool: asyncpg.Pool,
     target_butler: str,
     *,
@@ -498,7 +498,7 @@ async def route(
             receiver_cutover = receiver_route_cutover_enabled()
             transient_refusal = False
             if receiver_cutover or finance_warning_call is not None:
-                decision, resolve_error, transient_refusal = await _resolve_receiver_route_target(
+                decision, resolve_error, transient_refusal = await resolve_receiver_route_target(
                     operation_pool,
                     target_butler,
                     required_capability=required_capability,

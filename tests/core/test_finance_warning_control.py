@@ -512,7 +512,7 @@ async def test_actual_route_forces_current_receiver_even_cutover_off_and_binds_h
         boot_epoch=finance._boot_epoch,
     )
     current = AsyncMock(return_value=(decision, "ready", False))
-    monkeypatch.setattr(route_mod, "_resolve_receiver_route_target", current)
+    monkeypatch.setattr(route_mod, "resolve_receiver_route_target", current)
     legacy = AsyncMock(side_effect=AssertionError("legacy route must not authorize fixed read"))
     monkeypatch.setattr(route_mod, "resolve_routing_target", legacy)
     monkeypatch.setattr(route_mod, "receiver_route_cutover_enabled", lambda: False)
@@ -1002,7 +1002,7 @@ async def test_actual_route_native_release_stays_owned_until_shutdown_settlement
     else:
         monkeypatch.setattr(
             route,
-            "_resolve_receiver_route_target",
+            "resolve_receiver_route_target",
             AsyncMock(return_value=(decision, "ready", False)),
         )
 
