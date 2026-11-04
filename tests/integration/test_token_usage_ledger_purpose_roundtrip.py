@@ -38,7 +38,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity, record_token_usage, resolve_model
 
 docker_available = shutil.which("docker") is not None

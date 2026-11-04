@@ -31,12 +31,20 @@ import logging
 from datetime import datetime
 from typing import Any
 
-from butlers.connectors.metrics import health_wellness_ingest_total
 from butlers.credential_store import resolve_owner_entity_info
 from butlers.google_account_registry import list_health_scoped_accounts
+from butlers.metrics_registry import get_or_create_counter
 from butlers.modules.memory.tools.writing import memory_store_fact
 
 logger = logging.getLogger(__name__)
+
+# Health butler wellness ingest metrics
+health_wellness_ingest_total = get_or_create_counter(
+    "health_wellness_ingest_total",
+    "Total wellness ingest events by predicate and outcome",
+    labelnames=["predicate", "outcome"],
+)
+
 
 # ---------------------------------------------------------------------------
 # Per-session cache — recognised owner identity set

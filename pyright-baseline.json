@@ -1131,8 +1131,6 @@
     "[\"src/butlers/cli_auth/session.py\", \"reportGeneralTypeIssues\", \"733022ea05820687dda3f9059fba051aafaf4386bbbf21d069916d1e886616a1\"]": 1,
     "[\"src/butlers/cli_auth/session.py\", \"reportOptionalMemberAccess\", \"75e50aa1ed8d2826f602bf800b16ceaa77ee4c7079d67e974690673ad42c5036\"]": 3,
     "[\"src/butlers/connectors/discretion.py\", \"reportArgumentType\", \"9c3a76030a7506e1c9644c780b88b7164ad7f84fb1513037ebcaa65de2356573\"]": 1,
-    "[\"src/butlers/connectors/discretion_dispatcher.py\", \"reportArgumentType\", \"730eccb386eaf47161f5422643caf1960f01d2bfe9fb2e804b17b39c3ada63b4\"]": 1,
-    "[\"src/butlers/connectors/discretion_dispatcher.py\", \"reportArgumentType\", \"a86d10a48796bc43c635f5b24a457cd5035cb124fbcff0b41f50a5fd78778e01\"]": 1,
     "[\"src/butlers/connectors/gmail.py\", \"reportArgumentType\", \"1fab840b7e17dd11e8221ad0471163311f55aa98cb5c503519c7d1cedc9e8623\"]": 1,
     "[\"src/butlers/connectors/gmail.py\", \"reportArgumentType\", \"4b071fa54e1b824ba4da63c3c86727656e755f94ba6b669c69bce2d1c70b9d5d\"]": 1,
     "[\"src/butlers/connectors/gmail.py\", \"reportArgumentType\", \"68ab07ea5aec89843d0fc71a8cac0b121b3e9ac66fd559942f7c008195b02dd7\"]": 1,

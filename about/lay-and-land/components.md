@@ -145,7 +145,7 @@ source) and the connector services in `docker-compose.yml`. Health ports are in
 | **ConnectorMetrics** | `connectors/metrics.py` | Prometheus counters/histograms for connector-level observability. |
 | **CursorStore** | `connectors/cursor_store.py` | Durable checkpoint persistence for restart-safe resume. |
 | **Discretion** | `connectors/discretion.py` | LLM-based filter evaluating messages in sliding context window. Fail-open. Owner messages bypass. |
-| **DiscretionDispatcher** | `connectors/discretion_dispatcher.py` | Dispatches discretion calls to the configured LLM backend. |
+| **DiscretionDispatcher** | `core/discretion_dispatcher.py` | Dispatches discretion calls to the configured LLM backend. |
 | **FilteredEventBuffer** | `connectors/filtered_event_buffer.py` | Buffering layer between connector poll loop and MCP submission. |
 | **GmailPolicy** | `connectors/gmail_policy.py` | Gmail-specific ingestion policy (label filtering, sender rules). |
 | **HealthSocket** | `connectors/health_socket.py` | HTTP health/readiness endpoint shared by all connectors. |

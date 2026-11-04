@@ -24,8 +24,8 @@ from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core import baselines as baselines_core
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
 from butlers.core.health_baseline_metrics import METRICS as BASELINE_METRICS
 from butlers.core.model_routing import Complexity

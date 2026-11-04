@@ -283,7 +283,7 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row
   per checkpoint). Since sw_031 the role is persisted in `operational_role` (`runtime_instance`,
   `checkpoint`, `unknown`) with `parent_endpoint_identity`; the vocabulary is
-  `butlers.connectors.registry_roles`. Only `runtime_instance` rows carry liveness authority;
+  `butlers.core.connector_registry_roles`. Only `runtime_instance` rows carry liveness authority;
   heartbeat promotion is one-way; `save_cursor` stamps `checkpoint` on INSERT only, never in its
   `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
   `unclassified`, and make every new writer declare a role and every new consumer filter by it.
