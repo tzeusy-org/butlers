@@ -218,7 +218,6 @@
   "generalist-lead-focused-delegation/qa-investigation-dispatch/QA Self-Recursion Barrier": "d8d9cabd5c0ec2d82c65c6868a7e6a34703c17e316aace788bccf49959f78d28",
   "generalist-lead-focused-delegation/qa-investigation-dispatch/Structured Evidence Payloads": "da43b88fa26042549506f40da196b0d9c5bdcf11f49bcd3151980b121a2e233c",
   "generalist-lead-focused-delegation/relationship-facts/Fact writes persist an immutable typed evidence packet": "1b96033bb30bfa0126ebf9901a9ecafc2e64f254ebf098f843cde3b8d14482d6",
-  "generalist-lead-focused-delegation/runtime-opencode/Environment Variable Handling": "5d4a19e21720d17d653b878a7619bfcb9ad26b85c31d8ad5f4f7a95c4dd23266",
   "generalist-lead-focused-delegation/runtime-opencode/MCP Server Configuration": "7c14b644a44284c3301460b6ac287f69013307d39ec30f7f48c4d2623369485f",
   "generalist-lead-focused-delegation/runtime-opencode/System Prompt Handling": "872bc0212eb7aee61cd390adbfbec9282df45f5a53ac91e13329ecc75f80ff2e",
   "generalist-lead-focused-delegation/runtime-opencode/Temporary Config File Generation": "f223fe28998c183b6caeb5808bb6a8ff29c94b292b6df6654f2a3014e4a2029e",

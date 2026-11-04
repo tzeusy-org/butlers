@@ -127,6 +127,12 @@ class InvocationOwner:
         # No await before ownership: concurrent reuse cannot launch twice.
         self._seen.add(request.invocation_id)
         try:
+            # Resolve only an inert, resource-free host profile. Ineligible
+            # tuples fail before any credential material is allocated.
+            domain = factory()
+        except BaseException:
+            raise Refused("domain_unavailable") from None
+        try:
             material = InvocationMaterial.stage(self._root, request)
         except StagingCleanupFailed as error:
             self._quarantine(error.material)
@@ -136,11 +142,6 @@ class InvocationOwner:
             # could be returned. Never guess that a partial directory is gone.
             self._healthy = False
             raise Refused("staging_failed") from None
-        try:
-            domain = factory()
-        except BaseException:
-            self._discard(material)
-            raise Refused("domain_unavailable") from None
         work = self._start(_execute(domain, material), material)
         cancelled = False
         output: bytes | None = None
