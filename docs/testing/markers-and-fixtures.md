@@ -109,8 +109,10 @@ await booted.shutdown()                           # optional; teardown shuts dow
   with the Switchboard's own `seed_missing_roster_butlers`, so the boot commits an
   epoch and accepts routes. The butler's name must then match its schema's runtime
   role (`butler_<name>_rw`, e.g. name and schema both `general`).
-- Startup's `configure_logging` replaces root-logger handlers process-wide. The
-  kit restores them after shutdown so pytest's capture keeps working.
+- Startup's `configure_logging` replaces root-logger handlers process-wide,
+  dropping pytest's capture handlers. The kit re-attaches them as soon as startup
+  returns, so `caplog` records what the running daemon logs, and restores the
+  original handlers after shutdown.
 - Async tests that use it carry `pytest.mark.asyncio(loop_scope="session")`.
   `tests/testing/test_kit_booted_daemon.py` reports the cost of one boot as
   `DAEMON-BOOT-SECONDS`.

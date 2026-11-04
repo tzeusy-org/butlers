@@ -194,6 +194,19 @@ class _LoggingSnapshot:
             for name in _NOISE_LOGGERS
         }
 
+    def reattach(self) -> None:
+        """Put back the pre-boot root handlers that startup's ``configure_logging`` dropped.
+
+        It closes and removes every non-file console handler, pytest's capture
+        handlers included; without them ``caplog`` records nothing while the daemon
+        runs, and a "not in caplog.text" check passes vacuously. The daemon's own
+        handlers stay.
+        """
+        root = logging.getLogger()
+        for handler in self._root[0]:
+            if handler not in root.handlers:
+                root.addHandler(handler)
+
     def restore(self) -> None:
         root = logging.getLogger()
         handlers, filters, level = self._root
@@ -386,6 +399,7 @@ class DaemonBooter:
             finally:
                 logs.restore()
             raise
+        logs.reattach()
         booted = BootedDaemon(
             daemon,
             f"http://127.0.0.1:{config.port}/mcp",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import statistics
 import time
 import warnings
@@ -58,6 +59,22 @@ async def test_booted_daemon_serves_a_tool_and_shuts_down_clean(booted_daemon, t
     await asyncio.sleep(0)
     leaked = _live_tasks() - before - {asyncio.current_task()}
     assert not leaked, sorted(task.get_name() for task in leaked)
+
+
+@session_loop
+async def test_caplog_still_captures_daemon_logs_after_boot(
+    booted_daemon, tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Startup's configure_logging replaces the root logger's console handlers, which
+    # would silently drop pytest's capture handler: every "not in caplog.text" check
+    # on a booted daemon would then pass vacuously.
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+
+    with caplog.at_level("INFO"):
+        logging.getLogger("butlers.core_tools._routing").info("kit capture probe")
+        await booted.call_tool("status")
+
+    assert "kit capture probe" in caplog.text
 
 
 @session_loop
