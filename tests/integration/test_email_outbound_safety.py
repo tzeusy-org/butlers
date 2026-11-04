@@ -35,6 +35,7 @@ from butlers.modules.telegram import TelegramModule
 from butlers.modules.whatsapp import WhatsAppModule
 from butlers.testing.approval_parking_fake import record_pending_action
 from butlers.testing.mcp import tool_fn
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
@@ -349,33 +350,15 @@ def _make_daemon_patches() -> dict[str, Any]:
 
 
 async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
-    """Boot a daemon and extract the notify tool function."""
-    patches = _make_daemon_patches()
-    runtime_mcp = FastMCP("email-outbound-notify")
+    """The daemon's real notify on a DB-free host: no lifecycle runs (bu-rvgzmf.2).
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["RuntimeConfigAccessor"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        notify_tool = await runtime_mcp.get_tool("notify")
-        assert notify_tool is not None
-        return daemon, notify_tool.fn
+    notify's outbound-safety decisions are the subject, not the boot.
+    """
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock()
+    host = await host_tools(butler_dir, pool=mock_pool)
+    return host.daemon, await host.tool("notify")
 
 
 def _mock_switchboard_client() -> Any:
