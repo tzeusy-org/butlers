@@ -169,17 +169,20 @@ def write_butler_config(
     schema: str = "general",
     description: str = "booted_daemon test butler",
     extra_toml: str = "",
+    port: int = 0,
 ) -> Path:
     """Write ``root/name/butler.toml`` for a one-db butler the kit can boot.
 
     *schema* must have a runtime role (``butler_<schema>_rw``); for
     ``registered=True`` boots, *name* must equal it. *extra_toml* is appended as is,
-    for example ``[modules.x]`` or ``[butler.security]`` sections.
+    for example ``[modules.x]`` or ``[butler.security]`` sections. *port* is the
+    roster port; the kit always serves on a free one, but a Switchboard validates the
+    roster's ports on startup, so it needs a real one.
     """
     config_dir = root / name
     config_dir.mkdir(parents=True)
     (config_dir / "butler.toml").write_text(
-        f'[butler]\nname = "{name}"\nport = 0\ndescription = "{description}"\n\n'
+        f'[butler]\nname = "{name}"\nport = {port}\ndescription = "{description}"\n\n'
         f'[butler.db]\nname = "butlers"\nschema = "{schema}"\n\n{extra_toml}'
     )
     return config_dir

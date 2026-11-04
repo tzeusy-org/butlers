@@ -38,6 +38,19 @@ def test_write_butler_config_writes_a_bootable_one_db_butler(tmp_path) -> None:
     assert set(config.trusted_route_callers) == {"switchboard", "health"}
 
 
+@session_loop
+async def test_a_switchboard_boots_when_its_roster_port_is_valid(booted_daemon, tmp_path) -> None:
+    # The Switchboard derives control-plane identities from the roster on startup,
+    # and a roster port of 0 is invalid there. The kit still serves on a free port.
+    config_dir = write_butler_config(tmp_path, "switchboard", schema="switchboard", port=41100)
+
+    booted = await booted_daemon(config_dir, "core", "switchboard")
+
+    assert booted.daemon.config.name == "switchboard"
+    assert booted.daemon.switchboard_client is None
+    assert (await booted.call_tool("status"))["health"] == "ok"
+
+
 def _live_tasks() -> set[asyncio.Task]:
     return {task for task in asyncio.all_tasks() if not task.done()}
 
