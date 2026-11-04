@@ -493,3 +493,112 @@ class DaemonBooter:
         finally:
             for name, adapter in self._production_adapters.items():
                 register_adapter(name, adapter)
+
+
+class SharedDaemonMutated(AssertionError):
+    """A test using a shared daemon changed state the next test would see."""
+
+
+_SHARED_FINGERPRINT_TABLES = ("route_inbox", "sessions")
+
+
+class SharedDaemons:
+    """One boot per module and configuration, for tests that only read daemon state.
+
+    The root ``conftest.py`` exposes it as the ``shared_booted_daemon`` fixture:
+    ``booted = await shared_booted_daemon(registered=True)`` returns the module's
+    boot for that configuration, booting it on first use. Sharing is made safe in
+    two ways:
+
+    - Before each test the fake runtime is reset: no invocations, no queued script,
+      ``supports_resume`` off. Logs and spans are per-test already (``caplog``, the
+      test's own exporter).
+    - After each test, :meth:`verify` compares durable daemon state with what the
+      test was handed: row counts in ``route_inbox`` and ``sessions``, and the
+      loaded config. Any change fails the test with
+      :class:`SharedDaemonMutated` and retires that boot, so the next test gets a
+      fresh one. A test that routes, triggers a session, scripts the runtime or
+      changes config therefore belongs on ``booted_daemon``.
+
+    Patch with ``monkeypatch`` only; it is undone before the next test.
+    """
+
+    def __init__(self, booter: DaemonBooter, tmp_root: Path) -> None:
+        self._booter = booter
+        self._tmp_root = tmp_root
+        self._boots: dict[tuple[Any, ...], BootedDaemon] = {}
+        self._handed: list[tuple[tuple[Any, ...], BootedDaemon, tuple[Any, ...]]] = []
+
+    async def __call__(
+        self,
+        name: str = "general",
+        *chains: str,
+        schema: str | None = None,
+        extra_toml: str = "",
+        registered: bool = False,
+        credentials: dict[str, str] | None = None,
+    ) -> BootedDaemon:
+        schema = schema or name
+        key = (
+            name,
+            chains,
+            schema,
+            extra_toml,
+            registered,
+            tuple(sorted((credentials or {}).items())),
+        )
+        booted = self._boots.get(key)
+        if booted is None:
+            config_dir = write_butler_config(
+                self._tmp_root / f"shared-{len(self._boots)}-{_free_port()}",
+                name,
+                schema=schema,
+                extra_toml=extra_toml,
+            )
+            booted = await self._booter.boot(
+                config_dir, *chains, registered=registered, credentials=credentials
+            )
+            self._boots[key] = booted
+        _reset_runtime(booted.runtime)
+        if not any(handed is booted for _, handed, _ in self._handed):
+            self._handed.append((key, booted, await _fingerprint(booted)))
+        return booted
+
+    async def verify(self) -> None:
+        """Fail, and retire the boot, if this test changed what it was handed."""
+        handed, self._handed = self._handed, []
+        changes = []
+        for key, booted, before in handed:
+            after = await _fingerprint(booted)
+            if after != before:
+                changes.append(_describe_change(before, after))
+                self._boots.pop(key, None)
+                await booted.shutdown()
+        if changes:
+            raise SharedDaemonMutated(
+                "a shared_booted_daemon test changed daemon state ("
+                + "; ".join(changes)
+                + "); use booted_daemon for tests that change state"
+            )
+
+
+def _reset_runtime(runtime: FakeRuntime) -> None:
+    runtime.invocations.clear()
+    runtime._script.clear()
+    runtime.__dict__.pop("supports_resume", None)
+    runtime._last_process_info = None
+
+
+async def _fingerprint(booted: BootedDaemon) -> tuple[Any, ...]:
+    pool = booted.daemon.db.pool
+    counts = []
+    for table in _SHARED_FINGERPRINT_TABLES:
+        counts.append((table, await pool.fetchval(f"SELECT count(*) FROM {table}")))
+    return (tuple(counts), ("config", repr(booted.daemon.config)))
+
+
+def _describe_change(before: tuple[Any, ...], after: tuple[Any, ...]) -> str:
+    pairs = list(zip(before[0], after[0], strict=True)) + list(
+        zip(before[1:], after[1:], strict=True)
+    )
+    return ", ".join(f"{was[0]} {was[1]!r} -> {now[1]!r}" for was, now in pairs if was != now)[:500]

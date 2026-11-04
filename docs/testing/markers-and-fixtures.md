@@ -109,6 +109,15 @@ await booted.shutdown()                           # optional; teardown shuts dow
 - `booted_daemon(config_dir, credentials={...})` stores synthetic module
   credentials in the butler's secret store before start; module credential checks
   read only that store, never the environment.
+- `shared_booted_daemon` shares one boot per module and configuration among tests
+  that only read daemon state (rejections, tool listings, status):
+  `booted = await shared_booted_daemon("general", registered=True)` takes the same
+  name, chains, `schema=`, `extra_toml=` and `credentials=` as a boot. The fake
+  runtime is reset before each test. After each test the kit compares `route_inbox`
+  and `sessions` row counts and the loaded config with what the test was handed;
+  any change fails the test with `SharedDaemonMutated` and replaces that boot.
+  Tests that route, run a session or change config use `booted_daemon`; patch a
+  shared daemon only through `monkeypatch`.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
   sets environment seams: file logs under a temp root, MCP warmup off (it is an
