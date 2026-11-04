@@ -47,20 +47,11 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    """Provision a trusted core + Switchboard migration topology."""
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-        pool_schema="switchboard",
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """A trusted core + Switchboard migration topology."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    try:
-        yield p
-    finally:
-        await p.close()
 
 
 @pytest.fixture
@@ -372,7 +363,7 @@ _MOCK_BUTLERS = [
 
 
 @pytest.mark.integration
-async def test_ingest_conversation_history_persists_payload_type(pool):
+async def test_ingest_conversation_history_persists_payload_type(switchboard_pool):
     """ingest_v1 with payload_type='conversation_history' persists correctly to DB.
 
     Verifies:
@@ -384,14 +375,14 @@ async def test_ingest_conversation_history_persists_payload_type(pool):
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
     envelope = _build_conversation_history_envelope()
-    response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
+    response = await ingest_v1(switchboard_pool, envelope, enable_thread_affinity=False)
 
     assert response.status == "accepted"
     assert not response.duplicate
     assert response.request_id is not None
 
     # Verify the row was persisted with correct metadata
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT request_context, raw_payload, lifecycle_state FROM message_inbox WHERE id = $1",
         response.request_id,
     )
@@ -418,7 +409,7 @@ async def test_ingest_conversation_history_persists_payload_type(pool):
 
 
 @pytest.mark.integration
-async def test_decomposition_flow_full_pipeline(pool):
+async def test_decomposition_flow_full_pipeline(switchboard_pool):
     """Full end-to-end decomposition flow: ingest → pipeline → DB output stored.
 
     Verifies all five acceptance criteria:
@@ -433,7 +424,7 @@ async def test_decomposition_flow_full_pipeline(pool):
 
     # Step 1: Ingest the conversation_history batch envelope
     envelope = _build_conversation_history_envelope(event_id=f"evt-decomp-{uuid.uuid4()}")
-    ingest_response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
+    ingest_response = await ingest_v1(switchboard_pool, envelope, enable_thread_affinity=False)
     assert ingest_response.status == "accepted"
     message_inbox_id = ingest_response.request_id
 
@@ -476,7 +467,7 @@ async def test_decomposition_flow_full_pipeline(pool):
         ),
     ):
         pipeline = MessagePipeline(
-            switchboard_pool=pool,
+            switchboard_pool=switchboard_pool,
             dispatch_fn=mock_dispatch,
         )
 
@@ -525,7 +516,7 @@ async def test_decomposition_flow_full_pipeline(pool):
     }
 
     # --- Acceptance criterion 5: decomposition_output stored with metadata ---
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT decomposition_output, lifecycle_state FROM message_inbox WHERE id = $1",
         message_inbox_id,
     )
@@ -1202,7 +1193,7 @@ async def test_real_telegram_producer_decomposes_with_authoritative_speaker_anch
 
 
 @pytest.mark.integration
-async def test_decomposition_empty_signals_stores_decomposed_empty(pool):
+async def test_decomposition_empty_signals_stores_decomposed_empty(switchboard_pool):
     """When LLM returns empty signals, lifecycle_state is decomposed_empty.
 
     Verifies that the pipeline correctly short-circuits and stores an
@@ -1213,7 +1204,7 @@ async def test_decomposition_empty_signals_stores_decomposed_empty(pool):
 
     # Ingest a fresh batch envelope
     envelope = _build_conversation_history_envelope(event_id=f"evt-empty-{uuid.uuid4()}")
-    ingest_response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
+    ingest_response = await ingest_v1(switchboard_pool, envelope, enable_thread_affinity=False)
     assert ingest_response.status == "accepted"
     message_inbox_id = ingest_response.request_id
 
@@ -1235,7 +1226,7 @@ async def test_decomposition_empty_signals_stores_decomposed_empty(pool):
         patch("butlers.tools.switchboard.routing.route.route", new_callable=AsyncMock),
     ):
         pipeline = MessagePipeline(
-            switchboard_pool=pool,
+            switchboard_pool=switchboard_pool,
             dispatch_fn=mock_dispatch_empty,
         )
 
@@ -1254,7 +1245,7 @@ async def test_decomposition_empty_signals_stores_decomposed_empty(pool):
     assert result.routed_targets == []
 
     # DB should reflect empty decomposition
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT decomposition_output, lifecycle_state FROM message_inbox WHERE id = $1",
         message_inbox_id,
     )
@@ -1270,7 +1261,7 @@ async def test_decomposition_empty_signals_stores_decomposed_empty(pool):
 
 
 @pytest.mark.integration
-async def test_decomposition_no_conversation_history_in_db(pool):
+async def test_decomposition_no_conversation_history_in_db(switchboard_pool):
     """When message_inbox row has no conversation_history, returns decomposed_empty.
 
     This covers the case where the raw_payload does not contain a
@@ -1282,11 +1273,11 @@ async def test_decomposition_no_conversation_history_in_db(pool):
     received_at = datetime.now(UTC)
     row_id = uuid.uuid4()
 
-    await pool.execute(
+    await switchboard_pool.execute(
         "SELECT switchboard_message_inbox_ensure_partition($1)",
         received_at,
     )
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         INSERT INTO message_inbox (
             id, received_at, request_context, raw_payload,
@@ -1322,7 +1313,7 @@ async def test_decomposition_no_conversation_history_in_db(pool):
         raise AssertionError("dispatch_fn should not be called when no history found")
 
     pipeline = MessagePipeline(
-        switchboard_pool=pool,
+        switchboard_pool=switchboard_pool,
         dispatch_fn=mock_dispatch,
     )
 

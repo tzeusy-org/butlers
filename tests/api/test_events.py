@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -247,7 +248,8 @@ async def test_audit_append_error_emits_issue_event():
     from butlers.api.routers.audit import append
     from butlers.api.routers.events import _events_ring
 
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.is_closing.return_value = False
     pool.fetchval = AsyncMock(return_value=42)
 
     row_id = await append(
@@ -272,7 +274,8 @@ async def test_audit_append_success_does_not_emit_issue_event():
     from butlers.api.routers.audit import append
     from butlers.api.routers.events import _events_ring
 
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
+    pool.is_closing.return_value = False
     pool.fetchval = AsyncMock(return_value=1)
 
     await append(pool, "home", "spend.rule.create", result="success")

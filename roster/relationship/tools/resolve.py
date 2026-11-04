@@ -540,25 +540,27 @@ async def _compute_salience(
     )
     contact_data = {row["id"]: row for row in contact_data_rows}
 
-    # Batch query 2: Relationship types (graceful — table may not exist yet)
+    # Batch query 2: Relationship types. Only a missing table is tolerated; any
+    # other database error (a renamed column, a bad join) must fail loudly rather
+    # than silently zeroing every candidate's relationship boost.
     try:
         rel_rows = await pool.fetch(
             """
             SELECT DISTINCT ON (contact_id)
                 CASE
-                    WHEN r.contact_id = ANY($1) THEN r.contact_id
-                    ELSE r.related_contact_id
+                    WHEN r.contact_a = ANY($1) THEN r.contact_a
+                    ELSE r.contact_b
                 END as contact_id,
                 rt.forward_label
             FROM relationships r
             JOIN relationship_types rt ON r.relationship_type_id = rt.id
-            WHERE r.contact_id = ANY($1) OR r.related_contact_id = ANY($1)
+            WHERE r.contact_a = ANY($1) OR r.contact_b = ANY($1)
             ORDER BY contact_id, r.created_at DESC
             """,
             candidate_ids,
         )
         relationships = {row["contact_id"]: row["forward_label"] for row in rel_rows}
-    except asyncpg.PostgresError:
+    except asyncpg.UndefinedTableError:
         relationships = {}
 
     # Batch query 3: Interaction counts and recency (last 90 days).

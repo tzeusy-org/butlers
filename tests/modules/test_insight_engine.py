@@ -25,12 +25,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.testing.clock import FakeClock
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 
@@ -114,41 +111,21 @@ class TestInsightExpiryHelpers:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the actual shared context/policy schema once for this module."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def insight_pool(migrated_db_url: str):
-    """Reset test-owned Insight state on the migrated core schema."""
+async def insight_pool(db_pool):
+    """Test-owned Insight state on a fresh core-migrated clone."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    await create_insight_tables(db_pool)
+    # The core chain seeds the insight_settings singleton; tests start without it.
+    await db_pool.execute("TRUNCATE insight_settings")
+    await _set_owner_attention_policy(
+        db_pool,
+        quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
+        quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
+        timezone=_DEFAULT_QUIET_TIMEZONE,
     )
-    try:
-        await create_insight_tables(pool)
-        await pool.execute("""
-            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
-                insight_candidates, insight_cooldowns, insight_settings,
-                attention_daily_rollup
-        """)
-        await pool.execute("""
-            UPDATE public.user_context
-            SET superseded_at = now()
-            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
-        """)
-        await _set_owner_attention_policy(
-            pool,
-            quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
-            quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
-            timezone=_DEFAULT_QUIET_TIMEZONE,
-        )
-        yield pool
-    finally:
-        await pool.close()
+    return db_pool
 
 
 async def _insert_history_candidate(
@@ -186,14 +163,6 @@ async def _set_owner_attention_policy(
     pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None, timezone: str = "UTC"
 ) -> None:
     """Create the canonical test authority and set its complete/disabled window."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.approvals_policy (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            quiet_start_hour INTEGER,
-            quiet_end_hour INTEGER,
-            timezone TEXT NOT NULL DEFAULT 'UTC'
-        )
-    """)
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
@@ -1674,6 +1643,190 @@ class TestClusteredDigest:
         assert [[c["message"] for c in group] for group in first] == [
             [c["message"] for c in group] for group in second
         ]
+
+
+class _FakeTensionConn:
+    def __init__(self, log):
+        self.log = log
+
+    def transaction(self):
+        return _FakeAsyncCM(None)
+
+    async def execute(self, sql, *args):
+        self.log.append(("execute", " ".join(sql.split())[:40], args))
+
+    async def executemany(self, sql, rows):
+        self.log.append(("executemany", " ".join(sql.split())[:40], list(rows)))
+
+
+class _FakeAsyncCM:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeTensionPool:
+    """Records writes; ``members`` is what ``fetch`` returns for the sink lookup."""
+
+    def __init__(self, members=()):
+        self.log: list = []
+        self.members = list(members)
+
+    def acquire(self):
+        return _FakeAsyncCM(_FakeTensionConn(self.log))
+
+    async def fetch(self, sql, *args):
+        return self.members
+
+    async def fetchval(self, sql, *args):
+        return (args[0], args[1]) in getattr(self, "recorded", set())
+
+
+def _gift(idx: int, option: str, *, key: str = "gift:ent-1:2026-11-20", **extra) -> dict:
+    return {
+        "id": uuid.UUID(int=idx),
+        "origin_butler": "relationship",
+        "priority": 60,
+        "category": "pending-gift",
+        "dedup_key": f"relationship:pending-gift:{idx}",
+        "cooldown_days": None,
+        "message": f"Pending gift: {option}",
+        "metadata": {"entity_id": "ent-1", "choice": {"key": key, "option": option}, **extra},
+    }
+
+
+class TestTensionCluster:
+    """bu-7dpw8: a cluster whose members declare conflicting metadata.choice
+    options becomes one owner question instead of several digest lines."""
+
+    @pytest.mark.parametrize(
+        ("choices", "expected"),
+        [
+            ([("k", "tea"), ("k", "book")], True),
+            ([("k", "tea"), ("k", "tea")], False),  # same option is agreement
+            ([("k", "tea"), ("other", "book")], False),  # different keys never conflict
+            ([("k", "tea"), (None, None)], False),  # one declaration is not a tension
+            ([("k", "tea"), ("k", "")], False),  # malformed option ignored
+        ],
+    )
+    def test_is_tension_needs_same_key_with_different_options(self, choices, expected):
+        from butlers.tools.switchboard.insight.broker import _is_tension
+
+        cluster = []
+        for i, (key, option) in enumerate(choices, start=1):
+            metadata = {"entity_id": "e"}
+            if key is not None:
+                metadata["choice"] = {"key": key, "option": option}
+            cluster.append({"id": uuid.UUID(int=i), "dedup_key": f"a:b:{i}", "metadata": metadata})
+        assert _is_tension(cluster) is expected
+
+    async def test_tension_cluster_asks_one_question_and_leaves_the_digest(self):
+        from butlers.tools.switchboard.insight.broker import (
+            _format_digest,
+            absorb_tensions,
+        )
+
+        asked = []
+
+        async def confirm_fn(question):
+            asked.append(question)
+            return {"status": "asked"}
+
+        other = {
+            "id": uuid.UUID(int=9),
+            "origin_butler": "finance",
+            "priority": 50,
+            "category": "bill",
+            "dedup_key": "finance:bill:9",
+            "cooldown_days": None,
+            "message": "Rent due",
+            "metadata": {"entity_id": "ent-2"},
+        }
+        # Same entity links it into the cluster, but it declares no choice.
+        milestone = {
+            **other,
+            "id": uuid.UUID(int=8),
+            "dedup_key": "relationship:ms:8",
+            "message": "Milestone",
+            "metadata": {"entity_id": "ent-1"},
+        }
+        pool = _FakeTensionPool()
+        remaining, absorbed = await absorb_tensions(
+            pool, [_gift(1, "tea"), _gift(2, "book"), other, milestone], confirm_fn, budget=3
+        )
+        assert len(asked) == 1
+        assert [o.label for o in asked[0].options] == ["book", "tea"]
+        assert asked[0].member_ids == (str(uuid.UUID(int=1)), str(uuid.UUID(int=2)))
+        assert absorbed == 1
+        assert remaining == [other, milestone]
+        digest = await _format_digest(remaining)
+        assert "tea" not in digest and "Rent due" in digest and "Milestone" in digest
+        # members settle as delivered with the cluster ref stamped for the answer path
+        assert any(entry[0] == "execute" and "UPDATE" in entry[1] for entry in pool.log)
+
+    async def test_open_question_dedups_and_transport_failure_falls_back_to_digest(self):
+        from butlers.tools.switchboard.insight.broker import _tension_ref, absorb_tensions
+
+        a, b = _gift(1, "tea"), _gift(2, "book")
+        assert _tension_ref([a, b]) == _tension_ref([b, a])
+
+        seen: set[str] = set()
+
+        async def confirm_fn(question):
+            first = question.ref not in seen
+            seen.add(question.ref)
+            return {"status": "asked" if first else "open"}
+
+        pool = _FakeTensionPool()
+        for _ in range(2):  # identical tension re-detected next cycle
+            remaining, absorbed = await absorb_tensions(pool, [a, b], confirm_fn, budget=3)
+            assert remaining == [] and absorbed == 1
+        assert len(seen) == 1
+
+        for failing in (
+            AsyncMock(side_effect=RuntimeError("down")),
+            AsyncMock(return_value={"status": "error"}),
+            None,
+        ):
+            pool = _FakeTensionPool()
+            remaining, absorbed = await absorb_tensions(pool, [a, b], failing, budget=3)
+            assert remaining == [a, b] and absorbed == 0
+            assert pool.log == []
+
+    async def test_answer_records_feedback_on_every_member_once(self):
+        from butlers.tools.switchboard.insight import broker
+
+        members = [
+            {"id": uuid.UUID(int=i), "metadata": _gift(i, o)["metadata"]}
+            for i, o in ((1, "tea"), (2, "book"))
+        ]
+        pool = _FakeTensionPool(members)
+        with patch.object(
+            broker, "record_insight_feedback", AsyncMock(return_value={"status": "recorded"})
+        ) as record:
+            registration = broker.tension_sink_registration(pool)
+            assert registration.producer == "insight_broker"
+            receipt = await registration.apply(uuid.uuid4(), "ref-1", "o0")
+        assert receipt["status"] == "applied"
+        assert {c.kwargs["insight_id"] for c in record.await_args_list} == {
+            str(uuid.UUID(int=1)),
+            str(uuid.UUID(int=2)),
+        }
+        assert all(c.kwargs["verdict"] == "useful" for c in record.await_args_list)
+        assert all(c.kwargs["evidence_ref"].endswith(":book") for c in record.await_args_list)
+        # a retry after a lost receipt must not insert a second feedback row
+        pool.recorded = {(str(m["id"]), "tension:ref-1:book") for m in members}
+        with patch.object(broker, "record_insight_feedback", AsyncMock()) as again:
+            await registration.apply(uuid.uuid4(), "ref-1", "o0")
+        again.assert_not_awaited()
+        # expiry never reaches the sink (ConfirmService reports no_answer), and asking
+        # alone recorded no feedback.
+        assert {v for v in registration.values} == {"o0", "o1", "o2", "o3"}
 
 
 # ===========================================================================

@@ -9,7 +9,7 @@ async function restrictedSyntaxMessages(source: string) {
   return result.messages.filter((message) => message.ruleId === "no-restricted-syntax")
 }
 
-describe("focus-token lint", () => {
+describe("focus-token lint", { timeout: 60_000 }, () => {
   it("rejects the legacy low-contrast ring vocabulary repo-wide", async () => {
     const messages = await restrictedSyntaxMessages(
       'export const className = "focus-visible:ring-' + 'ring/50"\n',

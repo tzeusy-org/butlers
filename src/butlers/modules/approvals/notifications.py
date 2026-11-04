@@ -8,7 +8,6 @@ remains readable but has no sender here.
 
 from __future__ import annotations
 
-import os
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -18,8 +17,6 @@ from typing import Any
 
 from butlers.core.approval_callbacks import mint_approval_callback_token
 from butlers.modules.approvals.previews import defang_urls, resolve_call_preview
-
-_DASHBOARD_PORT_DEFAULT = "41200"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,20 +32,6 @@ class ApprovalPushRuntime:
     resolve_owner_recipient: Callable[[], Awaitable[str | None]]
     credential_store: Any | None
     dashboard_base_url: str | None = None
-
-
-def _dashboard_base_url(override: str | None = None) -> str:
-    """Return the dashboard origin used by owner-facing approval links."""
-    value = override or os.environ.get(
-        "DASHBOARD_URL",
-        f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
-    )
-    return value.rstrip("/")
-
-
-def dashboard_base_url(override: str | None = None) -> str:
-    """Public form of :func:`_dashboard_base_url` for other owner-facing links."""
-    return _dashboard_base_url(override)
 
 
 def _as_aware_datetime(value: Any, *, field_name: str) -> datetime:

@@ -24,6 +24,7 @@ def _declare(
     presentable: bool = True,
     posture: str = "deferred",
     namespace: str | None = None,
+    approval_mode: str = "default",
     **authorization: object,
 ) -> tuple[ToolPresentation, ...]:
     # Provider/cache responses retain their external provenance even on writes.
@@ -51,6 +52,7 @@ def _declare(
             namespace=f"{module}.{namespace or group}",
             llm_presentable=presentable,
             load_posture=posture,  # type: ignore[arg-type]
+            approval_policy={"mode": approval_mode},
             **authorization,
         )
         for name in names.split()
@@ -1662,6 +1664,23 @@ TOOL_PRESENTATION_INVENTORY = (
         idempotency="none",
         owner_authority=False,
         read_stores=(),
+        write_stores=("scheduled_tasks",),
+        recipient_params=RecipientParameters(),
+    ),
+    *_declare(
+        "core",
+        "temporal",
+        "paperwork_deadline_set",
+        namespace="paperwork",
+        effect_class="record",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("document_id",),
+        selection_bound={"document_id": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
     ),
@@ -11535,10 +11554,11 @@ STORE_WRITERS = MappingProxyType(
             unknown_writers=True,
         ),
         "scheduled_tasks": StoreWriters(
-            record_capabilities=("receive_domain_event",),
+            record_capabilities=("paperwork_deadline_set", "receive_domain_event"),
             native_writers=(
                 "butlers.core.scheduler._defer_cron_for_allowance",
                 "butlers.core.scheduler._fire_chain",
+                "butlers.core.scheduler._record_deadline_threshold",
                 "butlers.core.scheduler._tick_deadline_pass",
                 "butlers.core.scheduler.ensure_module_default_schedule",
                 "butlers.core.scheduler.schedule_create",
@@ -11550,6 +11570,7 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.core.temporal.deadlines_db.deadline_create",
                 "butlers.core.temporal.deadlines_db.deadline_delete",
                 "butlers.core.temporal.deadlines_db.deadline_update",
+                "butlers.core.temporal.document_deadlines.document_deadline_set",
                 "butlers.core_tools._scheduling.register_scheduling_tools.schedule_trigger",
                 "butlers.modules.calendar.internal_projection.InternalProjectionMixin._push_internal_events_to_provider",
                 "butlers.tools.education.mind_maps.mind_map_abandon_stale.delete_schedule",

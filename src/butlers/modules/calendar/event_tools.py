@@ -506,6 +506,24 @@ def register_event_tools(
             )
             return not_found_result
 
+        gate = await module._maybe_gate_recurrence_impact(
+            tool_name="calendar_update_event",
+            action_type="workspace_user_update",
+            tool_args=overlap_args,
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope="series",
+            occurrences_touched=module._count_scope_occurrences(
+                event=existing_event,
+                recurrence_scope="series",
+                occurrence_start=existing_event.start_at,
+            ),
+            resolved_calendar_id=resolved_calendar_id,
+        )
+        if gate is not None:
+            return gate
+
         normalized_title = title.strip() if isinstance(title, str) else None
         update_title = normalized_title
         patch_all_day = all_day
@@ -812,6 +830,8 @@ def register_event_tools(
             action_type="workspace_user_delete",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_delete_event",
+            tool_args={**approval_args, "calendar_id": resolved_calendar_id},
         )
         if replay is not None:
             return replay
@@ -867,6 +887,24 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
             )
             return result
+
+        gate = await module._maybe_gate_recurrence_impact(
+            tool_name="calendar_delete_event",
+            action_type="workspace_user_delete",
+            tool_args={**approval_args, "calendar_id": resolved_calendar_id},
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope="series",
+            occurrences_touched=module._count_scope_occurrences(
+                event=existing_event,
+                recurrence_scope="series",
+                occurrence_start=existing_event.start_at,
+            ),
+            resolved_calendar_id=resolved_calendar_id,
+        )
+        if gate is not None:
+            return gate
 
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,

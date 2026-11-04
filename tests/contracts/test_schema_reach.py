@@ -659,9 +659,9 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.attachment_refs",
     ): "burn-down: existing switchboard.attachment_refs coupling (was unqualified, so unseen); the connector alone holds Gmail credentials, so it serves attachment_materialize requests from this row",
     (
-        "src/butlers/connectors/gmail_policy.py",
+        "src/butlers/connectors/known_contact_snapshot.py",
         "relationship.entity_facts",
-    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    ): "burn-down: existing relationship.entity_facts coupling (lifted out of gmail_policy.py, bu-q7vx1q.42); route through owning service or make local schema authority explicit",
     (
         "src/butlers/connectors/google_drive.py",
         "switchboard.connector_registry",
@@ -906,6 +906,22 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/modules/memory/ann_observability.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed local memory tier tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{_q(schema, )}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{_q(schema, table)}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{events}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{links}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/knowledge_gaps.py",
         "relationship.entity_facts",

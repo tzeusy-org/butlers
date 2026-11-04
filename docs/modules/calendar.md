@@ -88,7 +88,10 @@ The dashboard-api process runs a supervised `calendar_overcommitment` loop
 reconciles `public.owner_conditions` under source `calendar:overcommitment`. Only `warning`
 `overlap` and `overloaded_day` issues qualify; `back_to_back` never does. An overlap's identity
 is a pair of provider identities (`origin_ref`, plus start for a recurring occurrence), not
-instance ids, because the dedup survivor rotates between butler schemas as each one syncs. An
+instance ids, because the dedup survivor rotates between butler schemas as each one syncs. The
+radar's own overlap `pair_id` uses the same provider-identity pair, so a pending fix proposal
+(`calendar_event_proposals.source_event_id`) stays attached across a resync; the join also
+accepts the legacy instance-based pair id so proposals stored before that change still attach. An
 overloaded day's identity is its owner-local date. Condition text carries the kind, date,
 severity, overlap minutes and entry ids, or meeting hours and event count, never a title,
 attendee or location.
@@ -207,7 +210,7 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   checks `FREQ` / `DTSTART` / `DTEND` case-insensitively. `CalendarEventCreate` and
   `CalendarEventUpdate` normalise `recurrence_rule` before any provider call.
 - Recurring writes with naive datetime boundaries require an explicit `timezone`, and
-  `calendar_update_event` accepts only `recurrence_scope="series"` for recurrence.
+  recurring update/delete tools accept `this`, `following` and `series` scopes.
 - Conflict preflight always runs on `calendar_create_event` and on `calendar_update_event` only when
   the start/end window changes. Legacy policy values normalise (`allow` to `allow_overlap`, `reject`
   to `fail`).
@@ -218,6 +221,14 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   the tool name and argument digest; for `calendar_update_event` the canonical
   `calendar_approval_args` form), so an approved overlap write runs once instead of re-parking.
   With approvals unavailable it returns `approval_unavailable` and never writes.
+- Before provider writes, whole-series and following-scope update/delete count affected
+  occurrences in the existing 90-day recurrence projection window. At least ten occurrences
+  requires approval; `this` and fewer than ten continue without an impact approval. Large
+  series/following edits and high-impact butler-event delete/toggle refuse with
+  `approval_unavailable` when no approval enqueuer is wired, with no provider or native effect.
+  The refusal is stored as a terminal no-effect workspace result, so repeating its `request_id`
+  returns the same refusal rather than a phantom pending approval. After enabling approvals,
+  use a new request ID. Exact executor replays retain the parked calendar and argument binding.
 - Malformed provider payloads raise `ValueError`; `CalendarAuthError` is reserved for auth and
   transport failures. `src/butlers/modules/calendar/google.py::_GoogleProvider` validates credentials
   before creating its owned `httpx.AsyncClient`, so a credential error cannot leak a client.

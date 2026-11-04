@@ -733,6 +733,26 @@ When a mutation targets a recurring event, the module SHALL support operating on
 - **THEN** an impact preview reports the number of occurrences the mutation will touch: 1 for `this`, the remaining-from-boundary count for `following`, and the whole-series occurrence count for `series`
 - **AND** the count feeds the high-impact approval gate so large `series` / `following` mutations are gated while a single-occurrence `this` mutation is not
 
+#### Scenario: Large series edit requires exact approved replay
+
+- **WHEN** a series update or delete affects at least ten occurrences in the 90-day recurrence projection window
+- **THEN** it SHALL return `approval_required` and park the canonical executable call before any provider write
+- **AND** the parked call SHALL bind the resolved calendar and every public argument with its default
+- **AND** only the approvals executor replaying that exact approved call SHALL resume its pending workspace action and execute once
+- **AND** a changed default calendar SHALL NOT redirect the approved replay
+
+#### Scenario: Approval unavailable refuses high-impact mutations
+
+- **WHEN** no approval enqueuer is wired and a series or following mutation affects at least ten projected occurrences, or a workspace butler-event delete or toggle is requested
+- **THEN** the tool SHALL return `approval_unavailable` without any provider or native mutation
+- **AND** the workspace action SHALL record a terminal no-effect result so its request ID replays the refusal instead of remaining pending
+- **AND** after approvals become available a new request ID MAY request approval
+
+#### Scenario: Low-impact mutations do not require an enqueuer
+
+- **WHEN** no approval enqueuer is wired and a recurrence mutation affects only `this` or fewer than ten projected occurrences
+- **THEN** the recurrence impact gate SHALL permit the mutation while preserving permission, overlap and other applicable checks
+
 #### Scenario: Unknown recurrence scope rejected
 
 - **WHEN** `calendar_update_event` or `calendar_delete_event` is called with a `recurrence_scope` other than `this`, `following`, or `series`

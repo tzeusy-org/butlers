@@ -431,3 +431,73 @@ def test_two_added_blocks_with_one_requirement_name_and_id_collide_under_strict(
 
     assert result.returncode == 1
     assert f"duplicate new ID {rid}" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "collision",
+    ["duplicate", "canonical_added", "canonical_modified", "canonical_remint", "pending_remint"],
+)
+@pytest.mark.parametrize("write", [False, True])
+def test_identity_conflicts_refuse_matching_freezes_and_baseline_writes(
+    tmp_path: Path, collision: str, write: bool
+) -> None:
+    import hashlib
+
+    kind = "ADDED" if collision in {"duplicate", "canonical_added"} else "MODIFIED"
+    number = 2 if collision in {"canonical_remint", "pending_remint"} else 1
+    body = _block("Fresh", req_id=_rid("widgets", number), source=False)
+    _delta(tmp_path, "a", "widgets", _doc(kind, body))
+    # Existing unidentified debt can still be frozen; this is not a blanket
+    # refusal of baseline writes or of a matching legacy exemption.
+    assert _run(tmp_path, "--write-baseline").returncode == 0
+    assert _run(tmp_path).returncode == 0
+    baseline = tmp_path / "baseline.json"
+    if collision == "duplicate":
+        other = _block("Other", req_id=_rid("widgets", 1), source=False)
+        _delta(tmp_path, "b", "widgets", _doc("ADDED", other))
+        # Simulate an existing/forged content-addressed collision exemption.
+        # The public ratchet format includes kind, name and normalized body.
+        normalized = " ".join(
+            " ".join(line.split())
+            for line in ["ADDED", "Other", *other.splitlines()[1:]]
+            if line.strip()
+        )
+        frozen = json.loads(baseline.read_text())
+        frozen["b/widgets/Other"] = hashlib.sha256(normalized.encode()).hexdigest()
+        baseline.write_text(json.dumps(frozen, indent=2, sort_keys=True) + "\n")
+    elif collision == "pending_remint":
+        _delta(tmp_path, "b", "widgets", _doc("ADDED", _block("Fresh", req_id=_rid("widgets", 1))))
+    else:
+        canonical_name = "Fresh" if collision == "canonical_remint" else "Existing"
+        _canonical(
+            tmp_path,
+            "widgets",
+            "## Requirements\n\n" + _block(canonical_name, req_id=_rid("widgets", 1)),
+        )
+    before = baseline.read_bytes()
+    result = _run(tmp_path, *(["--write-baseline"] if write else []))
+    assert result.returncode == 1, result.stdout
+    assert "ID" in result.stdout
+    assert baseline.read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["ADDED", "MODIFIED", "REMOVED", "RENAMED"])
+def test_repeated_delta_sections_refuse_all_modes_but_fenced_examples_pass(
+    tmp_path: Path, kind: str
+) -> None:
+    first = _doc(kind, _block("One", req_id=_rid("widgets", 1)))
+    second = _doc(kind.lower(), _block("Two", req_id=_rid("widgets", 2)))
+    path = _delta(tmp_path, "c", "widgets", first)
+    assert _run(tmp_path).returncode == 0
+    # Mixed fence characters/lengths must retain existing OpenSpec parity.
+    path.write_text(first + "\n~~~~markdown\n```\n" + second + "\n~~~~\n")
+    assert _run(tmp_path).returncode == 0
+    path.write_text(first + "\n" + second)
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text("{}\n")
+    before = baseline.read_bytes()
+    for flags in ([], ["--strict"], ["--write-baseline"]):
+        result = _run(tmp_path, *flags)
+        assert result.returncode == 1, (flags, result.stdout)
+        assert f"repeated {kind} Requirements section" in result.stdout
+        assert baseline.read_bytes() == before

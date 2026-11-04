@@ -769,6 +769,25 @@ requirement existed.
   clustering purposes — it does not raise, and does not silently link to an
   unrelated candidate
 
+#### Scenario: Conflicting declared choices become one owner question
+- **WHEN** a cluster holds two or more candidates whose `metadata.choice.key`
+  is equal and whose `metadata.choice.option` values differ, and an owner
+  confirm transport is wired to the delivery cycle
+- **THEN** the cycle asks the owner one confirm question whose options are the
+  distinct declared options (sorted, at most four), the members are removed
+  from the digest and settle as delivered, and the question spends one
+  delivery-budget slot
+- **AND** an answer records `useful` feedback on every member via
+  `record_insight_feedback`, while an unanswered expiry records none
+- **AND** a re-detected identical tension (same sorted dedup keys) does not
+  open a second question while the first is open
+- **AND** a cluster without conflicting choices render exactly as before
+
+#### Scenario: Unavailable question transport falls back to the digest
+- **WHEN** no transport is wired, the transport errors, or the cluster's
+  options cannot form a valid question
+- **THEN** the cluster renders in the normal digest, never silently dropped
+
 ### Requirement: Held-By Signal Telemetry on Suppressed Ledger Rows
 The delivery cycle SHALL record a `held_by` key in the `metadata` of any
 `public.attention_ledger` row it writes with `outcome="suppressed"`, naming
@@ -885,8 +904,13 @@ When a delivered candidate's `owner_condition` premise resolves, the delivered m
 - **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
 - **THEN** the cycle edits that message to a struck-through original plus `Resolved HH:MM UTC`, marks the amendment `applied`, and records one `outcome="amended"` ledger row
 
+#### Scenario: A resolved digest line is struck inside the delivered Telegram digest
+- **WHEN** pending amendments' candidates were delivered as lines of one Telegram digest with a stored chat id, provider message id and sent text
+- **THEN** the cycle edits that one message once, striking every resolved line (earlier applied strikes kept) with its `Resolved HH:MM UTC` note and leaving other lines untouched, marks those amendments `applied`, and sends no new notification
+- **AND** a replayed cycle issues no second edit
+
 #### Scenario: An uneditable delivery folds into the next digest
-- **WHEN** the delivery was a digest line, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
+- **WHEN** the delivery was a digest whose sent text was not recorded, was sent over email, has no provider reference, the edit is rejected (Telegram 400), or three transport attempts fail
 - **THEN** the amendment becomes `fold` and the next delivery that happens anyway SHALL carry a `Since last digest: Resolved ...` line, after which it is `folded`
 - **AND** a correction SHALL NEVER be sent as its own standalone message
 

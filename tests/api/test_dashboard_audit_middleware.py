@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import httpx
 import pytest
 
@@ -81,7 +82,7 @@ class TestEmitDashboardAudit:
     """
 
     async def test_inserts_row_on_success(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -117,7 +118,7 @@ class TestEmitDashboardAudit:
         assert metadata["user_context"]["source"] == "dashboard"
 
     async def test_explicit_user_context_overrides_default(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -145,7 +146,7 @@ class TestEmitDashboardAudit:
         )
 
     async def test_swallows_db_errors(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(side_effect=RuntimeError("db gone"))
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -160,7 +161,7 @@ class TestEmitDashboardAudit:
         )
 
     async def test_body_redaction_applied(self):
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=1)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.pool.return_value = mock_pool
@@ -241,7 +242,7 @@ class TestDashboardAuditMiddleware:
     def _make_app_with_mock_db(self):
         """Create an app where get_db_manager returns a mock that records execute calls."""
         app = create_app(api_key="")
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.execute = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=0)
         mock_pool.fetch = AsyncMock(return_value=[])
@@ -441,6 +442,41 @@ class TestDashboardAuditMiddleware:
         audit_trace_id = metadata["request_summary"].get("trace_id")
         assert audit_trace_id == header_trace_id
 
+    async def test_capture_no_body_policy_is_route_owned_not_caller_selectable(self):
+        """Capture intake routes never retain bodies; no caller header selects that policy.
+
+        RFC0037 "Capture audit and validation do not retain source bodies".
+        """
+        app, mock_db, mock_pool = self._make_app_with_mock_db()
+        sentinel = "capture-audit-sentinel-91e2"
+
+        with patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db):
+
+            @app.post("/api/test-capture-opt-out")
+            async def _ordinary_endpoint():
+                return {"ok": True}
+
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.post(
+                    "/api/test-capture-opt-out",
+                    json={"note": sentinel},
+                    headers={"X-Capture-Intake": "x", "X-No-Body-Audit": "1"},
+                )
+                # Any spelling of the fixed capture route keeps the no-body policy,
+                # even one the router redirects before the handler runs.
+                await client.post("/api/general/captures/", json={"note": sentinel})
+
+        audits = [c[0] for c in mock_pool.fetchval.call_args_list if "public.audit_log" in str(c)]
+        ordinary, capture = audits[-2:]
+        assert ordinary[7]["request_summary"]["body"] == {"note": sentinel}
+        assert capture[2] == "general_capture_admit" and capture[3] == "/api/general/captures"
+        summary = capture[7]["request_summary"]
+        assert "body" not in summary and summary["outcome"] == {"category": "not_routed"}
+        assert capture[7]["user_context"]["principal"] == "owner"
+        assert sentinel not in repr(capture)
+
 
 # ---------------------------------------------------------------------------
 # Integration: audit READ endpoint not broken
@@ -451,7 +487,7 @@ class TestAuditReadEndpoint:
     async def test_get_audit_log_returns_paginated_structure(self):
         """GET /api/audit-log still works correctly after middleware changes."""
 
-        mock_pool = AsyncMock()
+        mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         mock_pool.fetchval = AsyncMock(return_value=0)
         mock_pool.fetch = AsyncMock(return_value=[])
         mock_db = MagicMock(spec=DatabaseManager)
@@ -544,7 +580,11 @@ def callback_privacy(monkeypatch, caplog):
     monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE", ".*")
     caplog.set_level(logging.DEBUG)
     logging.getLogger("callback_privacy_control").warning("callback-capture-live-control")
-    connection = SimpleNamespace(fetchval=AsyncMock(return_value=1), fetchrow=AsyncMock())
+    connection = SimpleNamespace(
+        fetchval=AsyncMock(return_value=1),
+        fetchrow=AsyncMock(),
+        is_in_transaction=lambda: False,
+    )
     resolve = AsyncMock()
     monkeypatch.setattr(CredentialStore, "resolve", resolve)
     db = SimpleNamespace(pool=lambda name: connection)

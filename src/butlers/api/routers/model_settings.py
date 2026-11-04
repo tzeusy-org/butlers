@@ -32,6 +32,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db, get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
 from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.model_capabilities import CapabilityDescriptorError, parse_capability_descriptor
 from butlers.core.model_routing import (
     RoutingScore,
@@ -809,7 +810,7 @@ async def create_catalog_entry(
     capabilities = _validate_capabilities(body.capabilities)
     pool = _shared_pool(db)
 
-    async with pool.acquire() as connection, connection.transaction():
+    async with pool.acquire() as connection, audit_transaction(connection):
         try:
             row = await connection.fetchrow(
                 """
@@ -976,7 +977,7 @@ async def delete_catalog_entry(
 ) -> ApiResponse[dict]:
     """Delete a catalog entry by ID. Cascades to butler_model_overrides."""
     pool = _shared_pool(db)
-    async with pool.acquire() as connection, connection.transaction():
+    async with pool.acquire() as connection, audit_transaction(connection):
         deleted = await connection.fetchrow(
             """
             WITH target AS (
@@ -1720,7 +1721,7 @@ async def upsert_butler_model_overrides(
 
     upserted_ids: list[UUID] = []
     async with pool.acquire() as conn:
-        async with conn.transaction():
+        async with audit_transaction(conn):
             for item in body.overrides:
                 row = await conn.fetchrow(
                     """
@@ -1794,7 +1795,7 @@ async def delete_butler_model_override(
 ) -> ApiResponse[dict]:
     """Remove a single butler model override by ID."""
     pool = _shared_pool(db)
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         result = await conn.execute(
             "DELETE FROM public.butler_model_overrides WHERE id = $1 AND butler_name = $2",
             override_id,
