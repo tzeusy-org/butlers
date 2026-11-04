@@ -36,6 +36,13 @@ graph TB
         Vite["Vite Frontend"]
     end
 
+    subgraph Public["Public MCP read surface (Draft, RFC 0039)"]
+        Clients["Owner's AI clients (ChatGPT, claude.ai)"]
+        GW["Owner's gateway (Cloudflare Worker, filter-proxy)"]
+        PubMCP["butlers-public-mcp"]
+        Proj["Projection DB (one-way replica)"]
+    end
+
     Ext --> Conn
     Conn -- "ingest.v1 / MCP" --> SW
     SW -- "route.v1 / MCP" --> Staff
@@ -46,6 +53,11 @@ graph TB
     Core --> OTel
     API --> PG
     Vite --> API
+
+    Clients --> GW
+    GW -- "MCP + signed assertion" --> PubMCP
+    PubMCP -- "read views + inbox INSERT" --> Proj
+    PG -- "logical replication" --> Proj
 ```
 
 The roster is `ls roster/` (each directory with a `butler.toml`); staffers are the entries with
@@ -249,6 +261,9 @@ array). Channel identifiers (email, handles, chat ids) are triples in
 `relationship.entity_facts`. `src/butlers/identity.py` provides the reverse lookup
 (`resolve_contact_by_channel()`) used by Switchboard ingestion, `notify()`, and approval gates.
 Authoritative description: [`docs/concepts/identity-model.md`](../../docs/concepts/identity-model.md).
+The public MCP projection (§9) never receives `public.entity_info`, `butler_secrets` or
+contact-kind predicates such as `has-email` and `has-phone`
+([RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) D4).
 
 Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) are described in
 [`docs/runtime/model-routing.md`](../../docs/runtime/model-routing.md).
@@ -278,6 +293,31 @@ Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) a
 Trace context propagation: the Spawner injects `TRACEPARENT` into the environment
 of spawned LLM CLI processes, creating a connected trace from ingestion through
 classification, routing, and session execution.
+
+---
+
+## 9. Public MCP Read Surface (Draft)
+
+Accepted design, not implemented:
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md). It is one deterministic
+MCP server that gives the owner's own AI clients (ChatGPT, including Dots, and claude.ai)
+read access to Butlers data through the owner's Cloudflare gateway. It is not a butler and not a
+module: it has no roster entry, scheduler, spawner, state store or Switchboard client, and it never
+starts an LLM session. Its only data source is a projection database that the primary fills by
+one-way logical replication. Its only write is a `propose_fact` row in an inbox that the owner
+must approve before anything takes effect.
+
+| Sub-component | Source (planned) | Responsibility | Stability |
+|---|---|---|---|
+| **Read functions** | `butlers.knowledge_read` | Side-effect-free reads over the projection. Owns the allowlist manifest `projection.toml` and `proposable.toml`. | Draft |
+| **Capability host** | `butlers.capability_host` | Hop-bearer digest check, Worker-signed Ed25519 per-call assertion, tool allowlist, argument validation, per-tool budgets, per-domain kill switches, response DLP and canaries, audit log lines. | Draft |
+| **Entrypoint** | `butlers.mcp_public` | Thin FastMCP stateless-HTTP server (image entrypoint `butlers-public-mcp`) that registers the 17 tools in RFC 0039 D10 and nothing else. | Draft |
+| **Projection database** | `butlers_public` on CNPG `postgres-public-<env>` | Mirrored published tables, `mcp_read` views, the `mcp_inbox.proposals` inbox. Holds no credential. | Draft |
+| **Proposal importer** | Relationship job `public_mcp_proposal_import` | Pulls the inbox, re-validates each proposal and parks it as `relationship_assert_fact` on the dashboard approvals page. No LLM. | Draft |
+| **Controls** | `mcp_surface` schema on the primary | Per-domain kill-switch rows and the replicated manifest digest. Written only by the dashboard owner route and `butlers public-mcp reconcile`. | Draft |
+
+Placement and network boundaries: [`deployment.md` §Public MCP read surface](deployment.md#public-mcp-read-surface-draft).
+Flows: [`data-flow.md` §10-12](data-flow.md#10-public-mcp-read-flow-draft).
 
 ## QA publication authority target
 

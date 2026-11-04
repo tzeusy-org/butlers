@@ -24,6 +24,7 @@ import pytest
 
 from butlers.daemon import ButlerDaemon
 from butlers.modules.telegram import TelegramProviderResponseError
+from butlers.testing.daemon import write_butler_config
 
 pytestmark = pytest.mark.unit
 
@@ -536,32 +537,6 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
         await approvals.on_shutdown()
 
 
-async def test_messenger_without_approval_runtime_refuses_non_owner_and_preserves_owner(
-    tmp_path, monkeypatch
-):
-    from types import SimpleNamespace
-
-    daemon, route_execute = await _start_daemon_with_route_execute(
-        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
-        _patch_infra(),
-    )
-    telegram = next(module for module in daemon._modules if module.name == "telegram")
-    telegram._send_message = AsyncMock(return_value={"ok": True, "result": {"message_id": 7}})
-    lookup = AsyncMock(return_value=None)
-    monkeypatch.setattr("butlers.identity.resolve_channel_contact_with_owner_corroboration", lookup)
-    args = dict(
-        schema_version="route.v1",
-        request_context=_route_request_context(),
-        input={"prompt": "Deliver", "context": {"notify_request": _valid_notify_request()}},
-    )
-    refusal = await route_execute(**args)
-    assert refusal["status"] == "error"
-    telegram._send_message.assert_not_awaited()
-    lookup.return_value = SimpleNamespace(roles=["owner"])
-    assert (await route_execute(**args))["status"] == "ok"
-    telegram._send_message.assert_awaited_once()
-
-
 async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_task(
     tmp_path, monkeypatch
 ):
@@ -1051,8 +1026,13 @@ def _trusted_recovery_context() -> dict[str, Any]:
 
 
 @pytest.fixture(autouse=True)
-def _mock_route_inbox(monkeypatch):
-    """Patch route_inbox DB calls so tests don't need a real DB pool."""
+def _mock_route_inbox(request, monkeypatch):
+    """Patch route_inbox DB calls so tests don't need a real DB pool.
+
+    Booted tests (those using ``booted_daemon``) keep the real route inbox.
+    """
+    if "booted_daemon" in request.fixturenames:
+        return
     fake_inbox_id = uuid.uuid4()
     monkeypatch.setattr(
         "butlers.core_tools._routing.route_inbox_insert",
@@ -1081,29 +1061,111 @@ def _mock_route_inbox(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Tests: unauthenticated/unauthorized callers are rejected
+# Booted route.execute authz: a real daemon called over MCP
+#
+# These boot the butler with ``booted_daemon`` (a Messenger with telegram and email
+# on synthetic credentials, or a plain butler) and call route.execute over its MCP
+# endpoint; the route inbox, delivery pipeline and provider-response handling are
+# the production ones. Only the provider transport (``_send_message``, or an
+# injected failure) and the owner-identity lookup stand in.
 # ---------------------------------------------------------------------------
+
+_SYNTHETIC_CREDENTIALS = {
+    "BUTLER_TELEGRAM_TOKEN": "synthetic-telegram-token",
+    "BUTLER_EMAIL_ADDRESS": "butler@example.test",
+    "BUTLER_EMAIL_PASSWORD": "synthetic-email-password",
+}
+
+
+def _booted(test: Any) -> Any:
+    """Run *test* in the integration lane, on the session loop the kit's fixtures use."""
+    return pytest.mark.integration(pytest.mark.asyncio(loop_scope="session")(test))
+
+
+async def _boot_messenger(booted_daemon, config_root: Path, *modules: str):
+    modules = modules or ("telegram", "email")
+    booted = await booted_daemon(
+        write_butler_config(
+            config_root,
+            "messenger",
+            schema="messenger",
+            extra_toml="".join(f"[modules.{name}]\n\n" for name in modules),
+        ),
+        "core",
+        "messenger",
+        registered=True,
+        credentials=_SYNTHETIC_CREDENTIALS,
+    )
+    statuses = {name: status.status for name, status in booted.daemon._module_statuses.items()}
+    assert statuses == dict.fromkeys(modules, "active")
+    return booted
+
+
+async def _boot_butler(booted_daemon, config_root: Path, trusted_route_callers=None):
+    extra = ""
+    if trusted_route_callers is not None:
+        items = ", ".join(f'"{caller}"' for caller in trusted_route_callers)
+        extra = f"[butler.security]\ntrusted_route_callers = [{items}]\n"
+    return await booted_daemon(
+        write_butler_config(config_root, "general", extra_toml=extra), registered=True
+    )
+
+
+def _module(booted, name: str) -> Any:
+    return next(module for module in booted.daemon._modules if module.name == name)
+
+
+def _mcp_route(booted):
+    """route.execute as a caller sees it: over the daemon's MCP endpoint."""
+
+    async def route_execute(**arguments: Any) -> dict[str, Any]:
+        return await booted.call_tool("route.execute", arguments)
+
+    return route_execute
+
+
+async def _inbox_count(booted) -> int:
+    return await booted.daemon.db.pool.fetchval("SELECT count(*) FROM route_inbox")
+
+
+@_booted
+async def test_messenger_without_approval_runtime_refuses_non_owner_and_preserves_owner(
+    booted_daemon, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    booted = await _boot_messenger(booted_daemon, tmp_path, "telegram")
+    route_execute = _mcp_route(booted)
+    telegram = _module(booted, "telegram")
+    telegram._send_message = AsyncMock(return_value={"ok": True, "result": {"message_id": 7}})
+    lookup = AsyncMock(return_value=None)
+    monkeypatch.setattr("butlers.identity.resolve_channel_contact_with_owner_corroboration", lookup)
+    args = dict(
+        schema_version="route.v1",
+        request_context=_route_request_context(),
+        input={"prompt": "Deliver", "context": {"notify_request": _valid_notify_request()}},
+    )
+    refusal = await route_execute(**args)
+    assert refusal["status"] == "error"
+    telegram._send_message.assert_not_awaited()
+    lookup.return_value = SimpleNamespace(roles=["owner"])
+    assert (await route_execute(**args))["status"] == "ok"
+    telegram._send_message.assert_awaited_once()
 
 
 class TestRouteExecuteAuthz:
     """Verify route.execute authz: untrusted callers rejected; trusted callers allowed."""
 
+    @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
-    async def test_authz_reject_and_allow(self, tmp_path: Path) -> None:
+    async def test_authz_reject_and_allow(self, booted_daemon, tmp_path: Path) -> None:
         """Untrusted callers rejected with validation_error; trusted switchboard allowed."""
         # Messenger rejects rogue-caller
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
-            ),
-            patches,
-        )
-        assert route_execute_fn is not None
-        telegram_module = next(m for m in daemon._modules if m.name == "telegram")
+        messenger = await _boot_messenger(booted_daemon, tmp_path / "messenger")
+        telegram_module = _module(messenger, "telegram")
         telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 999}})
 
-        result = await route_execute_fn(
+        result = await _mcp_route(messenger)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="rogue-caller"),
             input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
@@ -1115,55 +1177,36 @@ class TestRouteExecuteAuthz:
         assert result["error"]["retryable"] is False
         assert "rogue-caller" in result["error"]["message"]
 
-        # Empty/blank endpoint identity also rejected
-        patches3 = _patch_infra()
-        subdir3 = tmp_path / "h3"
-        subdir3.mkdir()
-        _, route_execute_fn3 = await _start_daemon_with_route_execute(
-            _make_butler_toml(subdir3, butler_name="health"), patches3
-        )
-        result3 = await route_execute_fn3(
+        # Empty/blank endpoint identity also rejected, and nothing is queued
+        butler = await _boot_butler(booted_daemon, tmp_path / "butler")
+        result3 = await _mcp_route(butler)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity=" "),
             input={"prompt": "Run health check."},
         )
         assert result3["status"] == "error"
         assert result3["error"]["class"] == "validation_error"
+        assert await _inbox_count(butler) == 0
 
-        # Switchboard caller allowed: messenger delivery proceeds; non-messenger trigger accepted
-        patches_ok = _patch_infra()
-        (tmp_path / "mess2").mkdir(exist_ok=True)
-        daemon_ok, fn_ok = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path / "mess2", butler_name="messenger", modules={"telegram": {}, "email": {}}
-            ),
-            patches_ok,
-        )
-        tg_mod = next(m for m in daemon_ok._modules if m.name == "telegram")
-        tg_mod._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
-        result_ok = await fn_ok(
+        # Switchboard caller allowed: messenger delivery proceeds
+        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+        result_ok = await _mcp_route(messenger)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
         )
-        tg_mod._send_message.assert_awaited_once()
+        telegram_module._send_message.assert_awaited_once()
         assert result_ok["status"] == "ok"
 
-    # Spec: REQ-approval-delivery-intent-recovery-004; public DTO/correlation cannot create protected approval authority.
+    # Spec: REQ-approval-delivery-intent-recovery-004; public DTO/correlation cannot create
+    # protected approval authority.
+    @_booted
     async def test_recovery_requires_authenticated_switchboard_before_provider(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, booted_daemon, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        patches = _patch_infra()
-        daemon, route_execute = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path,
-                butler_name="messenger",
-                modules={"telegram": {}, "email": {}},
-            ),
-            patches,
-        )
-        assert route_execute is not None
-        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        booted = await _boot_messenger(booted_daemon, tmp_path)
+        route_execute = _mcp_route(booted)
+        telegram = _module(booted, "telegram")
         telegram._send_message = AsyncMock(return_value={"message_id": "provider-ref"})
 
         repository = MagicMock()
@@ -1229,9 +1272,6 @@ class TestRouteExecuteAuthz:
             },
         }
         cases = [route_payload, malformed, origin_mismatch, missing_attestation, mismatch]
-        telegram._send_message.reset_mock()
-        repository.process.reset_mock()
-        patches["mock_pool"].reset_mock()
         caplog.clear()
         with (
             patch(
@@ -1245,6 +1285,7 @@ class TestRouteExecuteAuthz:
                 "butlers.core_tools._routing.resolve_owner_channel_via_definer",
                 new=AsyncMock(),
             ) as owner_lookup,
+            caplog.at_level("DEBUG", logger="butlers"),
         ):
             refusals = []
             for payload in cases:
@@ -1266,30 +1307,23 @@ class TestRouteExecuteAuthz:
         assert route_logger.method_calls == []
         owner_lookup.assert_not_awaited()
         repository.process.assert_not_awaited()
-        assert patches["mock_pool"].method_calls == []
+        # Refused before any route state was written.
+        assert await _inbox_count(booted) == 0
         telegram._send_message.assert_not_awaited()
 
+    @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_null_recovery_is_ordinary_notify_not_privileged_recovery(
-        self, tmp_path: Path
+        self, booted_daemon, tmp_path: Path
     ) -> None:
-        patches = _patch_infra()
-        daemon, route_execute = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path,
-                butler_name="messenger",
-                modules={"telegram": {}, "email": {}},
-            ),
-            patches,
-        )
-        assert route_execute is not None
-        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        booted = await _boot_messenger(booted_daemon, tmp_path)
+        telegram = _module(booted, "telegram")
         telegram._send_message = AsyncMock(
             return_value={"ok": True, "result": {"message_id": 4321}}
         )
         notify_request = {**_valid_notify_request(), "recovery": None}
 
-        result = await route_execute(
+        result = await _mcp_route(booted)(
             schema_version="route.v1",
             request_context=_route_request_context(),
             input={"prompt": "Deliver.", "context": {"notify_request": notify_request}},
@@ -1302,21 +1336,13 @@ class TestRouteExecuteAuthz:
             "delivery_id": "4321",
         }
 
+    @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_telegram_transport_failure_is_content_blind_and_uncertain(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, booted_daemon, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        patches = _patch_infra()
-        daemon, route_execute = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path,
-                butler_name="messenger",
-                modules={"telegram": {}, "email": {}},
-            ),
-            patches,
-        )
-        assert route_execute is not None
-        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        booted = await _boot_messenger(booted_daemon, tmp_path)
+        telegram = _module(booted, "telegram")
         telegram._send_message = AsyncMock(
             side_effect=httpx.ReadTimeout(
                 "private-body-sentinel",
@@ -1327,7 +1353,7 @@ class TestRouteExecuteAuthz:
         )
 
         with caplog.at_level("WARNING"):
-            result = await route_execute(
+            result = await _mcp_route(booted)(
                 schema_version="route.v1",
                 request_context=_route_request_context(),
                 input={
@@ -1349,24 +1375,21 @@ class TestRouteExecuteAuthz:
         assert result["transport"]["outcome"] == "uncertain"
         assert result["transport"]["error_detail"] == "transport_timeout"
 
+    @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_permission_unavailable_is_transient_before_native_delivery(
-        self, tmp_path, caplog
+        self, booted_daemon, tmp_path, caplog
     ):
         from types import SimpleNamespace
 
         from butlers.core.permissions import PermissionUnavailable
         from butlers.core_tools._routing import _build_routed_delivery_command
 
-        patches = _patch_infra()
-        daemon, route_execute = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
-            ),
-            patches,
-        )
-        assert route_execute is not None
+        booted = await _boot_messenger(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        route_execute = _mcp_route(booted)
         modules = {module.name: module for module in daemon._modules}
+        # The permission store itself failing is the fault under test.
         permission_pool = AsyncMock()
         permission_pool.fetchrow.side_effect = OSError("private-database-error")
         allowed = SimpleNamespace(allowed=True, dossier_error=None)
@@ -1431,6 +1454,7 @@ class TestRouteExecuteAuthz:
             smtp.assert_not_called()
             get_client.assert_not_called()
 
+    @_booted
     @pytest.mark.parametrize(
         ("provider_rejected", "message", "outcome", "detail"),
         [
@@ -1446,23 +1470,15 @@ class TestRouteExecuteAuthz:
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_telegram_response_failure_preserves_transport_truth(
         self,
+        booted_daemon,
         tmp_path: Path,
         provider_rejected: bool,
         message: str,
         outcome: str,
         detail: str,
     ) -> None:
-        patches = _patch_infra()
-        daemon, route_execute = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                tmp_path,
-                butler_name="messenger",
-                modules={"telegram": {}, "email": {}},
-            ),
-            patches,
-        )
-        assert route_execute is not None
-        telegram = next(module for module in daemon._modules if module.name == "telegram")
+        booted = await _boot_messenger(booted_daemon, tmp_path)
+        telegram = _module(booted, "telegram")
         telegram._send_message = AsyncMock(
             side_effect=TelegramProviderResponseError(
                 "telegram_provider_response: invalid message_id",
@@ -1470,7 +1486,7 @@ class TestRouteExecuteAuthz:
             )
         )
 
-        result = await route_execute(
+        result = await _mcp_route(booted)(
             schema_version="route.v1",
             request_context=_route_request_context(),
             input={"prompt": "Deliver.", "context": {"notify_request": _valid_notify_request()}},
@@ -1495,36 +1511,26 @@ class TestRouteExecuteAuthz:
 class TestRouteExecuteCustomTrustedCallers:
     """Verify custom trusted_route_callers from butler.toml is respected."""
 
-    async def test_custom_trusted_callers(self, tmp_path: Path) -> None:
+    @_booted
+    async def test_custom_trusted_callers(self, booted_daemon, tmp_path: Path) -> None:
         """Custom list caller allowed; switchboard rejected when not in list; empty list rejects all."""
-        # Custom caller in list → accepted
-        patches = _patch_infra()
-        d1 = tmp_path / "c1"
-        d1.mkdir()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(
-                d1, butler_name="health", trusted_route_callers=["switchboard", "heartbeat"]
-            ),
-            patches,
+        # Custom caller in list → accepted, and its session runs
+        custom = await _boot_butler(
+            booted_daemon, tmp_path / "c1", trusted_route_callers=["switchboard", "heartbeat"]
         )
-        mock_tr = MagicMock(output="ok", success=True, error=None, duration_ms=10)
-        daemon.spawner.trigger = AsyncMock(return_value=mock_tr)
-        result = await route_execute_fn(
+        result = await _mcp_route(custom)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="heartbeat"),
             input={"prompt": "Tick check."},
         )
         assert result["status"] == "accepted"
+        await custom.runtime.wait_for_invocations(1)
 
         # Switchboard excluded from custom list → rejected
-        patches2 = _patch_infra()
-        d2 = tmp_path / "c2"
-        d2.mkdir()
-        _, route_execute_fn2 = await _start_daemon_with_route_execute(
-            _make_butler_toml(d2, butler_name="health", trusted_route_callers=["internal-only"]),
-            patches2,
+        internal = await _boot_butler(
+            booted_daemon, tmp_path / "c2", trusted_route_callers=["internal-only"]
         )
-        result2 = await route_execute_fn2(
+        result2 = await _mcp_route(internal)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Run health check."},
@@ -1534,20 +1540,18 @@ class TestRouteExecuteCustomTrustedCallers:
         assert "switchboard" in result2["error"]["message"]
 
         # Empty list → everyone rejected
-        patches3 = _patch_infra()
-        d3 = tmp_path / "c3"
-        d3.mkdir()
-        _, route_execute_fn3 = await _start_daemon_with_route_execute(
-            _make_butler_toml(d3, butler_name="health", trusted_route_callers=[]),
-            patches3,
-        )
-        result3 = await route_execute_fn3(
+        closed = await _boot_butler(booted_daemon, tmp_path / "c3", trusted_route_callers=[])
+        result3 = await _mcp_route(closed)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="switchboard"),
             input={"prompt": "Run health check."},
         )
         assert result3["status"] == "error"
         assert result3["error"]["class"] == "validation_error"
+        for rejecting in (internal, closed):
+            assert await _inbox_count(rejecting) == 0
+        # One fake runtime serves every boot in a test: only the accepted route ran.
+        assert len(custom.runtime.invocations) == 1
 
 
 # ---------------------------------------------------------------------------

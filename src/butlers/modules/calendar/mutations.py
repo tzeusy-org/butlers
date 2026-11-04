@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -11,7 +12,10 @@ import asyncpg
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.core.audit import write_audit_entry
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION, require_permission
-from butlers.modules.approvals.execution_context import get_approval_execution_context
+from butlers.modules.approvals.execution_context import (
+    approval_tool_args_digest,
+    get_approval_execution_context,
+)
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -23,6 +27,7 @@ from .constants import (
     SOURCE_KIND_PROVIDER,
 )
 from .models import AttendeeInfo, CalendarEvent, CalendarEventCreate
+from .party import calendar_party_binding
 
 
 class MutationsMixin:
@@ -251,6 +256,40 @@ class MutationsMixin:
         error = row["error"]
         return status, result, None if error is None else str(error)
 
+    async def _load_party_approval_receipt(
+        self, action_id: uuid.UUID
+    ) -> tuple[str, str, dict[str, Any], str | None] | None:
+        """Find one owning projection by trusted action identity, never request_id."""
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        projection_available = getattr(self, "_projection_tables_available", None)
+        if pool is None or not callable(projection_available):
+            return None
+        availability = projection_available()
+        if not inspect.isawaitable(availability) or not await availability:
+            return None
+        rows = await pool.fetch(
+            """
+            SELECT idempotency_key, action_status, action_result, error
+            FROM calendar_action_log
+            WHERE action_result->>'action_id' = $1
+              AND action_result ? 'party_binding'
+            LIMIT 2
+            """,
+            str(action_id),
+        )
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        result = reconstruct_action_result(row["action_result"])
+        if not isinstance(result, dict) or not result:
+            return None
+        return (
+            str(row["idempotency_key"]),
+            str(row["action_status"]),
+            result,
+            None if row["error"] is None else str(row["error"]),
+        )
+
     async def _prepare_workspace_mutation(
         self,
         *,
@@ -262,6 +301,42 @@ class MutationsMixin:
     ) -> tuple[str, dict[str, Any] | None]:
         idempotency_key = self._mutation_idempotency_key(action_type, request_id)
         existing = await self._load_projection_action(idempotency_key)
+        resumed_party_result: dict[str, Any] | None = None
+        context = get_approval_execution_context(tool_name=tool_name, tool_args=tool_args)
+        if context is not None:
+            try:
+                owning = await self._load_party_approval_receipt(context.action_id)
+            except Exception:
+                owning = None
+            if owning is not None:
+                idempotency_key, status, result, error = owning
+                existing = (status, result, error)
+            else:
+                try:
+                    pool = getattr(getattr(self, "_db", None), "pool", None)
+                    if pool is None:
+                        return idempotency_key, {
+                            "status": "request_changed",
+                            "error": "The owning calendar approval receipt is unavailable.",
+                        }
+                    row = await pool.fetchrow(
+                        "SELECT status, agent_summary FROM pending_actions WHERE id=$1",
+                        context.action_id,
+                    )
+                    if row is not None and row["status"] in {"executed", "rejected", "expired"}:
+                        return idempotency_key, {"status": row["status"], "idempotent_replay": True}
+                    if row is None or row.get("agent_summary") == (
+                        "Communication with a non-owner requires owner approval."
+                    ):
+                        return idempotency_key, {
+                            "status": "request_changed",
+                            "error": "The owning calendar approval receipt is unavailable.",
+                        }
+                except Exception:
+                    return idempotency_key, {
+                        "status": "request_changed",
+                        "error": "The owning calendar approval receipt is unavailable.",
+                    }
         if existing is not None:
             status, existing_result, error = existing
             if (
@@ -277,6 +352,65 @@ class MutationsMixin:
                     "error": error or "Mutation failed",
                     "idempotent_replay": True,
                 }
+            if (
+                status == MUTATION_STATUS_PENDING
+                and isinstance(existing_result, dict)
+                and "party_binding" in existing_result
+            ):
+                # Only our new complete party receipts use this path. The durable
+                # queue row, current owning account and reconstructed call all agree.
+                changed = {
+                    "status": "request_changed",
+                    "message": "The queued invitation no longer matches this request.",
+                    "error": "The queued invitation no longer matches this request.",
+                }
+                try:
+                    if not isinstance(tool_args, dict):
+                        return idempotency_key, changed
+                    action_id = uuid.UUID(existing_result["action_id"])
+                    pool = getattr(getattr(self, "_db", None), "pool", None)
+                    if pool is None:
+                        return idempotency_key, changed
+                    row = await pool.fetchrow(
+                        "SELECT tool_name, tool_args, status FROM pending_actions WHERE id=$1",
+                        action_id,
+                    )
+                    if row is None:
+                        return idempotency_key, changed
+                    stored_args = row["tool_args"]
+                    if isinstance(stored_args, str):
+                        import json
+
+                        stored_args = json.loads(stored_args)
+                    if (
+                        row["tool_name"] != existing_result["tool_name"]
+                        or approval_tool_args_digest(stored_args) != existing_result["args_digest"]
+                    ):
+                        return idempotency_key, changed
+                    if row["status"] in {"executed", "rejected", "expired"}:
+                        return idempotency_key, {"status": row["status"], "idempotent_replay": True}
+                    binding = await calendar_party_binding(self, tool_args["calendar_id"])
+                    if (
+                        tool_name != existing_result["tool_name"]
+                        or action_type != existing_result["action_type"]
+                        or approval_tool_args_digest(tool_args) != existing_result["args_digest"]
+                        or binding != existing_result["party_binding"]
+                    ):
+                        return idempotency_key, changed
+                    context = get_approval_execution_context(
+                        tool_name=tool_name, tool_args=tool_args
+                    )
+                    if context is not None and context.action_id != action_id:
+                        return idempotency_key, changed
+                    if row["status"] == "approved" and context is not None:
+                        # Keep the receipt available for the fetched-audience fence.
+                        resumed_party_result = existing_result
+                    elif row["status"] == "pending" and context is None:
+                        return idempotency_key, {**existing_result, "idempotent_replay": True}
+                    else:
+                        return idempotency_key, {"status": row["status"], "idempotent_replay": True}
+                except Exception:
+                    return idempotency_key, changed
             # A pending row resumes only under the approvals executor's
             # context for this exact tool call; any other caller is told it
             # is still queued.
@@ -298,6 +432,7 @@ class MutationsMixin:
             origin_ref=None,
             action_payload=action_payload,
             request_id=self._normalize_request_id(request_id),
+            **({"action_result": resumed_party_result} if resumed_party_result is not None else {}),
         )
         return idempotency_key, None
 

@@ -37,6 +37,12 @@ from taking actions beyond their intended scope.
   (OwnTracks), listening history (Spotify), smart home state (Home Assistant),
   and file metadata (Google Drive) may appear in LLM prompts when butlers
   process ingested events from these sources.
+- **The owner's edge and outside AI clients (RFC 0039).** The owner's own
+  gateway (Cloudflare Worker OAuth and a GitHub-id allowlist) terminates TLS
+  for the public read surface and sees its responses. The owner's outside AI
+  clients (ChatGPT and claude.ai) are models outside Butlers: they receive only
+  data the projection manifest publishes, and anything they send back is
+  third-party content. No request from either carries owner authority.
 - **Ephemeral LLM sessions.** Leads and children are partially trusted
   whatever model runs them. Each runs in a sandbox, holds a grant derived from
   its goal's origin, and reaches capabilities only through the broker.
@@ -160,6 +166,13 @@ butler's schema even though all schemas live in one database.
 - A butler runtime connection scoped by `SET ROLE` can reach only its own schema
   and `public`, plus any explicitly granted connector read schemas.
 - Cross-butler data access goes through MCP and the Switchboard, not direct SQL.
+  The one guarded exception is the publisher role that feeds the public read
+  surface's projection by logical replication. The publication's column lists
+  and row filters limit what the projection receives, not what the role can
+  read: the publisher role holds `REPLICATION`, which in PostgreSQL can decode
+  every change in the database regardless of grants. Its credential is
+  therefore primary-read-all material and is guarded as such. No runtime role,
+  session or internet-facing process holds it (see Public Read Surface).
 
 **Limitations:**
 
@@ -207,6 +220,59 @@ the exact action and current version, consumed atomically with that action
 the Telegram phone. Telegram identity or a presentation ACK cannot supply that
 factor. This contract does not register a factor, change credentials or release
 a held Vouch, Contain or mode action.
+
+## Public Read Surface
+
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) admits
+exactly one internet-reachable Butlers workload: a deterministic MCP server
+through which the owner's own outside AI clients read Butlers data (owner
+decision, 2026-11-04, recorded in
+[the decision record](../legends-and-lore/decisions/2026-11-04-doctrine-public-mcp-read-surface.md)). It covers outside clients calling Butlers. It admits no
+outside server as a Butlers data source, and the owner's rule that no outside
+server gets a write, send or spend effect (`bu-mzvel0`) is unchanged.
+
+**Guarantees.** The exception holds only while all four hold:
+
+- **No credential is reachable.** The server reads only a separate projection
+  database that one-way logical replication fills from one checked-in
+  allowlist manifest. `butler_secrets`, secured `entity_info` rows, connector
+  and OAuth tokens, and private-custody content are never published, and a
+  contract test holds the publication equal to the manifest. The server holds
+  no login to the primary database and no network route to butler daemons,
+  the dashboard API or the Switchboard, and it never holds the publisher's
+  credential.
+- **No Butlers model runs on the request path.** The server starts no session,
+  imports no spawner, runtime, model SDK or Switchboard client, has no egress
+  beyond its projection, and offers no sampling or elicitation.
+- **Writes are proposals the owner gates.** `propose_fact` only inserts into a
+  quarantined inbox. An inbox row is not an effect: it writes no domain store,
+  goal or schedule. A deterministic domain job parks each valid proposal as an
+  approval, and only the owner's per-event approval applies it, under the
+  Approval Gates rules above. No standing rule approves one. An applied fact
+  keeps `content_authority = third_party`, so it is never steering memory.
+- **The owner holds kill switches** for each domain and for the whole
+  surface, effective without a deploy.
+
+Cloudflare and OAuth are not the only defense. Every tool call carries a
+per-call assertion that the owner's Worker signs and the server verifies at
+home, the hop bearer is checked against a stored digest, the server runs in its
+own default-deny namespace, and responses are scanned for secrets and canaries
+and audited. The Worker's signing key never enters Butlers: the server holds
+only verification keys and a bearer digest, so the surface adds no
+process-bound deployment control key.
+
+**Limitations:**
+
+- The gateway and the clients see every response the manifest allows.
+- A client model can be steered by content it reads (prompt injection) into
+  reading any enabled domain and leaking it through its own tools. Every
+  layer past Cloudflare authenticates the owner's session, not the owner's
+  intent, and Butlers cannot see the client's intent. Per-client budgets,
+  volume alerts, audit and per-domain kill switches bound and detect this;
+  they do not prevent it.
+- Automatic approval of proposals is not admitted. It would turn outside
+  content into a write without a per-event tap, so it needs its own owner
+  decision.
 
 ## Credential Management
 
@@ -403,7 +469,8 @@ and adapter-owned pointers to files staged inside the sandbox.
 ### Principles
 
 1. **Bind to localhost unless there is a specific reason not to.** Tailscale
-   serve handles external HTTPS exposure.
+   serve handles external HTTPS exposure. The public read surface (RFC 0039)
+   is reached only through the owner's MCP gateway.
 2. **Egress by exception.** A service should not join the `egress` network
    unless it calls external APIs. This is a membership convention: the
    firewall covers only the `egress` bridge and no network is `internal: true`
@@ -417,6 +484,10 @@ and adapter-owned pointers to files staged inside the sandbox.
    value or `CredentialStore` fallback.
 5. **No `privileged: true`, no Docker socket mounts, no `cap_add`.** Containers
    run with default Docker capabilities.
+6. **Default-deny ingress on Kubernetes.** Every Butlers namespace denies
+   ingress by default and allows only named peers. The public read surface runs
+   in its own namespace, reachable only from the gateway's proxy and able to
+   reach only its projection database.
 
 ## Anti-Patterns
 
@@ -431,6 +502,9 @@ and adapter-owned pointers to files staged inside the sandbox.
   confirmation for high-stakes actions.
 - Logging full credential values in session logs or error messages.
 - Binding Docker ports to `0.0.0.0` (exposes services to the entire LAN).
+- Putting an OAuth layer or an internet route in front of a butler daemon's or
+  the dashboard API's MCP endpoint. Only the public read surface is
+  internet-reachable, and only through the gateway (RFC 0039).
 - Adding services to the `egress` network when they don't call external APIs.
 - Hardcoding tailnet IPs in compose files (use `ALLOWED_TAILNET_HOSTS` and
   dynamic resolution instead).

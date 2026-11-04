@@ -112,3 +112,22 @@ Scope: v1-mandatory
 
 - **WHEN** a goal creates an event whose only attendee is the owner, or that has no attendees
 - **THEN** the non-owner rule does not apply and the event follows the module's existing conflict and approval policy
+
+#### Scenario: Mixed owner and guest invitation
+- **WHEN** a create call contains an owner and another or unresolved attendee
+- **THEN** it SHALL park the complete concrete-calendar call before creation
+- **AND** one owner address SHALL NOT authorize the other attendees
+- **AND** approved update/delete and occurrence calls SHALL bind their fetched effective audience to the exact owning action receipt before effect, preserving inherited `attendees=None`
+- **AND** action identity SHALL recover that receipt even without a caller request ID; missing, ambiguous or changed audience/account/provider/calendar bindings SHALL refuse before an owner shortcut or mutation
+- **AND** approved non-owner existing-event mutations SHALL require a fetched resource version and condition their Google update/delete/recurrence write on that same version; concurrent changes SHALL refuse without automatically retrying the approved effect
+
+#### Scenario: Authenticated dashboard guest create
+- **WHEN** the owner submits a guest create on the surviving dashboard surface
+- **THEN** the same calendar/account owner SHALL park and decide that exact call
+- **AND** the locked owning approval SHALL reject a changed call
+- **AND** this self-submission SHALL NOT contribute autonomy promotion history
+
+#### Scenario: Retired dashboard actions stay retired
+- **WHEN** a caller requests dashboard update, delete or mutation undo
+- **THEN** the create-only contract adopted by bu-kf3n4i=A and PR4901 SHALL remain
+- **AND** MCP update/delete and occurrence mutations SHALL retain their party gates

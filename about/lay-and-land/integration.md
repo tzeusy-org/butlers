@@ -49,6 +49,12 @@ graph TB
         Shared["public schema (cross-butler tables)"]
     end
 
+    subgraph PublicSurface["Public MCP surface (Draft, RFC 0039)"]
+        Gateway["owner gateway filter-proxy"]
+        PublicMCP["butlers-public-mcp"]
+        Projection["projection DB"]
+    end
+
     C -- "ingest.v1 / MCP SSE" --> Ingest
     Ingest --> Classify
     Classify -- "durable classified targets" --> Intent
@@ -66,6 +72,10 @@ graph TB
     FastAPI -- "SQL / asyncpg" --> Shared
     MCP -- "SQL / asyncpg" --> Schema
     MCP -- "SQL / asyncpg" --> Shared
+
+    Gateway -- "MCP stateless HTTP + assertion" --> PublicMCP
+    PublicMCP -- "SQL: read views, inbox INSERT" --> Projection
+    DB -- "logical replication, one way" --> Projection
 ```
 
 ---
@@ -263,6 +273,9 @@ between domain butlers.
 **Exception**: The Switchboard itself holds MCP client connections to all
 registered domain butlers for route dispatch.
 
+The planned public MCP server (§10) is not a butler peer: it holds no MCP client to any
+butler or to the Switchboard, so this rule is unchanged.
+
 The candidate in-room voice envelopes (`voice_origin.v1`,
 `voice_presence_attest.v1`) keep this rule and are specified in
 [RFC 0034](../legends-and-lore/rfcs/0034-messenger-voice-egress.md); they are
@@ -327,6 +340,74 @@ classification, routing, and session execution.
 
 ---
 
+## 10. Owner AI Client to Public MCP Server (Draft)
+
+Accepted design, not implemented:
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) D6, D7, D10 and D17.
+
+**Transport**: MCP streamable HTTP, stateless, JSON responses, no SSE GET. Path: client, then
+the Cloudflare Worker, then `cloudflared-mcp`, then `traefik-mcp`, then filter-proxy release
+`butlers` (namespace `mcp`), then the `butlers-public-mcp` Service. Placement:
+[`deployment.md` §Public MCP read surface](deployment.md#public-mcp-read-surface-draft).
+
+**Credentials on each request**:
+
+| Header | Set by | Proves | Checked at home as |
+|---|---|---|---|
+| `Authorization: Bearer <UPSTREAM_BEARER>` | filter-proxy | The request passed the one filter-proxy release. Never an identity. | Constant-time compare against a file-mounted SHA-256 digest; 401 before the body is parsed |
+| `X-MCP-Assertion` (compact JWS, `typ` `butlers-mcp-assertion+v1`) | Cloudflare Worker | The GitHub user (`sub`), OAuth client (`cid`), method, tool, query string and body SHA-256 of this exact call | Ed25519 against the keyring ConfigMap; JCS canonical payload; `exp = iat + 30`; `jti` replay set; `iat` not before process start |
+
+Only `initialize`, `notifications/initialized`, `notifications/cancelled`, `ping`,
+`tools/list` and `server/discover` may arrive unasserted; they return static content and open
+no database connection. The verifier reuses the `runtime_probe_control` signed codec, but its
+`typ` and keyring are distinct, and no RFC 0038 broker accepts it. Inbound `X-MCP-User-Id`
+headers are never trusted.
+
+**Errors**: auth failures are JSON-RPC `-32001` with `{"reason":"unauthorized"}`. Tool
+failures are `isError: true` results with a fixed `error.code` (`domain_disabled`,
+`projection_stale`, `budget_exhausted`, `blocked`, ...).
+
+---
+
+## 11. Primary to Projection: Logical Replication (Draft)
+
+**Transport**: PostgreSQL 17 logical replication, publication `butlers_public_v1` on the primary
+to subscription `butlers_public_sub` on `butlers_public`, as `butlers_projection_publisher`.
+
+**Contract** (RFC 0039 D2, D4): column lists and row filters are generated from the manifest
+`src/butlers/knowledge_read/projection.toml` by `butlers public-mcp reconcile`; DDL is never
+replicated. Row-filter columns sit in each table's replica identity, so a row that later stops
+matching (reclassified, restricted) arrives as a DELETE. Chronicler publishes source-owned
+`episodes_public` and `rollups_public` tables, because its corrections live in an overlay a row
+filter cannot see. No JSONB column is published: entity flags, finance overlays and health
+values reach the projection through trigger-maintained plain columns or tables. The manifest
+digest and the kill-switch rows replicate via `mcp_surface`; the public pod refuses tools when
+the digest differs from its built-in one. A CI contract test asserts, on a PG17 testcontainer
+with all migrations applied, that the publication equals the manifest. Narrowing the manifest
+makes reconcile truncate and re-copy the affected subscriber tables.
+
+---
+
+## 12. Proposal Inbox to Relationship Importer (Draft)
+
+**Transport**: SQL pull from the Butlers side (namespace `butlers-<env>`). The Relationship job
+`public_mcp_proposal_import` (`dispatch_mode = "job"`, every 5 minutes) connects to the
+projection as `mcp_proposals_reader`, copies up to 100 rows from `mcp_inbox.proposals` into
+`relationship.external_fact_proposals`, then deletes them. Nothing on the public side can push
+into Butlers.
+
+**Handoff**: each valid proposal is parked through a new approvals entry point,
+`park_external_proposal` (collapsed presentation, never a delivery provider), as
+`relationship_assert_fact` with `deduplication_key = 'external_mcp:<proposal_id>'`, no standing
+rule match, no push notification and evidence limited to the client label and a digest of the
+evidence URL. The importer reads the `proposals` and `all` kill switches from
+`mcp_surface.controls` on the primary. The owner approves on the dashboard approvals page under a
+passkey session (`POST /api/approvals/actions/{id}/approve`); the executor applies it
+deterministically with `content_authority = 'third_party'` and `src = 'external_mcp:<id>'`
+(RFC 0039 D13). `pending_actions.origin` is not widened.
+
+---
+
 ## Protocol Summary
 
 | Boundary | Protocol | Envelope | Transport |
@@ -341,3 +422,7 @@ classification, routing, and session execution.
 | Control plane -> daemon (liveness) | backend-network HTTP GET | `butler.control.v1` bounded facts | HTTP |
 | Switchboard -> target (ingestion delivery) | MCP | stable per-target acceptance identity and receipt | Streamable HTTP or SSE |
 | All -> OTel | OTLP | Traces + metrics | gRPC |
+| Owner AI client -> public MCP, via gateway (Draft) | MCP | JSON-RPC + hop bearer + `X-MCP-Assertion` | Stateless streamable HTTP |
+| Primary -> projection (Draft) | PostgreSQL logical replication | publication `butlers_public_v1` | TCP 5432 |
+| Public MCP -> projection (Draft) | SQL | `mcp_read` SELECT, inbox INSERT as `mcp_public_ro` | TCP 5432 |
+| Relationship importer -> projection inbox (Draft) | SQL | SELECT, DELETE as `mcp_proposals_reader` | TCP 5432 |

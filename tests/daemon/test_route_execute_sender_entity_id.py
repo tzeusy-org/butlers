@@ -4,279 +4,56 @@ Verifies that when route.execute receives a request_context with
 source_sender_entity_id, the value is captured and injected into
 _routing_ctx_var before spawner.trigger() is called, so that
 memory_store_fact can use it as the default entity_id.
+
+Each test boots a real daemon (``booted_daemon``) and calls route.execute over MCP;
+the route inbox, background task and spawner are the production ones. The fake
+runtime reads the routing context at invocation time, and route-inbox outcomes
+are read back from the clone. Two failure modes the fake runtime cannot produce
+(the spawner itself raising, and an opaque unsuccessful result) inject that result
+on the booted daemon's spawner; nothing in the lifecycle is patched.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from butlers.daemon import ButlerDaemon
+from butlers.core.routing_context import _routing_ctx_var
+from butlers.testing.daemon import write_butler_config
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
-
-class _NoopLeaseHeartbeat:
-    async def __aenter__(self) -> asyncio.Event:
-        return asyncio.Event()
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
-
-
-class _RecordingSpan:
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.attributes: dict[str, Any] = {}
-
-    def set_attribute(self, key: str, value: Any) -> None:
-        self.attributes[key] = value
-
-    def set_status(self, *_args: Any, **_kwargs: Any) -> None:
-        return None
-
-    def is_recording(self) -> bool:
-        return True
-
-    def get_span_context(self) -> Any:
-        return MagicMock(is_valid=False)
+_REQUEST_ID = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00"
 
 
-class _RecordingSpanContext:
-    def __init__(self, span: _RecordingSpan) -> None:
-        self.span = span
-
-    def __enter__(self) -> _RecordingSpan:
-        return self.span
-
-    def __exit__(self, *_args: Any) -> bool:
-        return False
+def _reset_otel_global_state():
+    """Fully reset the OpenTelemetry global tracer provider state."""
+    trace._TRACER_PROVIDER_SET_ONCE = trace.Once()
+    trace._TRACER_PROVIDER = None
 
 
-class _RecordingTracer:
-    def __init__(self) -> None:
-        self.spans: dict[str, _RecordingSpan] = {}
-
-    def start_as_current_span(self, name: str, **_kwargs: Any) -> _RecordingSpanContext:
-        span = _RecordingSpan(name)
-        self.spans[name] = span
-        return _RecordingSpanContext(span)
-
-
-# ---------------------------------------------------------------------------
-# Helpers (shared with other route_execute test modules)
-# ---------------------------------------------------------------------------
-
-
-def _toml_value(v: Any) -> str:
-    if isinstance(v, str):
-        return f'"{v}"'
-    if isinstance(v, list):
-        items = ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in v)
-        return f"[{items}]"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
-
-
-def _make_butler_toml(
-    tmp_path: Path,
-    *,
-    butler_name: str = "health",
-    port: int = 9700,
-    modules: dict[str, dict] | None = None,
-) -> Path:
-    modules = modules or {}
-    toml_lines = [
-        "[butler]",
-        f'name = "{butler_name}"',
-        f"port = {port}",
-        'description = "A test butler"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        f'schema = "{butler_name}"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    for mod_name, mod_cfg in modules.items():
-        toml_lines.append(f"\n[modules.{mod_name}]")
-        for k, v in mod_cfg.items():
-            toml_lines.append(f"{k} = {_toml_value(v)}")
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
-
-
-def _patch_infra():
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    transaction_depth = 0
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def _transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        try:
-            yield
-        finally:
-            transaction_depth -= 1
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-    mock_pool.fetchval.return_value = None
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
-
-
-@pytest.fixture(autouse=True)
-def _mock_route_inbox(monkeypatch):
-    """Patch route_inbox functions to avoid DB calls in all tests here."""
-    mock_insert = AsyncMock(return_value=uuid.uuid4())
-    mock_claim_processing = AsyncMock(return_value=uuid.uuid4())
-    mock_mark_processed = AsyncMock()
-    mock_mark_errored = AsyncMock()
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_claim_processing", mock_claim_processing
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
-    )
-    monkeypatch.setattr(
-        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processed", mock_mark_processed
-    )
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", mock_mark_errored)
-    return mock_insert
+@pytest.fixture
+def otel_provider(monkeypatch: pytest.MonkeyPatch):
+    """Record every span the daemon emits, so the content-blind checks can read them."""
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    _reset_otel_global_state()
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(resource=Resource.create({"service.name": "butler-test"}))
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(provider)
+    yield exporter
+    provider.shutdown()
+    _reset_otel_global_state()
 
 
 def _base_request_context(
@@ -284,7 +61,7 @@ def _base_request_context(
     source_sender_entity_id: str | None = None,
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
-        "request_id": "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00",
+        "request_id": _REQUEST_ID,
         "received_at": "2026-03-10T00:00:00Z",
         "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard",
@@ -296,39 +73,96 @@ def _base_request_context(
     return ctx
 
 
+async def _route(booted, input_data: dict[str, Any], **request: Any) -> dict[str, Any]:
+    return await booted.call_tool(
+        "route.execute",
+        {
+            "schema_version": "route.v1",
+            "request_context": _base_request_context(**request),
+            "input": input_data,
+        },
+    )
+
+
+async def _drain(booted) -> None:
+    """Wait for every background route task the daemon started."""
+    await asyncio.gather(*tuple(booted.daemon._route_inbox_tasks))
+
+
+async def _inbox_rows(booted) -> list[dict[str, Any]]:
+    rows = await booted.daemon.db.pool.fetch(
+        "SELECT id, lifecycle_state, error, route_envelope FROM route_inbox"
+    )
+    return [dict(row) for row in rows]
+
+
+def _capture_routing_ctx(captured: list[Any]):
+    """A scripted reply that records the routing context the session runs under."""
+
+    def reply(_invocation: dict[str, Any]) -> str:
+        captured.append(_routing_ctx_var.get())
+        return "ok"
+
+    return reply
+
+
+class ContentLeak(AssertionError):
+    """A content-blind route's identifier or content reached a log record or span."""
+
+
+# Known production leaks (bu-rvgzmf.9). Strict, and scoped to ContentLeak, so the
+# tests' functional assertions still fail normally and a fix makes these XPASS.
+_KNOWN_LEAK = pytest.mark.xfail(
+    strict=True,
+    raises=ContentLeak,
+    reason=(
+        "bu-rvgzmf.9: route_inbox, spawner and sessions logs (and the background task "
+        "name) carry raw ids and runtime error text for content-blind routes"
+    ),
+)
+
+
+def _assert_content_blind(
+    caplog: pytest.LogCaptureFixture, spans: InMemorySpanExporter | None, *needles: str
+) -> None:
+    """No captured log record or span attribute carries any of *needles*.
+
+    Failures name each offending record (logger, file:line) or span, so a leak points
+    at its source.
+    """
+    leaks = []
+    for needle in needles:
+        for record in caplog.records:
+            if needle in repr(record.__dict__):
+                fields = sorted(k for k, v in record.__dict__.items() if needle in repr(v))
+                leaks.append(
+                    f"{needle!r} in log {record.name} {record.pathname}:{record.lineno} {fields}"
+                )
+        for span in spans.get_finished_spans() if spans is not None else ():
+            if needle in repr(dict(span.attributes or {})):
+                leaks.append(f"{needle!r} in span {span.name}")
+    if leaks:
+        raise ContentLeak("\n".join(leaks))
+
+
 class TestRouteExecuteSenderEntityIdInjection:
     """Verify that source_sender_entity_id is injected into _routing_ctx_var."""
 
-    async def test_sender_entity_id_injected_into_routing_ctx_var(self, tmp_path: Path) -> None:
+    async def test_sender_entity_id_injected_into_routing_ctx_var(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
         """_routing_ctx_var is set with source_entity_id when source_sender_entity_id present."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
+        booted = await booted_daemon(write_butler_config(tmp_path))
         sender_entity_id = "550e8400-e29b-41d4-a716-446655440000"
         captured_routing_ctx: list[Any] = []
+        booted.runtime.script(_capture_routing_ctx(captured_routing_ctx))
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-
-        async def _capture_and_trigger(*args, **kwargs):
-            from butlers.modules.pipeline import _routing_ctx_var
-
-            captured_routing_ctx.append(_routing_ctx_var.get())
-            return mock_trigger_result
-
-        daemon.spawner.trigger = _capture_and_trigger
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_base_request_context(source_sender_entity_id=sender_entity_id),
-            input={"prompt": "Store some info about me."},
+        result = await _route(
+            booted,
+            {"prompt": "Store some info about me."},
+            source_sender_entity_id=sender_entity_id,
         )
-        await asyncio.sleep(0.05)
+        await booted.runtime.wait_for_invocations(1)
 
         assert result["status"] == "accepted"
         assert len(captured_routing_ctx) == 1
@@ -337,51 +171,27 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert isinstance(ctx, dict)
         assert ctx.get("source_entity_id") == sender_entity_id
 
-    async def test_no_sender_entity_id_leaves_routing_ctx_unset(self, tmp_path: Path) -> None:
+    async def test_no_sender_entity_id_leaves_routing_ctx_unset(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
         """Without an entity ID, route still propagates the validated source channel."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-
+        booted = await booted_daemon(write_butler_config(tmp_path))
         captured_routing_ctx: list[Any] = []
+        booted.runtime.script(_capture_routing_ctx(captured_routing_ctx))
 
-        mock_trigger_result = MagicMock()
-        mock_trigger_result.output = "ok"
-        mock_trigger_result.success = True
-        mock_trigger_result.error = None
-        mock_trigger_result.duration_ms = 10
-
-        async def _capture_and_trigger(*args, **kwargs):
-            from butlers.modules.pipeline import _routing_ctx_var
-
-            captured_routing_ctx.append(_routing_ctx_var.get())
-            return mock_trigger_result
-
-        daemon.spawner.trigger = _capture_and_trigger
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_base_request_context(),  # no entity_id
-            input={"prompt": "Just a message."},
-        )
-        await asyncio.sleep(0.05)
+        result = await _route(booted, {"prompt": "Just a message."})  # no entity_id
+        await booted.runtime.wait_for_invocations(1)
 
         assert result["status"] == "accepted"
-        assert len(captured_routing_ctx) == 1
         assert captured_routing_ctx == [{"request_context": {"source_channel": "telegram_bot"}}]
 
     async def test_conceptual_message_is_persisted_and_available_as_structured_context(
-        self,
-        tmp_path: Path,
-        _mock_route_inbox: AsyncMock,
+        self, booted_daemon, tmp_path: Path
     ) -> None:
         """Spec: REQ-conversation-decomposition-001, REQ-entity-identity-001."""
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
+        from fastmcp import Client
 
+        booted = await booted_daemon(write_butler_config(tmp_path))
         conceptual_message = {
             "signal_type": "health",
             "confidence": "HIGH",
@@ -397,30 +207,26 @@ class TestRouteExecuteSenderEntityIdInjection:
             ],
         }
         captured_routing_ctx: list[Any] = []
-        trigger_result = MagicMock(success=True, error=None, session_id="session-1")
+        booted.runtime.script(_capture_routing_ctx(captured_routing_ctx))
 
-        async def _capture_and_trigger(**_kwargs: Any) -> Any:
-            from butlers.core.routing_context import _routing_ctx_var
+        # The structured context arrives only inside the routed input, never as a
+        # separate tool parameter a caller could set.
+        async with Client(booted.url) as client:
+            (route_tool,) = [t for t in await client.list_tools() if t.name == "route.execute"]
+        assert "internal_context" not in route_tool.inputSchema["properties"]
 
-            captured_routing_ctx.append(_routing_ctx_var.get())
-            return trigger_result
-
-        daemon.spawner.trigger = _capture_and_trigger
-
-        assert "internal_context" not in inspect.signature(route_execute_fn).parameters
-
-        result = await route_execute_fn(
-            schema_version="route.v1",
-            request_context=_base_request_context(),
-            input={
+        result = await _route(
+            booted,
+            {
                 "prompt": "Store health facts from the conceptual excerpt.",
                 "context": {"conceptual_message": conceptual_message},
             },
         )
-        await asyncio.sleep(0.05)
+        await booted.runtime.wait_for_invocations(1)
 
         assert result["status"] == "accepted"
-        persisted_envelope = _mock_route_inbox.await_args.kwargs["route_envelope"]
+        (row,) = await _inbox_rows(booted)
+        persisted_envelope = row["route_envelope"]
         assert persisted_envelope["input"]["context"]["conceptual_message"] == conceptual_message
         assert captured_routing_ctx == [
             {
@@ -431,172 +237,143 @@ class TestRouteExecuteSenderEntityIdInjection:
 
     async def test_route_inbox_insert_failure_is_content_blind(
         self,
+        booted_daemon,
         tmp_path: Path,
-        _mock_route_inbox: AsyncMock,
         caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        otel_provider: InMemorySpanExporter,
     ) -> None:
         sentinel = "222222222222222@lid PRIVATE MESSAGE SQL SELECT"
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        _daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-        _mock_route_inbox.side_effect = RuntimeError(sentinel)
+        booted = await booted_daemon(write_butler_config(tmp_path))
+        # Fault injection at the one call under test; the daemon is otherwise real.
+        monkeypatch.setattr(
+            "butlers.core_tools._routing.route_inbox_insert",
+            AsyncMock(side_effect=RuntimeError(sentinel)),
+        )
 
-        with caplog.at_level("DEBUG"):
-            result = await route_execute_fn(
-                schema_version="route.v1",
-                request_context=_base_request_context(),
-                input={"prompt": "Store a fact."},
-            )
+        with caplog.at_level("DEBUG", logger="butlers"):
+            result = await _route(booted, {"prompt": "Store a fact."})
 
         assert result["status"] == "error"
         assert result["error"]["class"] == "internal_error"
         assert sentinel not in result["error"]["message"]
-        assert sentinel not in caplog.text
+        # Positive control: the failure was logged, so the capture is live.
+        assert "route_inbox_insert failed failure_class=RuntimeError" in caplog.text
+        _assert_content_blind(caplog, otel_provider, sentinel)
 
+    @_KNOWN_LEAK
     async def test_background_runtime_failure_is_content_blind(
         self,
+        booted_daemon,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
-        _mock_route_inbox: AsyncMock,
+        otel_provider: InMemorySpanExporter,
     ) -> None:
         sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
-        request_uuid = _base_request_context()["request_id"]
-        inbox_uuid = uuid.UUID("11111111-1111-4111-8111-111111111111")
-        _mock_route_inbox.return_value = inbox_uuid
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-        daemon.spawner.trigger = AsyncMock(side_effect=RuntimeError(sentinel))
-        mark_errored = AsyncMock(return_value=True)
-        monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", mark_errored)
-        tracer = _RecordingTracer()
+        booted = await booted_daemon(write_butler_config(tmp_path))
+        # The spawner itself raising (not the runtime) is the failure under test.
+        monkeypatch.setattr(
+            booted.daemon.spawner, "trigger", AsyncMock(side_effect=RuntimeError(sentinel))
+        )
 
-        with (
-            patch("butlers.core_tools._routing.trace.get_tracer", return_value=tracer),
-            patch(
-                "butlers.core_tools._routing.trace.get_current_span",
-                side_effect=lambda *_args, **_kwargs: tracer.spans["butler.tool.route.execute"],
-            ),
-            patch("butlers.core_tools._routing.logger.warning") as route_warning,
-            caplog.at_level("DEBUG"),
-        ):
-            result = await route_execute_fn(
-                schema_version="route.v1",
-                request_context=_base_request_context(),
-                input={
-                    "prompt": "Store a fact.",
-                    "context": {"conceptual_message": {"excerpts": []}},
-                },
+        with caplog.at_level("DEBUG", logger="butlers"):
+            result = await _route(
+                booted,
+                {"prompt": "Store a fact.", "context": {"conceptual_message": {"excerpts": []}}},
             )
-            await asyncio.gather(*daemon._route_inbox_tasks)
+            await _drain(booted)
 
         assert result["status"] == "accepted"
-        stored_error = mark_errored.await_args.args[2]
-        assert stored_error == "route runtime failed (RuntimeError)"
-        observability = (
-            caplog.text
-            + repr([record.__dict__ for record in caplog.records])
-            + repr(route_warning.call_args_list)
-            + repr({name: span.attributes for name, span in tracer.spans.items()})
-        )
-        assert sentinel not in observability
-        assert request_uuid not in observability
-        assert str(inbox_uuid) not in observability
+        (row,) = await _inbox_rows(booted)
+        assert row["lifecycle_state"] == "errored"
+        assert row["error"] == "route runtime failed (RuntimeError)"
+        assert "route.execute" in caplog.text  # positive control: capture is live
+        _assert_content_blind(caplog, otel_provider, sentinel, _REQUEST_ID, str(row["id"]))
 
     @pytest.mark.parametrize(
-        ("result_error", "expected_class"),
+        ("runtime_failure", "expected_class"),
         [
             (
-                "RuntimeError: 15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT",
+                RuntimeError("15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"),
                 "RuntimeError",
             ),
             ("provider returned opaque failure text", "runtime_unsuccessful"),
         ],
+        ids=("runtime-raises", "opaque-result"),
     )
+    @_KNOWN_LEAK
     async def test_unsuccessful_runtime_result_uses_bounded_failure_class(
         self,
+        booted_daemon,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
-        _mock_route_inbox: AsyncMock,
-        result_error: str,
+        otel_provider: InMemorySpanExporter,
+        runtime_failure: Any,
         expected_class: str,
     ) -> None:
-        request_uuid = _base_request_context()["request_id"]
-        inbox_uuid = uuid.UUID("22222222-2222-4222-8222-222222222222")
-        _mock_route_inbox.return_value = inbox_uuid
-        patches = _patch_infra()
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
-        daemon.spawner.trigger = AsyncMock(
-            return_value=MagicMock(success=False, error=result_error, session_id=uuid.uuid4())
-        )
-        mark_errored = AsyncMock(return_value=True)
-        monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", mark_errored)
-
-        with (
-            patch("butlers.core_tools._routing.logger.warning") as route_warning,
-            caplog.at_level("DEBUG"),
-        ):
-            await route_execute_fn(
-                schema_version="route.v1",
-                request_context=_base_request_context(),
-                input={
-                    "prompt": "Store a fact.",
-                    "context": {"conceptual_message": {"excerpts": []}},
-                },
+        booted = await booted_daemon(write_butler_config(tmp_path))
+        if isinstance(runtime_failure, BaseException):
+            # The runtime raises; the real spawner turns it into an unsuccessful
+            # result whose error is "RuntimeError: <message>".
+            booted.runtime.script(runtime_failure)
+        else:
+            # An unsuccessful result with opaque provider text cannot come from the
+            # fake runtime, so it is injected as the spawner's result.
+            monkeypatch.setattr(
+                booted.daemon.spawner,
+                "trigger",
+                AsyncMock(
+                    return_value=MagicMock(
+                        success=False, error=runtime_failure, session_id=uuid.uuid4()
+                    )
+                ),
             )
-            await asyncio.gather(*daemon._route_inbox_tasks)
 
-        assert mark_errored.await_args.args[2] == (
-            f"route runtime returned unsuccessful result ({expected_class})"
+        with caplog.at_level("DEBUG", logger="butlers"):
+            await _route(
+                booted,
+                {"prompt": "Store a fact.", "context": {"conceptual_message": {"excerpts": []}}},
+            )
+            await _drain(booted)
+
+        (row,) = await _inbox_rows(booted)
+        assert row["error"] == f"route runtime returned unsuccessful result ({expected_class})"
+        assert "route.execute" in caplog.text  # positive control: capture is live
+        _assert_content_blind(
+            caplog,
+            otel_provider,
+            "15551234567@s.whatsapp.net",
+            "PRIVATE MESSAGE SQL SELECT",
+            "provider returned opaque failure text",
+            _REQUEST_ID,
+            str(row["id"]),
         )
-        observability = (
-            caplog.text
-            + repr([record.__dict__ for record in caplog.records])
-            + repr(route_warning.call_args_list)
-        )
-        assert "15551234567@s.whatsapp.net" not in observability
-        assert "PRIVATE MESSAGE SQL SELECT" not in observability
-        assert "provider returned opaque failure text" not in observability
-        assert request_uuid not in observability
-        assert str(inbox_uuid) not in observability
 
     async def test_conceptual_route_dedup_log_omits_request_and_session_uuids(
         self,
+        booted_daemon,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        request_uuid = _base_request_context()["request_id"]
-        session_uuid = uuid.UUID("33333333-3333-4333-8333-333333333333")
-        patches = _patch_infra()
-        patches["mock_pool"].fetchval.return_value = session_uuid
-        butler_dir = _make_butler_toml(tmp_path, butler_name="health")
-        _daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
-        assert route_execute_fn is not None
+        booted = await booted_daemon(write_butler_config(tmp_path))
+        conceptual = {
+            "prompt": "Store a fact.",
+            "context": {"conceptual_message": {"excerpts": []}},
+        }
+        # A first, successful session for this request makes the repeat a dedup.
+        await _route(booted, conceptual)
+        await booted.runtime.wait_for_invocations(1)
+        await _drain(booted)
 
-        with (
-            patch("butlers.core_tools._routing.logger.info") as route_info,
-            caplog.at_level("INFO"),
-        ):
-            result = await route_execute_fn(
-                schema_version="route.v1",
-                request_context=_base_request_context(),
-                input={
-                    "prompt": "Store a fact.",
-                    "context": {"conceptual_message": {"excerpts": []}},
-                },
-            )
+        # Only the dedup call is under test; the first session's own logs are
+        # covered by the bu-rvgzmf.9 cases above.
+        caplog.clear()
+        with caplog.at_level("INFO", logger="butlers"):
+            result = await _route(booted, conceptual)
 
         assert result["dedup"] is True
-        observability = (
-            caplog.text
-            + repr([record.__dict__ for record in caplog.records])
-            + repr(route_info.call_args_list)
-        )
-        assert request_uuid not in observability
-        assert str(session_uuid) not in observability
+        session_uuid = result["existing_session_id"]
+        assert "route.execute: dedup" in caplog.text  # positive control
+        _assert_content_blind(caplog, None, _REQUEST_ID, session_uuid)

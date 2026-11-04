@@ -103,15 +103,26 @@ async def approve_action(
     actor_id: str = "dashboard:rest-api",
     create_rule: bool = False,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    *,
+    promotion_eligible: bool = True,
 ) -> dict[str, Any]:
     """Ordinary approvals stay one-tap; combined authority changes commit once."""
     if not create_rule:
-        return await _approve_action_write(pool, action_id, actor_id, False, decision_memory_writer)
+        return await _approve_action_write(
+            pool,
+            action_id,
+            actor_id,
+            False,
+            decision_memory_writer,
+            promotion_eligible=promotion_eligible,
+        )
     result = await run_rule_write(
         pool,
         "approve_with_rule",
         dict(action_id=action_id),
-        lambda conn: _approve_action_write(conn, action_id, actor_id, True, None),
+        lambda conn: _approve_action_write(
+            conn, action_id, actor_id, True, None, promotion_eligible=promotion_eligible
+        ),
     )
     await remember_rule(decision_memory_writer, result)
     return result
@@ -221,6 +232,8 @@ async def _approve_action_write(
     actor_id: str = "dashboard:rest-api",
     create_rule: bool = False,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    *,
+    promotion_eligible: bool = True,
 ) -> dict[str, Any]:
     """Approve a pending action without performing its side effect.
 
@@ -282,33 +295,37 @@ async def _approve_action_write(
     action = transition.action
     assert action is not None
 
-    # Post-approval autonomy tracker hook (task 7.1)
-    # Wrap in try/except so tracker failure doesn't block approval
-    try:
-        async with descriptive_savepoint(pool) as tracker_connection:
-            # Re-read to get decided_at
-            updated_row = await tracker_connection.fetchrow(
-                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
-            )
-            if updated_row is not None:
-                updated_action = PendingAction.from_row(updated_row)
-                await _record_approval(tracker_connection, updated_action)
-                # Use a minimal config namespace with defaults (no module import needed)
-                _default_config = type(
-                    "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
-                )()
-                await _check_promotion_threshold(
-                    pool=tracker_connection,
-                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
-                    tool_name=action.tool_name,
-                    tool_args=action.tool_args,
-                    config=_default_config,
-                    action_id=updated_action.id,
+    # A dashboard owner deciding their own submitted command is not delegated success.
+    if promotion_eligible:
+        # Post-approval autonomy tracker hook (task 7.1)
+        # Wrap in try/except so tracker failure doesn't block approval
+        try:
+            async with descriptive_savepoint(pool) as tracker_connection:
+                # Re-read to get decided_at
+                updated_row = await tracker_connection.fetchrow(
+                    "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-    except Exception:
-        logger.exception(
-            "Autonomy tracker hook failed for action %s — approval not blocked", action_id
-        )
+                if updated_row is not None:
+                    updated_action = PendingAction.from_row(updated_row)
+                    await _record_approval(tracker_connection, updated_action)
+                    # Use a minimal config namespace with defaults (no module import needed)
+                    _default_config = type(
+                        "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
+                    )()
+                    await _check_promotion_threshold(
+                        pool=tracker_connection,
+                        pattern_fingerprint=_compute_fingerprint(
+                            action.tool_name, action.tool_args
+                        ),
+                        tool_name=action.tool_name,
+                        tool_args=action.tool_args,
+                        config=_default_config,
+                        action_id=updated_action.id,
+                    )
+        except Exception:
+            logger.exception(
+                "Autonomy tracker hook failed for action %s — approval not blocked", action_id
+            )
 
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None

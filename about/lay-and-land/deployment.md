@@ -38,6 +38,16 @@ graph TB
     MIG -- "db migrate" --> PG
     Jobs --> PVC
     UP -- "OTLP" --> OTel
+
+    subgraph PUBNS["k3s: butlers-public-&lt;env&gt; (Draft, RFC 0039, default-deny)"]
+        PUB["Deployment butlers-public-mcp<br/>replicas: 1, no NodePort"]
+    end
+    PROJ["CNPG postgres-public-&lt;env&gt;<br/>database butlers_public"]
+    FP["Owner gateway: filter-proxy release 'butlers'<br/>(namespace mcp)"]
+    FP -- "only allowed ingress" --> PUB
+    PUB -- "SQL :5432, only allowed egress" --> PROJ
+    PG -- "logical replication, one way" --> PROJ
+    UP -. "relationship importer pulls inbox" .-> PROJ
 ```
 
 Production `butlers up` runs every roster butler in one Deployment; each butler
@@ -129,6 +139,10 @@ session port is cluster-internal only: `GET /health` returns a fixed 503 and
 every other route is refused; a NetworkPolicy admits only the documented
 callers. It has no NodePort or host port.
 
+The planned `butlers-public-mcp` Service (RFC 0039) lives in its own namespace, has no
+NodePort, host port or Tailscale mapping, and has no port assigned yet; see
+[Public MCP read surface](#public-mcp-read-surface-draft).
+
 PostgreSQL uses `POSTGRES_PORT` (default 5432) outside the chart. The chart
 does not deploy MinIO; the retained Compose MinIO and host-port setup is
 covered by [Docker Deployment](../../docs/operations/docker-deployment.md).
@@ -142,6 +156,21 @@ schema for cross-butler identity, model catalog, and secrets. Each butler's
 role sees only its own schema and `public`, and its `search_path` is
 `{butler_schema}, public`. Schema creation and Alembic migrations run in the
 `dashboard-api` migrations initContainer (`db migrate`).
+
+Planned second database (RFC 0039 D2-D4, D9; Draft): `butlers_public`, recommended on its own
+CNPG cluster `postgres-public-<env>` (placement pending the owner), with no backups because it
+rebuilds from the primary. The
+primary has one publication, `butlers_public_v1`, whose column lists and row filters
+`butlers public-mcp reconcile` generates from `src/butlers/knowledge_read/projection.toml`
+after Alembic; the projection has one subscription, `butlers_public_sub`. Roles:
+`butlers_projection_publisher` (the only Butlers-managed `REPLICATION` role on the primary,
+beside CNPG's `postgres` and `streaming_replica`; its credential can decode every change on the
+primary, so it lives only in the projection's namespace),
+`mcp_public_ro` (SELECT on `mcp_read` views, column INSERT on `mcp_inbox.proposals`) and
+`mcp_proposals_reader` (SELECT, DELETE on the inbox, used only by the importer). The primary
+needs `max_slot_wal_keep_size` set so a stalled slot cannot fill its disk [Observed: unset on
+`postgres-dev` today]. The fallback, a second database on `postgres-<env>`, requires ordered
+`pg_hba` lines that admit `mcp_public_ro` only to `butlers_public` and reject it everywhere else.
 
 ---
 
@@ -186,7 +215,8 @@ Tailscale Serve supplies the canonical HTTPS entry point; the server pins one
 origin/RP hostname and trusted proxy path. Same-host dev/prod URL prefixes are
 one browser security origin. Separate cookie names/state avoid collisions,
 while separate trust requires distinct hostnames. Network membership does not
-identify the dashboard owner. See the
+identify the dashboard owner. The planned Cloudflare path for the public MCP
+surface (RFC 0039) ends at its own namespace and never routes to the dashboard. See the
 [operator runbook](../../docs/identity_and_secrets/dashboard-owner-auth.md) and
 [adopted design](../../openspec/changes/specify-host-authorized-dashboard-enrollment/design.md).
 
@@ -211,3 +241,49 @@ fleet receiver evidence, QA patrol age, supervised-loop health, and
 Switchboard's internal route preflight. The request itself makes no probe,
 query, or write. Deployment launchers consume this route and register no
 second handler.
+
+---
+
+## Public MCP read surface (Draft)
+
+Accepted design, not deployed:
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) D3, D8 and
+Rollout. This is the only Butlers workload meant to be reachable from the internet, and only
+through the owner's gateway.
+
+**Gateway path (owner-operated, homelab repo).** Cloudflare Worker at `mcp.tze.how` (OAuth 2.1
+with PKCE, GitHub-id allowlist, strips inbound `x-mcp-*`, signs `X-MCP-Assertion`), then the
+VPC binding to `cloudflared-mcp`, then `traefik-mcp` (watches namespace `mcp` only), then the
+filter-proxy release `butlers` in namespace `mcp` (injects the hop bearer, `FIXES` off). Its
+`UPSTREAM_URL` is the only cross-namespace hop; no Butlers namespace joins traefik-mcp's watch
+list, because its Role can read Secrets in every namespace it watches.
+
+**Namespaces and network policy.**
+
+| Namespace | Holds | Ingress allowed | Egress allowed |
+|---|---|---|---|
+| `butlers-public-<env>` | `butlers-public-mcp` Deployment (chart `deploy/helm/butlers-public-mcp`), hop-bearer digest Secret, verifier keyring and break-glass `disabled_domains` ConfigMaps | MCP port from the `butlers` filter-proxy pods in `mcp`; metrics port from monitoring | `postgres-public-<env>` pods on 5432; kube-dns on 53 |
+| `postgres-public-<env>` (recommended placement) | CNPG cluster, database `butlers_public`; the publisher credential Secret | The public pod on 5432; the `butlers-up` pod on 5432 (Relationship importer); the CNPG operator on 8000 and 5432; its own instances | kube-apiserver on 6443/443; kube-dns on 53; the primary's pods on 5432 (subscription) |
+
+Everything else is denied by default. The importer's network boundary is pod-level: production
+`butlers up` runs every roster butler in one pod, so the policy admits that whole pod, and the
+`mcp_proposals_reader` grant is what limits it. A live check after each deploy (and on a schedule)
+fails if any NetworkPolicy or cluster-wide policy the chart did not render selects pods in either
+namespace. The pod runs non-root with a read-only root filesystem,
+no service-account token and `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`. It runs one replica,
+because the assertion replay set is in memory.
+
+**Why not `butlers-<env>`.** [Observed] `butlers-tracker-egress` allows every pod in that
+namespace egress to `0.0.0.0/0`, and NetworkPolicies are additive, so no narrower policy could
+hold the public pod to the projection. **Precondition:** `butlers-<env>` has no default-deny
+ingress today [Observed]; that, with a contract test, lands before any gateway allow rule
+points into Butlers.
+
+**Owner acts** (RFC 0039 Rollout, OD5): create both namespaces; set `max_slot_wal_keep_size`
+and add the replication role and its single `hostssl` `pg_hba` line (no `replication` entry) on
+`postgres-<env>`; decide the projection placement, then create the cluster (or second database)
+and subscription; generate the Worker's Ed25519 key and add assertion signing; deploy the
+`butlers` filter-proxy release with an ExternalSecret on the dev store; add `butlers` to the
+Worker's `MCP_SERVERS`; configure an Alertmanager receiver outside Butlers. Rollout targets
+`dev`, which is the live system, so the first client connection exposes live data; prod waits
+on a separate owner act.

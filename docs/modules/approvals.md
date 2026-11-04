@@ -322,3 +322,19 @@ with exact persisted arguments, no edits and `create_rule=False`. An already
 approved command may recover through that same owning dispatch; its independent
 committed attempt fence prevents a repeated provider write. RFC 0023 recovery
 remains notification-only and retains its default-off authority boundary.
+
+### Domain producers without unrelated generic gates
+
+`[modules.approvals].enabled` continues to control generic `gated_tools`
+wrapping and its mandatory reverse coverage for declared write tools. The
+optional typed `domain_producers` list accepts only `calendar` and
+`google_drive`, without duplicates, and defaults to empty. It enables only
+those modules' own pending-action producers while leaving unrelated gates and
+standing-rule policy unchanged. The owning approvals module, queue pool and
+already-wired executor must all be active; configuration alone is insufficient.
+
+For example, a calendar owner can load actions with `enabled=false` and
+`domain_producers=["calendar"]`. This preserves its existing Spotify and other
+module behavior while giving guest invitations the same-owner approval path.
+A producer flag and the descriptive catalog marker grant no execution authority:
+only an authenticated owner decision and exact stored-call executor context do.

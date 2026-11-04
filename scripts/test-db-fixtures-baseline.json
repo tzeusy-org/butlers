@@ -4,367 +4,31 @@
     "fixtures": 0
   },
   "roster/chronicler/tests/test_storage_integration.py": {
-    "create_table": 7,
-    "fixtures": 0
-  },
-  "roster/education/tests/test_evaluator_notes_schema.py": {
     "create_table": 1,
-    "fixtures": 2
-  },
-  "roster/education/tests/test_response_type_check.py": {
-    "create_table": 1,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_alerts.py": {
-    "create_table": 5,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_anomaly_detection.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/finance/tests/test_backfill.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/finance/tests/test_budget_period_timezone.py": {
-    "create_table": 3,
     "fixtures": 0
-  },
-  "roster/finance/tests/test_budgets.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "roster/finance/tests/test_facts.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/finance/tests/test_feed_reconciliation.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_integration.py": {
-    "create_table": 1,
-    "fixtures": 3
-  },
-  "roster/finance/tests/test_jobs.py": {
-    "create_table": 5,
-    "fixtures": 0
-  },
-  "roster/finance/tests/test_overview.py": {
-    "create_table": 6,
-    "fixtures": 1
   },
   "roster/finance/tests/test_pattern_recognition.py": {
-    "create_table": 8,
-    "fixtures": 1
-  },
-  "roster/finance/tests/test_reconciliation.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_simplefin_bridge.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_spending.py": {
-    "create_table": 1,
-    "fixtures": 1
-  },
-  "roster/finance/tests/test_tools.py": {
-    "create_table": 0,
-    "fixtures": 3
-  },
-  "roster/finance/tests/test_track_c_hook.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_track_d_sweep.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/finance/tests/test_transactions.py": {
     "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/finance/tests/test_upcoming_bills_skill_path.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/general/tests/test_ordinary_source_authority.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "roster/general/tests/test_tools.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "roster/health/tests/test_clinical_retention.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/health/tests/test_condition_status_restore.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/health/tests/test_jobs.py": {
-    "create_table": 5,
-    "fixtures": 0
-  },
-  "roster/health/tests/test_measurement_sources.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/health/tests/test_owner_dominance.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "roster/health/tests/test_tools.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/health/tests/test_workout_last_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/lifestyle/tests/test_lifestyle_integration.py": {
-    "create_table": 5,
     "fixtures": 0
   },
   "roster/relationship/tests/evidence_schema.py": {
     "create_table": 3,
     "fixtures": 0
   },
-  "roster/relationship/tests/test_commitment_extraction_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
   "roster/relationship/tests/test_contact_info.py": {
-    "create_table": 7,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py": {
-    "create_table": 9,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_credentials_carveout.py": {
-    "create_table": 4,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_dedup_contacts_drop_fks_migration.py": {
-    "create_table": 10,
-    "fixtures": 0
-  },
-  "roster/relationship/tests/test_dunbar.py": {
-    "create_table": 10,
-    "fixtures": 0
-  },
-  "roster/relationship/tests/test_dunbar_tier_contactless_integration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "roster/relationship/tests/test_entity_cadence_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/relationship/tests/test_entity_dedup_curation_job.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_entity_posture.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/relationship/tests/test_episodic_predicate_curation_job.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_fact_evidence_and_coverage.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_family_confidence_gate.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_jobs.py": {
-    "create_table": 4,
-    "fixtures": 0
-  },
-  "roster/relationship/tests/test_loan_backfill_retracted_claims.py": {
     "create_table": 1,
     "fixtures": 0
-  },
-  "roster/relationship/tests/test_loans_entity_id.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_memory_curation_job.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_merge_cardinality_single_resolution.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_merge_repoints_all_source_refs.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_prefers_channel.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_promote_entity_park_atomicity.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_rel_034_migration.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_rel_035_migration.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_relationship_assert_fact.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_resolve_outbound_channel.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_spo_tools.py": {
-    "create_table": 8,
-    "fixtures": 1
-  },
-  "roster/relationship/tests/test_tools.py": {
-    "create_table": 24,
-    "fixtures": 1
   },
   "roster/relationship/tests/test_whatsapp_reconciliation.py": {
     "create_table": 2,
     "fixtures": 0
   },
-  "roster/switchboard/tests/test_backfill_replay_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "roster/switchboard/tests/test_conformance.py": {
-    "create_table": 5,
-    "fixtures": 0
-  },
-  "roster/switchboard/tests/test_correct_route.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "roster/switchboard/tests/test_deliver_search_path_integration.py": {
-    "create_table": 4,
-    "fixtures": 0
-  },
-  "roster/switchboard/tests/test_identity_mint_concurrency_integration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "roster/switchboard/tests/test_identity_notification_claim_integration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "roster/switchboard/tests/test_ingest_api.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/switchboard/tests/test_ingest_tier.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/switchboard/tests/test_tools.py": {
-    "create_table": 7,
-    "fixtures": 1
-  },
-  "roster/travel/tests/test_bookings.py": {
-    "create_table": 11,
-    "fixtures": 1
-  },
-  "roster/travel/tests/test_connections.py": {
-    "create_table": 6,
-    "fixtures": 1
-  },
-  "roster/travel/tests/test_jobs.py": {
-    "create_table": 5,
-    "fixtures": 0
-  },
-  "roster/travel/tests/test_migration_travel_002.py": {
-    "create_table": 5,
-    "fixtures": 1
-  },
-  "roster/travel/tests/test_migration_travel_003.py": {
-    "create_table": 3,
-    "fixtures": 1
-  },
-  "roster/travel/tests/test_tools.py": {
-    "create_table": 7,
-    "fixtures": 1
-  },
-  "roster/travel/tests/test_trips.py": {
-    "create_table": 7,
-    "fixtures": 1
-  },
-  "tests/api/test_api_health_meals_owner_tz.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/api/test_audit_grouping_credential_blind_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_audit_grouping_union_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_audit_log_schedule_privileged.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_audit_log_union_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_audit_propagation_rollback.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_audit_txn_atomicity.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
   "tests/api/test_calendar_workspace_linked_people_integration.py": {
     "create_table": 2,
     "fixtures": 0
   },
-  "tests/api/test_contacts_search_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_conversation_recall_search_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
   "tests/api/test_data_ops_permissions_export_order.py": {
     "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/api/test_issues_condition_ledger_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_memory_rules_forgotten.py": {
-    "create_table": 5,
-    "fixtures": 0
-  },
-  "tests/api/test_memory_stats_consolidation_e2e.py": {
-    "create_table": 4,
     "fixtures": 0
   },
   "tests/api/test_model_allowance_real_pg.py": {
@@ -373,49 +37,9 @@
   },
   "tests/api/test_optional_schema_lifecycle_db.py": {
     "create_table": 9,
-    "fixtures": 1
-  },
-  "tests/api/test_owner_auth_store.py": {
-    "create_table": 1,
     "fixtures": 0
   },
-  "tests/api/test_qa_case_proposal_state_db.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/api/test_qa_cases_session_doors_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_relationship_entities_activity_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_relationship_entities_concentration_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_relationship_entities_search_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_relationship_narrative_scope_parity.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_relationship_queue_dismissed_suppression_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_runtime_probe_control_receipts_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/api/test_secrets_v2_schema_drift_db.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/api/test_steam_account_config_jsonb_integration.py": {
+  "tests/api/test_owner_auth_store.py": {
     "create_table": 1,
     "fixtures": 0
   },
@@ -426,22 +50,6 @@
   "tests/chronicler/test_episode_entities_migration.py": {
     "create_table": 4,
     "fixtures": 0
-  },
-  "tests/chronicler/test_owner_episode_atomicity_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/config/test_dnd_generation_guard_postgres.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/config/test_education_curriculum_receipt_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/config/test_education_node_entity_id_db.py": {
-    "create_table": 0,
-    "fixtures": 2
   },
   "tests/config/test_init_db_admin_function_guard_lists.py": {
     "create_table": 12,
@@ -475,165 +83,25 @@
     "create_table": 7,
     "fixtures": 0
   },
-  "tests/config/test_schema_standin_parity.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
   "tests/contracts/test_chronicler_schema_drift.py": {
     "create_table": 11,
     "fixtures": 0
   },
-  "tests/core/healing/test_circuit_breaker_reset_db.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/core/healing/test_tracking.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/core/qa/test_circuit_breaker_reset_db.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/core/qa/test_journal_jsonb_roundtrip.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/core/test_active_session_detection.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_butler_logging_jsonb_roundtrip.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/core/test_context_bus.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
   "tests/core/test_core_scheduler.py": {
     "create_table": 2,
-    "fixtures": 2
-  },
-  "tests/core/test_core_sessions.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_core_state.py": {
-    "create_table": 0,
-    "fixtures": 2
+    "fixtures": 0
   },
   "tests/core/test_db.py": {
     "create_table": 1,
     "fixtures": 0
   },
-  "tests/core/test_deadlines_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_delivery_preferences.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_event_chains_mcp.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_general_settings_public_state.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/core/test_identity_resolution_entity_facts.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/core/test_model_routing.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
   "tests/core/test_model_routing_quota.py": {
     "create_table": 1,
-    "fixtures": 2
-  },
-  "tests/core/test_provider_allowance.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_resolve_dispatch.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_scheduler_continuity.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_scheduling_preferences.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/core/test_seasonal.py": {
-    "create_table": 2,
-    "fixtures": 1
-  },
-  "tests/core/test_task_continuity.py": {
-    "create_table": 0,
-    "fixtures": 2
+    "fixtures": 0
   },
   "tests/core/test_temporal_intelligence.py": {
     "create_table": 1,
-    "fixtures": 1
-  },
-  "tests/core_tools/test_schedule_trigger_dispatch.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/features/test_vcard.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_account_security_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_approval_delivery_worker.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_approval_push_on_park.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_approval_refused_edit_atomicity.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_approval_rule_memory_commit.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_attention_daily_rollup_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_attention_ledger_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_autonomy_fingerprint_v2.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_calendar_sync_deadman_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_chronicler_coverage_witness_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_chronicler_location_retention_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
+    "fixtures": 0
   },
   "tests/integration/test_chronicler_mem_schema_isolation.py": {
     "create_table": 1,
@@ -643,375 +111,15 @@
     "create_table": 2,
     "fixtures": 0
   },
-  "tests/integration/test_chronicler_rollups_api_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_chronicler_routines_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_chronicler_who_you_were_with_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_chronicler_writeback_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_commitment_escalation.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_commitments_entity_graph_edges.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_commitments_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_connector_stats_filtered_events_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_connector_summaries_filtered_events_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_contacts_sync_state_jsonb_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_cursor_store_parent_declaration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_cursor_store_settings_jsonb_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_daily_rollup_flags_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_daily_rollup_narrative_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_daily_rollups_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_dashboard_conversation_lineage.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_dashboard_stepup.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_day_close_recovery_atomicity.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_day_close_writer_concurrency.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_decision_memory_writeback.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_decomposition_flow.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_delegation_ask_dispatch_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_delegation_ledger_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_delegation_wake_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_deploy_drift_lifecycle_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_deploy_drift_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_deploy_ledger_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_deployments_record_cli_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_deployments_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_domain_event_bus_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_email_identity_enrichment_db.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/integration/test_entity_graph_dossier.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_entity_graph_walk.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_external_deadman_health.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_filtered_event_buffer_jsonb_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_fleet_case_contribution_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
   "tests/integration/test_fleet_events_notify_bridge.py": {
     "create_table": 1,
     "fixtures": 0
-  },
-  "tests/integration/test_fleet_retirement_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_gap_interview_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_google_health_workout_projection_integration.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_healing_retry_publication_hold.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_home_assistant_sensor_activity_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_idempotent_ingestion.py": {
-    "create_table": 9,
-    "fixtures": 1
-  },
-  "tests/integration/test_infra_conditions_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_infra_state_condition_suppression_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_infra_state_views_migration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_ingest_attachments_persistence.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_ingestion_events_histogram_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_ingestion_replay_policy_db.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_ingestion_replay_reconcile_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_integration.py": {
-    "create_table": 0,
-    "fixtures": 3
-  },
-  "tests/integration/test_meeting_debrief_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_meeting_debrief_pending_api_db.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_meeting_debrief_posture_refusal.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_meeting_debrief_unresolved_posture.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_owner_conditions_broker_mcp_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_owner_conditions_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_owner_creation_attention.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_owntracks_place_cluster_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_owntracks_ssid_adapter_integration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_passive_interaction_sender_identity_sql.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_pending_actions_writers_jsonb_roundtrip.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/integration/test_pipeline_ingress_partition_durability.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/integration/test_qa_publication_state.py": {
-    "create_table": 0,
-    "fixtures": 2
   },
   "tests/integration/test_queue_claim_contract.py": {
     "create_table": 3,
     "fixtures": 0
   },
-  "tests/integration/test_scheduler_jsonb_roundtrip.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/integration/test_schema_isolation.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/integration/test_sender_authentication_roundtrip.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_sessions_degraded_meta_db.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_signed_confirms.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/integration/test_switchboard_dropped_known_watch_job.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_switchboard_routing_tools_search_path.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_switchboard_routing_verdict_log_migration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_switchboard_rule_promotion_apply.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_switchboard_rule_promotion_suggestions_migration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_switchboard_rule_promotion_trigger_job.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_switchboard_spot_check_index_migration.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/integration/test_telegram_approval_callback_flow.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_timeline_intervals.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/integration/test_token_usage_ledger_purpose_roundtrip.py": {
-    "create_table": 1,
-    "fixtures": 2
-  },
-  "tests/jobs/test_briefing_owner_timezone.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/jobs/test_education_analytics_feedback_loop.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/jobs/test_flight_status.py": {
-    "create_table": 5,
-    "fixtures": 0
-  },
   "tests/jobs/test_health_baselines.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/jobs/test_home_ha_snapshot_persist.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/jobs/test_home_safety_sentinel.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_audit_log_failed_outcome_backfill_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_audit_log_index_perf.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/migrations/test_audit_log_metadata_repair_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_backfill_dashboard_audit_log.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_backfill_entity_canonical_name_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_backfill_entity_info_nonsecret_to_facts_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_breaker_resets_migration.py": {
     "create_table": 2,
     "fixtures": 0
   },
@@ -1027,23 +135,7 @@
     "create_table": 3,
     "fixtures": 0
   },
-  "tests/migrations/test_collapse_dashboard_conversation_ghosts_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_complexity_tier_rename_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_condition_resolution_reason_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
   "tests/migrations/test_core_255_insight_premise_binding_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_core_257_provider_allowance_states_migration.py": {
     "create_table": 1,
     "fixtures": 0
   },
@@ -1051,44 +143,8 @@
     "create_table": 1,
     "fixtures": 0
   },
-  "tests/migrations/test_core_272_health_refill_probe_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_dashboard_message_provenance_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_dashboard_messages_page_context_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_dashboard_messages_search_index_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_dashboard_messages_sources_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_dead_letter_unanswerable_category_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_dedup_contacts_public_refs_migration.py": {
-    "create_table": 4,
-    "fixtures": 0
-  },
   "tests/migrations/test_drop_backup_tables.py": {
     "create_table": 4,
-    "fixtures": 0
-  },
-  "tests/migrations/test_drop_contact_info.py": {
-    "create_table": 4,
-    "fixtures": 0
-  },
-  "tests/migrations/test_drop_contacts_preferred_channel.py": {
-    "create_table": 3,
     "fixtures": 0
   },
   "tests/migrations/test_drop_dead_feature_tables.py": {
@@ -1100,7 +156,7 @@
     "fixtures": 0
   },
   "tests/migrations/test_drop_quick_facts_migration.py": {
-    "create_table": 3,
+    "create_table": 1,
     "fixtures": 0
   },
   "tests/migrations/test_drop_source_links_contacts_fk_migration.py": {
@@ -1111,14 +167,6 @@
     "create_table": 5,
     "fixtures": 0
   },
-  "tests/migrations/test_entities_listed_flag_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_entity_rebind_log_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
   "tests/migrations/test_entity_v3_lifecycle_migration.py": {
     "create_table": 6,
     "fixtures": 0
@@ -1127,68 +175,16 @@
     "create_table": 1,
     "fixtures": 0
   },
-  "tests/migrations/test_fading_validity_backfill_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_finance_migrations.py": {
-    "create_table": 6,
-    "fixtures": 0
-  },
   "tests/migrations/test_finance_warning_boot_read_migration.py": {
     "create_table": 3,
     "fixtures": 0
   },
-  "tests/migrations/test_healing_breaker_reset_backfill_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_memory_catalog_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_memory_catalog_read_sensitivity_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_model_catalog_complexity_tier_default_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_model_resolution_receipt_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
   "tests/migrations/test_predicate_registry_migration.py": {
-    "create_table": 4,
-    "fixtures": 0
-  },
-  "tests/migrations/test_prefers_channel_predicate_migration.py": {
     "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_priority_contacts_cascade_audit.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_purge_confidential_pii_memory_catalog_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_qa_investigation_events_migration.py": {
-    "create_table": 2,
     "fixtures": 0
   },
   "tests/migrations/test_qa_repo_org_rename_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_reclassify_health_write_sensitivity_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_rehome_contact_profile_migration.py": {
-    "create_table": 3,
+    "create_table": 1,
     "fixtures": 0
   },
   "tests/migrations/test_relationship_expected_signal_endpoints.py": {
@@ -1196,54 +192,14 @@
     "fixtures": 0
   },
   "tests/migrations/test_relationship_facts_migration.py": {
-    "create_table": 6,
-    "fixtures": 0
-  },
-  "tests/migrations/test_resolve_owner_triple_migration.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/migrations/test_retire_legacy_permission_seeds_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_retitle_session_episodes_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_runtime_config_blind_spot_flag_migration.py": {
-    "create_table": 1,
+    "create_table": 4,
     "fixtures": 0
   },
   "tests/migrations/test_runtime_probe_control_receipts_migration.py": {
     "create_table": 2,
     "fixtures": 0
   },
-  "tests/migrations/test_seed_long_tail_relational_predicates_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_seed_works_at_member_of_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
   "tests/migrations/test_shared_pool_test_state_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_spotify_spoken_policy_migration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/migrations/test_task_continuity_migration.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/migrations/test_tombstone_heartbeat_migration.py": {
-    "create_table": 3,
-    "fixtures": 0
-  },
-  "tests/migrations/test_tombstone_memory_calendar_episodes_migration.py": {
     "create_table": 2,
     "fixtures": 0
   },
@@ -1255,73 +211,13 @@
     "create_table": 1,
     "fixtures": 0
   },
-  "tests/migrations/test_wellness_predicates.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
   "tests/migrations/test_whatsapp_session_rotation_migration.py": {
     "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/modules/approvals/test_prepared_actions.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/modules/approvals/test_prepared_execution.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/modules/approvals/test_rule_use_claim.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
-  "tests/modules/memory/test_catalog_sensitivity.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/modules/memory/test_consolidation_lifecycle.py": {
-    "create_table": 7,
     "fixtures": 0
   },
   "tests/modules/memory/test_consolidation_runs.py": {
     "create_table": 1,
     "fixtures": 0
-  },
-  "tests/modules/memory/test_entity_credential_anchor_exclusion.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/modules/memory/test_episode_cleanup_consolidation_aware.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/modules/memory/test_episode_requeue_lifecycle.py": {
-    "create_table": 2,
-    "fixtures": 0
-  },
-  "tests/modules/memory/test_repoint_temporal_coexistence.py": {
-    "create_table": 1,
-    "fixtures": 1
-  },
-  "tests/modules/memory/test_tools_entities.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/modules/memory/test_tools_management.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/modules/memory/test_tools_preferences.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/modules/memory/test_tools_reading.py": {
-    "create_table": 0,
-    "fixtures": 1
-  },
-  "tests/modules/memory/test_tools_writing.py": {
-    "create_table": 0,
-    "fixtures": 1
   },
   "tests/modules/test_approvals_migrations.py": {
     "create_table": 2,
@@ -1330,38 +226,6 @@
   "tests/modules/test_approvals_models.py": {
     "create_table": 4,
     "fixtures": 0
-  },
-  "tests/modules/test_calendar_force_sync_queue_integration.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/modules/test_calendar_reminder_integration.py": {
-    "create_table": 6,
-    "fixtures": 0
-  },
-  "tests/modules/test_health_refill_premise.py": {
-    "create_table": 1,
-    "fixtures": 1
-  },
-  "tests/modules/test_insight_attention_ledger.py": {
-    "create_table": 1,
-    "fixtures": 1
-  },
-  "tests/modules/test_insight_engine.py": {
-    "create_table": 1,
-    "fixtures": 1
-  },
-  "tests/modules/test_insight_premise_binding.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/relationship/test_jsonb_codec.py": {
-    "create_table": 13,
-    "fixtures": 0
-  },
-  "tests/relationship/test_relationship_lookup_readonly.py": {
-    "create_table": 3,
-    "fixtures": 1
   },
   "tests/scripts/test_pg_dump_backup.py": {
     "create_table": 8,
@@ -1379,24 +243,8 @@
     "create_table": 1,
     "fixtures": 0
   },
-  "tests/test_catalogue_bootstrap_jsonb_roundtrip.py": {
-    "create_table": 1,
-    "fixtures": 0
-  },
-  "tests/test_education_mind_map_staleness.py": {
-    "create_table": 0,
-    "fixtures": 2
-  },
   "tests/testing/test_migrated_db_templates.py": {
     "create_table": 1,
     "fixtures": 0
-  },
-  "tests/tools/test_relationship_types.py": {
-    "create_table": 7,
-    "fixtures": 1
-  },
-  "tests/tools/test_tools_extraction_queue.py": {
-    "create_table": 1,
-    "fixtures": 1
   }
 }

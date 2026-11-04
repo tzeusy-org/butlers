@@ -3,6 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-03-25
 **Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session spawn and sandbox rules, and the container layout, which gains `butlers-control` and the session host; network, port and firewall contracts remain).
+**Amended:** 2026-11-04, Kubernetes ingress and the public read surface ([RFC 0039](0039-public-mcp-read-surface.md); see the amendment at the end).
 
 ## Summary
 
@@ -276,3 +277,22 @@ exposes categories only and grants no control authority. The separate-host
 minimal `/api/health` pull monitor retains its already adopted scope; a new
 external functional monitor or public readiness consumption needs its own
 owner authorization.
+
+## Amendment (2026-11-04): Kubernetes Ingress and the Public Read Surface
+
+Owner decision 2026-11-04, designed in
+[RFC 0039](0039-public-mcp-read-surface.md). Invariant 3 and the statement
+that no service needs to bind to anything other than localhost describe the
+Compose host. On k3s the same intent is met by NetworkPolicy, not by the bind
+address: every Butlers namespace denies ingress by default and admits only
+named peers, and a rendered-chart contract test holds the union of policies to
+that set. Tailscale serve remains the entry point for the dashboard and its
+API.
+
+The only internet-reachable Butlers workload is RFC 0039's public MCP server.
+It runs in its own default-deny namespace, is reached only through the owner's
+MCP gateway (a Cloudflare Worker, then a filter-proxy release in namespace
+`mcp`), and can reach only its projection database. No Butlers namespace joins
+the gateway's traefik watch list, and no gateway allow rule may point into
+`butlers-<env>`. The network, port and firewall contracts above are otherwise
+unchanged.

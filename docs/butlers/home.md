@@ -157,3 +157,23 @@ verification matrices; they claim no measured live latency or token savings.
 
 - [Health Butler](health.md) -- reads Home Assistant sensors (read-only) for health correlation
 - [Switchboard Butler](switchboard.md) -- routes home automation messages here
+
+### Communication audience and physical risk
+
+Notify, TTS, persistent notifications and explicitly messaging/announcement
+services additionally classify their complete target selectors as communication.
+Target selectors are separate from message/title and other service data; both
+remain safety-critical in the exact parked command. Ownership uses the existing
+identity resolver's `other` handles (`home_assistant:notify:<service>` or
+`home_assistant:<selector>:<id>`), never friendly names or inferred household
+ownership. Missing, bulk, shared or unresolved targets require owner approval.
+
+This adds no device registry and never downgrades physical risk. Unknown notify
+and TTS services remain protected even when their targets resolve to the owner;
+a standing rule cannot bypass a consequential or protected physical call.
+
+Legacy notify `data.target` and unresolved area, label or floor selectors do not
+inherit an owner-mapped service handle's identity. They remain unresolved
+communication audiences while the independent protected-actuation gate remains
+in force. Home Assistant's [legacy notify handler](https://github.com/home-assistant/core/blob/dev/homeassistant/components/notify/legacy.py)
+forwards a generic service's explicit target to its notification platform.

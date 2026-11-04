@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import statistics
 import time
 import warnings
-from pathlib import Path
 
 import pytest
 
 from butlers.core.model_capabilities import capability_baseline_of_adapter
 from butlers.core.runtimes import create_adapter, get_adapter, list_registered_runtime_types
-from butlers.testing.daemon import DaemonBooter, FakeRuntime
+from butlers.testing.daemon import DaemonBooter, FakeRuntime, write_butler_config
 
 pytestmark = pytest.mark.integration
 
@@ -23,15 +23,19 @@ session_loop = pytest.mark.asyncio(loop_scope="session")
 _BOOTS = 10
 
 
-def _write_butler(root: Path, name: str = "kit_smoke") -> Path:
-    config_dir = root / name
-    config_dir.mkdir()
-    # One-db topology on a schema that has a runtime role, as production boots.
-    (config_dir / "butler.toml").write_text(
-        f'[butler]\nname = "{name}"\nport = 0\ndescription = "booted_daemon smoke"\n\n'
-        '[butler.db]\nname = "butlers"\nschema = "general"\n'
+def test_write_butler_config_writes_a_bootable_one_db_butler(tmp_path) -> None:
+    from butlers.config import load_config
+
+    config_dir = write_butler_config(
+        tmp_path,
+        "general",
+        extra_toml='[butler.security]\ntrusted_route_callers = ["switchboard", "health"]\n',
     )
-    return config_dir
+
+    assert config_dir == tmp_path / "general"
+    config = load_config(config_dir)
+    assert (config.name, config.db_name, config.db_schema) == ("general", "butlers", "general")
+    assert set(config.trusted_route_callers) == {"switchboard", "health"}
 
 
 def _live_tasks() -> set[asyncio.Task]:
@@ -41,7 +45,7 @@ def _live_tasks() -> set[asyncio.Task]:
 @session_loop
 async def test_booted_daemon_serves_a_tool_and_shuts_down_clean(booted_daemon, tmp_path) -> None:
     before = _live_tasks()
-    booted = await booted_daemon(_write_butler(tmp_path))
+    booted = await booted_daemon(write_butler_config(tmp_path, "kit_smoke"))
 
     # The real spawner holds the fake adapter, so no LLM CLI can start.
     assert isinstance(booted.daemon.spawner._runtime, FakeRuntime)
@@ -58,10 +62,62 @@ async def test_booted_daemon_serves_a_tool_and_shuts_down_clean(booted_daemon, t
 
 
 @session_loop
+async def test_caplog_still_captures_daemon_logs_after_boot(
+    booted_daemon, tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Startup's configure_logging replaces the root logger's console handlers, which
+    # would silently drop pytest's capture handler: every "not in caplog.text" check
+    # on a booted daemon would then pass vacuously.
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+
+    with caplog.at_level("INFO"):
+        logging.getLogger("butlers.core_tools._routing").info("kit capture probe")
+        await booted.call_tool("status")
+
+    assert "kit capture probe" in caplog.text
+
+
+@session_loop
+async def test_admin_url_reaches_the_daemons_clone_as_its_owner(booted_daemon, tmp_path) -> None:
+    # Fixtures the butler role may not write (dashboard turns, rows that must exist
+    # before a recovery sweep) are seeded through the clone's owner connection.
+    from butlers.testing.db import open_pool
+
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+
+    pool = await open_pool(booted.admin_url)
+    try:
+        database, owns_it = await pool.fetchrow(
+            "SELECT datname, pg_get_userbyid(datdba) = current_user FROM pg_database "
+            "WHERE datname = current_database()"
+        )
+    finally:
+        await pool.close()
+    assert database == booted.daemon.db.db_name
+    assert owns_it is True
+
+
+@session_loop
+async def test_seeded_credentials_let_credentialed_modules_start(booted_daemon, tmp_path) -> None:
+    # Module credentials resolve from the butler's secret store only (no env
+    # fallback), so they are seeded on the clone before the daemon starts.
+    # Channel egress modules belong to the Messenger only.
+    config_dir = write_butler_config(
+        tmp_path, "messenger", schema="messenger", extra_toml="[modules.telegram]\n"
+    )
+
+    booted = await booted_daemon(
+        config_dir, credentials={"BUTLER_TELEGRAM_TOKEN": "synthetic-test-token"}
+    )
+
+    assert booted.daemon._module_statuses["telegram"].status == "active"
+
+
+@session_loop
 async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
     booted_daemon, tmp_path
 ) -> None:
-    booted = await booted_daemon(_write_butler(tmp_path, "general"))
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
 
     assert booted.daemon._identity_facts()["accepting_routes"] is False
 
@@ -70,7 +126,7 @@ async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
 async def test_registered_boot_accepts_routes(booted_daemon, tmp_path) -> None:
     # Boot registration is the role-bound public.register_butler_boot, so the butler
     # name must match the schema's runtime role (butler_general_rw).
-    booted = await booted_daemon(_write_butler(tmp_path, "general"), registered=True)
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"), registered=True)
 
     facts = booted.daemon._identity_facts()
     assert facts["accepting_routes"] is True
@@ -80,7 +136,7 @@ async def test_registered_boot_accepts_routes(booted_daemon, tmp_path) -> None:
 
 @session_loop
 async def test_scripted_reply_comes_back_through_the_real_spawner(booted_daemon, tmp_path) -> None:
-    booted = await booted_daemon(_write_butler(tmp_path, "general"))
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
     booted.runtime.script("scripted answer")
 
     result = await booted.daemon.spawner.trigger(
@@ -142,6 +198,34 @@ async def test_fake_runtime_reply_can_depend_on_the_invocation() -> None:
     assert await _invoke(runtime, "echo") == "ECHO"
 
 
+async def test_fake_runtime_without_resume_reports_no_provider_session() -> None:
+    runtime = FakeRuntime()
+
+    await _invoke(runtime, "turn")
+
+    assert runtime.supports_resume is False
+    assert runtime.last_process_info is None
+    assert runtime.invocations[0]["resume_session_id"] is None
+
+
+async def test_resumable_fake_runtime_mints_a_session_per_turn_and_records_resumes() -> None:
+    # Like the Claude adapter: each successful turn reports a fresh provider session
+    # id, which the spawner stores as the handle the next turn resumes from.
+    runtime = FakeRuntime()
+    runtime.supports_resume = True
+
+    await _invoke(runtime, "first")
+    first = runtime.last_process_info
+    await runtime.invoke("second", "system", {}, {}, resume_session_id="fake-session-1")
+
+    assert first == {"provider_session_id": "fake-session-1"}
+    assert runtime.last_process_info == {"provider_session_id": "fake-session-2"}
+    assert [call["resume_session_id"] for call in runtime.invocations] == [
+        None,
+        "fake-session-1",
+    ]
+
+
 async def test_wait_for_invocations_returns_once_enough_have_happened() -> None:
     runtime = FakeRuntime()
 
@@ -164,12 +248,12 @@ async def test_wait_for_invocations_times_out_loudly() -> None:
 
 @session_loop
 async def test_boot_cost_is_reported(booted_daemon, tmp_path) -> None:
-    await (await booted_daemon(_write_butler(tmp_path, "warm"))).shutdown()
+    await (await booted_daemon(write_butler_config(tmp_path, "warm"))).shutdown()
     cycles: list[float] = []
     starts: list[float] = []
     for index in range(_BOOTS):
         began = time.monotonic()
-        booted = await booted_daemon(_write_butler(tmp_path, f"boot_{index}"))
+        booted = await booted_daemon(write_butler_config(tmp_path, f"boot_{index}"))
         starts.append(booted.start_seconds)
         await booted.call_tool("status")
         await booted.shutdown()

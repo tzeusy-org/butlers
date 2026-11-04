@@ -25,7 +25,7 @@ def test_initial_approvals_migration_creates_pending_actions_dossier_columns() -
     mod = load_migration(_MIGRATIONS_DIR / "001_approvals_tables.py")
     sqls = _collect_sqls(mod)
 
-    # schema-standin-exempt: this asserts on the migration's own SQL text, it
+    # Hand DDL on purpose: this asserts on the migration's own SQL text, it
     # does not provision a table.
     pending_actions_sql = next(
         sql for sql in sqls if "CREATE TABLE IF NOT EXISTS pending_actions" in sql
