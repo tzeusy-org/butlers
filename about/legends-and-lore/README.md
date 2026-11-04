@@ -57,6 +57,7 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0036](rfcs/0036-models-exact-path-vision-proof.md) | Models Exact-Path Vision Proof | Accepted | Bounded diagnostic controls and explicit proof application; implementation and real evidence remain gated. |
 | [0037](rfcs/0037-general-capture-and-private-source-boundaries.md) | General Capture and Private Source Boundaries | Accepted | Durable ordinary capture, source-owned receipts, private-safe vocabulary/search and source-fence readiness; implementation remains outstanding. |
 | [0038](rfcs/0038-goal-runtime-and-capability-authorization.md) | Goal Runtime and Capability Authorization | Accepted | Switchboard control plane admits goals, sandboxes lead and depth-1 child sessions, brokers origin-derived grants with exposure gating and domain-verified signed calls; `transact` disabled and messages to anyone but the owner always need owner approval; hard cutover replaces classify-and-route. |
+| [0039](rfcs/0039-public-mcp-read-surface.md) | Public MCP Read Surface | Accepted | Doctrine exception: one deterministic, gateway-fronted, read-only MCP server for the owner's AI clients, reading a one-way logical-replication projection; Worker-signed per-call assertions, per-domain kill switches, and an owner-approved `propose_fact` as the only write. Amends RFC 0038 D5/D6/D7/D13; implementation not started. |
 
 The RFC header is the single home for status detail (slices landed, gates, owner sign-off). The Status
 column is a one-word summary of it.
@@ -64,7 +65,7 @@ column is a one-word summary of it.
 ## Related
 
 - [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
-- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover.
+- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover; the [2026-11-04 record](decisions/2026-11-04-doctrine-public-mcp-read-surface.md) adopts the public MCP read surface exception (RFC 0039).
 
 ## Conventions
 
