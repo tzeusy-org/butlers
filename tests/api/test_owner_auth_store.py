@@ -903,7 +903,7 @@ async def test_global_migration_refuses_foreign_namespace_and_missing_installed_
         )
         await pool.execute("DROP SCHEMA dashboard_auth")
         await _run_auth_revision(pool, postgres_container, "upgrade")
-        # schema-standin-exempt: Alembic bookkeeping receipt, not a domain query stand-in.
+        # Hand DDL on purpose: an Alembic bookkeeping receipt, not a domain query stand-in.
         await pool.execute(
             "CREATE SCHEMA sibling; CREATE TABLE sibling.alembic_version(version_num varchar(32) PRIMARY KEY); INSERT INTO sibling.alembic_version VALUES('core_240')"
         )

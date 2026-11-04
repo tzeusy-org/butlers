@@ -190,6 +190,14 @@ Use a real migrated database when the behavior depends on those boundaries.
   and connection `transaction()` create fresh `AsyncCtx` objects. Context
   exits release once, including body exceptions and cancellation. Callable
   SQL dispatch is refused.
+- `db_manager.db_manager({"general": pool}, schemas=..., memory_schemas=...,
+  modules={"home": ["approvals"]}, credential_pool=...)` returns the production
+  dashboard `DatabaseManager` serving the given pools (`db` clones, `fake_pool`
+  fakes or sentinels). Lookups, `KeyError("No pool for butler: …")` refusals,
+  the module census and `fan_out_with_status` behave as in the dashboard; it
+  connects nothing. Never hand-write a fake manager with its own `pool` method
+  (`scripts/check_test_db_fixtures.py` refuses it); to count or refuse lookups,
+  wrap the method with `Mock(wraps=manager.pool)` or `side_effect`.
 - `migration.load_migration(path, name=None)` imports a fresh module from an
   explicit file without calling `upgrade` or `downgrade`. The default name is
   `_migration_<file stem>`; use the existing caller's explicit name when its

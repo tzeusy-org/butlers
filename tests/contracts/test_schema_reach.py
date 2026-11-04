@@ -1002,10 +1002,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/testing/recall_bench.py",
         "<dynamic:{table}>",
     ): "dynamic-local: benchmark-selected memory table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "src/butlers/testing/schema_standins.py",
-        "<dynamic:{qualified}>",
-    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
 }
 
 
