@@ -68,8 +68,8 @@ def test_old_spotify_cache_repair_preserves_steam_unrelated_prose_and_health(pos
                 conn.execute(
                     text("""INSERT INTO chronicler.daily_rollup_flags
                     (local_date, flag_type, severity, detail, narrative)
-                    VALUES (:d, :k, 'info', '{"historical":true}', 'keep flag text')"""),
-                    {"d": spotify.date(), "k": kind},
+                    VALUES (:d, :k, 'info', CAST(:detail AS jsonb), 'keep flag text')"""),
+                    {"d": spotify.date(), "k": kind, "detail": '{"historical": true}'},
                 )
         config = _build_alembic_config(url, chains=["chronicler"], target_schema="chronicler")
         command.upgrade(config, "chronicler@chronicler_030")

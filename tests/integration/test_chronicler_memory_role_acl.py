@@ -26,6 +26,7 @@ from butlers.db import register_jsonb_codec
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.modules.memory.storage import run_decay_sweep
 from butlers.testing.migration import (
+    clone_migrated_tables,
     create_migrated_test_db,
     migration_bootstrap_db_url,
     migration_db_name,
@@ -505,20 +506,22 @@ async def test_domain_pool_explicit_private_schema_disowns_exact_provenance_atom
     await register_jsonb_codec(control)
     trigger = f"f2_{memory_id.hex}"
     try:
-        # Fixed lookalike fixture tables, not replacement production schemas.
+        # Clone only migrated columns/defaults for these deliberate domain-schema
+        # lookalikes; no handwritten copy can drift from memory.
+        lookalike_tables = ("memory_events",)
         if memory_type != "episode":
-            await control.execute(
-                f'CREATE TABLE IF NOT EXISTS chronicler."{table}" '
-                f'(LIKE chronicler_mem."{table}" INCLUDING DEFAULTS)'
-            )
-        await control.execute(
-            "CREATE TABLE IF NOT EXISTS chronicler.memory_events "
-            "(LIKE chronicler_mem.memory_events INCLUDING DEFAULTS)"
+            lookalike_tables += (table,)
+        clone_migrated_tables(
+            url,
+            source_schema="chronicler_mem",
+            target_schema="chronicler",
+            tables=lookalike_tables,
         )
+        canonical_name = f"F2 synthetic owner {entity_id}"
         await control.execute(
-            "INSERT INTO public.entities(id,canonical_name,entity_type) "
-            "VALUES($1,'F2 synthetic owner','person')",
+            "INSERT INTO public.entities(id,canonical_name,entity_type) VALUES($1,$2,'person')",
             entity_id,
+            canonical_name,
         )
         if memory_type == "fact":
             values = "(id,subject,predicate,content) VALUES($1,$2,'is','F2 synthetic')"
@@ -705,18 +708,17 @@ async def test_legacy_unqualified_correction_uses_callers_schema_for_event_and_p
     memory_id, entity_id = uuid.uuid4(), uuid.uuid4()
     correction_id = str(uuid.uuid4())
     try:
-        await control.execute(
-            'CREATE TABLE IF NOT EXISTS chronicler."facts" '
-            'LIKE chronicler_mem."facts" INCLUDING DEFAULTS'
+        clone_migrated_tables(
+            private_grant_database,
+            source_schema="chronicler_mem",
+            target_schema="chronicler",
+            tables=("facts", "memory_events"),
         )
+        canonical_name = f"F2 legacy synthetic owner {entity_id}"
         await control.execute(
-            "CREATE TABLE IF NOT EXISTS chronicler.memory_events "
-            "(LIKE chronicler_mem.memory_events INCLUDING DEFAULTS)"
-        )
-        await control.execute(
-            "INSERT INTO public.entities(id,canonical_name,entity_type) "
-            "VALUES($1,'F2 legacy synthetic owner','person')",
+            "INSERT INTO public.entities(id,canonical_name,entity_type) VALUES($1,$2,'person')",
             entity_id,
+            canonical_name,
         )
         for schema in ("chronicler", "chronicler_mem"):
             await control.execute(
@@ -861,10 +863,11 @@ async def test_invoker_underlying_acl_failure_rolls_back_private_correction(
         else f"TABLE public.{relation}"
     )
     try:
+        canonical_name = f"synthetic ACL owner {entity_id}"
         await control.execute(
-            "INSERT INTO public.entities(id,canonical_name,entity_type) "
-            "VALUES($1,'synthetic ACL owner','person')",
+            "INSERT INTO public.entities(id,canonical_name,entity_type) VALUES($1,$2,'person')",
             entity_id,
+            canonical_name,
         )
         await control.execute(
             "INSERT INTO chronicler_mem.facts(id,subject,predicate,content) "

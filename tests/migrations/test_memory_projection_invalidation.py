@@ -89,12 +89,13 @@ def projection_database(postgres_container, request):
 
 def _seed(conn):
     source, entity = str(uuid.uuid4()), str(uuid.uuid4())
+    canonical_name = f"synthetic projection owner {entity}"
     conn.execute(
         text(
             "INSERT INTO public.entities(id,canonical_name,entity_type) "
-            "VALUES(CAST(:id AS uuid),'synthetic projection owner','person')"
+            "VALUES(CAST(:id AS uuid),:canonical_name,'person')"
         ),
-        {"id": entity},
+        {"id": entity, "canonical_name": canonical_name},
     )
     for schema, table in [
         ("chronicler_mem", "facts"),

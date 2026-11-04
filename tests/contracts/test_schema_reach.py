@@ -643,6 +643,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "relationship.entity_facts",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
     (
+        "src/butlers/chronicler/adapters/situation.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/adapters/situation.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay days for daily repair; schema and relation are constants, not caller-selected",
+    (
         "src/butlers/chronicler/anchors.py",
         "relationship.address_geocodes",
     ): "sanctioned:REQ-butler-chronicler-015: read-only owner anchor geocodes Relationship publishes to butler_chronicler_rw (REQ-butler-relationship-006)",
@@ -650,6 +658,38 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/chronicler/anchors.py",
         "relationship.entity_facts",
     ): "sanctioned:REQ-butler-chronicler-015: read-only owner works-at / has-address / residence facts for anchor places",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_archive",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned repair archive; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay days for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_rollup_flags",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned rollup flags reconciled by historical repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_rollups",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned daily rollups reconciled by historical repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.v_episodes_corrected",
+    ): "sanctioned:Chronicler_030: fixed-schema corrected episode view used by historical repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/jobs.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control gates rollup work; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/jobs.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned repair days gate rollup work; schema and relation are constants, not caller-selected",
     (
         "src/butlers/connectors/cursor_store.py",
         "switchboard.connector_registry",
@@ -972,6 +1012,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
+        "<dynamic:{events_table}>",
+    ): "sanctioned:bu-r3fmja.7 F2: the dynamic relation name is constrained to fixed memory_events; optional schema is caller input (Dashboard derives it from the selected butler configuration), and identifier validation is injection safety only, not authorization. PostgreSQL ACLs remain the access gate; this inventory entry grants no privilege",
+    (
+        "src/butlers/modules/memory/storage.py",
         "<dynamic:{table}>",
     ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
@@ -994,6 +1038,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/testing/migration.py",
         "<dynamic:{_quote_ident(schema)}.alembic_version>",
     ): "dynamic-local: validated target schema migration-version table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/testing/migration.py",
+        '<dynamic:"{target_schema}"."{table}">',
+    ): "dynamic-local: test-only migrated-table clone validates source schema, target schema and table identifiers before cloning a fixed migration-owned table shape",
     (
         "src/butlers/testing/recall_bench.py",
         "<dynamic:{table}>",

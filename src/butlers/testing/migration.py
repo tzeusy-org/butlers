@@ -49,6 +49,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import threading
 import uuid
@@ -65,6 +66,7 @@ _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 _MODULE_REGISTRATION_LOCK = threading.RLock()
 _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
 _TEMPLATES_ENV = "BUTLERS_TEST_DB_TEMPLATES"
+_TEST_SQL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -441,6 +443,39 @@ def create_migrated_test_db(
         postgres_container, chains=chains, schemas=schemas, revisions=revisions
     )
     return _clone_template(postgres_container, template, db_name)
+
+
+def clone_migrated_tables(
+    db_url: str,
+    *,
+    source_schema: str,
+    target_schema: str,
+    tables: tuple[str, ...],
+) -> None:
+    """Clone selected migrated table columns/defaults into a test lookalike schema.
+
+    The source table is provisioned by its real migration chain. This keeps
+    schema-specific integration fixtures aligned with current column/default
+    definitions without copying DDL into tests. Like PostgreSQL LIKE INCLUDING
+    DEFAULTS, this intentionally omits indexes, foreign keys and triggers;
+    tests that rely on those semantics must migrate the target chain.
+    """
+    identifiers = (source_schema, target_schema, *tables)
+    if not tables or any(_TEST_SQL_IDENTIFIER.fullmatch(name) is None for name in identifiers):
+        raise ValueError("test table cloning requires simple lowercase SQL identifiers")
+
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            for table in tables:
+                connection.execute(
+                    text(
+                        f'CREATE TABLE IF NOT EXISTS "{target_schema}"."{table}" '
+                        f'(LIKE "{source_schema}"."{table}" INCLUDING DEFAULTS)'
+                    )
+                )
+    finally:
+        engine.dispose()
 
 
 def _migrate(
