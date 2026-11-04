@@ -92,6 +92,8 @@ async def gate_calendar_party_mutation(
             return changed
 
         try:
+            if pool is None:
+                return await refuse_changed()
             owning = await module._load_party_approval_receipt(context.action_id)
             row = await pool.fetchrow(
                 "SELECT tool_name, tool_args, status, agent_summary "

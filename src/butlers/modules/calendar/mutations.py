@@ -260,7 +260,8 @@ class MutationsMixin:
     ) -> tuple[str, str, dict[str, Any], str | None] | None:
         """Find one owning projection by trusted action identity, never request_id."""
         pool = getattr(getattr(self, "_db", None), "pool", None)
-        if pool is None or not await self._projection_tables_available():
+        projection_available = getattr(self, "_projection_tables_available", None)
+        if pool is None or not callable(projection_available) or not await projection_available():
             return None
         rows = await pool.fetch(
             """
@@ -309,6 +310,11 @@ class MutationsMixin:
             else:
                 try:
                     pool = getattr(getattr(self, "_db", None), "pool", None)
+                    if pool is None:
+                        return idempotency_key, {
+                            "status": "request_changed",
+                            "error": "The owning calendar approval receipt is unavailable.",
+                        }
                     row = await pool.fetchrow(
                         "SELECT status, agent_summary FROM pending_actions WHERE id=$1",
                         context.action_id,
