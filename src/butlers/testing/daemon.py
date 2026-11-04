@@ -371,6 +371,7 @@ class DaemonBooter:
         *chains: str,
         registry: Any = None,
         registered: bool = False,
+        credentials: dict[str, str] | None = None,
     ) -> BootedDaemon:
         """Start the butler in *config_dir* on a fresh clone of *chains* (default ``core``).
 
@@ -378,6 +379,10 @@ class DaemonBooter:
         seeds this butler's roster row, as the Switchboard does in production, so boot
         registration commits an epoch and the daemon accepts routes. The butler's name
         must then match its schema's runtime role (``butler_<name>_rw``).
+
+        *credentials* are stored in the butler's secret store before start, where
+        module credential checks read them (they never fall back to the environment).
+        Pass synthetic values only.
         """
         from butlers.config import load_config
         from butlers.daemon import ButlerDaemon
@@ -399,6 +404,8 @@ class DaemonBooter:
         db_name = urlparse(url).path.lstrip("/")
         if registered:
             await self._seed_roster_row(url, config_dir)
+        if credentials:
+            await self._seed_credentials(url, schema, credentials)
         config.port = _free_port()
         config.db_name = db_name
         config.switchboard_url = None
@@ -455,6 +462,18 @@ class DaemonBooter:
         pool = await open_pool(url)
         try:
             await registry.seed_missing_roster_butlers(pool, roster)
+        finally:
+            await pool.close()
+
+    async def _seed_credentials(self, url: str, schema: str, credentials: dict[str, str]) -> None:
+        from butlers.credential_store import CredentialStore
+        from butlers.testing.db import open_pool
+
+        pool = await open_pool(url, schema=schema)
+        try:
+            store = CredentialStore(pool)
+            for key, value in credentials.items():
+                await store.store(key, value, category="test")
         finally:
             await pool.close()
 

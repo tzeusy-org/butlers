@@ -98,6 +98,22 @@ async def test_admin_url_reaches_the_daemons_clone_as_its_owner(booted_daemon, t
 
 
 @session_loop
+async def test_seeded_credentials_let_credentialed_modules_start(booted_daemon, tmp_path) -> None:
+    # Module credentials resolve from the butler's secret store only (no env
+    # fallback), so they are seeded on the clone before the daemon starts.
+    # Channel egress modules belong to the Messenger only.
+    config_dir = write_butler_config(
+        tmp_path, "messenger", schema="messenger", extra_toml="[modules.telegram]\n"
+    )
+
+    booted = await booted_daemon(
+        config_dir, credentials={"BUTLER_TELEGRAM_TOKEN": "synthetic-test-token"}
+    )
+
+    assert booted.daemon._module_statuses["telegram"].status == "active"
+
+
+@session_loop
 async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
     booted_daemon, tmp_path
 ) -> None:

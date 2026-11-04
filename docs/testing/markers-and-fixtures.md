@@ -100,6 +100,9 @@ await booted.shutdown()                           # optional; teardown shuts dow
 - `booted.admin_url` is the clone's owner connection (open it with
   `butlers.testing.db.open_pool`), for seeding rows the butler's role may not
   write, such as dashboard turns.
+- `booted_daemon(config_dir, credentials={...})` stores synthetic module
+  credentials in the butler's secret store before start; module credential checks
+  read only that store, never the environment.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
   sets environment seams: file logs under a temp root, MCP warmup off (it is an
