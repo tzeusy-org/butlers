@@ -175,10 +175,6 @@
     "create_table": 2,
     "fixtures": 1
   },
-  "roster/relationship/tests/test_entity_merge_service.py": {
-    "create_table": 7,
-    "fixtures": 0
-  },
   "roster/relationship/tests/test_entity_posture.py": {
     "create_table": 0,
     "fixtures": 2
@@ -252,7 +248,7 @@
     "fixtures": 1
   },
   "roster/relationship/tests/test_whatsapp_reconciliation.py": {
-    "create_table": 10,
+    "create_table": 2,
     "fixtures": 0
   },
   "roster/switchboard/tests/test_backfill_replay_integration.py": {
@@ -1380,7 +1376,7 @@
     "fixtures": 0
   },
   "tests/scripts/test_reconcile_whatsapp_entities.py": {
-    "create_table": 5,
+    "create_table": 1,
     "fixtures": 0
   },
   "tests/scripts/test_restore_drill_evidence_backup.py": {
