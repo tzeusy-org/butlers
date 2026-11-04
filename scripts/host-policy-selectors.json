@@ -1046,23 +1046,23 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 78,
-    "direct_files": 35,
-    "container": 87,
-    "supplementary": 40,
+    "direct": 79,
+    "direct_files": 36,
+    "container": 88,
+    "supplementary": 41,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 52,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 53,
       "NON_NAME_ENUM_OR_MODULE": 26,
-      "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 25,
+      "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
-      "SCHEMA_OWNERSHIP": 9
+      "SCHEMA_OWNERSHIP": 10
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 35,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 36,
       "NON_NAME_ENUM_OR_MODULE": 5,
-      "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 20,
+      "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
       "SCHEMA_OWNERSHIP": 7
     }
@@ -4234,6 +4234,48 @@
       ],
       "baseline_ids": [],
       "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "15b20f4b749f6a9c32a0e2e6ad1ef3a62789ee1705b8ecfb810a5a2280c09871",
+      "path": "src/butlers/modules/memory/retention_drain.py",
+      "symbol": "Plan.validate",
+      "kind": "alias_compare",
+      "expression": "self.schema != SCHEMA",
+      "occurrence": 1,
+      "line": 70,
+      "direct": false,
+      "container": false,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Pin the controlled drain to its Switchboard-owned schema.",
+      "citations": [
+        {
+          "path": "openspec/specs/memory-retention-policy/spec.md",
+          "requirement": "Controlled historical retention requires fixed evidence and bounded authority"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-kqnum.13.9: fixed target/provenance boundary for the owner-authorized controlled drain, never configurable per host and never deletion authority."
+    },
+    {
+      "id": "9c655162a70924ffc57a1b82d12482f861a8d5d3a5280fdec813f6289dfd8599",
+      "path": "src/butlers/modules/memory/retention_drain.py",
+      "symbol": "readback",
+      "kind": "compare",
+      "expression": "row['actor_butler'] != 'switchboard'",
+      "occurrence": 1,
+      "line": 272,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Validate attributable Switchboard operation audit on same-run readback.",
+      "citations": [
+        {
+          "path": "openspec/specs/memory-retention-policy/spec.md",
+          "requirement": "Controlled historical retention requires fixed evidence and bounded authority"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-kqnum.13.9: fixed target/provenance boundary for the owner-authorized controlled drain, never configurable per host and never deletion authority."
     }
   ],
   "retired": [
