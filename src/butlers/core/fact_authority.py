@@ -36,7 +36,7 @@ RECEIVER_PATH = "/internal/fact-source/receiver"
 
 
 async def _owning_endpoint(pool: Any, target: str) -> str | None:
-    """Return the admitted registry endpoint of an owning butler, or None.
+    """Return the admitted MCP endpoint of an owning butler, or None.
 
     Admission matches route(): under the receiver-derived cutover the legacy
     registry liveness projection is no longer refreshed, so a quiet owner would

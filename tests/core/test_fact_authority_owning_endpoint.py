@@ -91,3 +91,13 @@ async def test_resolve_identities_calls_receiver_endpoint(monkeypatch, resolvers
     assert await registry.resolve_identities("telegram", ["42"]) == {"42": None}
     assert seen == [_RECEIVER_URL]
     assert resolvers == ["receiver:relationship"]
+
+
+def test_real_roster_admits_relationship_without_capability():
+    """Guard the unmocked expectation the identity seam relies on."""
+    expected = registry_mod.expected_route_target(
+        "relationship",
+        required_capability=None,
+        route_contract_version=registry_mod.DEFAULT_ROUTE_CONTRACT_VERSION,
+    )
+    assert expected is not None
