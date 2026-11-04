@@ -428,3 +428,22 @@ measured. A separate timeout control verifies closed UNKNOWN and preservation of
 pytest exception. Diagnostic directory/CLI startup failures likewise produce fixed UNKNOWN notices without
 replacing cleanup or pytest verdicts. Factory failure counters cover owned template creation,
 migration and finalization once, including SQLSTATE 53100, without retrying or reclaiming resources.
+
+
+Closed probe steps identify Docker `system_df`/`root_info` and PostgreSQL
+`url`/`connect`/`readonly`/`database_sizes`/`wal`/`temp`/`dispose`. Each reached step
+records only its fixed stage, safe outcome category and bounded elapsed milliseconds;
+worker rows also record completion against their existing monotonic origin.
+Driver SQLSTATE is mapped only to connection, permission, disk-full, query-canceled
+or other categories; no SQL, DSN, exception text or argument is recorded. Query-canceled
+does not distinguish the configured statement timeout from explicit cancellation.
+Invalid or missing timing is null/UNKNOWN, never zero or complete evidence. Only
+all successful, ordered, finite steps qualify for a complete inventory.
+
+These are durations of actual probe work, not measured incremental CI overhead.
+The existing 3-second/8192-byte child limits, 2-second connection/statement and
+1-second lock settings remain unchanged; separate per-step settings are not a
+whole-function wall deadline. Sampling waits 30 seconds after the previous sample,
+so its cadence also includes probe/flush/scheduling time. No capacity or causal fix
+is claimed. Disable the existing opt-in observer to roll back its measurements;
+test/fixture lifetimes, resource policy and real-PostgreSQL coverage are unchanged.

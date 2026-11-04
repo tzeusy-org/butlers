@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import selectors
@@ -18,6 +19,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -95,32 +97,92 @@ def _size(value: str) -> int:
     return int(float(match[1]) * 1000 ** ("B", "kB", "MB", "GB", "TB").index(match[2]))
 
 
-def docker_totals() -> dict:
-    raw = _capture(["docker", "system", "df", "--format", "{{json .}}"])
-    records = [json.loads(line) for line in raw.splitlines()]
-    categories = {
-        "Images": "images",
-        "Containers": "containers",
-        "Local Volumes": "volumes",
-        "Build Cache": "build_cache",
-    }
-    if len(records) != 4 or {r.get("Type") for r in records} != set(categories):
-        raise Unknown("docker_totals_shape")
-    result: dict[str, Any] = {"status": "ok"}
-    for row in records:
-        count = str(row["TotalCount"])
-        active = str(row["Active"])
-        if not count.isdecimal() or not active.isdecimal():
-            raise Unknown("docker_totals_shape")
-        result[categories[row["Type"]]] = {
-            "count": int(count),
-            "active": int(active),
-            "bytes": _size(row["Size"]),
+DOCKER_STAGES = ("system_df", "root_info")
+PG_STAGES = ("url", "connect", "readonly", "database_sizes", "wal", "temp", "dispose")
+
+
+def _elapsed_s(started: float) -> float | None:
+    elapsed = time.monotonic() - started
+    return round(elapsed, 3) if math.isfinite(elapsed) and 0 <= elapsed <= 7200 else None
+
+
+def _probe_outcome(error: Exception, stage: str) -> str:
+    if isinstance(error, Unknown):
+        return {
+            "command_timeout": "command_timeout",
+            "command_failed": "command_failed",
+            "command_output_limit": "command_output_limit",
+            "database_not_readonly": "not_readonly",
+        }.get(str(error), "other")
+    if stage in PG_STAGES:
+        original = getattr(error, "orig", error)
+        code = getattr(original, "pgcode", None) or getattr(original, "sqlstate", None)
+        if isinstance(code, str):
+            if code.startswith("08") and re.fullmatch(r"[0-9A-Z]{5}", code):
+                return "connection"
+            return {
+                "57014": "query_canceled",
+                "53100": "disk_full",
+                "42501": "permission",
+            }.get(code, "other")
+    return "other"
+
+
+def _probe_step[T](steps: list[dict] | None, stage: str, call: Callable[[], T]) -> T:
+    started = time.monotonic()
+    outcome = "ok"
+    try:
+        result = call()
+        if isinstance(result, dict) and result.get("status", "ok") != "ok":
+            outcome = "unavailable"
+        return result
+    except Exception as error:
+        outcome = _probe_outcome(error, stage)
+        raise
+    finally:
+        if steps is not None:
+            elapsed = _elapsed_s(started)
+            steps.append(
+                {
+                    "stage": stage,
+                    "outcome": outcome,
+                    "elapsed_ms": None if elapsed is None else round(elapsed * 1000, 3),
+                }
+            )
+
+
+def docker_totals(*, steps: list[dict] | None = None) -> dict:
+    def system_df():
+        raw = _capture(["docker", "system", "df", "--format", "{{json .}}"])
+        records = [json.loads(line) for line in raw.splitlines()]
+        categories = {
+            "Images": "images",
+            "Containers": "containers",
+            "Local Volumes": "volumes",
+            "Build Cache": "build_cache",
         }
-    root = _capture(["docker", "info", "--format", "{{.DockerRootDir}}"]).decode().strip()
-    if not root.startswith("/") or "\n" in root:
-        raise Unknown("docker_root_shape")
-    result["filesystem"] = safe(lambda: filesystem(root))
+        if len(records) != 4 or {r.get("Type") for r in records} != set(categories):
+            raise Unknown("docker_totals_shape")
+        result: dict[str, Any] = {"status": "ok"}
+        for row in records:
+            count, active = str(row["TotalCount"]), str(row["Active"])
+            if not count.isdecimal() or not active.isdecimal():
+                raise Unknown("docker_totals_shape")
+            result[categories[row["Type"]]] = {
+                "count": int(count),
+                "active": int(active),
+                "bytes": _size(row["Size"]),
+            }
+        return result
+
+    def root_info():
+        root = _capture(["docker", "info", "--format", "{{.DockerRootDir}}"]).decode().strip()
+        if not root.startswith("/") or "\n" in root:
+            raise Unknown("docker_root_shape")
+        return safe(lambda: filesystem(root))
+
+    result = _probe_step(steps, "system_df", system_df)
+    result["filesystem"] = _probe_step(steps, "root_info", root_info)
     if result["filesystem"]["status"] != "ok":
         result["status"] = "unknown_filesystem"
     return result
@@ -185,30 +247,44 @@ def owned_pgdata(container_id: str) -> dict:
     return result
 
 
-def database_totals(container: Any) -> dict:
-    # Existing fixture-owned credentials flow straight to the existing driver.
-    # Never render the URL, SQL, exceptions, database names or relation rows.
+def database_totals(container: Any, *, steps: list[dict] | None = None) -> dict:
+    # Credentials/results flow only to the driver. The optional trace contains
+    # fixed stages, safe error categories and timing, never call arguments.
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import NullPool
 
-    engine = create_engine(
-        container.get_connection_url(),
-        poolclass=NullPool,
-        connect_args={
-            "connect_timeout": 2,
-            "options": (
-                "-c default_transaction_read_only=on -c statement_timeout=2000 -c lock_timeout=1000"
-            ),
-        },
-    )
+    url = _probe_step(steps, "url", container.get_connection_url)
+    engine = None
+
+    def connect():
+        nonlocal engine
+        engine = create_engine(
+            url,
+            poolclass=NullPool,
+            connect_args={
+                "connect_timeout": 2,
+                "options": (
+                    "-c default_transaction_read_only=on "
+                    "-c statement_timeout=2000 -c lock_timeout=1000"
+                ),
+            },
+        )
+        return engine.connect()
+
     try:
-        with engine.connect() as connection:
-            read_only = connection.execute(text("SHOW transaction_read_only")).scalar_one() == "on"
-            if not read_only:
-                raise Unknown("database_not_readonly")
-            row = (
-                connection.execute(
-                    text("""
+        with _probe_step(steps, "connect", connect) as connection:
+
+            def readonly():
+                if connection.execute(text("SHOW transaction_read_only")).scalar_one() != "on":
+                    raise Unknown("database_not_readonly")
+
+            _probe_step(steps, "readonly", readonly)
+            row = _probe_step(
+                steps,
+                "database_sizes",
+                lambda: (
+                    connection.execute(
+                        text("""
                 WITH sizes AS MATERIALIZED (
                     SELECT datname, pg_database_size(oid) AS bytes FROM pg_database
                 )
@@ -223,20 +299,29 @@ def database_totals(container: Any) -> dict:
                         AS test_named_database_bytes
                 FROM sizes
             """)
-                )
-                .mappings()
-                .one()
+                    )
+                    .mappings()
+                    .one()
+                ),
             )
             result = {key: int(value) for key, value in row.items()}
-            result["wal_bytes"] = int(
-                connection.execute(
-                    text("SELECT coalesce(sum(size), 0) FROM pg_ls_waldir()")
-                ).scalar_one()
+            result["wal_bytes"] = _probe_step(
+                steps,
+                "wal",
+                lambda: int(
+                    connection.execute(
+                        text("SELECT coalesce(sum(size), 0) FROM pg_ls_waldir()")
+                    ).scalar_one()
+                ),
             )
-            result["temp_bytes_cumulative"] = int(
-                connection.execute(
-                    text("SELECT coalesce(sum(temp_bytes), 0) FROM pg_stat_database")
-                ).scalar_one()
+            result["temp_bytes_cumulative"] = _probe_step(
+                steps,
+                "temp",
+                lambda: int(
+                    connection.execute(
+                        text("SELECT coalesce(sum(temp_bytes), 0) FROM pg_stat_database")
+                    ).scalar_one()
+                ),
             )
             return {
                 "status": "ok",
@@ -246,7 +331,8 @@ def database_totals(container: Any) -> dict:
                 **result,
             }
     finally:
-        engine.dispose()
+        if engine is not None:
+            _probe_step(steps, "dispose", engine.dispose)
 
 
 def enabled() -> bool:
@@ -348,15 +434,18 @@ class StorageObserver:
             if len(self.rows) >= MAX_SAMPLES:
                 return
             counters = dict(self.events)
+        probes: dict[str, list[dict]] = {"docker": [], "postgres": []}
         row = {
             "phase": phase,
-            "elapsed_s": round(time.monotonic() - self.started, 3),
+            "elapsed_s": _elapsed_s(self.started),
             "events": counters,
             "root": safe(lambda: filesystem("/")),
-            "docker": safe(docker_totals),
+            "docker": safe(lambda: docker_totals(steps=probes["docker"])),
             "pgdata": safe(lambda: owned_pgdata(self.container_id)),
-            "postgres": safe(lambda: database_totals(self.container)),
+            "postgres": safe(lambda: database_totals(self.container, steps=probes["postgres"])),
+            "probes": probes,
         }
+        row["completed_elapsed_s"] = _elapsed_s(self.started)
         with self.lock:
             self.rows.append(row)
         self.flush("observing")
@@ -425,12 +514,14 @@ def observe(container: Any):
 
 def host(phase: str) -> None:
     if enabled():
+        steps: list[dict] = []
         record = {
             "version": 1,
             "identity": safe(identity),
             "phase": phase,
             "root": safe(lambda: filesystem("/")),
-            "docker": safe(docker_totals),
+            "docker": safe(lambda: docker_totals(steps=steps)),
+            "probes": {"docker": steps},
         }
         with contextlib.suppress(Exception):
             write_report("storage-" + phase + ".json", record)
@@ -473,10 +564,30 @@ def _bound(actual: dict, expected: dict, worker: str, *, server: bool = False) -
     )
 
 
+def _probe_steps(steps: Any, expected: tuple[str, ...]) -> bool:
+    # Only complete, successful, finite evidence may become a sampled inventory.
+    return (
+        isinstance(steps, list)
+        and len(steps) == len(expected)
+        and all(
+            isinstance(step, dict)
+            and set(step) == {"stage", "outcome", "elapsed_ms"}
+            and step["stage"] == stage
+            and step["outcome"] == "ok"
+            and type(step["elapsed_ms"]) in (int, float)
+            and math.isfinite(step["elapsed_ms"])
+            and 0 <= step["elapsed_ms"] <= 7_200_000
+            for step, stage in zip(steps, expected, strict=True)
+        )
+    )
+
+
 def _sample(row: dict) -> bool:
     if not isinstance(row, dict) or set(row) != {
         "phase",
         "elapsed_s",
+        "completed_elapsed_s",
+        "probes",
         "events",
         "root",
         "docker",
@@ -488,7 +599,14 @@ def _sample(row: dict) -> bool:
     return (
         row["phase"] in {"server_started", "periodic", "create_error", "before_server_stop"}
         and type(row["elapsed_s"]) in (int, float)
-        and 0 <= row["elapsed_s"] <= 7200
+        and math.isfinite(row["elapsed_s"])
+        and type(row["completed_elapsed_s"]) in (int, float)
+        and math.isfinite(row["completed_elapsed_s"])
+        and 0 <= row["elapsed_s"] <= row["completed_elapsed_s"] <= 7200
+        and isinstance(row["probes"], dict)
+        and set(row["probes"]) == {"docker", "postgres"}
+        and _probe_steps(row["probes"]["docker"], DOCKER_STAGES)
+        and _probe_steps(row["probes"]["postgres"], PG_STAGES)
         and _numbers(
             row["events"], {"template_created", "clone_created", "create_failed", "storage_error"}
         )
@@ -573,12 +691,15 @@ def inventory() -> None:
         try:
             value = _read_report(output / ("storage-" + phase + ".json"))
             complete = (
-                set(value) == {"version", "identity", "phase", "root", "docker"}
+                set(value) == {"version", "identity", "phase", "root", "docker", "probes"}
                 and value["version"] == 1
                 and value["phase"] == phase
                 and _bound(value["identity"], binding, "controller")
                 and _filesystem(value["root"])
                 and _docker(value["docker"])
+                and isinstance(value["probes"], dict)
+                and set(value["probes"]) == {"docker"}
+                and _probe_steps(value["probes"]["docker"], DOCKER_STAGES)
             )
         except Exception:
             pass
