@@ -6,6 +6,7 @@
 
 - [Docker Deployment](docker-deployment.md) — Docker Compose setup, production deployment
 - [Kubernetes Deployment](kubernetes-deployment.md) — Helm chart for k3s (`butlers` / `butlers-dev` namespaces), cutover from compose
+- [Public MCP Read Surface](public-mcp-read-surface.md): target setup for the second database `butlers_public`, its replication and the public server on a fresh environment, homelab and Butlers steps, the owner step cadence (RFC 0039; not yet built)
 - [Deployment Posture](deployment-posture.md) — dev vs hardened posture, Grafana anon-viewer gating
 - [Environment Config](environment-config.md) — configuration reference, secrets directory
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation

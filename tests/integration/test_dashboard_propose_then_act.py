@@ -34,8 +34,8 @@ from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.testing.mcp import tool_fn
 from tests.daemon.test_dashboard_lane_tools import (
     _clear_routing_context,
+    _infra,
     _make_switchboard_dir,
-    _patch_infra,
     _set_dashboard_routing_context,
     _start_switchboard_and_capture_tools,
 )
@@ -104,7 +104,7 @@ async def test_action_request_parks_zero_writes_no_completion_claim(
         )
         return {"result": {"status": "accepted"}}
 
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     _, tools = await _start_switchboard_and_capture_tools(
         butler_dir, patches, mock_route=AsyncMock(side_effect=_fake_target_dispatch)
@@ -160,7 +160,7 @@ async def test_statement_applies_write_and_replies_with_confirmation(tmp_path: P
         replies.append("Recorded: Amazon transaction for $45.99 — correct?")
         return {"result": {"status": "accepted"}}
 
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_switchboard_dir(tmp_path)
     _, tools = await _start_switchboard_and_capture_tools(
         butler_dir, patches, mock_route=AsyncMock(side_effect=_fake_target_dispatch)

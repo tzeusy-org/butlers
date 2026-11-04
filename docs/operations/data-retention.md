@@ -194,3 +194,11 @@ terminal-status rows older than `ttl_days` (default 90).
 `recorded_at` is older than `ttl_days`.  It enforces the 90-day floor:
 `ttl_days < 90` raises `ValueError`.
 `job_args = {enabled = true, dry_run = false, ttl_days = 90}`.
+
+## Controlled Switchboard drain
+
+The [controlled retention runbook](controlled-retention-drain.md) separates the
+fixed-cutoff read-only tool and isolated atomic-batch rehearsals from future
+owner-run deletion. Owner choice A on 2026-11-04 permits one content-blind dev
+dry run, not a retention schedule change. The original full tool outcome remains
+open pending target-bound recovery/owner admission, actual evidence and review.

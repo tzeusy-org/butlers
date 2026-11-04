@@ -292,7 +292,9 @@ API.
 The only internet-reachable Butlers workload is RFC 0039's public MCP server.
 It runs in its own default-deny namespace, is reached only through the owner's
 MCP gateway (a Cloudflare Worker, then a filter-proxy release in namespace
-`mcp`), and can reach only its projection database. No Butlers namespace joins
+`mcp`), and can reach only the PostgreSQL port of the cluster that holds its
+projection database, where `pg_hba` admits it to that database alone. No
+Butlers namespace joins
 the gateway's traefik watch list, and no gateway allow rule may point into
 `butlers-<env>`. The network, port and firewall contracts above are otherwise
 unchanged.

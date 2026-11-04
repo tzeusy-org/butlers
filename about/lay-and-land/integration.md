@@ -365,26 +365,41 @@ headers are never trusted.
 
 **Errors**: auth failures are JSON-RPC `-32001` with `{"reason":"unauthorized"}`. Tool
 failures are `isError: true` results with a fixed `error.code` (`domain_disabled`,
-`projection_stale`, `budget_exhausted`, `blocked`, ...).
+`projection_stale`, `projection_apply_pending`, `budget_exhausted`, `blocked`, ...).
 
 ---
 
 ## 11. Primary to Projection: Logical Replication (Draft)
 
 **Transport**: PostgreSQL 17 logical replication, publication `butlers_public_v1` on the primary
-to subscription `butlers_public_sub` on `butlers_public`, as `butlers_projection_publisher`.
+to subscription `butlers_public_sub` on `butlers_public`, as `butlers_projection_publisher`, which
+has no credential and connects over the instance's local socket by peer authentication (OD14).
+Both databases live on the same CNPG cluster, `postgres-<env>` (RFC 0039 D3), so the owner step
+(`butlers public-mcp owner-sql`, run as superuser through `kubectl exec`, by every
+`make deploy-dev` after the migrations on dev, OD20, and by the owner elsewhere) pre-creates
+the slot with `pg_create_logical_replication_slot(..., 'pgoutput')` and creates the subscription
+with `create_slot = false` and `password_required = false`, then hands it to
+`mcp_subscription_owner`.
 
 **Contract** (RFC 0039 D2, D4): column lists and row filters are generated from the manifest
-`src/butlers/knowledge_read/projection.toml` by `butlers public-mcp reconcile`; DDL is never
-replicated. Row-filter columns sit in each table's replica identity, so a row that later stops
+`src/butlers/knowledge_read/projection.toml` by `butlers public-mcp reconcile` in the migration
+Job; the subscriber DDL is in the owner step; DDL is never replicated. Row-filter columns sit in each table's replica identity, so a row that later stops
 matching (reclassified, restricted) arrives as a DELETE. Chronicler publishes source-owned
 `episodes_public` and `rollups_public` tables, because its corrections live in an overlay a row
 filter cannot see. No JSONB column is published: entity flags, finance overlays and health
-values reach the projection through trigger-maintained plain columns or tables. The manifest
+values reach the projection through trigger-maintained plain columns or tables, and since OD17
+every scalar leaf of a finance or health JSONB column reaches it through
+`finance.json_fields_public` and `health.json_fields_public`, skipping credential-named paths.
+Finance and health publish everything they hold except credentials (OD17); the other domains
+stay narrow, under the breadth tier of the column denylist and literal predicate allowlists with
+no contact- or identity-kind predicate, which also filter graph edges through a trigger-kept
+`publish_key` (OD21). The manifest
 digest and the kill-switch rows replicate via `mcp_surface`; the public pod refuses tools when
-the digest differs from its built-in one. A CI contract test asserts, on a PG17 testcontainer
-with all migrations applied, that the publication equals the manifest. Narrowing the manifest
-makes reconcile truncate and re-copy the affected subscriber tables.
+the replicated digest differs from its built-in one (`projection_version_mismatch`) and when the
+digest the last owner step applied differs from it (`projection_apply_pending`). A CI contract
+test asserts, on a PG17 testcontainer with all migrations applied, that the publication equals
+the manifest. Narrowing the manifest makes the owner step truncate and re-copy the subscriber
+tables; until it runs the surface refuses.
 
 ---
 
@@ -392,7 +407,7 @@ makes reconcile truncate and re-copy the affected subscriber tables.
 
 **Transport**: SQL pull from the Butlers side (namespace `butlers-<env>`). The Relationship job
 `public_mcp_proposal_import` (`dispatch_mode = "job"`, every 5 minutes) connects to the
-projection as `mcp_proposals_reader`, copies up to 100 rows from `mcp_inbox.proposals` into
+projection as `mcp_proposals_reader` (which `pg_hba` admits to `butlers_public` only), copies up to 100 rows from `mcp_inbox.proposals` into
 `relationship.external_fact_proposals`, then deletes them. Nothing on the public side can push
 into Butlers.
 
@@ -423,6 +438,6 @@ deterministically with `content_authority = 'third_party'` and `src = 'external_
 | Switchboard -> target (ingestion delivery) | MCP | stable per-target acceptance identity and receipt | Streamable HTTP or SSE |
 | All -> OTel | OTLP | Traces + metrics | gRPC |
 | Owner AI client -> public MCP, via gateway (Draft) | MCP | JSON-RPC + hop bearer + `X-MCP-Assertion` | Stateless streamable HTTP |
-| Primary -> projection (Draft) | PostgreSQL logical replication | publication `butlers_public_v1` | TCP 5432 |
+| Primary -> projection (Draft) | PostgreSQL logical replication | publication `butlers_public_v1` | local Unix socket (`/controller/run`), peer auth, same instance; no TCP |
 | Public MCP -> projection (Draft) | SQL | `mcp_read` SELECT, inbox INSERT as `mcp_public_ro` | TCP 5432 |
 | Relationship importer -> projection inbox (Draft) | SQL | SELECT, DELETE as `mcp_proposals_reader` | TCP 5432 |

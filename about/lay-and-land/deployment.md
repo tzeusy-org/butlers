@@ -42,11 +42,11 @@ graph TB
     subgraph PUBNS["k3s: butlers-public-&lt;env&gt; (Draft, RFC 0039, default-deny)"]
         PUB["Deployment butlers-public-mcp<br/>replicas: 1, no NodePort"]
     end
-    PROJ["CNPG postgres-public-&lt;env&gt;<br/>database butlers_public"]
+    PROJ["database butlers_public<br/>(second database on postgres-&lt;env&gt;)"]
     FP["Owner gateway: filter-proxy release 'butlers'<br/>(namespace mcp)"]
     FP -- "only allowed ingress" --> PUB
-    PUB -- "SQL :5432, only allowed egress" --> PROJ
-    PG -- "logical replication, one way" --> PROJ
+    PUB -- "SQL :5432, only allowed egress;<br/>pg_hba admits butlers_public only" --> PROJ
+    PG -- "logical replication, one way, same instance" --> PROJ
     UP -. "relationship importer pulls inbox" .-> PROJ
 ```
 
@@ -157,20 +157,46 @@ role sees only its own schema and `public`, and its `search_path` is
 `{butler_schema}, public`. Schema creation and Alembic migrations run in the
 `dashboard-api` migrations initContainer (`db migrate`).
 
-Planned second database (RFC 0039 D2-D4, D9; Draft): `butlers_public`, recommended on its own
-CNPG cluster `postgres-public-<env>` (placement pending the owner), with no backups because it
-rebuilds from the primary. The
-primary has one publication, `butlers_public_v1`, whose column lists and row filters
+Planned second database (RFC 0039 D2-D4, D9; Draft): `butlers_public` on the same CNPG cluster
+`postgres-<env>` (owner decision OD10), with no backups of its own because it rebuilds from the
+primary. The primary has one publication, `butlers_public_v1`, whose column lists and row filters
 `butlers public-mcp reconcile` generates from `src/butlers/knowledge_read/projection.toml`
-after Alembic; the projection has one subscription, `butlers_public_sub`. Roles:
-`butlers_projection_publisher` (the only Butlers-managed `REPLICATION` role on the primary,
-beside CNPG's `postgres` and `streaming_replica`; its credential can decode every change on the
-primary, so it lives only in the projection's namespace),
-`mcp_public_ro` (SELECT on `mcp_read` views, column INSERT on `mcp_inbox.proposals`) and
-`mcp_proposals_reader` (SELECT, DELETE on the inbox, used only by the importer). The primary
-needs `max_slot_wal_keep_size` set so a stalled slot cannot fill its disk [Observed: unset on
-`postgres-dev` today]. The fallback, a second database on `postgres-<env>`, requires ordered
-`pg_hba` lines that admit `mcp_public_ro` only to `butlers_public` and reject it everywhere else.
+in the migration Job (the `dashboard-api` `db migrate` initContainer above; RFC 0039 uses OD14's
+name for it) after Alembic, as the migration user; in the same transaction it writes the
+replicated manifest digest. The projection has one subscription, `butlers_public_sub`. Because both live on one
+instance, and because the subscription's `password_required = false` makes it superuser-only
+work, the slot and subscription are one owner step (OD14): `butlers public-mcp owner-sql`
+prints one idempotent SQL file that is piped through
+`kubectl exec -i -n postgres-<env> <instance> -- psql -X -U postgres -d butlers -f -`, the same
+path as `scripts/init-db.sql`. On dev, `make deploy-dev` does this on every deploy (OD20): after
+`bootstrap-dev` and after `record-deploy.sh`, whatever it returned (its guard refuses when the
+migrations did not reconcile), `scripts/k8s/public-mcp-owner-step.sh` captures the file from the
+`dashboard-api` pod running the deployed tag and pipes it to the superuser `psql` in the primary;
+a failure fails the deploy loudly and rolls nothing back, and after a success the same target
+upgrades the public chart at the same tag. Elsewhere the owner runs it. It pre-creates the slot with
+`pg_create_logical_replication_slot(..., 'pgoutput')`, creates the subscription with
+`create_slot = false` on the local socket and hands it to `mcp_subscription_owner`, refreshes it,
+purges and re-copies after a narrowing, and records the applied digest. It must run at the
+first sync, after each manifest change and after each slot invalidation; until it runs after the
+first sync or a manifest change the public server refuses with `projection_apply_pending`, and
+after an invalidation with `projection_stale`. Roles: `butlers_projection_publisher` (the only
+Butlers-managed `REPLICATION` role on the primary, beside CNPG's `postgres` and
+`streaming_replica`; it can decode every change on the primary, so it has no password or
+certificate and logs in only by local peer authentication inside the instance pods, through the
+CNPG `local` `pg_ident` map, and no role is a member of it; exec into those pods, pod creation,
+Secret read and `Cluster` writes in `postgres-<env>` are already superuser-equivalent),
+`mcp_public_ro` (SELECT on `mcp_read` views, column INSERT on `mcp_inbox.proposals`, connection
+limit 10, `statement_timeout` 2s set by `init-db.sql`), `mcp_proposals_reader` (SELECT, DELETE on
+the inbox, used only by the importer) and `mcp_subscription_owner` (owns the subscription; keeps
+`LOGIN` and its password copies per OD15, mounted by no Butlers workload). `pg_hba` admits both
+projection roles only to `butlers_public` from the single-node pod range `10.42.0.0/24`, rejects
+them everywhere else, and rejects every TCP login as the publisher; that, with the grants, is the
+boundary between projection and primary, since the network cannot separate two databases on one
+instance and the shared pod range cannot separate pods. The projection shares the primary's
+volume, WAL, backups and restore drill (the drill drops it or keeps its subscription disabled).
+`max_slot_wal_keep_size = 10GB` caps a stalled slot [Observed: homelab PR #40]. [Observed] Dev
+and prod data share one 1.4T disk, 90 % full with 144G free, with PVC sizes not enforced, so a
+full disk stops both clusters.
 
 ---
 
@@ -262,14 +288,23 @@ list, because its Role can read Secrets in every namespace it watches.
 
 | Namespace | Holds | Ingress allowed | Egress allowed |
 |---|---|---|---|
-| `butlers-public-<env>` | `butlers-public-mcp` Deployment (chart `deploy/helm/butlers-public-mcp`), hop-bearer digest Secret, verifier keyring and break-glass `disabled_domains` ConfigMaps | MCP port from the `butlers` filter-proxy pods in `mcp`; metrics port from monitoring | `postgres-public-<env>` pods on 5432; kube-dns on 53 |
-| `postgres-public-<env>` (recommended placement) | CNPG cluster, database `butlers_public`; the publisher credential Secret | The public pod on 5432; the `butlers-up` pod on 5432 (Relationship importer); the CNPG operator on 8000 and 5432; its own instances | kube-apiserver on 6443/443; kube-dns on 53; the primary's pods on 5432 (subscription) |
+| `butlers-public-<env>` (created by the chart) | `butlers-public-mcp` Deployment (chart `deploy/helm/butlers-public-mcp`), hop-bearer digest Secret, the ExternalSecret for `MCP_PUBLIC_RO_DB_PASSWORD`, verifier keyring and break-glass `disabled_domains` ConfigMaps | MCP port from the `butlers` filter-proxy pods in `mcp`; metrics port from monitoring | `postgres-<env>` instance pods on 5432; kube-dns on 53 |
+| `postgres-<env>` (existing) | CNPG cluster; databases `butlers` (primary) and `butlers_public` (projection); Secrets `postgres-mcp-public-ro-user`, `postgres-mcp-proposals-reader-user` and `postgres-mcp-subscription-owner-user`; no publisher credential, because none exists | Unchanged; the public pod on 5432 would be added only if a default-deny selected the instance pods, and none does on dev | Unchanged |
+| `butlers-<env>` (existing) | adds Secrets `postgres-mcp-proposals-reader-user` (mounted by the importer) and `postgres-mcp-subscription-owner-user` (mounted by nothing, OD15) | Unchanged | Unchanged |
 
-Everything else is denied by default. The importer's network boundary is pod-level: production
-`butlers up` runs every roster butler in one pod, so the policy admits that whole pod, and the
-`mcp_proposals_reader` grant is what limits it. A live check after each deploy (and on a schedule)
-fails if any NetworkPolicy or cluster-wide policy the chart did not render selects pods in either
-namespace. The pod runs non-root with a read-only root filesystem,
+Everything else in `butlers-public-<env>` is denied by default. On `postgres-<env>` the change
+widens nothing: NetworkPolicies are additive, and a new policy on pods that had none would isolate
+them from the primary's other clients, so the allow is added only where a default-deny already
+selects the instance pods. [Observed: homelab report, 2026-11-04] None selects the `postgres-dev`
+pods and there is no cluster-wide or CNI policy, so no policy was added. The importer and the subscription
+need no new path. Because the instance pods also serve the primary, the network cannot separate
+the projection from it: `pg_hba` and grants are the boundary, and the `mcp_proposals_reader`
+grant and its `pg_hba` line are what limit the importer, since production `butlers up` runs every
+roster butler in one pod. A live check after each deploy (and on a schedule) fails if any
+NetworkPolicy or cluster-wide policy the chart did not render selects pods in
+`butlers-public-<env>`, or if a policy in `postgres-<env>` admits that namespace to anything other
+than the instance pods on 5432, and reports when a policy starts selecting the instance pods,
+because the public pod's allow must then be added. The pod runs non-root with a read-only root filesystem,
 no service-account token and `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1`. It runs one replica,
 because the assertion replay set is in memory.
 
@@ -279,11 +314,27 @@ hold the public pod to the projection. **Precondition:** `butlers-<env>` has no 
 ingress today [Observed]; that, with a contract test, lands before any gateway allow rule
 points into Butlers.
 
-**Owner acts** (RFC 0039 Rollout, OD5): create both namespaces; set `max_slot_wal_keep_size`
-and add the replication role and its single `hostssl` `pg_hba` line (no `replication` entry) on
-`postgres-<env>`; decide the projection placement, then create the cluster (or second database)
-and subscription; generate the Worker's Ed25519 key and add assertion signing; deploy the
-`butlers` filter-proxy release with an ExternalSecret on the dev store; add `butlers` to the
-Worker's `MCP_SERVERS`; configure an Alertmanager receiver outside Butlers. Rollout targets
-`dev`, which is the live system, so the first client connection exposes live data; prod waits
-on a separate owner act.
+**Owner acts** (RFC 0039 Rollout, OD5). The ordered setup for a fresh environment, with checks
+for each step, is [Public MCP Read Surface](../../docs/operations/public-mcp-read-surface.md).
+Per environment, declared by homelab in its CNPG chart values
+(`helm/postgresql_cloudnativepg/values.<env>.yaml`) and repeated on any new cluster: on
+`postgres-<env>`, database `butlers_public` and the managed roles, the ordered `pg_hba` lines that
+admit `mcp_public_ro` and `mcp_proposals_reader` only to it from the node's pod range plus the
+publisher's reject line, the `local` `pg_ident` line for the publisher's peer login,
+`max_slot_wal_keep_size`, and the password Secrets; plus a `postgres-<env>` allow only where a
+default-deny selects the instance pods. Homelab PR Tzeusy/homelab#40 applied these to dev
+(`values.dev.yaml`, `10GB`, pod range `10.42.0.0/24`; no allow was needed). The namespace
+`butlers-public-<env>` is the chart's, not an owner act. Automatic on dev, so not owner acts
+there: the `scripts/init-db.sql` rerun with the publisher grants and `statement_timeout`
+(`make deploy-dev` runs `bootstrap-dev` first) and the owner step at first sync, after each
+manifest change and after each slot invalidation (`make deploy-dev` runs it after the migrations,
+OD20; elsewhere it stays the one recurring owner act). Still to do: generate the Worker's Ed25519 key
+and add assertion signing; deploy the `butlers` filter-proxy release with an ExternalSecret on
+the dev store; add `butlers` to the Worker's `MCP_SERVERS`; add two Uptime Kuma `json-query`
+monitors on the alert flags `butlers_public_mcp:critical_ok` (at `interval = 60`) and
+`butlers_public_mcp:warning_ok` in the homelab's `uptimekuma-monitors.toml`, on its existing
+Telegram notification. Alerting adds no ingress to `butlers-public-<env>`: Kuma polls Prometheus.
+Rollout targets `dev`, which is the live system, so the first client connection exposes live
+data, which the owner accepted (OD12). Prod rollout is deferred for the foreseeable future
+(OD18): `butlers-public-dev` and `postgres-dev` are the only targets, and the `<env>` design
+stays as the deferred prod plan.

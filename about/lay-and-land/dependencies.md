@@ -99,10 +99,14 @@ above depends on it:
 
 ```
 1. PostgreSQL primary
-   └── 2. Migrations, then butlers public-mcp reconcile (publication + subscriber DDL)
-       └── 3. Projection cluster subscription (initial copy)
-           └── 4. butlers-public-mcp (refuses tools until replication is fresh and the
-                  manifest digest matches)
+   └── 2. Migrations, then butlers public-mcp reconcile (publication + replicated digest)
+       └── 3. Owner step as superuser (butlers public-mcp owner-sql; run by every
+              make deploy-dev after step 2, by the owner elsewhere):
+              pre-created slot and publisher grants on the primary, subscriber DDL, the
+              same-instance subscription
+              (initial copy), purge on narrowing, applied digest
+           └── 4. butlers-public-mcp (refuses tools until replication is fresh and both the
+                  replicated and the applied manifest digests match its own)
 ```
 
 ---
@@ -150,8 +154,7 @@ MCP surface uses them; every failure below leaves the rest of Butlers unaffected
 | **GitHub OAuth** | Worker | Owner identity; the numeric GitHub id is the allowlist key | Clients cannot sign in |
 | **cloudflared-mcp, traefik-mcp** (namespace `mcp-gateway` / `mcp`) | Gateway | Tunnel from the Worker's VPC binding; routing to filter-proxy | Surface unreachable |
 | **filter-proxy release `butlers`** (namespace `mcp`) | Gateway | Injects the hop bearer from an ExternalSecret; forwards bytes unchanged (`FIXES` off) | Surface unreachable; any body rewrite fails the assertion body hash |
-| **CNPG operator, cluster `postgres-public-<env>`** | Projection | Hosts `butlers_public` and the subscription | Tools return `unavailable` |
-| **Alertmanager receiver outside Butlers** (channel pending the owner) | Public MCP alerts | Canary, DLP, assertion-failure, bearer-refusal, bulk-read, unexpected-slot, lag and WAL-retention alerts that bypass Butlers | Alerts unseen. [Unknown] whether any such receiver exists today |
+| **Uptime Kuma** (existing homelab monitor, Telegram notification) | Public MCP alerts | `json-query` monitors poll the flags `butlers_public_mcp:critical_ok` and `:warning_ok` in Prometheus, which collapse the canary, DLP, assertion-failure, bearer-refusal, bulk-read, unexpected-slot, lag and WAL-retention rules; delivery bypasses Butlers | Alerts unseen while Kuma is down. An unreachable Prometheus or an empty flag turns the monitor DOWN and notifies |
 
 ### Build-Time Dependencies
 
@@ -212,12 +215,25 @@ errors. Connectors cannot resolve credentials.
 
 No Butlers daemon depends on the public server, the projection or the gateway.
 
-- **Projection cluster down**: public tools return `unavailable`; `describe` still answers.
-  The primary is unaffected.
+- **`postgres-<env>` down**: the projection is a second database on the primary's cluster, so it
+  goes down with the primary; public tools return `unavailable` and `describe` still answers.
+- **Projection database alone unavailable** (connection limit reached, or the database dropped
+  and re-created): public tools return
+  `unavailable`; the primary is unaffected.
 - **Replication stalled**: tools refuse with `projection_stale` after 15 minutes. The primary's
   only exposure is WAL retained for the slot, bounded by `max_slot_wal_keep_size` and alerted at
-  50 % of the cap; an invalidated slot means rebuilding the projection, never risking the primary.
+  50 % of the cap (10GB on dev). An invalidated slot leaves the applied digest matching, so it
+  surfaces as `projection_stale` with the slot and lag alerts; recovery is rerunning the owner
+  step, which rebuilds the projection, never risking the primary.
+- **Owner step pending** (first sync, a manifest change, a rebuild the owner step has started,
+  or a run that stopped midway): every tool except
+  `describe` refuses with `projection_apply_pending` and the warning flag is down; a narrowing
+  left pending for 24 hours turns the critical flag down.
+- **Shared disk full**: [Observed] dev and prod data share one 1.4T disk, 90 % full with 144G
+  free, so a full disk stops both clusters and Butlers with them; the projection, its retained
+  slot WAL (capped), and decoding spill files and apply WAL (not capped) add to that shared risk.
 - **Gateway down**: clients cannot connect; nothing else changes.
 - **Importer down**: proposals stay `received` in the inbox (capped at 1,000 undrained rows).
 - **Public pod compromised**: it can read published projection data and insert capped inbox
-  rows. It has no route to the primary, the daemons, the dashboard or the internet.
+  rows. It reaches the shared instance's PostgreSQL port, where `pg_hba` refuses every database
+  but `butlers_public`, and has no route to the daemons, the dashboard or the internet.

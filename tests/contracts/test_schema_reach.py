@@ -768,10 +768,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
     (
         "src/butlers/core/ingestion_events.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: partition/ingestion table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
     (
@@ -954,6 +950,54 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/modules/memory/reembedding.py",
         "<dynamic:{table}>",
     ): "dynamic-local: validated memory-tier/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.episode_tombstones",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "verifies mem010 tombstones after isolated test_retention_* batches; dev inventory "
+        "is READ ONLY, no new grant or ambient cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.episodes",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "inventories Switchboard episodes READ ONLY in dev; bounded deletion is isolated "
+        "to test_retention_*, never live deletion or ambient cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.memory_events",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads attributable same-run evidence in dev READ ONLY and writes atomic batch "
+        "progress only in isolated test_retention_*; no new grant or cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.memory_policies",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads only Switchboard retention/archive policy for content-blind classification; "
+        "dev READ ONLY and isolated-only writer confer no policy-write or cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.scheduled_tasks",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads existing Switchboard schedule names to classify provenance; dev READ ONLY "
+        "and isolated-only writer do not execute/change schedules or grant cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.sessions",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads Switchboard source-session identity and hashed trigger provenance; dev READ ONLY "
+        "and isolated-only writer confer no session-write or ambient cross-butler authority"
+    ),
     (
         "src/butlers/modules/memory/search.py",
         "<dynamic:{table}>",

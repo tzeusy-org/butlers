@@ -342,12 +342,18 @@ sequenceDiagram
 1. **Worker**: authenticates the owner (GitHub id) and the client (`claude.ai`, `chatgpt.com`
    CIMD ids), and signs the per-call assertion. The private key never enters the cluster.
 2. **Public pod**: re-checks everything the Worker asserted, against a home-side allowlist that
-   duplicates the Worker's on purpose. Network and grants are the next layers: egress reaches
-   only the projection, and `mcp_public_ro` can read only `mcp_read` views.
+   duplicates the Worker's on purpose. Network, `pg_hba` and grants are the next layers: egress
+   reaches only the PostgreSQL port of `postgres-<env>`, which also serves the primary, so
+   `pg_hba` is what admits `mcp_public_ro` to `butlers_public` alone, and the role can read only
+   `mcp_read` views.
 3. **Response**: DLP redaction and canary detection run on every result. A canary hit latches all
    tools off until restart. `search` and `fetch` never return finance or health records.
+   Finance and health results are shared at full breadth (OD17), so only the credential rules
+   scan them; the identifier and personal-contact rules run on the other domains.
 4. **Freshness**: past 15 minutes of replication lag every tool refuses with `projection_stale`,
-   so a kill switch cannot go unseen for longer.
+   so a kill switch cannot go unseen for longer. While the owner step is pending, every tool
+   refuses with `projection_apply_pending`, so a server shipping a narrowed manifest never serves
+   unpurged rows; a server still on the old manifest refuses once the new digest replicates.
 
 Reads never write: no `knowledge_read` function reuses memory search, which bumps
 `reference_count` (RFC 0039 D12).
@@ -358,8 +364,9 @@ Reads never write: no `knowledge_read` function reuses memory search, which bump
 
 ```mermaid
 graph LR
-    M["projection.toml<br/>(checked-in allowlist)"] -->|"butlers public-mcp reconcile<br/>(after Alembic)"| PUB["primary: publication butlers_public_v1<br/>column lists + row filters"]
-    M -->|"reconcile"| SUBDDL["projection: subscriber tables,<br/>mcp_read views, inbox"]
+    M["projection.toml<br/>(checked-in allowlist)"] -->|"butlers public-mcp reconcile<br/>(migration Job, after Alembic)"| PUB["primary: publication butlers_public_v1<br/>column lists + row filters"]
+    M -->|"butlers public-mcp owner-sql<br/>(owner step, superuser via kubectl exec;<br/>run by make deploy-dev, OD20)"| SUBDDL["projection: subscriber tables,<br/>mcp_read views, inbox, subscription,<br/>applied digest"]
+    M -->|"owner step"| SLOT["primary: slot butlers_public_sub,<br/>publisher USAGE + SELECT sync"]
     SRC["primary tables"] -->|"WAL"| PUB
     PUB -->|"logical replication, one way"| SUB["projection: subscription butlers_public_sub"]
     CHR["chronicler.overrides write<br/>+ 15-min sweep"] -->|"same transaction"| CP["chronicler.episodes_public,<br/>rollups_public"]
@@ -368,8 +375,18 @@ graph LR
 
 Only allowlisted tables and columns leave the primary; a new table or column stays unpublished
 until someone adds it to the manifest. Restrictions arrive as DELETEs because filter columns sit
-in the replica identity. Credentials, `butler_secrets`, secured `entity_info` rows, connector
-tokens, approval tables and raw message bodies are never published (RFC 0039 D2, D4).
+in the replica identity. Memory facts outside finance and health, and the graph edges they
+project, pass the same literal predicate allowlists, which hold no contact- or identity-kind
+predicate; facts about people other than the owner are published under them (OD21). Credentials, `butler_secrets`, secured `entity_info` rows, connector
+tokens, approval tables and raw message bodies are never published (RFC 0039 D2, D4). Both
+databases live on `postgres-<env>`, so the owner step pre-creates the replication slot and creates
+the subscription with `create_slot = false` and `password_required = false`, on the local socket
+as the credential-less publisher (RFC 0039 D3, OD14). It runs at the first sync, after each
+manifest change and after each slot invalidation: on dev every `make deploy-dev` runs it after the
+migrations (OD20), and elsewhere the owner does; until it has applied the manifest the
+public server ships with, every tool except `describe` refuses with `projection_apply_pending`.
+An invalidated slot leaves the applied digest matching, so it shows as `projection_stale` and
+the slot and lag alerts until the owner step rebuilds.
 
 ---
 
@@ -416,5 +433,5 @@ decision (RFC 0039 D13).
 | Memory | Session episode | Facts / rules | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |
 | Public read (Draft) | Owner AI client via gateway | Tool result | MCP (stateless HTTP) + SQL on projection | No (audit to logs only) |
-| Projection replication (Draft) | Primary WAL | Projection tables | PostgreSQL logical replication | Rebuildable copy; no backups |
+| Projection replication (Draft) | Primary WAL | Projection tables (same instance) | PostgreSQL logical replication | Rebuildable copy; in the cluster backups, never restored from them |
 | Fact proposal (Draft) | `propose_fact` | Owner-approved `relationship_assert_fact` | Inbox INSERT -> job pull -> approvals | Inbox transient; `external_fact_proposals` durable |

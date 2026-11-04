@@ -109,14 +109,28 @@ await booted.shutdown()                           # optional; teardown shuts dow
 - `booted_daemon(config_dir, credentials={...})` stores synthetic module
   credentials in the butler's secret store before start; module credential checks
   read only that store, never the environment.
+- `booted_daemon(config_dir, chain_schemas={"relationship": "relationship"})`
+  migrates other butlers' chains into their own schemas, for cross-butler reads
+  under production grants (for example `relationship.entity_facts`).
+- `tool_host` is for tests whose subject is a tool's SQL rather than the boot
+  (about 0.5 s per host, against about 2.3 s per boot).
+  - `host = await tool_host(config_dir)` clones the template, connects the
+    butler's pool under its production role, and registers the core tools on a
+    fresh FastMCP. No lifecycle phase runs or is patched.
+  - `await host.call("remind", ...)` runs a handler in process.
+  - `tool_host(config_dir, pool=fake_pool())` is the DB-free form, for handler tests
+    whose subject is not SQL: no clone, same registration.
+  - Tests that need the spawner, the Switchboard or module startup boot instead.
 - `shared_booted_daemon` shares one boot per module and configuration among tests
   that only read daemon state (rejections, tool listings, status):
   `booted = await shared_booted_daemon("general", registered=True)` takes the same
-  name, chains, `schema=`, `extra_toml=` and `credentials=` as a boot. The fake
-  runtime is reset before each test. After each test the kit compares `route_inbox`
-  and `sessions` row counts and the loaded config with what the test was handed;
-  any change fails the test with `SharedDaemonMutated` and replaces that boot.
-  Tests that route, run a session or change config use `booted_daemon`; patch a
+  name, chains, `schema=`, `extra_toml=`, `credentials=` and `chain_schemas=` as a
+  boot. The fake
+  runtime is reset before each test. After each test the kit compares row counts in
+  `route_inbox`, `sessions`, `public.attention_ledger` and `scheduled_tasks`, and
+  the loaded config, with what the test was handed; any change fails the test with
+  `SharedDaemonMutated` and replaces that boot. Tests that route, run a session,
+  deliver a notification, schedule a task or change config use `booted_daemon`; patch a
   shared daemon only through `monkeypatch`.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and

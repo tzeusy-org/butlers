@@ -311,8 +311,9 @@ must approve before anything takes effect.
 |---|---|---|---|
 | **Read functions** | `butlers.knowledge_read` | Side-effect-free reads over the projection. Owns the allowlist manifest `projection.toml` and `proposable.toml`. | Draft |
 | **Capability host** | `butlers.capability_host` | Hop-bearer digest check, Worker-signed Ed25519 per-call assertion, tool allowlist, argument validation, per-tool budgets, per-domain kill switches, response DLP and canaries, audit log lines. | Draft |
-| **Entrypoint** | `butlers.mcp_public` | Thin FastMCP stateless-HTTP server (image entrypoint `butlers-public-mcp`) that registers the 17 tools in RFC 0039 D10 and nothing else. | Draft |
-| **Projection database** | `butlers_public` on CNPG `postgres-public-<env>` | Mirrored published tables, `mcp_read` views, the `mcp_inbox.proposals` inbox. Holds no credential. | Draft |
+| **Entrypoint** | `butlers.mcp_public` | Thin FastMCP stateless-HTTP server (image entrypoint `butlers-public-mcp`) that registers the 19 tools in RFC 0039 D10 and nothing else. | Draft |
+| **Projection database** | `butlers_public`, a second database on CNPG `postgres-<env>` | Mirrored published tables, `mcp_read` views, the `mcp_inbox.proposals` inbox, and the applied manifest digest the owner step records. Holds no credential. `pg_hba` admits its roles to it alone. | Draft |
+| **Owner step** | `butlers public-mcp owner-sql`; on dev `scripts/k8s/public-mcp-owner-step.sh` | Prints one idempotent SQL file per manifest, run as the CNPG superuser through `kubectl exec`: the replication slot, the subscriber DDL, the subscription, the narrowing purge and the applied digest (RFC 0039 D3, OD14). Every `make deploy-dev` runs it after the migrations, generated in the deployed `dashboard-api` image (OD20); elsewhere the owner runs it. | Draft |
 | **Proposal importer** | Relationship job `public_mcp_proposal_import` | Pulls the inbox, re-validates each proposal and parks it as `relationship_assert_fact` on the dashboard approvals page. No LLM. | Draft |
 | **Controls** | `mcp_surface` schema on the primary | Per-domain kill-switch rows and the replicated manifest digest. Written only by the dashboard owner route and `butlers public-mcp reconcile`. | Draft |
 

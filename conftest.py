@@ -844,6 +844,23 @@ async def booted_daemon(
         await booter.close()
 
 
+@pytest.fixture
+async def tool_host(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory: a butler's core tools on a fresh clone, with no daemon lifecycle.
+
+    ``host = await tool_host(config_dir)`` registers the tools and connects the
+    butler's pool; ``await host.call("remind", ...)`` runs a handler in process. Use it
+    when the subject is a tool's SQL, not the boot. See ``butlers.testing.tool_host``.
+    """
+    from butlers.testing.tool_host import ToolHosts
+
+    hosts = ToolHosts(postgres_container)
+    try:
+        yield hosts
+    finally:
+        await hosts.close()
+
+
 @pytest.fixture(scope="module")
 async def _shared_daemons(
     postgres_container: PostgresContainer,

@@ -7,14 +7,34 @@ Runs Butlers on k3s in namespace `butlers-dev` (`values.dev.yaml`) or `butlers`
 scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, bootstrap, helm upgrade, status
 ```
 
-`make deploy-dev` reruns the deployed tag's `scripts/init-db.sql` (`make bootstrap-dev`) before
-`helm upgrade`. Online migrations only check that privileged bootstrap; they never create it.
+`make deploy-dev` first runs the read-only dev topology preflight, then reruns the deployed tag's
+`scripts/init-db.sql` (`make bootstrap-dev`), then rechecks the same preflight immediately before
+`helm upgrade`. The deploy host needs the checkout's real virtualenv (`uv sync --dev`); the guard
+uses `uv run --no-sync`. Unknown runtime state or an active topology transition stops before
+bootstrap. A split/cohost change requires both runtime roles observed at zero with no old or
+terminating pods. The guard never scales or deletes anything, and competing automation must
+remain held because these reads are not an atomic ownership lock. Online migrations only check
+that privileged bootstrap; they never create it. Production deployment behavior is unchanged.
+
+Dev Helm and kubectl must use the same inherited context/`KUBECONFIG`. All supported namespace
+forms, including `-nVALUE` and `-n=VALUE`, must select `butlers-dev`. Helm-only `--kube-*` /
+`--kubeconfig` flags and any `HELM_KUBE*` environment key are refused before render/query;
+their values are never reported. Use the shared inherited context rather than Helm-only overrides.
 
 `localSecrets.source` (chart default `local`, dev `bws`) chooses whether `make secrets-*` or
 External Secrets owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator
 guide.
 
-Dev selects `butlersControl.enabled=true`: `butlers-control` runs today's
+Dev temporarily selects `butlersControl.enabled=false` by owner decision on
+2026-11-04 so RFC 0023 recovery can use the accepted same-PID authority. One
+`butlers-up` includes Switchboard and shares all five session slots; the control
+workload, session listener and ingress policy are absent. This source selection
+does not attest deployment or enable approval delivery. Follow the
+[exclusive, data-preserving rollout](../../../docs/operations/approval-delivery-dev-rollout.md)
+before replacing either topology; preserve live DB/PVCs and all durable evidence.
+
+Explicit `butlersControl.enabled=true` retains the key-absent split stage:
+`butlers-control` runs today's
 Switchboard service on 41100 plus the refusal-only session port 41199, while
 `butlers-up` excludes Switchboard. Probes use service health. Both Deployments
 have exactly one replica with `Recreate`; their session capacities are 1 and 4
@@ -22,7 +42,7 @@ from the owner fleet budget 5. Invalid/nonpositive staged partitions or budgets
 above five refuse rendering. The production default remains disabled/unsplit at
 five. No GOAL private key is provisioned or mounted in this stage.
 
-`butlers-control-ingress` permits service callers within the namespace on 41100.
+When the split stage is selected, `butlers-control-ingress` permits service callers within the namespace on 41100.
 Port 41199 permits only pods with this release's instance label and component
 `control-session-health` (operator/test caller) or `session-host` (reserved future
 identity). These labels are trusted deployment identities, not caller input.

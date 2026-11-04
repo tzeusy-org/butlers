@@ -383,3 +383,33 @@ content, or perform a historical catch-up drain as part of this requirement.
   pre-existing retained episode solely to establish historical provenance
 - **AND** a historical drain MUST remain a separately owner-authorized
   operation
+
+
+### Requirement: Controlled historical retention requires fixed evidence and bounded authority
+
+ID: REQ-memory-retention-policy-012
+Source: bu-kqnum.13.9 adopted design; owner switchboard-retention-drain-target choice A (2026-11-04).
+Scope: Switchboard controlled historical drain; no automatic cleanup activation.
+
+A controlled historical drain SHALL use one immutable run, explicit target/runtime role/operator/window, fixed UTC cutoff and deterministic complete candidate fingerprint with explicit row/batch/time/lock/statement bounds. It SHALL apply the cutoff-relative expiry and pending grace predicate, exclude verified consolidation/quarantine/archive-required rows and refuse unknown provenance. Source/content/credentials/candidate identifiers SHALL never enter public output. The read-only CLI and isolated engine are intermediate capabilities, not evidence that the full owner-run deleting admission exists.
+
+#### Scenario: Deny-write inventory precedes every candidate read
+
+- **WHEN** the one owner-authorized dev dry run is executed through the reviewed tool
+- **THEN** PostgreSQL READ ONLY SHALL be enforced before identity and candidate queries
+- **AND** output SHALL contain only aggregate counts, candidate/endpoint fingerprints and the content-free exact plan
+- **AND** no delete, schedule mutation, notice, backup, restore or automatic retry SHALL occur.
+
+#### Scenario: Isolated batches commit provenance and audit atomically
+
+- **WHEN** the actual bounded engine is rehearsed on isolated migrated PostgreSQL
+- **THEN** each batch SHALL revalidate its fixed candidate scope, preserve source-expired links, and commit deletion/tombstones/attributable durable progress together
+- **AND** failure SHALL roll back only that batch, preserve earlier commits and stop further batches
+- **AND** ambiguous COMMIT SHALL be UNKNOWN and require authoritative same-run readback rather than blind replay.
+
+#### Scenario: Future live deletion cannot borrow synthetic authority
+
+- **WHEN** a caller requests live deleting execution without exact owner-plan approval and successful target/artifact-bound authoritative managed restore proof
+- **THEN** execution SHALL be refused
+- **AND** a public audit projection, latest unbound pass, supplied boolean/reference, fixture success, closed bead or merged source SHALL not substitute for that proof
+- **AND** the full original outcome SHALL remain open until all four accepted criteria are actually earned.
