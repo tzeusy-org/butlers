@@ -15,15 +15,18 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 
+from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.deps import get_db as ingestion_db
 from butlers.modules.memory.consolidation import REAPABLE_EXPIRED_EPISODE_SQL
+from butlers.testing.db_manager import db_manager
 from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
@@ -54,60 +57,32 @@ def _make_episode_row(
     }
 
 
-class _MockDB:
-    """Minimal DatabaseManager stand-in for fan-out tests.
-
-    Attributes
-    ----------
-    pool_mock:
-        The single AsyncMock pool returned for any known butler.
-    pool_lookup:
-        MagicMock wrapping the pool() method, used to assert which butler
-        names were queried.
-    """
-
-    def __init__(self, *, rows: list[dict], total: int, known_butlers: list[str]) -> None:
-        mock_records = [Record(r) for r in rows]
-
-        self.pool_mock = AsyncMock()
-        self.pool_mock.fetchval = AsyncMock(return_value=total)
-        self.pool_mock.fetch = AsyncMock(return_value=mock_records)
-
-        self._known = known_butlers
-        self.butler_names = known_butlers
-
-        def _pool(name: str):
-            if name not in self._known:
-                raise KeyError(f"No pool for butler: {name}")
-            return self.pool_mock
-
-        self.pool_lookup = MagicMock(side_effect=_pool)
-
-    def pool(self, name: str):  # type: ignore[override]
-        return self.pool_lookup(name)
-
-
 def _wire_memory_db(
     app,
     *,
     rows: list[dict],
     total: int | None = None,
     known_butlers: list[str] | None = None,
-) -> _MockDB:
-    """Wire app with a mock DatabaseManager returning the given episode rows.
+) -> SimpleNamespace:
+    """Wire app with a DatabaseManager whose every pool returns the given episode rows.
 
-    *known_butlers* sets db.butler_names (default: ["atlas", "memory"]).
-    db.pool() raises KeyError for any name not in known_butlers, mirroring
-    real DatabaseManager behaviour.
+    *known_butlers* are the registered butlers (default: ["atlas", "memory"]); each is
+    served the same AsyncMock pool. Returns ``pool_mock`` (that pool) and
+    ``pool_lookup`` (the manager's ``pool`` method, wrapped to record which butler
+    names were looked up).
     """
     if total is None:
         total = len(rows)
     if known_butlers is None:
         known_butlers = ["atlas", "memory"]
 
-    mock_db = _MockDB(rows=rows, total=total, known_butlers=known_butlers)
-    app.dependency_overrides[get_db] = lambda: mock_db
-    return mock_db
+    pool_mock = AsyncMock()
+    pool_mock.fetchval = AsyncMock(return_value=total)
+    pool_mock.fetch = AsyncMock(return_value=[Record(r) for r in rows])
+    manager = db_manager(dict.fromkeys(known_butlers, pool_mock))
+    manager.pool = MagicMock(wraps=manager.pool)
+    app.dependency_overrides[get_db] = lambda: manager
+    return SimpleNamespace(pool_mock=pool_mock, pool_lookup=manager.pool)
 
 
 # ---------------------------------------------------------------------------
@@ -310,19 +285,6 @@ class _FactsPool:
         return []
 
 
-class _FactsDB:
-    """DatabaseManager stand-in returning a distinct _FactsPool per butler."""
-
-    def __init__(self, pools: dict[str, _FactsPool]) -> None:
-        self._pools = pools
-        self.butler_names = list(pools)
-
-    def pool(self, name: str) -> _FactsPool:
-        if name not in self._pools:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pools[name]
-
-
 async def test_facts_source_episode_id_filter_adds_where_clause(app):
     """?source_episode_id binds a WHERE clause on the FK column."""
     episode_id = str(uuid.uuid4())
@@ -330,7 +292,7 @@ async def test_facts_source_episode_id_filter_adds_where_clause(app):
     row = _make_fact_row(fact_id=fact_id)
     row["source_episode_id"] = episode_id
     pool = _FactsPool(rows=[row], total=1)
-    db = _FactsDB({"atlas": pool})
+    db = db_manager({"atlas": pool})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -353,7 +315,7 @@ async def test_facts_nonexistent_episode_returns_empty_not_error(app):
     """A valid-but-unmatched source_episode_id yields an empty 200, not an error."""
     episode_id = str(uuid.uuid4())
     pool = _FactsPool(rows=[], total=0)
-    db = _FactsDB({"atlas": pool})
+    db = db_manager({"atlas": pool})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -377,7 +339,7 @@ async def test_facts_importance_min_filter_adds_where_clause(app):
     row = _make_fact_row(fact_id=uuid.uuid4())
     row["importance"] = 8.0
     pool = _FactsPool(rows=[row], total=1)
-    db = _FactsDB({"atlas": pool})
+    db = db_manager({"atlas": pool})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -471,36 +433,41 @@ class _PartialMemoryStatsPool(_StatsPool):
         return await super().fetchval(query, *args)
 
 
-class _StatsDB:
-    """DatabaseManager stand-in returning a distinct _StatsPool per butler."""
+def _memory_db(
+    pools: dict[str, object],
+    *,
+    memory_schema_absent: set[str] | None = None,
+    memory_schemas: dict[str, str | None] | None = None,
+) -> DatabaseManager:
+    """A DatabaseManager over *pools*.
 
-    def __init__(
-        self,
-        pools: dict[str, _StatsPool],
-        *,
-        memory_schema_absent: set[str] | None = None,
-    ) -> None:
-        self._pools = pools
-        self._memory_schema_absent = memory_schema_absent or set()
-        self.butler_names = list(pools)
+    *memory_schema_absent* names butlers whose memory relations the startup
+    snapshot recorded as absent. That snapshot is taken while the dashboard
+    lifespan provisions pools, which these tests skip, so it is stubbed here.
+    """
+    manager = db_manager(pools, memory_schemas=memory_schemas)
+    absent = memory_schema_absent or set()
+    if absent:
+        manager.relation_observed_since_start = lambda name, _relation: (
+            False if name in absent else None
+        )
+    return manager
 
-    def pool(self, name: str) -> _StatsPool:
-        if name not in self._pools:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pools[name]
 
-    def memory_schema_for_butler(self, name: str) -> str | None:
-        return getattr(self.pool(name), "_schema", None)
-
-    def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
-        if name in self._memory_schema_absent:
-            return False
-        return None
+def _stats_db(
+    pools: dict[str, object], *, memory_schema_absent: set[str] | None = None
+) -> DatabaseManager:
+    """A DatabaseManager whose memory schema per butler is its stats pool's ``schema``."""
+    return _memory_db(
+        pools,
+        memory_schema_absent=memory_schema_absent,
+        memory_schemas={name: getattr(pool, "_schema", None) for name, pool in pools.items()},
+    )
 
 
 async def test_stats_retention_healthy_with_zero_eligible_denominator(app):
     """Completed zero coverage has no fabricated retention ratio."""
-    db = _StatsDB({"atlas": _StatsPool(schema="atlas")})
+    db = _stats_db({"atlas": _StatsPool(schema="atlas")})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -541,7 +508,7 @@ async def test_stats_retention_healthy_with_zero_eligible_denominator(app):
 
 async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_stats(app):
     """A retention-only fault must not manufacture a zero or drop other gauges."""
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(
                 counts={"consolidation_status = 'dead_letter'": 3},
@@ -608,7 +575,7 @@ async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_st
 
 async def test_stats_graph_health_marks_partial_memory_schema_as_unknown(app):
     """An ordinary stats/schema failure cannot leave graph coverage complete."""
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(schema="atlas", retention={"expired": 1, "eligible": 2}),
             "partial": _PartialMemoryStatsPool(
@@ -652,7 +619,7 @@ async def test_stats_graph_health_marks_partial_memory_schema_as_unknown(app):
 
 async def test_stats_graph_health_is_unknown_when_only_partial_memory_schema_fails(app):
     """No ordinary-stats-complete pool means no completed graph observation."""
-    db = _StatsDB(
+    db = _stats_db(
         {
             "partial": _PartialMemoryStatsPool(
                 schema="partial", retention={"expired": 0, "eligible": 1}
@@ -687,7 +654,7 @@ async def test_stats_graph_health_is_unknown_when_only_partial_memory_schema_fai
 
 async def test_stats_graph_health_is_unknown_without_memory_pool_evidence(app):
     """No completed pool is unknown evidence, never a zero/healthy graph claim."""
-    db = _StatsDB({})
+    db = _stats_db({})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -707,7 +674,7 @@ async def test_stats_graph_health_is_unknown_without_memory_pool_evidence(app):
 async def test_stats_graph_health_reuses_the_consolidation_aware_retention_population(app):
     """Graph coverage inherits the cleanup predicate and expiry denominator verbatim."""
     pool = _StatsPool(schema="relationship", retention={"expired": 2, "eligible": 4})
-    db = _StatsDB({"relationship": pool})
+    db = _stats_db({"relationship": pool})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -736,7 +703,7 @@ async def test_stats_graph_health_reuses_the_consolidation_aware_retention_popul
 
 async def test_stats_retention_omits_pool_without_memory_schema(app):
     """A known absent memory schema is not a retention coverage failure."""
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(schema="atlas"),
             "switchboard": _StatsPool(
@@ -764,7 +731,7 @@ async def test_stats_consolidation_fields_aggregate_across_pools(app):
     """dead_letter_episodes sums; last_consolidation picks the globally-latest run."""
     older = datetime(2026, 6, 10, tzinfo=UTC)
     newer = datetime(2026, 6, 12, tzinfo=UTC)
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(
                 counts={"consolidation_status = 'dead_letter'": 2},
@@ -827,31 +794,6 @@ class _RaisingMemoryPool:
         raise self._exc
 
 
-class _MemoryFanOutDB:
-    """Minimal two-pool database fixture for degraded memory list contracts."""
-
-    def __init__(
-        self,
-        pools: dict[str, object],
-        *,
-        memory_schema_absent: set[str] | None = None,
-    ) -> None:
-        self._pools = pools
-        self._memory_schema_absent = memory_schema_absent or set()
-        self.butler_names = list(pools)
-
-    def pool(self, name: str) -> object:
-        try:
-            return self._pools[name]
-        except KeyError:
-            raise KeyError(f"No pool for butler: {name}") from None
-
-    def relation_observed_since_start(self, name: str, relation: str) -> bool | None:
-        if name in self._memory_schema_absent:
-            return False
-        return None
-
-
 @pytest.mark.parametrize(
     "endpoint",
     [
@@ -863,7 +805,7 @@ class _MemoryFanOutDB:
 )
 async def test_memory_list_endpoints_report_genuine_failed_pools(endpoint: str, app) -> None:
     """A failed memory source is named instead of masquerading as an empty list."""
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _EmptyMemoryPool(),
             "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -915,7 +857,7 @@ class _EntityListPool(_EmptyMemoryPool):
 
 async def test_memory_entities_reports_genuine_failed_fact_count_pool(app) -> None:
     """Entity fact-count failures are named instead of reporting a false zero."""
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _EntityListPool(uuid.uuid4()),
             "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -939,7 +881,7 @@ async def test_stats_reports_pools_failed_for_a_genuine_query_failure(app):
     must be named in meta.pools_failed -- its contribution is silently
     dropped from the totals otherwise, with zero signal that they undercount.
     """
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
             "finance": _RaisingStatsPool(RuntimeError("connection reset by peer")),
@@ -965,7 +907,7 @@ async def test_stats_does_not_flag_pools_failed_for_missing_memory_schema(app):
     """
     from asyncpg.exceptions import UndefinedTableError
 
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
             "switchboard": _RaisingStatsPool(UndefinedTableError("relation does not exist")),
@@ -995,7 +937,7 @@ async def test_stats_facts_produced_tracks_latest_run_not_max(app):
     """
     older = datetime(2026, 6, 10, tzinfo=UTC)
     newer = datetime(2026, 6, 12, tzinfo=UTC)
-    db = _StatsDB(
+    db = _stats_db(
         {
             # Older run with a LARGE facts_produced.
             "atlas": _StatsPool(
@@ -1028,7 +970,7 @@ async def test_stats_facts_produced_tracks_latest_run_not_max(app):
 
 async def test_stats_consolidation_fields_default_when_no_runs(app):
     """No consolidation_runs rows → null timestamp/facts, dead_letter defaults to 0."""
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(counts={}, last_runs={"atlas": None}),
         }
@@ -1081,7 +1023,7 @@ class _CatalogQueryRaisingPool:
 
 async def test_stats_catalog_drift_gauge_aggregates_across_pools(app):
     """meta.catalog_live/catalog_stale/catalog_drifted sum across butler pools."""
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(
                 schema="atlas",
@@ -1114,7 +1056,7 @@ async def test_stats_catalog_drift_omitted_when_schema_unresolved(app):
     or a test topology living directly in public) contributes zero to the
     gauge and is NOT flagged as a degraded catalog source.
     """
-    db = _StatsDB(
+    db = _stats_db(
         {
             "switchboard": _StatsPool(schema=None),
             "atlas": _StatsPool(
@@ -1143,7 +1085,7 @@ async def test_stats_catalog_drift_flags_genuine_failure(app):
     missing memory schema must be named in meta.catalog_pools_failed --
     never silently folded into a truthful zero-drift result.
     """
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(
                 schema="atlas",
@@ -1178,7 +1120,7 @@ async def test_stats_catalog_drift_not_flagged_for_missing_memory_schema(app):
     """
     from asyncpg.exceptions import UndefinedTableError
 
-    db = _StatsDB(
+    db = _stats_db(
         {
             "atlas": _StatsPool(
                 schema="atlas",
@@ -1337,7 +1279,7 @@ async def test_reembed_pending_reports_genuine_failed_pool(app, monkeypatch):
 
     healthy_pool = object()
     failed_pool = object()
-    db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
+    db = _memory_db({"general": healthy_pool, "health": failed_pool})
     app.dependency_overrides[get_db] = lambda: db
 
     async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
@@ -1596,24 +1538,11 @@ class _ConfirmPool:
         return "UPDATE 0"
 
 
-class _ConfirmDB:
-    """DatabaseManager stand-in returning a distinct _ConfirmPool per butler."""
-
-    def __init__(self, pools: dict[str, _ConfirmPool]) -> None:
-        self._pools = pools
-        self.butler_names = list(pools)
-
-    def pool(self, name: str) -> _ConfirmPool:
-        if name not in self._pools:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pools[name]
-
-
 async def test_confirm_fact_reinks_and_returns_updated_fact(app):
     """POST confirm stamps last_confirmed_at and returns the updated Fact."""
     fact_id = uuid.uuid4()
     holding = _ConfirmPool(fact=_make_fact_row(fact_id=fact_id, last_confirmed_at=None))
-    db = _ConfirmDB({"atlas": holding, "memory": _ConfirmPool(fact=None)})
+    db = db_manager({"atlas": holding, "memory": _ConfirmPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1634,7 +1563,7 @@ async def test_confirm_fact_reinks_and_returns_updated_fact(app):
 async def test_confirm_fact_404_when_not_found(app):
     """POST confirm returns 404 when no pool holds the fact."""
     fact_id = uuid.uuid4()
-    db = _ConfirmDB({"atlas": _ConfirmPool(fact=None), "memory": _ConfirmPool(fact=None)})
+    db = db_manager({"atlas": _ConfirmPool(fact=None), "memory": _ConfirmPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1647,7 +1576,7 @@ async def test_confirm_fact_404_when_not_found(app):
 
 async def test_confirm_fact_400_on_malformed_id(app):
     """POST confirm returns 400 when the path id is not a valid UUID."""
-    db = _ConfirmDB({"atlas": _ConfirmPool(fact=None)})
+    db = db_manager({"atlas": _ConfirmPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1661,7 +1590,7 @@ async def test_confirm_fact_400_on_malformed_id(app):
 async def test_confirm_fact_503_when_no_pools_available(app):
     """POST confirm returns 503 when no memory pools are registered."""
     fact_id = uuid.uuid4()
-    db = _ConfirmDB({})
+    db = db_manager({})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1765,7 +1694,7 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
     """POST retract flips validity to 'retracted' and returns the updated Fact."""
     fact_id = uuid.uuid4()
     holding = _RetractPool(fact=_make_fact_row(fact_id=fact_id))
-    db = _ConfirmDB({"atlas": holding, "memory": _RetractPool(fact=None)})
+    db = db_manager({"atlas": holding, "memory": _RetractPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1793,7 +1722,7 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
 async def test_retract_fact_404_when_not_found(app):
     """POST retract returns 404 when no pool holds the fact."""
     fact_id = uuid.uuid4()
-    db = _ConfirmDB({"atlas": _RetractPool(fact=None), "memory": _RetractPool(fact=None)})
+    db = db_manager({"atlas": _RetractPool(fact=None), "memory": _RetractPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1806,7 +1735,7 @@ async def test_retract_fact_404_when_not_found(app):
 
 async def test_retract_fact_400_on_malformed_id(app):
     """POST retract returns 400 when the path id is not a valid UUID."""
-    db = _ConfirmDB({"atlas": _RetractPool(fact=None)})
+    db = db_manager({"atlas": _RetractPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1820,7 +1749,7 @@ async def test_retract_fact_400_on_malformed_id(app):
 async def test_retract_fact_503_when_no_pools_available(app):
     """POST retract returns 503 when no memory pools are registered."""
     fact_id = uuid.uuid4()
-    db = _ConfirmDB({})
+    db = db_manager({})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1923,7 +1852,7 @@ async def test_retire_rule_sets_retired_at_and_returns_updated_rule(app):
     """PATCH retire sets retired_at and returns the updated Rule."""
     rule_id = uuid.uuid4()
     holding = _RetireRulePool(rule=_make_rule_row(rule_id=rule_id))
-    db = _ConfirmDB({"atlas": holding, "memory": _RetireRulePool(rule=None)})
+    db = db_manager({"atlas": holding, "memory": _RetireRulePool(rule=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1951,7 +1880,7 @@ async def test_retire_rule_sets_retired_at_and_returns_updated_rule(app):
 async def test_retire_rule_404_when_not_found(app):
     """PATCH retire returns 404 when no pool holds the rule."""
     rule_id = uuid.uuid4()
-    db = _ConfirmDB({"atlas": _RetireRulePool(rule=None), "memory": _RetireRulePool(rule=None)})
+    db = db_manager({"atlas": _RetireRulePool(rule=None), "memory": _RetireRulePool(rule=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1964,7 +1893,7 @@ async def test_retire_rule_404_when_not_found(app):
 
 async def test_retire_rule_400_on_malformed_id(app):
     """PATCH retire returns 400 when the path id is not a valid UUID."""
-    db = _ConfirmDB({"atlas": _RetireRulePool(rule=None)})
+    db = db_manager({"atlas": _RetireRulePool(rule=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1978,7 +1907,7 @@ async def test_retire_rule_400_on_malformed_id(app):
 async def test_retire_rule_503_when_no_pools_available(app):
     """PATCH retire returns 503 when no memory pools are registered."""
     rule_id = uuid.uuid4()
-    db = _ConfirmDB({})
+    db = db_manager({})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -1996,7 +1925,7 @@ async def test_retire_rule_503_when_no_pools_available(app):
 
 async def _post_endorse(app, rule_id, **endorse_kwargs):
     holding = _RetireRulePool(rule=None)
-    db = _ConfirmDB({"atlas": holding})
+    db = db_manager({"atlas": holding})
     app.dependency_overrides[get_db] = lambda: db
     with (
         patch("butlers.api.routers.memory.fetch_owner_entity_id", AsyncMock(return_value=None)),
@@ -2097,7 +2026,7 @@ async def test_memory_detail_miss_reports_degraded_source_instead_of_false_404(
 ) -> None:
     """A failed detail source leaves ownership unknown, so the miss is a 503."""
     path, _ = _detail_fixture(kind)
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _MemoryDetailPool(),
             "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
@@ -2118,7 +2047,7 @@ async def test_memory_detail_miss_reports_degraded_source_instead_of_false_404(
 async def test_memory_detail_found_row_wins_over_degraded_sibling(kind: str, app) -> None:
     """A reachable detail row is useful even while another schema is down."""
     path, holding_pool = _detail_fixture(kind)
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": holding_pool,
             "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
@@ -2139,7 +2068,7 @@ async def test_memory_detail_found_row_wins_over_degraded_sibling(kind: str, app
 async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app) -> None:
     """A non-memory schema is skipped rather than being reported as degraded."""
     path, _ = _detail_fixture(kind)
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _MemoryDetailPool(),
             "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
@@ -2159,7 +2088,7 @@ async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app)
 async def test_memory_detail_unknown_schema_state_is_degraded(app) -> None:
     """An unrecorded missing schema is never silently treated as optional."""
     path, _ = _detail_fixture("fact")
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _MemoryDetailPool(),
             "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
@@ -2243,7 +2172,7 @@ class _EntityMemoryPool:
 async def test_entity_detail_names_failed_fact_pool(app) -> None:
     """An entity's partial fact ledger is explicitly marked as degraded."""
     entity_id = uuid.uuid4()
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
             "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
@@ -2265,7 +2194,7 @@ async def test_entity_detail_names_failed_fact_pool(app) -> None:
 async def test_entity_detail_returns_rebind_receipt_cohort(app) -> None:
     entity_id = uuid.uuid4()
     rebind_id = uuid.uuid4()
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _EntityMemoryPool(
                 entity=_make_entity_row(entity_id),
@@ -2309,8 +2238,8 @@ async def test_entity_responses_and_schemas_omit_retired_linked_contact_fields(a
     """
     retired = {f"linked_contact_{suffix}" for suffix in ("id", "name")}
     entity_id = uuid.uuid4()
-    list_db = _MemoryFanOutDB({"atlas": _EntityListPool(entity_id)})
-    detail_db = _MemoryFanOutDB({"atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id))})
+    list_db = _memory_db({"atlas": _EntityListPool(entity_id)})
+    detail_db = _memory_db({"atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id))})
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2342,7 +2271,7 @@ async def test_entity_responses_and_schemas_omit_retired_linked_contact_fields(a
 async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app) -> None:
     """A legitimate non-memory schema does not taint an otherwise complete entity view."""
     entity_id = uuid.uuid4()
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
             "switchboard": _EntityMemoryPool(
@@ -2385,7 +2314,7 @@ async def test_delete_entity_stops_on_failed_fact_precheck(app) -> None:
     """A failed precheck cannot be treated as proof that an entity has no facts."""
     entity_id = uuid.uuid4()
     atlas = _EntityMemoryPool(entity=_make_entity_row(entity_id))
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": atlas,
             "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
@@ -2406,7 +2335,7 @@ async def test_delete_entity_does_not_soft_delete_after_failed_fact_retirement(a
     """A partial retirement failure must not be reported as a completed entity deletion."""
     entity_id = uuid.uuid4()
     atlas = _EntityMemoryPool(entity=_make_entity_row(entity_id), fact_count=1)
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": atlas,
             "finance": _EntityMemoryPool(
@@ -2461,14 +2390,14 @@ class _InspectPool:
         return []
 
 
-def _inspect_db(pool: _InspectPool) -> _FactsDB:
-    """Single-butler DatabaseManager stand-in for inspect tests."""
-    return _FactsDB({"atlas": pool})  # type: ignore[arg-type]
+def _inspect_db(pool: _InspectPool) -> DatabaseManager:
+    """Single-butler DatabaseManager for inspect tests."""
+    return db_manager({"atlas": pool})
 
 
 async def test_inspect_reports_genuine_failed_pool(app) -> None:
     """Inspect never renders a partial empty ledger as a complete result."""
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _InspectPool(),
             "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -2701,7 +2630,7 @@ async def test_get_fact_superseded_by_set_when_another_fact_supersedes_it(app):
     fact_id = uuid.uuid4()
     superseder_id = uuid.uuid4()
     holding = _GetFactPool(fact=_make_fact_row(fact_id=fact_id), superseder_id=superseder_id)
-    db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
+    db = db_manager({"atlas": holding, "memory": _GetFactPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -2721,7 +2650,7 @@ async def test_get_fact_superseded_by_none_when_nothing_supersedes_it(app):
     """GET fact leaves superseded_by None when no fact supersedes it."""
     fact_id = uuid.uuid4()
     holding = _GetFactPool(fact=_make_fact_row(fact_id=fact_id), superseder_id=None)
-    db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
+    db = db_manager({"atlas": holding, "memory": _GetFactPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -2747,7 +2676,7 @@ async def test_get_fact_preserves_existing_fields_additively(app):
         ),
         superseder_id=None,
     )
-    db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
+    db = db_manager({"atlas": holding, "memory": _GetFactPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -2768,7 +2697,7 @@ async def test_get_fact_preserves_existing_fields_additively(app):
 async def test_get_fact_404_when_not_found(app):
     """GET fact returns 404 when no pool holds the fact."""
     fact_id = uuid.uuid4()
-    db = _ConfirmDB({"atlas": _GetFactPool(fact=None), "memory": _GetFactPool(fact=None)})
+    db = db_manager({"atlas": _GetFactPool(fact=None), "memory": _GetFactPool(fact=None)})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
@@ -3119,13 +3048,6 @@ def _gap_row(asked_at: datetime, *, predicate: str = "child_name") -> dict:
     }
 
 
-class _GapDB:
-    butler_names = ["atlas", "memory", "broken"]
-
-    def pool(self, name: str):
-        return name
-
-
 def _wire_gaps(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
     """Serve each pool's gaps through the real keyset filter; a pool may raise."""
 
@@ -3139,7 +3061,9 @@ def _wire_gaps(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
         return rows[:limit]
 
     monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.list_gaps", fake_list_gaps)
-    app.dependency_overrides[get_db] = lambda: _GapDB()
+    # Each pool is its butler's name, so fake_list_gaps can key its outcome by pool.
+    manager = db_manager({name: name for name in ("atlas", "memory", "broken")})
+    app.dependency_overrides[get_db] = lambda: manager
 
 
 async def _get_gaps(app, **params):
@@ -3265,7 +3189,7 @@ async def test_memory_lists_report_exact_total_has_more_and_degraded_count(
 ) -> None:
     """Two healthy pools plus a failed one: total is the exact reachable count, not
     the page size, has_more follows it, and the failed pool is named."""
-    db = _MemoryFanOutDB(
+    db = _memory_db(
         {
             "atlas": _CountingPool(**{relation: [make_row() for _ in range(3)]}),
             "health": _CountingPool(**{relation: [make_row() for _ in range(2)]}),
@@ -3293,7 +3217,7 @@ async def test_inspect_count_filters_exactly_like_the_row_query(
 ) -> None:
     """meta.total is only exact while count(*) and the row fetch share one filter."""
     pool = _CountingPool()
-    app.dependency_overrides[get_db] = lambda: _MemoryFanOutDB({"atlas": pool})
+    app.dependency_overrides[get_db] = lambda: _memory_db({"atlas": pool})
     params = {"kind": kind, **({"q": q} if q else {})}
 
     async with httpx.AsyncClient(

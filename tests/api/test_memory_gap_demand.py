@@ -6,15 +6,9 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
-
-
-class _GapDB:
-    butler_names = ["atlas", "memory", "broken"]
-
-    def pool(self, name: str):
-        return name
 
 
 def _wire_demand(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
@@ -25,7 +19,9 @@ def _wire_demand(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
         return outcome
 
     monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.demand_by_predicate", fake_demand)
-    app.dependency_overrides[get_db] = lambda: _GapDB()
+    # Each pool is its butler's name, so fake_demand can key its outcome by pool.
+    manager = db_manager({name: name for name in ("atlas", "memory", "broken")})
+    app.dependency_overrides[get_db] = lambda: manager
 
 
 async def _get_demand(app):

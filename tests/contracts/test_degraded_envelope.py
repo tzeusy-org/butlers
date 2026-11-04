@@ -79,10 +79,10 @@ from tests.api.test_butlers_board import (
     _build_app as _make_board_app,
 )
 from tests.api.test_butlers_board import (
-    _FakeButlerPool as _BoardButlerPool,
+    _db as _board_db,
 )
 from tests.api.test_butlers_board import (
-    _FakeDb as _BoardFakeDb,
+    _FakeButlerPool as _BoardButlerPool,
 )
 from tests.api.test_butlers_board import (
     _FakeSwitchboardPool as _BoardSwitchboardPool,
@@ -107,11 +107,11 @@ from tests.api.test_memory import (
     _EntityMemoryPool,
     _InspectPool,
     _make_entity_row,
+    _memory_db,
     _MemoryDetailPool,
-    _MemoryFanOutDB,
     _RaisingMemoryPool,
     _RaisingStatsPool,
-    _StatsDB,
+    _stats_db,
     _StatsPool,
 )
 from tests.api.test_notifications import (
@@ -328,7 +328,7 @@ def _case_board() -> DegradedCase:
             ButlerConnectionInfo(name="finance", port=41105),
             ButlerConnectionInfo(name="general", port=41101),
         ]
-        db = _BoardFakeDb(
+        db = _board_db(
             switchboard=_BoardSwitchboardPool(
                 rows=[_board_registry_row("finance"), _board_registry_row("general")]
             ),
@@ -383,7 +383,7 @@ def _case_notifications_stats() -> DegradedCase:
 
 def _case_memory_stats() -> DegradedCase:
     async def _run() -> None:
-        db = _StatsDB(
+        db = _stats_db(
             {
                 "atlas": _StatsPool(counts={"consolidation_status = 'dead_letter'": 3}),
                 "finance": _RaisingStatsPool(RuntimeError("connection reset by peer")),
@@ -402,7 +402,7 @@ def _case_memory_stats() -> DegradedCase:
 
 def _case_memory_retention_stats() -> DegradedCase:
     async def _run() -> None:
-        db = _StatsDB(
+        db = _stats_db(
             {
                 "atlas": _StatsPool(retention={"expired": 0, "eligible": 1}),
                 "finance": _StatsPool(retention_exc=RuntimeError("connection reset by peer")),
@@ -443,7 +443,7 @@ def _case_memory_retention_stats() -> DegradedCase:
 
 def _case_memory_list(endpoint: str, name: str) -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _EmptyMemoryPool(),
                 "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -462,7 +462,7 @@ def _case_memory_list(endpoint: str, name: str) -> DegradedCase:
 
 def _case_memory_entities() -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _EntityListPool(uuid4()),
                 "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -481,7 +481,7 @@ def _case_memory_entities() -> DegradedCase:
 
 def _case_memory_detail() -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _MemoryDetailPool(),
                 "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
@@ -499,7 +499,7 @@ def _case_memory_detail() -> DegradedCase:
 def _case_memory_entity_detail() -> DegradedCase:
     async def _run() -> None:
         entity_id = uuid4()
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _EntityMemoryPool(entity=_make_entity_row(entity_id)),
                 "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
@@ -516,7 +516,7 @@ def _case_memory_entity_detail() -> DegradedCase:
 
 def _case_memory_inspect() -> DegradedCase:
     async def _run() -> None:
-        db = _MemoryFanOutDB(
+        db = _memory_db(
             {
                 "atlas": _InspectPool(),
                 "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
@@ -537,7 +537,7 @@ def _case_memory_reembed_pending() -> DegradedCase:
 
         healthy_pool = object()
         failed_pool = object()
-        db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
+        db = _memory_db({"general": healthy_pool, "health": failed_pool})
         app = create_app()
         app.dependency_overrides[_memory_get_db] = lambda: db
 

@@ -27,6 +27,7 @@ import pytest
 
 from butlers.api.deps import get_db
 from butlers.modules.memory.consolidation import _record_consolidation_run
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -34,20 +35,6 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-class _SinglePoolDB:
-    """DatabaseManager stand-in exposing one real pool under one butler name."""
-
-    def __init__(self, butler: str, pool: object) -> None:
-        self._butler = butler
-        self._pool = pool
-        self.butler_names = [butler]
-
-    def pool(self, name: str) -> object:
-        if name != self._butler:
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
 
 
 @asynccontextmanager
@@ -78,7 +65,7 @@ async def test_consolidation_run_populates_stats_fields(db) -> None:
     )
     await pool.execute("INSERT INTO rules (content, maturity) VALUES ('r1', 'candidate')")
 
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
 
     # Baseline: no consolidation runs yet → consolidation fields are null,
     # while the seeded counts already populate.
@@ -148,7 +135,7 @@ async def test_stats_reports_complete_expired_retention_observation(
         # No TTL → not eligible.
         "('memory', 'e5', 'pending', NULL)"
     )
-    manager = _SinglePoolDB("memory", pool)
+    manager = db_manager({"memory": pool})
 
     async with _app_client(manager) as client:
         resp = await client.get("/api/memory/stats")
