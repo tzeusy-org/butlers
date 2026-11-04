@@ -101,7 +101,12 @@ def _integration_cleanup_script(shard: int) -> str:
 
 
 def _run_cleanup_script(
-    *, tmp_path: Path, shard: int, available_kib: str
+    *,
+    tmp_path: Path,
+    shard: int,
+    available_kib: str,
+    diagnostic_failure: str = "",
+    script: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(parents=True)
@@ -122,14 +127,21 @@ def _run_cleanup_script(
         encoding="utf-8",
     )
     (fake_bin / "uv").write_text(
-        '#!/usr/bin/env bash\nprintf "%s\\n" "${@: -1}" >> "$STORAGE_PHASES"\n',
+        '#!/usr/bin/env bash\nprintf "%s\\n" "${@: -1}" >> "$STORAGE_PHASES"\n'
+        'if [ "${@: -1}" = "$STORAGE_FAIL" ]; then exit 17; fi\n',
         encoding="utf-8",
     )
-    for command in (fake_bin / "df", fake_bin / "sudo", fake_bin / "uv"):
+    (fake_bin / "mkdir").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$STORAGE_FAIL" = "evidence_directory" ]; then exit 17; fi\n'
+        'exec /usr/bin/mkdir "$@"\n',
+        encoding="utf-8",
+    )
+    for command in (fake_bin / "df", fake_bin / "sudo", fake_bin / "uv", fake_bin / "mkdir"):
         command.chmod(0o755)
 
     result = subprocess.run(
-        ["bash", "-e", "-c", _integration_cleanup_script(shard)],
+        ["bash", "-e", "-c", script if script is not None else _integration_cleanup_script(shard)],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
@@ -141,6 +153,7 @@ def _run_cleanup_script(
             "SUDO_SENTINEL": str(sentinel),
             "TEST_EVIDENCE_DIR": str(tmp_path / "evidence"),
             "STORAGE_PHASES": str(tmp_path / "storage-phases"),
+            "STORAGE_FAIL": diagnostic_failure,
         },
     )
     return result, sentinel
@@ -390,10 +403,61 @@ def test_storage_evidence_is_opt_in_group_six_and_inventory_survives_test_failur
     assert job["env"]["BUTLERS_TEST_STORAGE_EVIDENCE"] == "${{ matrix.group == 6 && '1' || '0' }}"
     inventory = _workflow_step(job=job, name="Summarize bounded integration storage metadata")
     assert inventory["if"] == "always() && matrix.group == 6"
-    assert shlex.split(inventory["run"])[-2:] == ["butlers.testing.storage", "inventory"]
+    assert shlex.split(inventory["run"].split("||", 1)[0])[-2:] == [
+        "butlers.testing.storage",
+        "inventory",
+    ]
     uploads = [
         step
         for step in job["steps"]
         if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     ]
     assert any("storage-*.json" in step["with"]["path"] for step in uploads)
+
+
+@pytest.mark.parametrize("phase", ["before_cleanup", "after_cleanup", "inventory"])
+def test_optional_storage_startup_failure_preserves_cleanup_verdict(tmp_path, phase):
+    job = _ci_workflow()["jobs"]["check-integration"]
+    script = (
+        _workflow_step(job=job, name="Summarize bounded integration storage metadata")["run"]
+        if phase == "inventory"
+        else None
+    )
+    result, sentinel = _run_cleanup_script(
+        tmp_path=tmp_path,
+        shard=6,
+        available_kib=str(80 * 1024 * 1024),
+        diagnostic_failure=phase,
+        script=script,
+    )
+    assert result.returncode == 0
+    assert "UNKNOWN" in result.stdout
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize(
+    ("available", "verdict", "cleanup"), [(str(29 * 1024 * 1024), 99, True), ("N/A", 1, False)]
+)
+def test_storage_failure_does_not_replace_required_cleanup_failure(
+    tmp_path, available, verdict, cleanup
+):
+    result, sentinel = _run_cleanup_script(
+        tmp_path=tmp_path,
+        shard=6,
+        available_kib=available,
+        diagnostic_failure="before_cleanup",
+    )
+    assert result.returncode == verdict
+    assert sentinel.exists() is cleanup
+
+
+def test_storage_directory_failure_does_not_preempt_required_cleanup(tmp_path):
+    result, sentinel = _run_cleanup_script(
+        tmp_path=tmp_path,
+        shard=6,
+        available_kib=str(29 * 1024 * 1024),
+        diagnostic_failure="evidence_directory",
+    )
+    assert result.returncode == 99
+    assert sentinel.exists()
+    assert "UNKNOWN" in result.stdout

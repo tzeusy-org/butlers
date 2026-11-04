@@ -249,15 +249,32 @@ def test_observer_join_preserves_original_failure_when_measurement_fails(monkeyp
 
 
 @pytest.mark.integration
-def test_actual_pg_storage_query_is_readonly_and_aggregate(postgres_container, db_pool):
-    result = storage.database_totals(postgres_container)
-    assert result["status"] == "ok" and result["readonly"] is True
-    assert result["databases"] >= 3 and result["test_named_databases"] >= 1
-    assert result["database_bytes"] >= result["test_named_database_bytes"] > 0
-    assert result["attribution"] == "prefix_only"
-    assert result["clone_current_bytes_status"] == "unknown_untracked"
-    assert result["wal_bytes"] > 0 and result["temp_bytes_cumulative"] >= 0
-    assert all(type(value) in (int, bool, str) for value in result.values())
+def test_actual_pg_storage_query_is_readonly_and_aggregate():
+    # This bounded positive must not census thousands of unrelated worker DBs.
+    # Only this proof owns an extra server; ordinary session fixtures are unchanged.
+    from sqlalchemy import create_engine, text
+    from testcontainers.postgres import PostgresContainer
+
+    container = PostgresContainer("pgvector/pgvector:pg17")
+    try:
+        container.start()
+        engine = create_engine(container.get_connection_url(), isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("CREATE DATABASE test_storage_positive"))
+        finally:
+            engine.dispose()
+        result = storage.database_totals(container)
+        assert result["status"] == "ok" and result["readonly"] is True
+        assert result["databases"] >= 3 and result["test_named_databases"] >= 1
+        assert result["database_bytes"] >= result["test_named_database_bytes"] > 0
+        assert result["attribution"] == "prefix_only"
+        assert result["clone_current_bytes_status"] == "unknown_untracked"
+        assert result["wal_bytes"] > 0 and result["temp_bytes_cumulative"] >= 0
+        assert all(type(value) in (int, bool, str) for value in result.values())
+
+    finally:
+        container.stop(delete_volume=True)
 
 
 def test_real_observer_thread_records_owned_events_and_joins(monkeypatch):
@@ -280,3 +297,35 @@ def test_real_observer_thread_records_owned_events_and_joins(monkeypatch):
     assert receipts[-1]["samples"][-1]["phase"] == "before_server_stop"
     assert receipts[-1]["samples"][-1]["events"]["clone_created"] == 1
     assert receipts[-1]["samples"][-1]["postgres"]["status"] == "unknown"
+
+
+def test_query_timeout_is_closed_unknown_and_preserves_original_verdict(monkeypatch):
+    from psycopg2.errors import QueryCanceled
+    from sqlalchemy.exc import OperationalError
+
+    container = SimpleNamespace(get_wrapped_container=lambda: SimpleNamespace(id="a" * 64))
+    monkeypatch.setattr(storage, "identity", lambda: {"worker": "gw0"})
+    monkeypatch.setattr(storage, "enabled", lambda: True)
+    monkeypatch.setattr(storage, "filesystem", lambda path: {"status": "unknown"})
+    monkeypatch.setattr(storage, "docker_totals", lambda: {"status": "unknown"})
+    monkeypatch.setattr(storage, "owned_pgdata", lambda cid: {"status": "unknown"})
+
+    def timed_out(server):
+        raise OperationalError("PRIVATE-SYNTHETIC-SENTINEL", {}, QueryCanceled())
+
+    monkeypatch.setattr(storage, "database_totals", timed_out)
+    receipts = []
+    monkeypatch.setattr(storage, "write_report", lambda name, record: receipts.append(record))
+    original = ValueError("original-verdict")
+    with pytest.raises(ValueError) as raised:
+        with storage.observe(container):
+            raise original
+    assert raised.value is original
+    assert storage._ACTIVE is None
+    assert receipts[-1]["status"] == "observer_joined"
+    assert receipts[-1]["samples"]
+    assert all(
+        row["postgres"] == {"status": "unknown", "reason": "measurement_unavailable"}
+        for row in receipts[-1]["samples"]
+    )
+    assert "PRIVATE-SYNTHETIC-SENTINEL" not in json.dumps(receipts)

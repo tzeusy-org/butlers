@@ -566,8 +566,8 @@ jobs:
         # no-space/asyncpg failures on small runners, but do not spend minutes
         # deleting 20+ GiB of tools when the runner already has a safe floor.
         run: |
-          mkdir -p "${TEST_EVIDENCE_DIR}"
-          uv run --no-sync python -B -m butlers.testing.storage before_cleanup
+          mkdir -p "${TEST_EVIDENCE_DIR}" || echo "storage evidence UNKNOWN evidence_directory_startup"
+          uv run --no-sync python -B -m butlers.testing.storage before_cleanup || echo "storage evidence UNKNOWN before_cleanup_startup"
           echo "Disk usage before cleanup:"
           df -h /
           MIN_FREE_GB=30
@@ -594,7 +594,7 @@ jobs:
           fi
           echo "Disk usage after cleanup decision:"
           df -h /
-          uv run --no-sync python -B -m butlers.testing.storage after_cleanup
+          uv run --no-sync python -B -m butlers.testing.storage after_cleanup || echo "storage evidence UNKNOWN after_cleanup_startup"
 
       - name: Integration tests (group ${{ matrix.group }})
         env:
@@ -606,7 +606,7 @@ jobs:
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
         if: always() && matrix.group == 6
-        run: uv run --no-sync python -B -m butlers.testing.storage inventory
+        run: uv run --no-sync python -B -m butlers.testing.storage inventory || echo "storage evidence UNKNOWN inventory_startup"
 
       - name: Prepare integration group ${{ matrix.group }} duration evidence
         if: always()

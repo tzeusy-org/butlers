@@ -495,30 +495,34 @@ def _migrated_template(
         if template is not None:
             return template
         name = f"tmpl_{key}_{uuid.uuid4().hex[:6]}"
-        db_url = create_migration_db(postgres_container, name)
         try:
+            db_url = create_migration_db(postgres_container, name)
             _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
-        except Exception:
+            admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
+            engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+            try:
+                with engine.connect() as conn:
+                    # No session may remain in a template while it is copied, and no
+                    # test may connect to it by accident afterwards.
+                    conn.execute(
+                        text(
+                            f'ALTER DATABASE "{name}" WITH IS_TEMPLATE true ALLOW_CONNECTIONS false'
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                            "WHERE datname = :name AND pid <> pg_backend_pid()"
+                        ),
+                        {"name": name},
+                    )
+            finally:
+                engine.dispose()
+        except Exception as error:
             _storage_note("create_failed", postgres_container)
+            if getattr(getattr(error, "orig", None), "pgcode", None) == "53100":
+                _storage_note("storage_error", postgres_container)
             raise
-        admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
-        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
-        try:
-            with engine.connect() as conn:
-                # No session may remain in a template while it is copied, and no
-                # test may connect to it by accident afterwards.
-                conn.execute(
-                    text(f'ALTER DATABASE "{name}" WITH IS_TEMPLATE true ALLOW_CONNECTIONS false')
-                )
-                conn.execute(
-                    text(
-                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                        "WHERE datname = :name AND pid <> pg_backend_pid()"
-                    ),
-                    {"name": name},
-                )
-        finally:
-            engine.dispose()
         template = _Template(name=name, db_url=db_url)
         _TEMPLATES[key] = template
         _storage_note("template_created", postgres_container)

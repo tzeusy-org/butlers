@@ -415,3 +415,16 @@ keep the complete real-PostgreSQL population and repeated normal-load source/pro
 
 Actual observer overhead must be measured from natural hosted execution; no speed or capacity
 improvement is claimed from adding these diagnostics.
+
+
+The storage-query native positive owns one additional function-scoped
+`pgvector/pgvector:pg17` server and one tiny test-named database. The image is the same
+major-tagged image as the session fixture, not a digest pin. It exercises the actual bounded,
+read-only aggregate on a controlled census rather than requiring a loaded worker's entire
+retained database population to finish inside two seconds. A `finally` stops that proof-only
+server, including after failed startup; ordinary server ownership and cleanup remain unchanged.
+This adds one server startup/stop in the lane selecting that test; its hosted cost is not yet
+measured. A separate timeout control verifies closed UNKNOWN and preservation of the original
+pytest exception. Diagnostic directory/CLI startup failures likewise produce fixed UNKNOWN notices without
+replacing cleanup or pytest verdicts. Factory failure counters cover owned template creation,
+migration and finalization once, including SQLSTATE 53100, without retrying or reclaiming resources.
