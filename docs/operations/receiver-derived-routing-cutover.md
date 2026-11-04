@@ -100,6 +100,16 @@ keep routing unavailable and escalate rather than widen eligibility.
 
 ## Implementation Notes
 
+- Aggregate pod readiness does not prove every daemon reached startup. Concierge
+  schedule synchronization reads `scheduled_tasks.max_token_budget` even when its
+  TOML schedule list is empty. The historical `core_050` roster list omitted this
+  later staffer; `concierge_003` supplies its nullable integer column. A
+  `core_312` ledger alone therefore does not prove the older Concierge shape is
+  complete. Diagnose the startup failure and schema before changing receiver
+  policy. A source repair or read-only diagnosis does not establish recovery:
+  the separately authorized deployment still needs an actual named 13-of-13
+  receiver-health observation window.
+
 - Board `stale` is observation state: `set_butler_registry_policy(..., 'active')` cannot refresh
   it. The board projects `paused`, `quarantined` and `review_required` all as
   `eligibility='quarantined'`, so never infer the policy subtype from eligibility.
