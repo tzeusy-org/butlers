@@ -536,6 +536,56 @@ async def test_vouch_is_additive_single_receipt_and_reversible(pool_factory) -> 
     before = await pool.fetchrow(f"{lineage} FROM facts WHERE id = $1", fact_id)
     assert before["content_authority"] == "third_party"
 
+    # Only the shared held predicate admits a vouch. Legacy/system and owner-class
+    # rows are complete no-ops, including an already-present catalog entry.
+    for authority in (None, "system", "owner", "owner_device"):
+        with _session(stranger):
+            ordinary = await _writing.memory_store_fact(
+                pool,
+                engine,
+                "Owner",
+                f"nonheld_{tag}_{authority}",
+                f"unchanged {tag}",
+                entity_id=str(owner),
+                **catalog,
+            )
+        ordinary_id = uuid.UUID(ordinary["id"])
+        # NULL represents a legacy row; explicit stamps exercise the persisted
+        # classifier independently of the session authority writer.
+        await pool.execute(
+            "UPDATE facts SET content_authority = $2 WHERE id = $1", ordinary_id, authority
+        )
+        fact_before = await pool.fetchrow("SELECT * FROM facts WHERE id = $1", ordinary_id)
+        catalog_before = await pool.fetchrow(
+            "SELECT * FROM public.memory_catalog WHERE source_table = 'facts' AND source_id = $1",
+            ordinary_id,
+        )
+        assert catalog_before is not None
+        assert fact_before["endorsed_at"] is None and fact_before["endorsed_by"] is None
+        for _ in range(2):
+            assert await storage.endorse_fact(pool, ordinary_id, endorsed_by=owner) == {
+                "fact_id": ordinary_id,
+                "content_authority": authority,
+                "endorsed_at": None,
+                "endorsed_by": None,
+                "changed": False,
+            }
+        assert await pool.fetchrow("SELECT * FROM facts WHERE id = $1", ordinary_id) == fact_before
+        assert (
+            await pool.fetchrow(
+                "SELECT * FROM public.memory_catalog WHERE source_table = 'facts' AND source_id = $1",
+                ordinary_id,
+            )
+            == catalog_before
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type = 'fact_vouched' AND memory_id = $1",
+                ordinary_id,
+            )
+            == 0
+        )
+
     # Two connections race: one CAS wins, both get the same receipt, one event.
     first, second = await asyncio.gather(
         storage.endorse_fact(pool, fact_id, endorsed_by=owner),
