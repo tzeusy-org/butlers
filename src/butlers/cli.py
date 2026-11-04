@@ -9,7 +9,6 @@ import signal
 import socket
 import sys
 from collections import defaultdict
-from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -881,6 +880,8 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
 
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
+    from contextlib import AsyncExitStack
+
     from butlers.daemon import ButlerDaemon
 
     daemons: list[ButlerDaemon] = []
