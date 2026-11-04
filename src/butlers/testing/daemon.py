@@ -265,11 +265,23 @@ async def _rearm_sse() -> None:
 
 
 class BootedDaemon:
-    """One started daemon: its ``ButlerDaemon``, MCP URL and fake runtime."""
+    """One started daemon: its ``ButlerDaemon``, MCP URL and fake runtime.
 
-    def __init__(self, daemon: Any, url: str, start_seconds: float, logs: _LoggingSnapshot):
+    ``admin_url`` is the clone's owner connection, for seeding rows the butler's
+    role may not write (open it with :func:`butlers.testing.db.open_pool`).
+    """
+
+    def __init__(
+        self,
+        daemon: Any,
+        url: str,
+        start_seconds: float,
+        logs: _LoggingSnapshot,
+        admin_url: str = "",
+    ):
         self.daemon = daemon
         self.url = url
+        self.admin_url = admin_url
         self.start_seconds = start_seconds
         self._logs = logs
         self._stopped = False
@@ -422,6 +434,7 @@ class DaemonBooter:
             f"http://127.0.0.1:{config.port}/mcp",
             time.monotonic() - began,
             logs,
+            admin_url=url,
         )
         self._booted.append(booted)
         return booted

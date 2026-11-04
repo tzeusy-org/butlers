@@ -97,6 +97,9 @@ await booted.shutdown()                           # optional; teardown shuts dow
 - Set `booted.runtime.supports_resume = True` to exercise provider-session resume:
   each turn then reports a fresh `provider_session_id` (`fake-session-<n>`), and
   each invocation records the `resume_session_id` the spawner passed.
+- `booted.admin_url` is the clone's owner connection (open it with
+  `butlers.testing.db.open_pool`), for seeding rows the butler's role may not
+  write, such as dashboard turns.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
   sets environment seams: file logs under a temp root, MCP warmup off (it is an

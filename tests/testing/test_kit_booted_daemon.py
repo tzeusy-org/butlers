@@ -78,6 +78,26 @@ async def test_caplog_still_captures_daemon_logs_after_boot(
 
 
 @session_loop
+async def test_admin_url_reaches_the_daemons_clone_as_its_owner(booted_daemon, tmp_path) -> None:
+    # Fixtures the butler role may not write (dashboard turns, rows that must exist
+    # before a recovery sweep) are seeded through the clone's owner connection.
+    from butlers.testing.db import open_pool
+
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+
+    pool = await open_pool(booted.admin_url)
+    try:
+        database, owns_it = await pool.fetchrow(
+            "SELECT datname, pg_get_userbyid(datdba) = current_user FROM pg_database "
+            "WHERE datname = current_database()"
+        )
+    finally:
+        await pool.close()
+    assert database == booted.daemon.db.db_name
+    assert owns_it is True
+
+
+@session_loop
 async def test_unregistered_boot_serves_tools_but_does_not_accept_routes(
     booted_daemon, tmp_path
 ) -> None:
