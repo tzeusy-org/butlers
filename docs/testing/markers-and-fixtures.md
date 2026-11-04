@@ -113,10 +113,11 @@ await booted.shutdown()                           # optional; teardown shuts dow
   that only read daemon state (rejections, tool listings, status):
   `booted = await shared_booted_daemon("general", registered=True)` takes the same
   name, chains, `schema=`, `extra_toml=` and `credentials=` as a boot. The fake
-  runtime is reset before each test. After each test the kit compares `route_inbox`
-  and `sessions` row counts and the loaded config with what the test was handed;
-  any change fails the test with `SharedDaemonMutated` and replaces that boot.
-  Tests that route, run a session or change config use `booted_daemon`; patch a
+  runtime is reset before each test. After each test the kit compares row counts in
+  `route_inbox`, `sessions`, `public.attention_ledger` and `scheduled_tasks`, and
+  the loaded config, with what the test was handed; any change fails the test with
+  `SharedDaemonMutated` and replaces that boot. Tests that route, run a session,
+  deliver a notification, schedule a task or change config use `booted_daemon`; patch a
   shared daemon only through `monkeypatch`.
 - No lifecycle internal is patched. The kit injects a connected `Database`,
   pre-sets the loaded config (a free port, the clone's name, no Switchboard) and

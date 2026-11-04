@@ -511,8 +511,8 @@ class SharedDaemons:
       ``supports_resume`` off. Logs and spans are per-test already (``caplog``, the
       test's own exporter).
     - After each test, :meth:`verify` compares durable daemon state with what the
-      test was handed: row counts in ``route_inbox`` and ``sessions``, and the
-      loaded config. Any change fails the test with
+      test was handed: row counts in ``route_inbox``, ``sessions``,
+      ``public.attention_ledger`` and ``scheduled_tasks``, and the loaded config. Any change fails the test with
       :class:`SharedDaemonMutated` and retires that boot, so the next test gets a
       fresh one. A test that routes, triggers a session, scripts the runtime or
       changes config therefore belongs on ``booted_daemon``.
@@ -589,12 +589,14 @@ def _reset_runtime(runtime: FakeRuntime) -> None:
 
 async def _fingerprint(booted: BootedDaemon) -> tuple[Any, ...]:
     pool = booted.daemon.db.pool
-    inbox = await pool.fetchval("SELECT count(*) FROM route_inbox")
-    sessions = await pool.fetchval("SELECT count(*) FROM sessions")
-    return (
-        (("route_inbox", inbox), ("sessions", sessions)),
-        ("config", repr(booted.daemon.config)),
+    # Literal queries: dynamic relation names are banned in src (test_schema_reach).
+    counts = (
+        ("route_inbox", await pool.fetchval("SELECT count(*) FROM route_inbox")),
+        ("sessions", await pool.fetchval("SELECT count(*) FROM sessions")),
+        ("attention_ledger", await pool.fetchval("SELECT count(*) FROM public.attention_ledger")),
+        ("scheduled_tasks", await pool.fetchval("SELECT count(*) FROM scheduled_tasks")),
     )
+    return (counts, ("config", repr(booted.daemon.config)))
 
 
 def _describe_change(before: tuple[Any, ...], after: tuple[Any, ...]) -> str:
