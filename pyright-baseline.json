@@ -1,7 +1,6 @@
 {
   "checker": "1.1.414",
   "errors": {
-    "[\"roster/chronicler/api/router.py\", \"reportOptionalOperand\", \"9c9b7cd84299c612ba68e51d84ef98b1cf74da2fde428aa34d63b19a2b076d10\"]": 1,
     "[\"roster/chronicler/api/router.py\", \"reportReturnType\", \"067444943e556bfae4825344c3a19166ffe3f70b9b375946ba887bf61991fc6f\"]": 1,
     "[\"roster/chronicler/api/router.py\", \"reportReturnType\", \"2724af0389c4992c9a69406ee6b88e1abb2d5ed3966a60544df8ad56c4a7e89a\"]": 3,
     "[\"roster/chronicler/api/router.py\", \"reportReturnType\", \"6572ba8e5fd10e19d8581ebbb6a56f0f284f1691d350905fdaaf14bd76bd91e1\"]": 5,
@@ -243,7 +242,6 @@
     "[\"roster/finance/tools/bills.py\", \"reportMissingImports\", \"ccf8c5e534816f20af66b790449962188fe507df1b132c3d19cbfb4e30c06d5e\"]": 1,
     "[\"roster/finance/tools/claim_reconciliation.py\", \"reportArgumentType\", \"38262cfc39e2756beb9d8784d301d4fe3db733e522c7d3785cb01892974e0dac\"]": 1,
     "[\"roster/finance/tools/claim_reconciliation.py\", \"reportMissingImports\", \"8e00c3762ee09caadaa01c80b833e812d368756b395848c4d929bce91e4a64f3\"]": 1,
-    "[\"roster/finance/tools/data_import.py\", \"reportMissingImports\", \"aa62a2e6a74a811214e4d298c5362588c4935d4f44fcccb268463ac1aba6060f\"]": 1,
     "[\"roster/finance/tools/data_import.py\", \"reportMissingImports\", \"be36bf1c6b2c7c18543eebf85ce81a7f36a637b61f4626fde08ed5942ef668b2\"]": 1,
     "[\"roster/finance/tools/data_import.py\", \"reportReturnType\", \"a15af33dad79b508f692cd009925db1fae360854deb35f31df03e2e474c51d8c\"]": 1,
     "[\"roster/finance/tools/feed_reconciliation.py\", \"reportMissingImports\", \"8e00c3762ee09caadaa01c80b833e812d368756b395848c4d929bce91e4a64f3\"]": 1,

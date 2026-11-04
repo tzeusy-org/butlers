@@ -45,7 +45,7 @@ The finance butler SHALL have bill reminder, spending review, data import, and i
 
 #### Scenario: Skill inventory
 - **WHEN** the finance butler operates
-- **THEN** it SHALL have access to `bill-reminder` (bill review, urgency triage, and payment reminder workflow), `spending-review` (spending analysis by category, time period, anomaly detection, and trend analysis), `transaction-csv-extraction` (adaptive CSV import through `import_transactions(storage_ref)` with a dry-run preview and an explicit column map), `historical-data-import` (multi-format bank CSV import with format detection, deduplication, and baseline computation), `budget-review` (interactive budget setting, status checking, and forecast review), `anomaly-triage` (interactive anomaly review and resolution workflow), plus shared skills `butler-memory` and `butler-notifications`
+- **THEN** it SHALL have access to `bill-reminder` (bill review, urgency triage, and payment reminder workflow), `spending-review` (spending analysis by category, time period, anomaly detection, and trend analysis), `transaction-csv-extraction` (adaptive CSV import through `import_transactions(storage_ref)` with a dry-run preview and an explicit column map, also used for a historical backfill of several statements with one import per stored statement), which also replaces the retired `historical-data-import` (multi-format bank CSV import with format detection, deduplication, and baseline computation), `budget-review` (interactive budget setting, status checking, and forecast review), `anomaly-triage` (interactive anomaly review and resolution workflow), plus shared skills `butler-memory` and `butler-notifications`
 
 ### Requirement: Finance Data Conventions
 Financial data SHALL use precise numeric types, ISO currency codes, and tiered deduplication on the dedicated transaction table.
@@ -86,7 +86,7 @@ The finance butler runtime instances SHALL follow additional behavioral guidelin
 #### Scenario: Intelligence data sufficiency awareness
 - **WHEN** intelligence tools return `status="insufficient_data"`
 - **THEN** the runtime SHALL inform the user about the minimum data requirements
-- **AND** it SHALL suggest importing historical data using the `historical-data-import` skill if no historical import has been performed
+- **AND** it SHALL suggest importing historical statements through the `transaction-csv-extraction` skill (one upload and one `import_transactions(storage_ref)` call per statement) if no historical import has been performed
 
 ### Requirement: Finance data stored in dedicated tables with SPO mirror
 The finance butler SHALL store transactions and bills in dedicated `finance.*` tables as primary storage, with SPO facts as a secondary fire-and-forget mirror for memory/recall.
