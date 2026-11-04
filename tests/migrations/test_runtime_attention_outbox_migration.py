@@ -2724,6 +2724,24 @@ def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) 
     db_name = migration_db_name()
     db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
+    control_db_name = migration_db_name()
+    control_db_url = create_migrated_test_db(postgres_container, control_db_name, chains=["core"])
+
+    def control_state() -> tuple[str, int, str]:
+        # Use the factory's effective identity for every control read: deriving
+        # another URL here would hide a factory that returned the first clone.
+        control = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+        try:
+            with control.connect() as conn:
+                return (
+                    conn.execute(text(_FLEET_HALT_DEFINITION_SQL)).scalar_one(),
+                    conn.execute(text(_FLEET_HALT_OID_SQL)).scalar_one(),
+                    conn.execute(text("SELECT current_database()")).scalar_one(),
+                )
+        finally:
+            control.dispose()
+
+    control_definition, control_oid, control_database = control_state()
 
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
@@ -2746,6 +2764,15 @@ def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) 
     finally:
         admin.dispose()
 
+    unchanged_definition, unchanged_oid, unchanged_database = control_state()
+    assert unchanged_definition == control_definition, (
+        "rewriting the first clone changed the second clone's producer body"
+    )
+    assert unchanged_oid == control_oid
+    assert control_definition == fresh_definition
+    assert unchanged_database == control_database == control_db_name
+    assert control_db_name != db_name
+
     _rerun_actual_init_db(bootstrap_url, db_url)
 
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
@@ -2759,6 +2786,10 @@ def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) 
             ), "a migrated database and a fresh bootstrap disagree on the producer body"
     finally:
         admin.dispose()
+
+    assert control_state() == (control_definition, control_oid, control_database), (
+        "rerunning init-db in the first clone changed the untouched second clone"
+    )
 
 
 # ---------------------------------------------------------------------------
