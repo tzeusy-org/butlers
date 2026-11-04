@@ -206,7 +206,7 @@ class TestScenario1ValidCredentials:
         import unittest.mock as mock
 
         with mock.patch(
-            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            "butlers.spotify_client.httpx.AsyncClient",
             return_value=http_client,
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
@@ -271,7 +271,7 @@ class TestScenario1ValidCredentials:
         import unittest.mock as mock
 
         with mock.patch(
-            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            "butlers.spotify_client.httpx.AsyncClient",
             return_value=http_client,
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
@@ -304,7 +304,7 @@ class TestScenario1ValidCredentials:
 
         module = SpotifyModule()
         with mock.patch(
-            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            "butlers.spotify_client.httpx.AsyncClient",
             return_value=startup_http_client,
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
@@ -460,7 +460,7 @@ class TestScenario3PlaylistFlow:
         import unittest.mock as mock
 
         with mock.patch(
-            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            "butlers.spotify_client.httpx.AsyncClient",
             return_value=http_client,
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
@@ -553,7 +553,7 @@ class TestScenario4SearchPlayFlow:
         import unittest.mock as mock
 
         with mock.patch(
-            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            "butlers.spotify_client.httpx.AsyncClient",
             return_value=http_client,
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
@@ -622,7 +622,7 @@ class TestScenario5DiscoveryFallback:
         import unittest.mock as mock
 
         with mock.patch(
-            "butlers.connectors.spotify_client.httpx.AsyncClient",
+            "butlers.spotify_client.httpx.AsyncClient",
             return_value=http_client,
         ):
             await module.on_startup(config={}, db=None, credential_store=cred_store)
