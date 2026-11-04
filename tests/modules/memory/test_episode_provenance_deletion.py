@@ -21,6 +21,7 @@ from butlers.api.routers.memory import list_facts, list_rules
 from butlers.db import register_jsonb_codec
 from butlers.migrations import run_migrations
 from butlers.modules.memory.storage import get_links
+from butlers.testing.db_manager import db_manager
 from butlers.testing.migration import create_migration_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -118,14 +119,7 @@ async def _delete_sourced_episode(db_url: str) -> dict[str, object]:
 
         await pool.execute("DELETE FROM episodes WHERE id = $1", episode_id)
 
-        class _MemoryDb:
-            butler_names = ["general"]
-
-            def pool(self, name: str):
-                assert name == "general"
-                return pool
-
-        api_db = _MemoryDb()
+        api_db = db_manager({"general": pool})
         api_facts = await list_facts(
             q=None,
             scope=None,

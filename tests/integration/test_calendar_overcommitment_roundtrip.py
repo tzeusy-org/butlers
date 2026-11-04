@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -21,6 +20,7 @@ import pytest
 from butlers.api.read_models.calendar_workspace import CalendarConflictScan
 from butlers.core.temporal.conflicts import ConflictEventRef, DetectedIssue
 from butlers.jobs import calendar_overcommitment as job
+from butlers.testing.db_manager import db_manager
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -30,16 +30,6 @@ pytestmark = [
 ]
 
 _DAY = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
-
-
-class _Db:
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-
-    def pool(self, name: str) -> Any:
-        if name != "switchboard":
-            raise KeyError(name)
-        return self._pool
 
 
 def _ref(entry_id: str, start: datetime) -> ConflictEventRef:
@@ -90,7 +80,7 @@ async def _episodes(pool: asyncpg.Pool) -> list[tuple[int, str]]:
 async def test_open_then_partial_scan_keeps_then_complete_scan_resolves(
     db_pool: asyncpg.Pool, scans: AsyncMock
 ) -> None:
-    db = _Db(db_pool)
+    db = db_manager({"switchboard": db_pool})
 
     scans.return_value = _scan(_overlap())
     assert (await job.run_calendar_overcommitment_check(db))["transitions"] == ["opened"]
@@ -111,7 +101,10 @@ async def test_concurrent_scans_of_one_calendar_keep_one_active_episode(
     scans.return_value = _scan(_overlap())
 
     results = await asyncio.gather(
-        *[job.run_calendar_overcommitment_check(_Db(pool)) for _ in range(8)]
+        *[
+            job.run_calendar_overcommitment_check(db_manager({"switchboard": pool}))
+            for _ in range(8)
+        ]
     )
 
     transitions = sorted(t for r in results for t in r["transitions"])

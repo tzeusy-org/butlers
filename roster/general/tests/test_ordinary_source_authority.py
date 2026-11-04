@@ -22,6 +22,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 
 pytestmark = [
     pytest.mark.integration,
@@ -88,14 +89,10 @@ def _router_app(pool: asyncpg.Pool) -> FastAPI:
     discover_butler_routers()
     router_module = sys.modules["general_api_router"]
 
-    class _Db:
-        def pool(self, name: str) -> asyncpg.Pool:
-            assert name == "general"
-            return pool
-
+    manager = db_manager({"general": pool})
     app = FastAPI()
     app.include_router(router_module.router)
-    app.dependency_overrides[get_db] = lambda: _Db()
+    app.dependency_overrides[get_db] = lambda: manager
     return app
 
 

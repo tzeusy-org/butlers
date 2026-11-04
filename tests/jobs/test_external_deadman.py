@@ -30,6 +30,7 @@ from butlers.jobs.external_deadman import (
     run_external_deadman_check,
     run_external_deadman_loop,
 )
+from butlers.testing.db_manager import db_manager
 from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
@@ -257,22 +258,15 @@ async def test_run_check_audit_write_failure_is_reported_not_raised(monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-class _FakeDatabaseManager:
-    def __init__(self, *, pool: object | None = None, missing: bool = False) -> None:
-        self._pool = pool
-        self._missing = missing
-        self.configured_butler_names = ["home"]
-
-    def pool(self, name: str):
-        if self._missing:
-            raise KeyError(name)
-        return self._pool
+def _manager(*, pool: object | None = None, missing: bool = False):
+    """A manager configured with the home butler; *missing* leaves out the switchboard pool."""
+    return db_manager({} if missing else {"switchboard": pool}, modules={"home": []})
 
 
 async def test_loop_rejects_non_positive_interval():
     with pytest.raises(ValueError):
         await run_external_deadman_loop(
-            _FakeDatabaseManager(pool=object()), url="https://example.com/ping", interval_s=0
+            _manager(pool=object()), url="https://example.com/ping", interval_s=0
         )
 
 
@@ -290,7 +284,7 @@ async def test_loop_sleeps_then_ticks_and_can_be_cancelled(monkeypatch):
 
     with pytest.raises(asyncio.CancelledError):
         await run_external_deadman_loop(
-            _FakeDatabaseManager(pool=object()), url="https://example.com/ping", interval_s=5
+            _manager(pool=object()), url="https://example.com/ping", interval_s=5
         )
 
     assert sleep_calls == [5, 5]
@@ -314,7 +308,7 @@ async def test_loop_skips_tick_when_pool_unavailable(monkeypatch):
 
     with pytest.raises(asyncio.CancelledError):
         await run_external_deadman_loop(
-            _FakeDatabaseManager(missing=True), url="https://example.com/ping", interval_s=5
+            _manager(missing=True), url="https://example.com/ping", interval_s=5
         )
 
     check_mock.assert_not_awaited()
@@ -335,7 +329,7 @@ async def test_loop_swallows_a_bad_tick(monkeypatch):
 
     with pytest.raises(asyncio.CancelledError):
         await run_external_deadman_loop(
-            _FakeDatabaseManager(pool=object()), url="https://example.com/ping", interval_s=5
+            _manager(pool=object()), url="https://example.com/ping", interval_s=5
         )
 
     assert check_mock.await_count == 1
