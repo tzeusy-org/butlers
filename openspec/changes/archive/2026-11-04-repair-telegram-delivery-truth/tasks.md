@@ -13,4 +13,4 @@
 
 - [x] 3.1 Add focused recovery-null, nested-error, malformed-receipt, Telegram response, timeout, and audit tests.
 - [x] 3.2 Run strict OpenSpec validation, overwrite checks, targeted tests, planner-selected gates, independent review, and hosted CI.
-- [ ] 3.3 After landing and separate runtime authorization, restart affected services and run one traced Telegram canary.
+- [x] 3.3 After landing and separate runtime authorization, restart affected services and run one traced Telegram canary. (2026-11-04, owner-authorized: butlers-dev deploy 9e28384a4e6e restarted Telegram connectors and butlers-up; owner Telegram message routed to general, whose notify returned notify_response.v1 status=ok, channel=telegram, Telegram message_id delivery_id=2664, transport outcome=confirmed; general session 994e21fe-6f3b-4a17-9636-d9a17e0df2b4, notify trace 22b15379b33939e11d9ae4e5ffe40258.)
