@@ -166,3 +166,71 @@ def test_per_database_role_settings_are_replayed_onto_a_clone(postgres_container
             conn.execute(text(f'DROP ROLE "{login}"'))
     finally:
         admin.dispose()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage", ["database_create", "migration", "finalize", "success"])
+@pytest.mark.parametrize("disk_full", [False, True])
+def test_template_storage_observes_complete_lifecycle(monkeypatch, stage, disk_full):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from butlers.testing import storage
+
+    container = SimpleNamespace(
+        get_connection_url=lambda: "postgresql://synthetic@localhost/synthetic",
+        get_wrapped_container=lambda: SimpleNamespace(id="a" * 64),
+    )
+    monkeypatch.setattr(storage, "identity", lambda: {"worker": "gw0"})
+    observer = storage.StorageObserver(container)
+    monkeypatch.setattr(storage, "_ACTIVE", observer)
+    monkeypatch.setattr(migration, "_TEMPLATES", {})
+    monkeypatch.setattr(migration, "_TEMPLATE_LOCKS", {})
+    calls = []
+    failure = RuntimeError("fixed synthetic template failure")
+    failure.orig = SimpleNamespace(pgcode="53100" if disk_full else "XX000")
+
+    def operation(name):
+        calls.append(name)
+        if stage == name:
+            raise failure
+
+    def create(*args):
+        operation("database_create")
+        return "postgresql://synthetic@localhost/template"
+
+    class Engine:
+        @contextmanager
+        def connect(self):
+            yield self
+
+        def execute(self, *args):
+            operation("finalize")
+
+        def dispose(self):
+            calls.append("dispose")
+
+    monkeypatch.setattr(migration, "create_migration_db", create)
+    monkeypatch.setattr(migration, "_migrate", lambda *a, **k: operation("migration"))
+    monkeypatch.setattr(migration, "create_engine", lambda *a, **k: Engine())
+    request = dict(chains=["core"], schemas={}, revisions={})
+    if stage == "success":
+        first = migration._migrated_template(container, **request)
+        assert migration._migrated_template(container, **request) is first
+        assert calls == ["database_create", "migration", "finalize", "finalize", "dispose"]
+        assert observer.events == dict(
+            template_created=1, clone_created=0, create_failed=0, storage_error=0
+        )
+        assert not observer.wake_event.is_set()
+    else:
+        with pytest.raises(RuntimeError) as raised:
+            migration._migrated_template(container, **request)
+        assert raised.value is failure
+        assert observer.events == dict(
+            template_created=0, clone_created=0, create_failed=1, storage_error=int(disk_full)
+        )
+        assert observer.wake_event.is_set()
+        assert migration._TEMPLATES == {}
+        assert calls.count("dispose") == int(stage == "finalize")
+    assert all(not lock.locked() for lock in migration._TEMPLATE_LOCKS.values())
+    assert observer.thread.ident is None

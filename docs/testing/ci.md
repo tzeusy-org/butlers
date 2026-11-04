@@ -382,3 +382,68 @@ BUTLERS_UPDATE_ROUTE_SNAPSHOT=1 uv run pytest tests/api/test_router_registry.py 
 ```
 
 On a merge conflict in the snapshot, rerun the refresh instead of hand-editing hashes.
+
+
+### Integration-six storage measurements
+
+Hosted integration group 6 opts into closed storage metadata via
+`BUTLERS_TEST_STORAGE_EVIDENCE=1`; ordinary pytest runs and the other shards do not.
+`butlers.testing.storage` records root and Docker bytes/inodes immediately before and after the
+existing runner cleanup, then samples each shared session-fixture PostgreSQL server every 30 seconds and
+before its existing teardown. Exact factory create counters and aggregate database/prefix-bucket sizes, WAL bytes and
+cumulative PostgreSQL temporary bytes accompany the owned server identity; database names,
+credentials, SQL rows and raw command errors are excluded. Temporary bytes are a lifetime counter,
+not currently allocated temporary space. `test_named_*` includes fresh migration-subject and legacy
+databases as well as clones; `template_named_*` is also a naming bucket. Current actual clone
+bytes remain explicitly UNKNOWN (`unknown_untracked`), not inferred from a name or create count. Docker sizes are rounded CLI aggregates, not exact
+per-layer physical allocation. PGDATA `df` measures its containing filesystem, not directory size.
+
+Each worker has at most 73 samples and a 128 KiB atomic receipt. The always-run inventory binds the
+expected workers and both host phases to the checkout/run/attempt and records UNKNOWN for missing,
+truncated, unavailable or mismatched evidence. The default three workers plus host/inventory
+receipts use at most 768 KiB. The fixed global bound is 35 files (32 admitted worker identities,
+two host phases and the inventory), or 4,587,520 bytes (4.375 MiB). Invalid expected worker counts
+or extra known worker files yield UNKNOWN; the sampler never changes actual worker selection. Diagnostic
+failures never replace pytest's verdict. These measurements do not change clone retention,
+container teardown, workers, selection, disk cleanup or the 30 GiB runner free-space floor.
+Separately started legacy containers have no individual PGDATA/database sample; Docker totals
+include them, so this increment does not yet attribute every byte of the full job.
+
+The initial instrumentation provides attribution data, not a demonstrated DiskFull fix. Compare
+source- and attempt-bound failing and successful hosted samples before changing resource policy;
+keep the complete real-PostgreSQL population and repeated normal-load source/protected gates.
+
+Actual observer overhead must be measured from natural hosted execution; no speed or capacity
+improvement is claimed from adding these diagnostics.
+
+
+The storage-query native positive owns one additional function-scoped
+`pgvector/pgvector:pg17` server and one tiny test-named database. The image is the same
+major-tagged image as the session fixture, not a digest pin. It exercises the actual bounded,
+read-only aggregate on a controlled census rather than requiring a loaded worker's entire
+retained database population to finish inside two seconds. A `finally` stops that proof-only
+server, including after failed startup; ordinary server ownership and cleanup remain unchanged.
+This adds one server startup/stop in the lane selecting that test; its hosted cost is not yet
+measured. A separate timeout control verifies closed UNKNOWN and preservation of the original
+pytest exception. Diagnostic directory/CLI startup failures likewise produce fixed UNKNOWN notices without
+replacing cleanup or pytest verdicts. Factory failure counters cover owned template creation,
+migration and finalization once, including SQLSTATE 53100, without retrying or reclaiming resources.
+
+
+Closed probe steps identify Docker `system_df`/`root_info` and PostgreSQL
+`url`/`connect`/`readonly`/`database_sizes`/`wal`/`temp`/`dispose`. Each reached step
+records only its fixed stage, safe outcome category and bounded elapsed milliseconds;
+worker rows also record completion against their existing monotonic origin.
+Driver SQLSTATE is mapped only to connection, permission, disk-full, query-canceled
+or other categories; no SQL, DSN, exception text or argument is recorded. Query-canceled
+does not distinguish the configured statement timeout from explicit cancellation.
+Invalid or missing timing is null/UNKNOWN, never zero or complete evidence. Only
+all successful, ordered, finite steps qualify for a complete inventory.
+
+These are durations of actual probe work, not measured incremental CI overhead.
+The existing 3-second/8192-byte child limits, 2-second connection/statement and
+1-second lock settings remain unchanged; separate per-step settings are not a
+whole-function wall deadline. Sampling waits 30 seconds after the previous sample,
+so its cadence also includes probe/flush/scheduling time. No capacity or causal fix
+is claimed. Disable the existing opt-in observer to roll back its measurements;
+test/fixture lifetimes, resource policy and real-PostgreSQL coverage are unchanged.
