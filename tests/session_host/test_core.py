@@ -279,8 +279,10 @@ async def test_factory_cleanup_failure_poisoning_and_recovery_control(stage_root
         raise Refused("stage_cleanup_failed")
 
     monkeypatch.setattr(InvocationMaterial, "discard", failed_discard)
+    # A constructed failing runtime still owns staged material. A failed
+    # inert factory now refuses before staging, so it cannot exercise discard.
     with pytest.raises(Refused, match="stage_cleanup_failed"):
-        await owner.run(request(), broken_factory)
+        await owner.run(request(), lambda: DomainDouble(error=True))
     assert not owner.healthy
     assert len(list(stage_root.iterdir())) == 1
     called = False
@@ -294,8 +296,8 @@ async def test_factory_cleanup_failure_poisoning_and_recovery_control(stage_root
         await owner.run(request(), another_factory)
     assert not called and len(list(stage_root.iterdir())) == 1
     monkeypatch.setattr(InvocationMaterial, "discard", original_discard)
-    # Successful cleanup of a failed inert factory is the positive companion:
-    # it removes the new material and leaves a different owner usable.
+    # Failed inert admission allocates no material and leaves this owner usable.
+    # A subsequent supported profile still stages, settles and removes material.
     clean_root = stage_root.with_name("clean-stage")
     clean_root.mkdir(mode=0o700)
     clean_root.chmod(0o700)
@@ -343,22 +345,25 @@ async def test_partial_staging_failure_retains_material_and_refuses_launch(stage
 
     monkeypatch.setattr("butlers.session_host.material.os.open", failed_second_write)
     monkeypatch.setattr(InvocationMaterial, "discard", failed_discard)
-    factory_called = False
+    factory_calls = 0
+    domain = DomainDouble()
 
     def factory():
-        nonlocal factory_called
-        factory_called = True
-        return DomainDouble()
+        nonlocal factory_calls
+        factory_calls += 1
+        return domain
 
     with pytest.raises(Refused, match="stage_cleanup_failed"):
         await owner.run(request(), factory)
-    assert not owner.healthy and not factory_called
+    assert not owner.healthy and factory_calls == 1
+    assert not domain.executed.is_set()
     [partial] = list(stage_root.iterdir())
     assert (partial / "model-credential").read_bytes() == b"synthetic-credential"
     assert len(owner._quarantined) == 1
     with pytest.raises(Refused, match="host_unavailable"):
         await owner.run(request(), factory)
-    assert not factory_called and len(list(stage_root.iterdir())) == 1
+    assert factory_calls == 1 and len(list(stage_root.iterdir())) == 1
+    assert not domain.executed.is_set()
 
 
 @pytest.mark.parametrize("failing_start", [1, 2])

@@ -842,3 +842,39 @@ async def booted_daemon(
         yield booter.boot
     finally:
         await booter.close()
+
+
+@pytest.fixture(scope="module")
+async def _shared_daemons(
+    postgres_container: PostgresContainer,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Any]:
+    """The module's shared boots; tests use ``shared_booted_daemon``."""
+    from butlers.testing.daemon import DaemonBooter, SharedDaemons
+
+    patcher = pytest.MonkeyPatch()
+    root = tmp_path_factory.mktemp("shared-daemon")
+    booter = DaemonBooter(postgres_container, patcher, root)
+    try:
+        yield SharedDaemons(booter, root)
+    finally:
+        try:
+            await booter.close()
+        finally:
+            patcher.undo()
+
+
+@pytest.fixture
+async def shared_booted_daemon(_shared_daemons: Any) -> AsyncIterator[Any]:
+    """One boot per module and configuration, for tests that only read daemon state.
+
+    ``booted = await shared_booted_daemon(registered=True)`` (name, chains, ``schema=``,
+    ``extra_toml=`` and ``credentials=`` as for ``booted_daemon``) returns the module's
+    boot for that configuration. The fake runtime is reset before each test; a test
+    that changes durable daemon state (route inbox or session rows, config) fails at
+    teardown and its boot is replaced. See ``butlers.testing.daemon.SharedDaemons``.
+    """
+    try:
+        yield _shared_daemons
+    finally:
+        await _shared_daemons.verify()

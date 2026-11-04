@@ -1063,11 +1063,14 @@ def _mock_route_inbox(request, monkeypatch):
 # ---------------------------------------------------------------------------
 # Booted route.execute authz: a real daemon called over MCP
 #
-# These boot the butler with ``booted_daemon`` (a Messenger with telegram and email
+# These use ``shared_booted_daemon`` (a Messenger with telegram and email
 # on synthetic credentials, or a plain butler) and call route.execute over its MCP
 # endpoint; the route inbox, delivery pipeline and provider-response handling are
 # the production ones. Only the provider transport (``_send_message``, or an
-# injected failure) and the owner-identity lookup stand in.
+# injected failure) and the owner-identity lookup stand in, patched through
+# ``monkeypatch`` so the shared boot is unchanged for the next test. Delivery and
+# refusal write no route_inbox or session rows, so the Messenger tests share one
+# boot; the trusted-callers test changes config per case and boots its own.
 # ---------------------------------------------------------------------------
 
 _SYNTHETIC_CREDENTIALS = {
@@ -1082,17 +1085,14 @@ def _booted(test: Any) -> Any:
     return pytest.mark.integration(pytest.mark.asyncio(loop_scope="session")(test))
 
 
-async def _boot_messenger(booted_daemon, config_root: Path, *modules: str):
+async def _shared_messenger(shared_booted_daemon, *modules: str):
+    """The module's shared Messenger: these tests deliver or refuse, and queue nothing."""
     modules = modules or ("telegram", "email")
-    booted = await booted_daemon(
-        write_butler_config(
-            config_root,
-            "messenger",
-            schema="messenger",
-            extra_toml="".join(f"[modules.{name}]\n\n" for name in modules),
-        ),
+    booted = await shared_booted_daemon(
+        "messenger",
         "core",
         "messenger",
+        extra_toml="".join(f"[modules.{name}]\n\n" for name in modules),
         registered=True,
         credentials=_SYNTHETIC_CREDENTIALS,
     )
@@ -1130,14 +1130,16 @@ async def _inbox_count(booted) -> int:
 
 @_booted
 async def test_messenger_without_approval_runtime_refuses_non_owner_and_preserves_owner(
-    booted_daemon, tmp_path, monkeypatch
+    shared_booted_daemon, monkeypatch
 ):
     from types import SimpleNamespace
 
-    booted = await _boot_messenger(booted_daemon, tmp_path, "telegram")
+    booted = await _shared_messenger(shared_booted_daemon, "telegram")
     route_execute = _mcp_route(booted)
     telegram = _module(booted, "telegram")
-    telegram._send_message = AsyncMock(return_value={"ok": True, "result": {"message_id": 7}})
+    monkeypatch.setattr(
+        telegram, "_send_message", AsyncMock(return_value={"ok": True, "result": {"message_id": 7}})
+    )
     lookup = AsyncMock(return_value=None)
     monkeypatch.setattr("butlers.identity.resolve_channel_contact_with_owner_corroboration", lookup)
     args = dict(
@@ -1158,12 +1160,16 @@ class TestRouteExecuteAuthz:
 
     @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
-    async def test_authz_reject_and_allow(self, booted_daemon, tmp_path: Path) -> None:
+    async def test_authz_reject_and_allow(self, shared_booted_daemon, monkeypatch) -> None:
         """Untrusted callers rejected with validation_error; trusted switchboard allowed."""
         # Messenger rejects rogue-caller
-        messenger = await _boot_messenger(booted_daemon, tmp_path / "messenger")
+        messenger = await _shared_messenger(shared_booted_daemon)
         telegram_module = _module(messenger, "telegram")
-        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 999}})
+        monkeypatch.setattr(
+            telegram_module,
+            "_send_message",
+            AsyncMock(return_value={"result": {"message_id": 999}}),
+        )
 
         result = await _mcp_route(messenger)(
             schema_version="route.v1",
@@ -1178,7 +1184,7 @@ class TestRouteExecuteAuthz:
         assert "rogue-caller" in result["error"]["message"]
 
         # Empty/blank endpoint identity also rejected, and nothing is queued
-        butler = await _boot_butler(booted_daemon, tmp_path / "butler")
+        butler = await shared_booted_daemon(registered=True)
         result3 = await _mcp_route(butler)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity=" "),
@@ -1189,7 +1195,11 @@ class TestRouteExecuteAuthz:
         assert await _inbox_count(butler) == 0
 
         # Switchboard caller allowed: messenger delivery proceeds
-        telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+        monkeypatch.setattr(
+            telegram_module,
+            "_send_message",
+            AsyncMock(return_value={"result": {"message_id": 321}}),
+        )
         result_ok = await _mcp_route(messenger)(
             schema_version="route.v1",
             request_context=_route_request_context(source_endpoint_identity="switchboard"),
@@ -1202,12 +1212,14 @@ class TestRouteExecuteAuthz:
     # protected approval authority.
     @_booted
     async def test_recovery_requires_authenticated_switchboard_before_provider(
-        self, booted_daemon, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, shared_booted_daemon, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        booted = await _boot_messenger(booted_daemon, tmp_path)
+        booted = await _shared_messenger(shared_booted_daemon)
         route_execute = _mcp_route(booted)
         telegram = _module(booted, "telegram")
-        telegram._send_message = AsyncMock(return_value={"message_id": "provider-ref"})
+        monkeypatch.setattr(
+            telegram, "_send_message", AsyncMock(return_value={"message_id": "provider-ref"})
+        )
 
         repository = MagicMock()
         repository.process = AsyncMock()
@@ -1314,12 +1326,14 @@ class TestRouteExecuteAuthz:
     @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_null_recovery_is_ordinary_notify_not_privileged_recovery(
-        self, booted_daemon, tmp_path: Path
+        self, shared_booted_daemon, monkeypatch
     ) -> None:
-        booted = await _boot_messenger(booted_daemon, tmp_path)
+        booted = await _shared_messenger(shared_booted_daemon)
         telegram = _module(booted, "telegram")
-        telegram._send_message = AsyncMock(
-            return_value={"ok": True, "result": {"message_id": 4321}}
+        monkeypatch.setattr(
+            telegram,
+            "_send_message",
+            AsyncMock(return_value={"ok": True, "result": {"message_id": 4321}}),
         )
         notify_request = {**_valid_notify_request(), "recovery": None}
 
@@ -1339,17 +1353,21 @@ class TestRouteExecuteAuthz:
     @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_telegram_transport_failure_is_content_blind_and_uncertain(
-        self, booted_daemon, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, shared_booted_daemon, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        booted = await _boot_messenger(booted_daemon, tmp_path)
+        booted = await _shared_messenger(shared_booted_daemon)
         telegram = _module(booted, "telegram")
-        telegram._send_message = AsyncMock(
-            side_effect=httpx.ReadTimeout(
-                "private-body-sentinel",
-                request=httpx.Request(
-                    "POST", "https://api.telegram.org/botsecret-token/sendMessage"
-                ),
-            )
+        monkeypatch.setattr(
+            telegram,
+            "_send_message",
+            AsyncMock(
+                side_effect=httpx.ReadTimeout(
+                    "private-body-sentinel",
+                    request=httpx.Request(
+                        "POST", "https://api.telegram.org/botsecret-token/sendMessage"
+                    ),
+                )
+            ),
         )
 
         with caplog.at_level("WARNING"):
@@ -1378,14 +1396,14 @@ class TestRouteExecuteAuthz:
     @_booted
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_permission_unavailable_is_transient_before_native_delivery(
-        self, booted_daemon, tmp_path, caplog
+        self, shared_booted_daemon, monkeypatch, caplog
     ):
         from types import SimpleNamespace
 
         from butlers.core.permissions import PermissionUnavailable
         from butlers.core_tools._routing import _build_routed_delivery_command
 
-        booted = await _boot_messenger(booted_daemon, tmp_path)
+        booted = await _shared_messenger(shared_booted_daemon)
         daemon = booted.daemon
         route_execute = _mcp_route(booted)
         modules = {module.name: module for module in daemon._modules}
@@ -1409,8 +1427,8 @@ class TestRouteExecuteAuthz:
             patch.object(modules["email"], "_smtp_send") as smtp,
             patch.object(modules["telegram"], "_get_client") as get_client,
         ):
-            modules["email"]._pool = permission_pool
-            modules["telegram"]._audit_pool = permission_pool
+            monkeypatch.setattr(modules["email"], "_pool", permission_pool)
+            monkeypatch.setattr(modules["telegram"], "_audit_pool", permission_pool)
             for channel, recipient in (("telegram", "12345"), ("email", "recipient@example.com")):
                 request = _valid_notify_request()
                 request["delivery"].update(
@@ -1470,20 +1488,24 @@ class TestRouteExecuteAuthz:
     @pytest.mark.usefixtures("verified_owner_transport")
     async def test_telegram_response_failure_preserves_transport_truth(
         self,
-        booted_daemon,
-        tmp_path: Path,
+        shared_booted_daemon,
+        monkeypatch,
         provider_rejected: bool,
         message: str,
         outcome: str,
         detail: str,
     ) -> None:
-        booted = await _boot_messenger(booted_daemon, tmp_path)
+        booted = await _shared_messenger(shared_booted_daemon)
         telegram = _module(booted, "telegram")
-        telegram._send_message = AsyncMock(
-            side_effect=TelegramProviderResponseError(
-                "telegram_provider_response: invalid message_id",
-                provider_rejected=provider_rejected,
-            )
+        monkeypatch.setattr(
+            telegram,
+            "_send_message",
+            AsyncMock(
+                side_effect=TelegramProviderResponseError(
+                    "telegram_provider_response: invalid message_id",
+                    provider_rejected=provider_rejected,
+                )
+            ),
         )
 
         result = await _mcp_route(booted)(
