@@ -499,9 +499,6 @@ class SharedDaemonMutated(AssertionError):
     """A test using a shared daemon changed state the next test would see."""
 
 
-_SHARED_FINGERPRINT_TABLES = ("route_inbox", "sessions")
-
-
 class SharedDaemons:
     """One boot per module and configuration, for tests that only read daemon state.
 
@@ -592,10 +589,12 @@ def _reset_runtime(runtime: FakeRuntime) -> None:
 
 async def _fingerprint(booted: BootedDaemon) -> tuple[Any, ...]:
     pool = booted.daemon.db.pool
-    counts = []
-    for table in _SHARED_FINGERPRINT_TABLES:
-        counts.append((table, await pool.fetchval(f"SELECT count(*) FROM {table}")))
-    return (tuple(counts), ("config", repr(booted.daemon.config)))
+    inbox = await pool.fetchval("SELECT count(*) FROM route_inbox")
+    sessions = await pool.fetchval("SELECT count(*) FROM sessions")
+    return (
+        (("route_inbox", inbox), ("sessions", sessions)),
+        ("config", repr(booted.daemon.config)),
+    )
 
 
 def _describe_change(before: tuple[Any, ...], after: tuple[Any, ...]) -> str:
