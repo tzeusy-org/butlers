@@ -1285,9 +1285,24 @@ async def _dispatch_approved_action_outcome(
         async def _deliver_notify(**kwargs: Any) -> dict[str, Any]:
             nonlocal dispatch_failure
 
-            dispatch_args = dict(kwargs)
-            # deliver expects source_butler; notify's tool_args don't include it.
-            dispatch_args.setdefault("source_butler", "switchboard")
+            if action_butler is None:
+                raise RuntimeError("approved notify requires its owning butler")
+            # notify's public kwargs are not deliver's signature. Preserve the
+            # approved delivery inside its canonical envelope; attribution comes
+            # only from the schema owning the action, never from tool arguments.
+            delivery = {"intent": "send", "message": "", **kwargs}
+            request_context = delivery.pop("request_context", None)
+            notify_request = {
+                "schema_version": "notify.v1",
+                "origin_butler": action_butler,
+                "delivery": delivery,
+            }
+            if request_context is not None:
+                notify_request["request_context"] = request_context
+            dispatch_args = {
+                "source_butler": action_butler,
+                "notify_request": notify_request,
+            }
             try:
                 client = await asyncio.wait_for(
                     mcp_mgr.get_client("switchboard"), timeout=_MCP_DISPATCH_TIMEOUT_S

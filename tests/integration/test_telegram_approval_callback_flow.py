@@ -331,19 +331,38 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     result and terminal execution event are durable.
     """
     action_id = uuid4()
+    tool_args = {
+        "intent": "insight",
+        "channel": "telegram",
+        "recipient": "42",
+        "message": "Race-proof delivery",
+    }
     await approval_pool.execute(
         """
         INSERT INTO pending_actions (id, tool_name, tool_args, status)
         VALUES ($1, 'notify', $2, 'approved')
         """,
         action_id,
-        {"channel": "telegram", "recipient": "42", "message": "Race-proof delivery"},
+        tool_args,
     )
     delivery_started = asyncio.Event()
     release_delivery = asyncio.Event()
     abandon_started = asyncio.Event()
+    replay_started = asyncio.Event()
 
     from butlers.modules.approvals import operations as approvals_operations
+    from butlers.modules.approvals.executor import execute_approved_action
+
+    execution_attempts = 0
+
+    async def _observe_execution(**kwargs: Any) -> Any:
+        nonlocal execution_attempts
+        execution_attempts += 1
+        if execution_attempts == 2:
+            replay_started.set()
+        return await execute_approved_action(**kwargs)
+
+    monkeypatch.setattr(approvals_router, "execute_approved_action", _observe_execution)
 
     real_abandon = approvals_operations.abandon_approved_action
 
@@ -360,7 +379,16 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
             self.calls = []
 
         async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+            from inspect import signature
+
+            from butlers.tools.switchboard.contracts import parse_notify_request
+            from butlers.tools.switchboard.notification.deliver import deliver
+
             assert tool_name == "deliver"
+            signature(deliver).bind(pool=approval_pool, **arguments)
+            parsed = parse_notify_request(arguments["notify_request"])
+            assert parsed.origin_butler == arguments["source_butler"] == "relationship"
+            assert parsed.delivery.model_dump(exclude_none=True) == tool_args
             self.calls.append((tool_name, arguments))
             delivery_started.set()
             await release_delivery.wait()
@@ -393,6 +421,10 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
             retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
         )
         await asyncio.wait_for(delivery_started.wait(), timeout=2)
+        replay_task = asyncio.create_task(
+            retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
+        )
+        await asyncio.wait_for(replay_started.wait(), timeout=2)
         abandon_task = asyncio.create_task(
             abandon_client.post(
                 f"/api/approvals/{action_id}/abandon",
@@ -406,14 +438,19 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
         # here, marking the row abandoned while delivery is still in flight.
         await asyncio.sleep(0.05)
         abandon_blocked = not abandon_task.done()
+        replay_blocked = not replay_task.done()
 
         release_delivery.set()
         retry_response = await asyncio.wait_for(retry_task, timeout=2)
+        replay_response = await asyncio.wait_for(replay_task, timeout=2)
         abandon_response = await asyncio.wait_for(abandon_task, timeout=2)
 
     assert abandon_blocked, "Abandon must wait once notification delivery has begun"
+    assert replay_blocked, "A concurrent retry must wait for the first execution's result"
     assert retry_response.status_code == 200, retry_response.text
     assert retry_response.json()["data"]["status"] == "executed"
+    assert replay_response.status_code == 200, replay_response.text
+    assert replay_response.json()["data"]["status"] == "executed"
     assert abandon_response.status_code == 409, abandon_response.text
     assert len(delivery_client.calls) == 1
 
@@ -426,7 +463,7 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     events = await approval_pool.fetch(
         "SELECT event_type FROM approval_events WHERE action_id = $1", action_id
     )
-    assert {row["event_type"] for row in events} == {"action_execution_succeeded"}
+    assert [row["event_type"] for row in events] == ["action_execution_succeeded"]
 
 
 async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_route(

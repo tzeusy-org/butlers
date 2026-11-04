@@ -36,7 +36,9 @@ bootstrap-%:
 	../../../scripts/k8s/bootstrap-db.sh $* $(TAG)
 
 # Wrapped so each release leaves one public.deployments row (success or failed).
-deploy-%: bootstrap-%
+deploy-%:
+	@../../../scripts/k8s/runtime-topology-preflight.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
+	$(MAKE) --no-print-directory bootstrap-$* TAG="$(TAG)"
 	../../../scripts/k8s/record-deploy.sh "$(NAMESPACE_$*)" "$(TAG)" "$(RELEASE_NAME)" -- $(call helm_args,$*)
 
 # Build + push images for the current commit, then deploy them. Migrations run

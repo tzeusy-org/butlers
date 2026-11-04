@@ -44,6 +44,8 @@ commonEnv:
 trackerEgress:
   enabled: true
 
-# Current service traffic moves to its own process; session health refuses (503).
+# Owner-approved 2026-11-04 temporary cohosting for RFC 0023 same-PID approval
+# recovery. Actual rollout is exclusive and data-preserving; see
+# docs/operations/approval-delivery-dev-rollout.md. Split support stays opt-in.
 butlersControl:
-  enabled: true
+  enabled: false

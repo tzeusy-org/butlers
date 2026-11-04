@@ -6,9 +6,10 @@ import asyncio
 import logging
 import socket
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastmcp import FastMCP
@@ -42,6 +43,140 @@ class _Runtime:
     resolve_callback_secret = AsyncMock(return_value="secret")
     handoff = AsyncMock(return_value=HandoffResult("confirmed"))
     reconcile = AsyncMock(return_value=HandoffResult("ambiguous", "provider_outcome_unknown"))
+
+
+def _cohost_daemons():
+    """Registered peers and an idle source, without a DB or provider side effect."""
+    repository = _IdleRepository()
+    approvals = SimpleNamespace(
+        name="approvals",
+        approval_delivery_worker_enabled=AsyncMock(return_value=True),
+        approval_delivery_worker_components=Mock(return_value=(repository, SimpleNamespace())),
+    )
+    switchboard = SimpleNamespace(name="switchboard")
+    daemons = {}
+    for name, modules, port in (
+        ("switchboard", [switchboard], 41100),
+        ("messenger", [], 41104),
+        ("custom_source", [approvals], 41105),
+    ):
+        daemons[name] = SimpleNamespace(
+            config=SimpleNamespace(name=name, db_schema=name, port=port),
+            _modules=modules,
+            _module_runtime_states={
+                module.name: SimpleNamespace(health="active", enabled=True) for module in modules
+            },
+            _approval_delivery_runtime=None,
+            _approval_delivery_task=None,
+            _approval_delivery_stop=None,
+            _credential_store=SimpleNamespace(resolve=AsyncMock(return_value="synthetic-secret")),
+            _resolve_default_notify_recipient=AsyncMock(return_value="100200300"),
+            db=SimpleNamespace(pool=object()),
+            mcp=FastMCP(name),
+            start=AsyncMock(),
+            shutdown=AsyncMock(),
+        )
+
+    @daemons["switchboard"].mcp.tool()
+    async def deliver(notify_request: dict, source_butler: str) -> dict:
+        raise AssertionError("Idle source must never deliver")
+
+    @daemons["messenger"].mcp.tool(name="route.execute")
+    async def route_execute() -> dict:
+        raise AssertionError("Idle source must never send")
+
+    return daemons, approvals, switchboard
+
+
+@pytest.mark.asyncio
+async def test_start_all_owns_approval_composition_and_cancellation_cleanup() -> None:
+    """Actual host startup installs recovery, then stops it before daemon teardown."""
+    from butlers.cli import _start_all
+
+    daemons, _, switchboard = _cohost_daemons()
+    source = daemons["custom_source"]
+    stop = asyncio.Event()
+    entered = asyncio.Event()
+    sockets = []
+
+    async def wait_for_shutdown():
+        runtime = source._approval_delivery_runtime
+        assert isinstance(runtime, ApprovalRecoveryRuntime)
+        assert source._approval_delivery_task is not None
+        assert all(daemon.start.await_count == 1 for daemon in daemons.values())
+        endpoint = runtime._dispatch._endpoint
+        sockets.append(endpoint._socket_path)
+        assert sockets[-1].exists()
+        entered.set()
+        await stop.wait()
+
+    async def check_shutdown():
+        assert source._approval_delivery_runtime is None
+        assert source._approval_delivery_task is None
+        assert all(not path.exists() for path in sockets)
+        assert switchboard._approval_recovery_call is None
+
+    source.shutdown.side_effect = check_shutdown
+    real_event = asyncio.Event
+
+    # Only the host's signal Event is substituted; worker/listener Events remain real.
+    class HostEvent:
+        def set(self):
+            stop.set()
+
+        async def wait(self):
+            await wait_for_shutdown()
+
+    event_calls = 0
+
+    def event_factory():
+        nonlocal event_calls
+        event_calls += 1
+        return HostEvent() if event_calls == 1 else real_event()
+
+    with (
+        patch("butlers.daemon.ButlerDaemon", side_effect=lambda path: daemons[path.name]),
+        patch("butlers.cli._record_deployment_boot", new_callable=AsyncMock),
+        patch.object(asyncio.get_running_loop(), "add_signal_handler"),
+        patch("butlers.cli.asyncio.Event", side_effect=event_factory),
+    ):
+        task = asyncio.create_task(_start_all({name: Path(name) for name in daemons}))
+        entered_wait = asyncio.create_task(entered.wait())
+        try:
+            done, _ = await asyncio.wait(
+                [task, entered_wait],
+                timeout=10,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done:
+                await task  # Preserve a real assertion failure from the composition seam.
+            assert entered.is_set()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            entered_wait.cancel()
+            await asyncio.gather(entered_wait, return_exceptions=True)
+            stop.set()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    for daemon in daemons.values():
+        daemon.shutdown.assert_awaited_once()
+
+    # Cancellation inside a later daemon's start cleans both its partial
+    # resources and the already started peer, without ever installing authority.
+    daemons, _, _ = _cohost_daemons()
+    daemons["custom_source"].start.side_effect = asyncio.CancelledError
+    with (
+        patch("butlers.daemon.ButlerDaemon", side_effect=lambda path: daemons[path.name]),
+        patch.object(asyncio.get_running_loop(), "add_signal_handler"),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await _start_all({name: Path(name) for name in daemons})
+    daemons["switchboard"].shutdown.assert_awaited_once()
+    daemons["custom_source"].shutdown.assert_awaited_once()
+    daemons["messenger"].start.assert_not_awaited()
 
 
 def _claim() -> DeliveryClaim:
@@ -346,7 +481,9 @@ async def test_lost_heartbeat_cancels_external_await_without_terminal_write() ->
 
 @pytest.mark.asyncio
 # Spec: REQ-approval-delivery-intent-recovery-003; active module lifecycle and server-held rollout govern worker startup.
-async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly() -> None:
+async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly(
+    monkeypatch,
+) -> None:
     repository = _IdleRepository()
     module = SimpleNamespace(
         name="approvals",
@@ -385,6 +522,119 @@ async def test_lifecycle_starts_once_only_for_active_approvals_and_stops_cleanly
     module.approval_delivery_worker_enabled.side_effect = RuntimeError("invalid rollout config")
     assert await start_approval_delivery_worker(daemon) is False
     assert module.approval_delivery_worker_components.call_count == 2
+
+    from butlers.core import approval_delivery_authority as authority
+    from butlers.core.approval_delivery_authority import approval_delivery_composition
+
+    # Disabled/invalid/missing peers never create even a temporary socket home.
+    real_directory = authority.tempfile.TemporaryDirectory
+    for case in ("disabled", "invalid", "inactive", "split", "schema", "missing-tool"):
+        daemons, approvals, _switchboard = _cohost_daemons()
+        source = daemons["custom_source"]
+        if case == "disabled":
+            approvals.approval_delivery_worker_enabled.return_value = False
+        elif case == "invalid":
+            approvals.approval_delivery_worker_enabled.side_effect = ValueError("invalid flag")
+        elif case == "inactive":
+            source._module_runtime_states["approvals"].enabled = False
+        elif case == "split":
+            del daemons["switchboard"]
+        elif case == "schema":
+            source.config.db_schema = "someone_else"
+        elif case == "missing-tool":
+            # A failed registration closes any partially opened topology too.
+            daemons["switchboard"].mcp = FastMCP("missing-deliver")
+        with monkeypatch.context() as scope:
+            directories = []
+            directory_guard = Mock(
+                side_effect=AssertionError("disabled composition opened a directory")
+            )
+            admission_guard = Mock(
+                side_effect=AssertionError("disabled composition constructed source authority")
+            )
+            if case != "missing-tool":
+                scope.setattr(authority, "SourceApprovalAdmission", admission_guard)
+                scope.setattr(
+                    "butlers.core.approval_delivery_authority.tempfile.TemporaryDirectory",
+                    directory_guard,
+                )
+            else:
+
+                def observed_directory(*args, directories=directories, **kwargs):
+                    directory = real_directory(*args, **kwargs)
+                    directories.append(Path(directory.name))
+                    return directory
+
+                scope.setattr(authority.tempfile, "TemporaryDirectory", observed_directory)
+            async with approval_delivery_composition(list(daemons.values())) as topology:
+                assert topology is None, case
+            assert source._approval_delivery_runtime is None, case
+            assert source._approval_delivery_task is None, case
+            directory_guard.assert_not_called()
+            admission_guard.assert_not_called()
+            assert all(not directory.exists() for directory in directories)
+
+    daemons, approvals, switchboard = _cohost_daemons()
+    source = daemons["custom_source"]
+    owner_lookup = AsyncMock(return_value=object())
+    monkeypatch.setattr("butlers.identity.resolve_owner_channel_via_definer", owner_lookup)
+    async with approval_delivery_composition(list(daemons.values())) as topology:
+        assert topology is not None
+        assert set(topology._sources) == {"custom_source"}
+        runtime = source._approval_delivery_runtime
+        assert await runtime.resolve_verified_owner_recipient() == "100200300"
+        owner_lookup.assert_awaited_once_with(source.db.pool, "telegram", "100200300")
+        owner_lookup.return_value = None
+        assert await runtime.resolve_verified_owner_recipient() is None
+        assert await runtime.resolve_callback_secret() == "synthetic-secret"
+        source._credential_store.resolve.assert_awaited_once_with(
+            "APPROVAL_CALLBACK_SECRET", env_fallback=False
+        )
+        first_task = source._approval_delivery_task
+        assert await start_approval_delivery_worker(source) is False
+        await stop_approval_delivery_worker(source)
+        assert await start_approval_delivery_worker(source) is True
+        assert source._approval_delivery_task is not first_task
+        # A concurrent installation must never take custody from this owner.
+        async with approval_delivery_composition(list(daemons.values())) as other:
+            assert other is None
+            assert source._approval_delivery_runtime is runtime
+    assert source._approval_delivery_runtime is None
+    assert source._approval_delivery_task is None
+    assert switchboard._approval_recovery_call is None
+    assert topology._sources["custom_source"]._retired
+    assert not topology._socket_directory.exists()
+
+    # Reused registrations can start again, with a fresh source epoch.
+    previous_epoch = topology._sources["custom_source"].epoch
+    async with approval_delivery_composition(list(daemons.values())) as restarted:
+        assert restarted is not None
+        assert restarted._sources["custom_source"].epoch != previous_epoch
+
+    # Failure after one worker starts must stop it before its live topology
+    # closes, and must clear the partially attached second runtime as well.
+    second_daemons, _, _ = _cohost_daemons()
+    second = second_daemons["custom_source"]
+    second.config.name = second.config.db_schema = "another_source"
+    starts = 0
+
+    async def fail_second_start(daemon):
+        nonlocal starts
+        starts += 1
+        if starts == 2:
+            raise RuntimeError("controlled worker setup failure")
+        return await start_approval_delivery_worker(daemon)
+
+    with patch(
+        "butlers.core.approval_delivery_worker.start_approval_delivery_worker", fail_second_start
+    ):
+        async with approval_delivery_composition([*daemons.values(), second]) as failed:
+            assert failed is None
+    assert starts == 2
+    for item in (source, second):
+        assert item._approval_delivery_runtime is None
+        assert item._approval_delivery_task is None
+    assert switchboard._approval_recovery_call is None
 
 
 _SENTINEL = "SENTINEL-7f3c"

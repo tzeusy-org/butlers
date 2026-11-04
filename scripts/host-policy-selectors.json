@@ -1046,12 +1046,12 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 77,
+    "direct": 78,
     "direct_files": 35,
-    "container": 86,
-    "supplementary": 37,
+    "container": 87,
+    "supplementary": 40,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 52,
       "NON_NAME_ENUM_OR_MODULE": 26,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 25,
@@ -1059,7 +1059,7 @@
       "SCHEMA_OWNERSHIP": 9
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 34,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 35,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 20,
@@ -4150,6 +4150,90 @@
       ],
       "baseline_ids": [],
       "reason": "bu-rvgzmf.2 S7b: booted_daemon(registered=True) migrates the Switchboard chain into its own schema so public.register_butler_boot exists and the boot can accept routes. Test kit only; it writes a chain-to-schema mapping and no behaviour branches on the butler name. Not a host-policy conversion."
+    },
+    {
+      "id": "a0c2d6a1ec9c8fc35c904d66685327593ba96812c979eb8bf6df906cf5135d81",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "lookup",
+      "expression": "peers.get('switchboard')",
+      "occurrence": 1,
+      "line": 640,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind the canonical cohosted Switchboard registration as the approval recovery routing authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "27f7f10eb14be1de76b128fad8f4081979a33212a6db2578ef979e604ab3334d",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "lookup",
+      "expression": "peers.get('messenger')",
+      "occurrence": 1,
+      "line": 640,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind the canonical cohosted Messenger registration as the approval recovery provider-handoff authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "7438fcdf0e12049e624b6c892ae906c0621197765b1bc755f42b6eaaa7ea2c74",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "lookup",
+      "expression": "switchboard._module_runtime_states.get('switchboard')",
+      "occurrence": 1,
+      "line": 642,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Require the active canonical Switchboard module before installing protected recovery routing.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "0030e905a855de1eadf58a2625aa7e3679c8beeae2fe1ea382f0eedb89a378a9",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "compare",
+      "expression": "item.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 685,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind source verifiers and the protected Messenger call to the registered Switchboard module.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
     }
   ],
   "retired": [
