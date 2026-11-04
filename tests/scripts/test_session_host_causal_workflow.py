@@ -23,7 +23,8 @@ github.repository == 'tzeusy-org/butlers' &&
 github.event.pull_request.number == 5479 &&
 github.event.pull_request.base.ref == 'main' &&
 github.event.pull_request.head.repo.full_name == 'tzeusy-org/butlers' &&
-github.event.pull_request.head.ref == 'agent/bu-m1u7zy.4-20261104'
+github.event.pull_request.head.ref == 'agent/bu-m1u7zy.4-20261104' &&
+github.event.pull_request.head.sha == '32dcf18dfa1d68e5321df376f26876b791fa8a97'
 """.split()
 )
 
@@ -84,6 +85,8 @@ def test_reviewed_launcher_has_only_the_finite_admitted_route():
         "source",
         "tree",
         "guard",
+        "head_pin_changed",
+        "head_pin_missing",
         "quarantine_upload",
         "quarantine_cleanup",
         "soft_failure",
@@ -105,6 +108,10 @@ def test_real_launcher_contract_refuses_unsafe_mutations(mutation):
         job["env"]["PROBE_SOURCE_TREE"] = "0" * 40
     elif mutation == "guard":
         job["if"] += " || true"
+    elif mutation == "head_pin_changed":
+        job["if"] = job["if"].replace("32dcf18dfa1d68e5321df376f26876b791fa8a97", "0" * 40)
+    elif mutation == "head_pin_missing":
+        job["if"] = " ".join(job["if"].split()).rsplit(" && ", 1)[0]
     elif mutation == "quarantine_upload":
         job["steps"][-1]["if"] = "always()"
     elif mutation == "quarantine_cleanup":
