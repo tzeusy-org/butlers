@@ -151,6 +151,9 @@ async def _drain(booted) -> None:
     """Wait for every background route task the daemon started, including follow-ons."""
     while booted.daemon._route_inbox_tasks:
         await asyncio.gather(*tuple(booted.daemon._route_inbox_tasks))
+        # Finished tasks leave the set from a done-callback, which needs a loop turn;
+        # awaiting already-done tasks never yields, so without this the loop spins.
+        await asyncio.sleep(0)
 
 
 async def _inbox_rows(booted) -> list[dict[str, Any]]:
