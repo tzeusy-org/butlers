@@ -27,6 +27,7 @@ import pytest
 
 from butlers.api.deps import get_db
 from butlers.core.general_settings import save_general_settings
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -45,19 +46,6 @@ OWNER_TZ = "Asia/Singapore"  # UTC+8, no DST
 # The health read endpoints touch the memory chain's ``facts`` table (meals are
 # temporal facts) and the core chain's ``state`` table (general settings, which
 # is where the owner timezone is resolved from); both migrate into ``public``.
-
-
-class _SinglePoolDB:
-    """DatabaseManager stand-in exposing one real pool under the health butler."""
-
-    def __init__(self, pool: object) -> None:
-        self._pool = pool
-        self.butler_names = ["health"]
-
-    def pool(self, name: str) -> object:
-        if name != "health":
-            raise KeyError(f"No pool for butler: {name}")
-        return self._pool
 
 
 @asynccontextmanager
@@ -155,7 +143,7 @@ async def test_meals_day_window_uses_owner_timezone(db) -> None:
     """A bare since/until day key frames the owner-tz calendar day, not UTC."""
     pool = await db("core", "memory")
     await _seed(pool)
-    manager = _SinglePoolDB(pool)
+    manager = db_manager({"health": pool})
 
     async with _app_client(manager) as client:
         resp = await client.get("/api/health/meals?since=2026-07-11&until=2026-07-11")
@@ -182,7 +170,7 @@ async def test_meals_next_owner_day_key_round_trips(db) -> None:
     """The next owner-day's key returns exactly the meal that spilled over."""
     pool = await db("core", "memory")
     await _seed(pool)
-    manager = _SinglePoolDB(pool)
+    manager = db_manager({"health": pool})
 
     async with _app_client(manager) as client:
         resp = await client.get("/api/health/meals?since=2026-07-12&until=2026-07-12")
@@ -197,7 +185,7 @@ async def test_nutrition_summary_window_uses_owner_timezone(db) -> None:
     """GET /nutrition/summary shares the owner-tz day-boundary interpretation."""
     pool = await db("core", "memory")
     await _seed(pool)
-    manager = _SinglePoolDB(pool)
+    manager = db_manager({"health": pool})
 
     async with _app_client(manager) as client:
         resp = await client.get("/api/health/nutrition/summary?start=2026-07-11&end=2026-07-11")

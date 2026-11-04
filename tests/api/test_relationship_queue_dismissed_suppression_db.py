@@ -35,6 +35,8 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
+from butlers.testing.db_manager import db_manager
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -354,16 +356,6 @@ async def _add_queue_dismissed(pool: asyncpg.Pool, *, subject: uuid.UUID) -> Non
     )
 
 
-class _StubDBManager:
-    """Minimal DatabaseManager exposing ``pool(name)`` for the queue endpoint."""
-
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-
-    def pool(self, _name: str) -> asyncpg.Pool:
-        return self._pool
-
-
 async def _register_owner(pool: asyncpg.Pool) -> uuid.UUID:
     """Register an owner entity so the queue endpoint's owner gate passes."""
     return await pool.fetchval(
@@ -377,7 +369,7 @@ async def _queue_entity_ids(pool: asyncpg.Pool, router_mod) -> set[uuid.UUID]:
     resp = await router_mod.get_entities_queue(
         limit=router_mod._QUEUE_MAX_LIMIT,
         offset=0,
-        db=_StubDBManager(pool),
+        db=db_manager({"relationship": pool}),
     )
     return {item.entity_id for item in resp.items}
 

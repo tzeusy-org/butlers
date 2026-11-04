@@ -9,17 +9,19 @@ memory pool.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
+from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.routers.memory import router
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -29,23 +31,21 @@ COOKIE_NAME = "__Host-butlers-test-owner"
 PATH = "/api/memory/episodes/00000000-0000-0000-0000-000000000001/requeue"
 
 
-class _ForbiddenDB:
-    """Any attempt to reach a memory pool fails the test."""
+_DB_LOOKUPS = ("pool", "schema_for_butler", "memory_schema_for_butler")
 
-    butler_names = ["atlas"]
-    touched = False
 
-    def pool(self, name: str):
-        type(self).touched = True
-        raise AssertionError("a rejected request reached a memory pool")
-
-    def schema_for_butler(self, name: str):
-        type(self).touched = True
-        raise AssertionError("a rejected request reached the db manager")
+def _forbidden_db() -> DatabaseManager:
+    """A manager over an atlas pool where any pool or schema lookup fails the test."""
+    manager = db_manager({"atlas": object()})
+    for lookup in _DB_LOOKUPS:
+        refusal = AssertionError(f"a rejected request reached the db manager ({lookup})")
+        setattr(manager, lookup, Mock(side_effect=refusal))
+    return manager
 
 
 def _build(*, unavailable: bool = False):
     app = FastAPI()
+    db = _forbidden_db()
     calls: list[tuple] = []
 
     async def authorize(session_token=None, api_key=None, csrf_token=None, unsafe=False):
@@ -64,8 +64,8 @@ def _build(*, unavailable: bool = False):
     app.state.owner_auth_service = SimpleNamespace(authorize=AsyncMock(side_effect=authorize))
     app.add_middleware(OwnerAuthMiddleware, config=CONFIG)
     app.include_router(router)
-    app.dependency_overrides[get_db] = lambda: _ForbiddenDB()
-    return app, calls
+    app.dependency_overrides[get_db] = lambda: db
+    return app, calls, db
 
 
 @pytest.mark.parametrize(
@@ -111,7 +111,7 @@ def _build(*, unavailable: bool = False):
 async def test_the_boundary_rejects_before_the_handler_and_never_touches_a_pool(
     headers, unavailable, status, code, authorize_called
 ):
-    app, calls = _build(unavailable=unavailable)
+    app, calls, db = _build(unavailable=unavailable)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN) as client:
         response = await client.post(PATH, headers=headers)
@@ -119,4 +119,4 @@ async def test_the_boundary_rejects_before_the_handler_and_never_touches_a_pool(
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
     assert bool(calls) is authorize_called
-    assert _ForbiddenDB.touched is False
+    assert [lookup for lookup in _DB_LOOKUPS if getattr(db, lookup).called] == []

@@ -1,18 +1,19 @@
 """Tests for GET /api/delegation/ledger (+ /{id}) — bu-gxmfx.
 
-Mirrors the ``_MockDB``/``_Record`` harness style from ``tests/api/test_memory.py``.
+Mirrors the ``_Record`` harness style from ``tests/api/test_memory.py``.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -59,26 +60,15 @@ def _make_ledger_row(
     )
 
 
-class _MockDB:
-    """Minimal DatabaseManager stand-in — one pool serving public.delegation_ledger."""
-
-    def __init__(self, *, rows: list[dict], total: int | None = None) -> None:
-        self.butler_names = ["finance"]
-        self.pool_mock = AsyncMock()
-        self.pool_mock.fetchval = AsyncMock(return_value=total if total is not None else len(rows))
-        self.pool_mock.fetch = AsyncMock(return_value=rows)
-        self.pool_mock.fetchrow = AsyncMock(return_value=rows[0] if rows else None)
-
-    def pool(self, name: str):
-        if name not in self.butler_names:
-            raise KeyError(name)
-        return self.pool_mock
-
-
-def _wire_db(app, *, rows: list[dict], total: int | None = None) -> _MockDB:
-    mock_db = _MockDB(rows=rows, total=total)
-    app.dependency_overrides[get_db] = lambda: mock_db
-    return mock_db
+def _wire_db(app, *, rows: list[dict], total: int | None = None) -> AsyncMock:
+    """Serve one pool (public.delegation_ledger) under ``finance``; return that pool."""
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value=total if total is not None else len(rows))
+    pool.fetch = AsyncMock(return_value=rows)
+    pool.fetchrow = AsyncMock(return_value=rows[0] if rows else None)
+    manager = db_manager({"finance": pool})
+    app.dependency_overrides[get_db] = lambda: manager
+    return pool
 
 
 async def test_list_ledger_returns_rows(app):
@@ -109,7 +99,7 @@ async def test_list_ledger_rejects_invalid_status(app):
 
 
 async def test_list_ledger_passes_filters_through(app):
-    mock_db = _wire_db(app, rows=[])
+    pool = _wire_db(app, rows=[])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -124,7 +114,7 @@ async def test_list_ledger_passes_filters_through(app):
         )
 
     assert resp.status_code == 200
-    fetch_query, *fetch_args = mock_db.pool_mock.fetch.await_args.args
+    fetch_query, *fetch_args = pool.fetch.await_args.args
     assert "status = $1" in fetch_query
     assert "asking_butler = $2" in fetch_query
     assert "target_butler = $3" in fetch_query
@@ -167,7 +157,7 @@ async def test_list_ledger_defaults_wake_state_when_absent(app):
 
 
 async def test_list_ledger_passes_wake_stuck_through(app):
-    mock_db = _wire_db(app, rows=[])
+    pool = _wire_db(app, rows=[])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -175,7 +165,7 @@ async def test_list_ledger_passes_wake_stuck_through(app):
         resp = await client.get("/api/delegation/ledger", params={"wake_stuck": "true"})
 
     assert resp.status_code == 200
-    fetch_query, *fetch_args = mock_db.pool_mock.fetch.await_args.args
+    fetch_query, *fetch_args = pool.fetch.await_args.args
     assert "wake_state = ANY($1)" in fetch_query
     assert fetch_args[0] == ["callback_failed", "task_conflict"]
 
@@ -218,9 +208,8 @@ async def test_get_ledger_entry_invalid_uuid(app):
 
 
 async def test_no_pools_available_returns_503(app):
-    mock_db = MagicMock()
-    mock_db.butler_names = []
-    app.dependency_overrides[get_db] = lambda: mock_db
+    manager = db_manager({})
+    app.dependency_overrides[get_db] = lambda: manager
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
