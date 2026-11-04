@@ -254,8 +254,6 @@
   "memory-honesty-last-mile/dashboard-domain-pages/Fact Commit Footer Gives Accessible Mutation Feedback": "548a2394a1d9ddb854da052d0dabec2be918dee464deec5b12e5e3404b7812db",
   "memory-honesty-last-mile/dashboard-domain-pages/Memory Reads Preserve Source Uncertainty": "c8deea4bed16eb1fa6d7925a750e72ca6d9dc031c90f382fe103eb6fcf19d323",
   "provider-allowance-windows/database-security/Provider Allowance State Write Grants": "398fb7fe0afe50cce317c98de3c8b6955904269dc865d5e93db23b4960395eeb",
-  "repair-telegram-delivery-truth/core-notify/[TARGET-STATE] Notify Response Envelope": "e9ba4c2b7059c25f4d97d657cc2105646cefd65cd3d24f92b000bc9b2cda46e1",
-  "repair-telegram-delivery-truth/module-telegram/Telegram API Integration": "c5009c7fd4ed288c0f5e7448b2d23d258035830f1975691e189fb8742e37ee75",
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Cherry-Picked Message Excerpts": "20f3183cc52e1ba31a1e65c0bbe3ae30158d705341b4deedd55927fd21286c0a",
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Multi-Butler Fan-Out from Single Ingestion": "e49f213d646d6b21e440d3baa614e4261f761f93bb6c53e59cab9d7158e35e30",
   "repair-whatsapp-identity-reconciliation/conversation-decomposition/Signal Extraction for Decomposition": "5519098eced36eab1150a57f492a026658d14f95f84f92527027e3b7e9172c84",
