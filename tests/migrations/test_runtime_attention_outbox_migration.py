@@ -34,6 +34,7 @@ from alembic import command
 from butlers.migrations import _build_alembic_config, get_chain_head, run_migrations
 from butlers.testing.migration import (
     assert_at_chain_head,
+    create_migrated_test_db,
     create_migration_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
@@ -1937,9 +1938,8 @@ def test_actual_init_db_rerun_repairs_function_only_acl_and_effective_roles(
 ) -> None:
     """Rerunning bootstrap cannot restore broad producer/connector public DML."""
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    _upgrade_to_core_head(db_url)
     _rerun_actual_init_db(bootstrap_url, db_url)
     _entry_id, trigger_id = _seed_legacy_breaker_edge(db_url)
 
@@ -2283,9 +2283,8 @@ def test_init_db_rerun_adopts_the_renamed_debounce_marker_planter(
     renames the objects and leaves the trigger planting.
     """
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    _upgrade_to_core_head(db_url)
 
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
@@ -2529,9 +2528,8 @@ def test_init_db_rerun_converges_the_debounce_marker_audit_vocabulary(
     old vocabulary.
     """
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    _upgrade_to_core_head(db_url)
 
     legacy_entry_id = uuid.uuid4()
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
@@ -2724,9 +2722,8 @@ def test_init_db_rerun_converges_the_fleet_halt_month_clock(postgres_container) 
     ``finalize_interface`` adopts it on every init-db rerun.
     """
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    _upgrade_to_core_head(db_url)
 
     admin = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
     try:
@@ -2781,8 +2778,7 @@ def _asyncpg_url(url: str) -> str:
 def _fresh_condition_database(postgres_container) -> tuple[str, str]:
     """A fresh core-head database with the v4 condition interface installed."""
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
-    _upgrade_to_core_head(db_url)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     return db_url, migration_bootstrap_db_url(postgres_container, db_name)
 
 
@@ -3271,9 +3267,8 @@ def test_runtime_attention_definers_never_run_a_public_decoy(postgres_container)
     runtime-attention definer idempotently.
     """
     db_name = migration_db_name()
-    db_url = create_migration_db(postgres_container, db_name)
+    db_url = create_migrated_test_db(postgres_container, db_name, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, db_name)
-    _upgrade_to_core_head(db_url)
 
     def definers(conn) -> dict[str, list[str]]:
         return {
