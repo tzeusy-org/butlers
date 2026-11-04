@@ -138,3 +138,8 @@ class ToolHosts:
         hosts, self._hosts = self._hosts, []
         for host in hosts:
             await host.daemon.db.close()
+
+
+async def host_tools(config_dir: Path, *, pool: Any) -> ToolHost:
+    """A DB-free host on *pool*, for unit-lane handler tests (no fixture, no Postgres)."""
+    return await ToolHosts(None)(config_dir, pool=pool)

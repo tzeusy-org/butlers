@@ -78,3 +78,13 @@ async def test_a_db_free_host_registers_the_same_tools_on_a_given_pool(tool_host
     assert host.setup_seconds < 0.5
     names = {tool.name for tool in await host.mcp.list_tools()}
     assert {"remind", "notify", "status"} <= names
+
+
+async def test_db_free_hosts_need_no_fixture_or_container(tmp_path) -> None:
+    # Unit-lane handler tests build the host themselves; no Postgres is involved.
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.tool_host import host_tools
+
+    host = await host_tools(write_butler_config(tmp_path, "general"), pool=fake_pool())
+
+    assert (await host.tool("remind")).__name__ == "remind"
