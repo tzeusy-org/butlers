@@ -1237,7 +1237,7 @@
     "[\"src/butlers/core/fact_authority.py\", \"reportArgumentType\", \"1a45a73899d44d011d811320fa8419501f0017c8085afd34d7d1b27fa993a185\"]": 1,
     "[\"src/butlers/core/fact_authority.py\", \"reportArgumentType\", \"7144f04cb20b38ce6e79870ada79984f1bbc53ca5dac094aad214d1b11b6b6d4\"]": 1,
     "[\"src/butlers/core/fact_authority.py\", \"reportArgumentType\", \"c959d2d4ff6a50bdec1f6ec3ea7b4210afc58c3db5b95f3de3a42c2afcd004d4\"]": 1,
-    "[\"src/butlers/core/fact_authority.py\", \"reportMissingImports\", \"1ea5c2513dc5b9efe44c7dc055b9612312cb48c8212837e3ac7ee7e05134d125\"]": 3,
+    "[\"src/butlers/core/fact_authority.py\", \"reportMissingImports\", \"1ea5c2513dc5b9efe44c7dc055b9612312cb48c8212837e3ac7ee7e05134d125\"]": 2,
     "[\"src/butlers/core/finance_warning_control.py\", \"reportOperatorIssue\", \"b3f3136a9f2be8390c2b82f631b9c4cf74f67556ffd25c5d81f2819ba589c298\"]": 1,
     "[\"src/butlers/core/finance_warning_control.py\", \"reportOperatorIssue\", \"ece93abd71f056883a850ec7bf12ff2562717a3539e15c5671f8513bb13598a8\"]": 1,
     "[\"src/butlers/core/finance_warning_control.py\", \"reportOptionalCall\", \"ec6541f706d30c047f59b57f24936e594c5d326aab3adfcbb56a9e3c0d088e22\"]": 1,

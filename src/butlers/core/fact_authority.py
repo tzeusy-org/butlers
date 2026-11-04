@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import importlib
 import json
 import secrets
 import time
@@ -32,6 +33,40 @@ SOURCE_HEADER = "X-Butlers-Fact-Source"
 VERIFIER_PATH = "/internal/fact-source/verify"
 RECOVERY_PATH = "/internal/fact-source/recover"
 RECEIVER_PATH = "/internal/fact-source/receiver"
+
+
+async def _owning_endpoint(pool: Any, target: str) -> str | None:
+    """Return the admitted MCP endpoint of an owning butler, or None.
+
+    Admission matches route(): under the receiver-derived cutover the legacy
+    registry liveness projection is no longer refreshed, so a quiet owner would
+    read as stale there (bu-n7zmbp.20). The receiver resolver decides instead,
+    including its single fenced recheck of a stale target. A refusal is final;
+    it never falls back to the legacy projection.
+    """
+    from butlers.tools.switchboard.registry.registry import (
+        DEFAULT_ROUTE_CONTRACT_VERSION,
+        receiver_route_cutover_enabled,
+    )
+
+    if receiver_route_cutover_enabled():
+        # The routing package re-exports a route() function under the module's
+        # name, so import the module itself explicitly.
+        route = importlib.import_module("butlers.tools.switchboard.routing.route")
+        decision, _, _ = await route._resolve_receiver_route_target(
+            pool,
+            target,
+            required_capability=None,
+            route_contract_version=DEFAULT_ROUTE_CONTRACT_VERSION,
+        )
+        if decision is None or decision.state != "ready":
+            return None
+        return decision.endpoint_url
+
+    from butlers.tools.switchboard.registry.registry import resolve_routing_target
+
+    row, _ = await resolve_routing_target(pool, target)
+    return None if row is None else row["endpoint_url"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,15 +210,12 @@ class FactSourceContextRegistry:
 
         from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
         from butlers.identity import IdentityResolutionQueryError, ResolvedContact
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
         try:
-            target, _ = await resolve_routing_target(self.pool, "relationship")
-            if target is None:
+            owning_url = await _owning_endpoint(self.pool, "relationship")
+            if owning_url is None:
                 raise ValueError("owning identity resolver unavailable")
-            endpoint = resolve_cross_container_mcp_url(
-                canonical_runtime_mcp_url(target["endpoint_url"])
-            )
+            endpoint = resolve_cross_container_mcp_url(canonical_runtime_mcp_url(owning_url))
             async with Client(endpoint, timeout=5) as client:
                 result = await client.call_tool(
                     "identity_resolve_channels",
@@ -220,15 +252,12 @@ class FactSourceContextRegistry:
         from fastmcp import Client
 
         from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
         try:
-            target, _ = await resolve_routing_target(self.pool, "relationship")
-            if target is None:
+            owning_url = await _owning_endpoint(self.pool, "relationship")
+            if owning_url is None:
                 raise ValueError("owning identity writer unavailable")
-            endpoint = resolve_cross_container_mcp_url(
-                canonical_runtime_mcp_url(target["endpoint_url"])
-            )
+            endpoint = resolve_cross_container_mcp_url(canonical_runtime_mcp_url(owning_url))
             async with Client(endpoint, timeout=5) as client:
                 await client.call_tool(
                     "identity_assert_sender_channel",
@@ -405,12 +434,10 @@ class FactSourceContextRegistry:
         # Receiver addresses come from this source's actual registry, never the
         # request body. The ephemeral receiver claim proves possession of its
         # own durable, source-verified acceptance, rather than a copied UUID.
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
-
-        receiver, _ = await resolve_routing_target(self.pool, target)
-        if receiver is None:
+        receiver_url = await _owning_endpoint(self.pool, target)
+        if receiver_url is None:
             raise ValueError("registered receiver is unavailable")
-        parts = urlsplit(receiver["endpoint_url"])
+        parts = urlsplit(receiver_url)
         url = urlunsplit((parts.scheme, parts.netloc, RECEIVER_PATH, "", ""))
         async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
             response = await client.post(url, json={"capability": receiver_capability})
