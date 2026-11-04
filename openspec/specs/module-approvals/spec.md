@@ -521,8 +521,8 @@ Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 
 #### Scenario: Missing or disabled config
 
-- **WHEN** `[modules.approvals]` is absent or `enabled = false`
-- **THEN** the module does not install generic tool wrappers
+- **WHEN** `[modules.approvals]` is absent or `enabled = false`, with `domain_producers` omitted or empty
+- **THEN** the module does not wrap any tools and no approval gates are active
 - **AND** a missing configuration declares no domain producers
 
 #### Scenario: Explicit domain producer capability
