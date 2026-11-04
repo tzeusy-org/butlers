@@ -249,8 +249,8 @@ record a manifest the publication does not yet match.
   and three password copies (OD15). No Butlers workload mounts them, but the
   password reaches `butlers_public` and `postgres` over TCP ([Observed] not
   `butlers`), where it can rewrite the projection and forge the applied
-  digest, so its custody is recorded and a `pg_hba` reject line returns to
-  the owner, recommended (RFC 0039 open question 5).
+  digest, so its custody is recorded. The owner declined a `pg_hba` reject
+  line and accepted the risk (OD16).
 - **Owner step pending.** Each manifest change and each slot invalidation
   needs a manual superuser step. Until it runs after a manifest change the
   server refuses with `projection_apply_pending`, the warning flag is down,
@@ -356,9 +356,6 @@ as written.
 2. Prod rollout. v1 targets dev only; prod waits for a separate owner act.
 3. The knowledge predicate allowlists are written from the predicate registry
    at implementation time (task 1.4); the owner may widen them.
-4. Whether to add a `pg_hba` reject line for `mcp_subscription_owner` (RFC
-   0039 open question 5). It is beyond OD15 and returns to the owner; no
-   requirement depends on it.
 
 Closed by the owner on 2026-11-04: projection placement (OD10, a second
 database; `public-mcp-projection` REQ-008 states the `pg_hba` isolation

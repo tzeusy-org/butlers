@@ -217,8 +217,8 @@ written in this change.
 The owner recorded decisions OD1 to OD9 on 2026-11-04 and accepted the doctrine
 change (OD2), then answered the four items the conformance review returned
 (OD10 to OD13) the same day, and recorded OD14 and OD15 after the homelab
-apply. One item beyond OD15 (a `pg_hba` reject line for
-`mcp_subscription_owner`, RFC 0039 open question 5) returns to the owner. Under the owner's standing rule, text that
+apply, and OD16 (no `pg_hba` reject line for `mcp_subscription_owner`, an
+accepted risk) after that. Under the owner's standing rule, text that
 conforms to those decisions is adopted once the PR's independent conformance
 review passes; text that goes beyond them returns to the owner. The spec-level choices in
 `design.md` § Spec-level decisions are listed for that review. Implementation is

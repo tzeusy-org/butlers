@@ -85,6 +85,10 @@ Tzeusy/homelab#40 to `postgres-dev` and reported the result (see [Homelab facts]
     is pending, so a narrowed manifest can never keep serving rows that should have been purged.
 15. **Keep `mcp_subscription_owner` as created** (`LOGIN`, with its three password copies). The owner
     chose to keep it, though OD14 means no Butlers workflow needs it to log in.
+16. **No `pg_hba` reject line for `mcp_subscription_owner`** (RFC 0039 open question 5, answered
+    2026-11-04: "Leave it open"). The owner accepts that its password can log in over TCP to
+    `butlers_public` and `postgres`, where it could rewrite the projection and forge the applied digest.
+    The D17 fail-closed guarantee assumes that password stays unused.
 
 ## Homelab facts
 
@@ -220,6 +224,6 @@ owner decision, blocked by `bu-u5euwb.3` and `bu-u5s4w8`.
 - After homelab PR Tzeusy/homelab#40 applied the CNPG owner acts to
   `postgres-dev`, the owner recorded OD14 and OD15. RFC 0039 (D3, D4, D8, D9,
   D16, D17, owner acts and open questions), this record, the OpenSpec change
-  and the topology docs were amended to match the homelab facts above. One
-  item beyond OD15 returns to the owner as RFC 0039 open question 5: whether
-  to add a `pg_hba` reject line for `mcp_subscription_owner`.
+  and the topology docs were amended to match the homelab facts above. The
+  owner then answered RFC 0039 open question 5 (OD16): no `pg_hba` reject
+  line for `mcp_subscription_owner`, as an accepted risk.

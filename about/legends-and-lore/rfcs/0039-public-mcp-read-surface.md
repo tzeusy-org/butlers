@@ -1,10 +1,10 @@
 # RFC 0039: Public MCP Read Surface
 
 **Status:** Accepted (2026-11-04) on the owner decisions recorded in
-[Owner decisions](#owner-decisions) (OD1 to OD15). Under the owner's standing
+[Owner decisions](#owner-decisions) (OD1 to OD16). Under the owner's standing
 rule, text that conforms to those decisions is adopted once the PR's independent
 conformance review passes; the owner does not sign off exact wording. Text that
-goes beyond OD1 to OD15 returns to the owner. The conformance review returned
+goes beyond OD1 to OD16 returns to the owner. The conformance review returned
 four items beyond OD1 to OD9, and the owner answered all four on 2026-11-04:
 the projection is a second database on the existing cluster (OD10, D3), alerts
 reach the owner through the existing Uptime Kuma (OD11, D16), live data in
@@ -243,6 +243,7 @@ owner. OD14 and OD15 followed the homelab apply of the CNPG owner acts to
 | OD13 | The upkeep of the trigger-maintained source-owned materializations is accepted, with the parity tests and CI drift checks as its mitigation (D2). |
 | OD14 | The publisher has no credential. It logs in only by local peer authentication through the CNPG `local` `pg_ident` map; no password or certificate exists, and every TCP login as the publisher is rejected. The slot, the subscription (created by the superuser with `password_required = false`, `create_slot = false` and conninfo on the local socket, then owned by `mcp_subscription_owner`), `REFRESH PUBLICATION` and the narrowing purge become one owner step: Butlers generates one idempotent SQL file per manifest change, and the owner pipes it through the same `kubectl exec ... psql -U postgres` path as `init-db.sql`. Publication DDL in `butlers` stays with the migration user in the migration Job. The public server fails closed while the owner step is pending, so a narrowed manifest never keeps serving rows that should have been purged (D3, D4, D9, D17). |
 | OD15 | `mcp_subscription_owner` is kept as created: `LOGIN`, with its three password copies. No Butlers workflow needs it to log in (D9). |
+| OD16 | No `pg_hba` reject line for `mcp_subscription_owner`. The owner accepts that its password can log in over TCP to `butlers_public` and `postgres` (D9, D17). |
 
 ## Decisions
 
@@ -1124,8 +1125,8 @@ an applied digest and defeat the D17 fail-closed rule. Its custody is
 therefore listed above, and a rendered-chart check asserts that no Butlers
 chart mounts `postgres-mcp-subscription-owner-user`. The D17 guarantee
 assumes that password stays unused; a `host all mcp_subscription_owner all
-reject` line would make it hold without that assumption. Whether to add the
-line is open question 5.
+reject` line would make it hold without that assumption. The owner declined
+the line and accepted the risk (OD16).
 
 - The projection has exactly two `SECURITY DEFINER` functions:
   `mcp_read.replication_as_of()` (returning only
@@ -1614,7 +1615,7 @@ change (D4), so that window is the replication lag, capped by the 15-minute
 stale rule, and the leak runbook starts with the kill switch (D16). And the
 guarantee assumes that no one writes `mcp_local.manifest_applied` but the
 owner step: the `mcp_subscription_owner` password could forge the applied
-digest over TCP (D9, open question 5).
+digest over TCP, a risk the owner accepted (D9, OD16).
 
 **Error shape.** A tool-level failure is an MCP tool result with
 `isError: true` and `structuredContent`:
@@ -1861,19 +1862,13 @@ Genuine questions only. Every other choice above is decided and reversible.
    a separate owner act. Prod's version is no longer open (closed below).
 4. **Knowledge predicate allowlist.** The v1 allowlist is written from the
    predicate registry at implementation time (D4); the owner may widen it.
-5. **Subscription-owner login path (OD15).** `mcp_subscription_owner` keeps
-   `LOGIN` and three password copies, and no `pg_hba` line rejects it.
-   [Observed: `postgres-dev`, 2026-11-04] Its password reaches
-   `butlers_public` and `postgres` over TCP, not `butlers`, which grants it
-   no `CONNECT`. On `butlers_public` it acts as the database owner's member,
-   so it can rewrite the projection and forge the applied digest that the
-   D17 fail-closed rule trusts (D9). A `host all mcp_subscription_owner all
-   reject` line would close the TCP path without removing the role, and
-   would let the D17 guarantee hold without assuming the password stays
-   unused. That is a homelab choice beyond OD15, so it returns to the owner,
-   with the reject line recommended.
-
-Closed on 2026-11-04: projection placement (a second database on the existing
+Closed on 2026-11-04: the subscription-owner login path (OD16). No
+`pg_hba` line rejects `mcp_subscription_owner`, so its password reaches
+`butlers_public` and `postgres` over TCP [Observed: `postgres-dev`,
+2026-11-04], and on `butlers_public` it could rewrite the projection and
+forge the applied digest (D9). The owner accepted that risk; the D17
+guarantee assumes the password stays unused, which the custody list and the
+rendered-chart check support. Also closed: projection placement (a second database on the existing
 cluster, OD10, D3) and the alert path (Uptime Kuma polling Prometheus flags,
 OD11, D16). The Chronicler materialization shape is decided: source-owned
 `episodes_public` and `rollups_public` tables (D2). Prod's PostgreSQL version
