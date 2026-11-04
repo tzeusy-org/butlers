@@ -51,6 +51,17 @@ class ToolHost:
         return await (await self.tool(name))(**arguments)
 
 
+class _GivenDatabase:
+    """A ``Database`` stand-in that only carries a test's DB-free pool."""
+
+    def __init__(self, pool: Any) -> None:
+        self.pool = pool
+        self.db_name = "db-free"
+
+    async def close(self) -> None:
+        return None
+
+
 class ToolHosts:
     """Creates hosts on fresh clones for one test and closes their pools."""
 
@@ -63,11 +74,15 @@ class ToolHosts:
         config_dir: Path,
         *chains: str,
         chain_schemas: dict[str, str] | None = None,
+        pool: Any = None,
     ) -> ToolHost:
-        from fastmcp import FastMCP
+        """Host *config_dir*'s tools on a fresh clone of *chains* (default ``core``).
+
+        With *pool* (a DB-free fake, for handler tests whose subject is not SQL) no
+        clone is made and the tools get that pool instead.
+        """
 
         from butlers.config import load_config
-        from butlers.daemon import ButlerDaemon
         from butlers.db import Database
         from butlers.testing.db import migrated_url
 
@@ -76,6 +91,9 @@ class ToolHosts:
         schema = config.db_schema
         if schema is None:
             raise ValueError(f"{config_dir}/butler.toml needs a [butler.db] schema")
+        config.switchboard_url = None
+        if pool is not None:
+            return self._host(config_dir, config, _GivenDatabase(pool), "", began)
         schemas = dict.fromkeys(chains or ("core",), schema)
         schemas.update(chain_schemas or {})
         # A clean context, as for boots: no inherited butler context reaches the
@@ -85,7 +103,6 @@ class ToolHosts:
             None, contextvars.Context().run, build
         )
         config.db_name = urlparse(url).path.lstrip("/")
-        config.switchboard_url = None
         db = Database(
             db_name=config.db_name,
             schema=schema,
@@ -98,14 +115,21 @@ class ToolHosts:
             max_pool_size=3,
         )
         await db.connect()
-        daemon = ButlerDaemon(config_dir, db=db)
-        daemon.config = config
-        daemon.mcp = FastMCP(config.name)
         try:
-            daemon._register_core_tools()
+            return self._host(config_dir, config, db, url, began)
         except BaseException:
             await db.close()
             raise
+
+    def _host(self, config_dir: Path, config: Any, db: Any, url: str, began: float) -> ToolHost:
+        from fastmcp import FastMCP
+
+        from butlers.daemon import ButlerDaemon
+
+        daemon = ButlerDaemon(config_dir, db=db)
+        daemon.config = config
+        daemon.mcp = FastMCP(config.name)
+        daemon._register_core_tools()
         host = ToolHost(daemon, url, time.monotonic() - began)
         self._hosts.append(host)
         return host

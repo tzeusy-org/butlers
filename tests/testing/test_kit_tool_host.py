@@ -63,3 +63,18 @@ async def test_host_cost_is_reported(tool_host, tmp_path) -> None:
 
     assert host.setup_seconds > 0
     print(f"tool_host setup: {host.setup_seconds:.3f}s (wall {elapsed:.3f}s)")
+
+
+async def test_a_db_free_host_registers_the_same_tools_on_a_given_pool(tool_host, tmp_path) -> None:
+    # Handler tests whose subject is not SQL hand the host a DB-free pool: no clone,
+    # no lifecycle, the daemon's real registration.
+    from butlers.testing.fake_pool import fake_pool
+
+    pool = fake_pool()
+    host = await tool_host(write_butler_config(tmp_path, "general"), pool=pool)
+
+    assert host.pool is pool
+    assert host.admin_url == ""
+    assert host.setup_seconds < 0.5
+    names = {tool.name for tool in await host.mcp.list_tools()}
+    assert {"remind", "notify", "status"} <= names

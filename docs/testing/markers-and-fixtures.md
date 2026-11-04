@@ -118,6 +118,8 @@ await booted.shutdown()                           # optional; teardown shuts dow
     butler's pool under its production role, and registers the core tools on a
     fresh FastMCP. No lifecycle phase runs or is patched.
   - `await host.call("remind", ...)` runs a handler in process.
+  - `tool_host(config_dir, pool=fake_pool())` is the DB-free form, for handler tests
+    whose subject is not SQL: no clone, same registration.
   - Tests that need the spawner, the Switchboard or module startup boot instead.
 - `shared_booted_daemon` shares one boot per module and configuration among tests
   that only read daemon state (rejections, tool listings, status):
