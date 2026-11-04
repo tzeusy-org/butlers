@@ -20,6 +20,7 @@ PACKAGE_URL = (
 )
 PACKAGE_SHA256 = "90b02aa006eea7702cd4e851343e469e41365dda42145a3cb035de1d6c773b8c"
 PROFILE_SHA256 = "11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9"
+RUNNER_PROFILE_SHA256 = "a964037f6cf0df1099f14226b037eaedde6237c86e715188e93eb460b30be859"
 PROFILE_MEMBER = "./usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
 _SYSCTL = "kernel.apparmor_restrict_unprivileged_userns"
 _PROFILE_NAMES = {"bwrap", "unpriv_bwrap"}
@@ -137,6 +138,53 @@ def verified_profile(package: bytes, archive: bytes) -> bytes:
     return profile
 
 
+def runner_profile(profile: bytes) -> bytes:
+    # Upstream AppArmor MR1272: mediate bwrap's unlinked --ro-bind-data files.
+    # Keep both named profiles and every rule byte; accept only this pinned input.
+    if len(profile) != 1936 or hashlib.sha256(profile).hexdigest() != PROFILE_SHA256:
+        raise Refusal("profile_digest_mismatch")
+    for header in (
+        b"profile bwrap /usr/bin/bwrap flags=(attach_disconnected) {",
+        b"profile unpriv_bwrap flags=(attach_disconnected) {",
+    ):
+        if profile.count(header) != 1:
+            raise Refusal("profile_header_mismatch")
+        profile = profile.replace(
+            header, header.replace(b"attach_disconnected", b"attach_disconnected,mediate_deleted")
+        )
+    if len(profile) != 1968 or hashlib.sha256(profile).hexdigest() != RUNNER_PROFILE_SHA256:
+        raise Refusal("runner_profile_digest_mismatch")
+    return profile
+
+
+def load_receipt() -> bytes:
+    return json.dumps(
+        {
+            "version": 2,
+            "upstream_profile": PROFILE_SHA256,
+            "runner_profile": RUNNER_PROFILE_SHA256,
+        },
+        sort_keys=True,
+    ).encode()
+
+
+def receipt_matches(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+        expected = load_receipt()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size != len(expected)
+        ):
+            return False
+        return path.read_bytes() == expected
+    except FileNotFoundError:
+        return False
+
+
 def _write(path: Path, content: bytes) -> None:
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
@@ -213,21 +261,19 @@ def prepare(root: Path) -> None:
     package_path = root / "profile.deb"
     _write(package_path, package)
     archive = checked(["dpkg-deb", "--fsys-tarfile", str(package_path)])
-    profile = verified_profile(package, archive)
+    profile = runner_profile(verified_profile(package, archive))
     path = root / "bwrap-userns-restrict"
     _write(path, profile)
     # No kernel policy has changed yet. Do not replace (-r) an existing profile.
     restricted()
     profile_absent()
-    _write(
-        root / "load-intent.json", json.dumps({"version": 1, "profile": PROFILE_SHA256}).encode()
-    )
+    _write(root / "load-intent.json", load_receipt())
     result = run(["sudo", "-n", "apparmor_parser", "-a", str(path)])
     if result.returncode:
         raise Refusal("profile_load_unproven")
     if not _PROFILE_NAMES.issubset(loaded()):
         raise Refusal("profile_load_unobserved")
-    _write(root / "loaded.json", b'{"version":1}')
+    _write(root / "loaded.json", load_receipt())
     restricted()
     generic_denied()
     after = repeat_preflight(root / "after")
@@ -258,6 +304,7 @@ def prepare(root: Path) -> None:
                 "global_restriction": 1,
                 "generic_userns": "denied",
                 "profile_sha256": PROFILE_SHA256,
+                "runner_profile_sha256": RUNNER_PROFILE_SHA256,
             }
         )
     )
@@ -265,8 +312,12 @@ def prepare(root: Path) -> None:
 
 def cleanup(root: Path) -> None:
     if not root.exists() or not (root / "load-intent.json").exists():
+        if (root / "loaded.json").exists():
+            raise Refusal("cleanup_load_identity_refused")
         print('{"status":"no_profile_load_attempted"}')
         return
+    if not receipt_matches(root / "load-intent.json"):
+        raise Refusal("cleanup_load_identity_refused")
     path = root / "bwrap-userns-restrict"
     metadata = path.lstat()
     if (
@@ -274,13 +325,13 @@ def cleanup(root: Path) -> None:
         or metadata.st_uid != os.geteuid()
         or metadata.st_nlink != 1
         or stat.S_IMODE(metadata.st_mode) != 0o600
-        or hashlib.sha256(path.read_bytes()).hexdigest() != PROFILE_SHA256
+        or hashlib.sha256(path.read_bytes()).hexdigest() != RUNNER_PROFILE_SHA256
     ):
         raise Refusal("cleanup_profile_identity_refused")
     # An unsuccessful add can be partial. We cannot prove ownership of a
     # conflicting profile after that outcome: quarantine the disposable runner,
     # refuse tests/green, and never remove uncertain foreign policy.
-    if not (root / "loaded.json").exists():
+    if not receipt_matches(root / "loaded.json"):
         raise Refusal("cleanup_load_ownership_unproven")
     if not _PROFILE_NAMES.issubset(loaded()):
         raise Refusal("cleanup_owned_profiles_unobserved")
@@ -288,6 +339,7 @@ def cleanup(root: Path) -> None:
     if _PROFILE_NAMES & loaded():
         raise Refusal("profile_cleanup_unobserved")
     restricted()
+    generic_denied()
     print('{"status":"scoped_profile_removed","global_restriction":1}')
 
 

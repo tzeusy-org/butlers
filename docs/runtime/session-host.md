@@ -102,7 +102,17 @@ establish production deployment policy. It uses Canonical's purpose-built
 and the [Noble package](https://packages.ubuntu.com/noble-updates/apparmor-profiles),
 version `4.0.1really4.0.1-0ubuntu0.24.04.9`. The helper pins the published package
 SHA256 and exact `bwrap-userns-restrict` member SHA256; the latter also defines the
-necessary `unpriv_bwrap` child restriction. It leaves the global restriction enabled,
+necessary `unpriv_bwrap` child restriction. A separately pinned runner variant adds
+only `mediate_deleted` to both named profile headers, following
+[AppArmor MR1272](https://gitlab.com/apparmor/apparmor/-/merge_requests/1272).
+Bubblewrap0.9 binds then unlinks temporary files for `--ro-bind-data`; the plain-path
+prerequisite does not exercise that behavior. The observed native shim-exec ENOENT
+is consistent with deleted-entry lookup failure, but the flag change needs a same-run
+original/derived/original control using the unchanged native FD-backed node before
+it establishes causality. No arbitrary stderr is emitted by that node's observer.
+The original member and derived policy retain separate hashes in load receipts;
+cleanup refuses a different variant or uncertain receipt. It leaves the global
+restriction enabled,
 refuses uncertain policy ownership, and removes observed owned policy in the job's
 always cleanup path. No live policy changes run on developer hosts through tests.
 Local helper controls use fake host operations and earn no hosted/AppArmor credit;

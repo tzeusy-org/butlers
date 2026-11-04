@@ -15,7 +15,14 @@ from scripts import session_host_ci as ci
 @pytest.fixture
 def host(monkeypatch, tmp_path):
     package = b"synthetic-public-package"
-    profile = b"x" * 1936
+    profile = (
+        b"profile bwrap /usr/bin/bwrap flags=(attach_disconnected) {\n}\n"
+        b"profile unpriv_bwrap flags=(attach_disconnected) {\n  audit deny capability,\n}\n#"
+    )
+    profile += b"x" * (1936 - len(profile))
+    derived = profile.replace(
+        b"flags=(attach_disconnected)", b"flags=(attach_disconnected,mediate_deleted)"
+    )
     tar = io.BytesIO()
     with tarfile.open(fileobj=tar, mode="w") as files:
         member = tarfile.TarInfo(ci.PROFILE_MEMBER)
@@ -23,6 +30,7 @@ def host(monkeypatch, tmp_path):
         files.addfile(member, io.BytesIO(profile))
     monkeypatch.setattr(ci, "PACKAGE_SHA256", hashlib.sha256(package).hexdigest())
     monkeypatch.setattr(ci, "PROFILE_SHA256", hashlib.sha256(profile).hexdigest())
+    monkeypatch.setattr(ci, "RUNNER_PROFILE_SHA256", hashlib.sha256(derived).hexdigest())
     text = Path.read_text
     exists = Path.exists
     monkeypatch.setattr(
@@ -168,7 +176,121 @@ def test_package_and_member_integrity_have_no_unverified_fallback(host, mutation
 def test_published_noble_hashes_and_no_runtime_credential_dependency():
     assert ci.PACKAGE_SHA256 == "90b02aa006eea7702cd4e851343e469e41365dda42145a3cb035de1d6c773b8c"
     assert ci.PROFILE_SHA256 == "11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9"
+    assert ci.RUNNER_PROFILE_SHA256 == (
+        "a964037f6cf0df1099f14226b037eaedde6237c86e715188e93eb460b30be859"
+    )
     assert ci.PROFILE_MEMBER == "./usr/share/apparmor/extra-profiles/bwrap-userns-restrict"
+
+
+def test_runner_transform_changes_only_both_named_flags_and_binds_load_cleanup(host):
+    state, root, package, archive = host
+    original = ci.verified_profile(package, archive)
+    expected = original.replace(
+        b"flags=(attach_disconnected)", b"flags=(attach_disconnected,mediate_deleted)"
+    )
+    assert len(expected) == 1968
+    assert ci.runner_profile(original) == expected
+    assert expected.replace(b",mediate_deleted", b"") == original
+    assert b"audit deny capability," in expected
+    ci.prepare(root)
+    assert (root / "bwrap-userns-restrict").read_bytes() == expected
+    receipt = {
+        "version": 2,
+        "upstream_profile": hashlib.sha256(original).hexdigest(),
+        "runner_profile": hashlib.sha256(expected).hexdigest(),
+    }
+    for name in ("load-intent.json", "loaded.json"):
+        assert json.loads((root / name).read_bytes()) == receipt
+    ci.cleanup(root)
+    assert not state["names"]
+    assert sum(args[0] == "unshare" for args in state["calls"]) == 3
+
+
+@pytest.mark.parametrize("mutation", ["changed", "short", "already_transformed"])
+def test_runner_transform_never_accepts_unpinned_input(host, mutation):
+    _, _, package, archive = host
+    original = ci.verified_profile(package, archive)
+    candidates = {
+        "changed": original[:-1] + b"y",
+        "short": original[:-1],
+        "already_transformed": original.replace(
+            b"attach_disconnected", b"attach_disconnected,mediate_deleted"
+        ),
+    }
+    with pytest.raises(ci.Refusal, match="^profile_digest_mismatch$"):
+        ci.runner_profile(candidates[mutation])
+
+
+@pytest.mark.parametrize("header", [b"bwrap /usr/bin/bwrap", b"unpriv_bwrap"])
+@pytest.mark.parametrize("mutation", ["missing", "duplicate"])
+def test_runner_transform_requires_each_exact_named_header(host, monkeypatch, header, mutation):
+    _, _, package, archive = host
+    original = ci.verified_profile(package, archive)
+    if mutation == "missing":
+        altered = original.replace(header, b"x" * len(header))
+    else:
+        extra = b"profile " + header + b" flags=(attach_disconnected) {"
+        altered = original[: -len(extra)] + extra
+    monkeypatch.setattr(ci, "PROFILE_SHA256", hashlib.sha256(altered).hexdigest())
+    with pytest.raises(ci.Refusal, match="^profile_header_mismatch$"):
+        ci.runner_profile(altered)
+
+
+def test_wrong_derived_pin_refuses_before_loading_policy(host, monkeypatch):
+    state, root, _, _ = host
+    monkeypatch.setattr(ci, "RUNNER_PROFILE_SHA256", "0" * 64)
+    with pytest.raises(ci.Refusal, match="^runner_profile_digest_mismatch$"):
+        ci.prepare(root)
+    assert not any("apparmor_parser" in args for args in state["calls"])
+    ci.cleanup(root)
+
+
+def test_cleanup_original_member_is_not_the_owned_runner_variant(host):
+    state, root, package, archive = host
+    ci.prepare(root)
+    (root / "bwrap-userns-restrict").write_bytes(ci.verified_profile(package, archive))
+    with pytest.raises(ci.Refusal, match="^cleanup_profile_identity_refused$"):
+        ci.cleanup(root)
+    assert state["names"] == {"bwrap", "unpriv_bwrap"}
+    assert not any("-R" in args for args in state["calls"])
+
+
+def test_cleanup_does_not_claim_success_if_generic_userns_became_allowed(host, capsys):
+    state, root, _, _ = host
+    ci.prepare(root)
+    capsys.readouterr()
+    state["generic_exit"] = 0
+    with pytest.raises(ci.Refusal, match="^generic_userns_not_denied$"):
+        ci.cleanup(root)
+    assert not state["names"]
+    assert "scoped_profile_removed" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("name", ["load-intent.json", "loaded.json"])
+@pytest.mark.parametrize("mutation", ["missing", "old_variant", "wrong_pin", "mode", "symlink"])
+def test_cleanup_requires_both_owned_exact_variant_receipts(host, name, mutation):
+    state, root, _, _ = host
+    ci.prepare(root)
+    path = root / name
+    if mutation == "old_variant":
+        path.write_bytes(b'{"version":1}')
+    elif mutation == "wrong_pin":
+        path.write_bytes(path.read_bytes().replace(ci.RUNNER_PROFILE_SHA256.encode(), b"0" * 64))
+    elif mutation == "mode":
+        path.chmod(0o644)
+    else:
+        path.unlink()
+        if mutation == "symlink":
+            path.symlink_to(root / "profile.deb")
+    reason = (
+        "cleanup_load_identity_refused"
+        if name == "load-intent.json"
+        else "cleanup_load_ownership_unproven"
+    )
+    with pytest.raises(ci.Refusal, match=f"^{reason}$"):
+        ci.cleanup(root)
+    assert state["names"] == {"bwrap", "unpriv_bwrap"}
+    assert not any("-R" in args for args in state["calls"])
 
 
 def test_script_refuses_non_hosted_execution(monkeypatch, capsys):

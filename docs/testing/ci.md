@@ -163,7 +163,10 @@ The unit jobs pin Ubuntu24.04 and run a bounded CI-host-only AppArmor experiment
 The global userns restriction stays1. The helper verifies the published Noble
 `apparmor-profiles` package and purpose-built ABI4 Bubblewrap member by pinned
 SHA256, extracts only that member, and refuses preloaded/conflicting or local
-policy overrides. It loads the `/usr/bin/bwrap` policy with its inseparable
+policy overrides. It applies the exact two-header `mediate_deleted` transform from
+AppArmor MR1272, verifies a separate derived SHA256, and preserves every rule byte.
+Both load receipts and cleanup bind to that derived policy. It loads the
+`/usr/bin/bwrap` policy with its inseparable
 child-capability-deny companion, never a generic unconfined profile. The exact
 unprivileged synthetic preflight must change from a recognized refusal to payload
 exit31 while generic map-root `unshare` remains denied. The exact observed
