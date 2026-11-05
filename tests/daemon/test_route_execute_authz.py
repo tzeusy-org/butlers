@@ -211,11 +211,12 @@ def _trusted_recovery_context() -> dict[str, Any]:
 # refusal write no route_inbox or session rows, so the Messenger tests share one
 # boot; the trusted-callers test changes config per case and boots its own.
 #
-# The approvals park/approve/replay tests write ``pending_actions`` rows, so each
-# boots a fresh Messenger with the Approvals module (``_approvals_messenger``) and
-# runs its cases in that one boot: the production guards park, the daemon's own
-# executor replays, and outcomes are read back from the clone. Switchboard
-# ``deliver()`` runs in the test with ``route`` sent to the booted MCP endpoint.
+# The approvals park/approve/replay tests write ``pending_actions`` rows, so they
+# run on their own fresh Messenger with the Approvals module (the module-scoped
+# ``approvals_messenger``, one boot for all three) and each reads back only the
+# actions it created: the production guards park, the daemon's own executor
+# replays, and outcomes are read back from the clone. Switchboard ``deliver()``
+# runs in the test with ``route`` sent to the booted MCP endpoint.
 # ---------------------------------------------------------------------------
 
 _SYNTHETIC_CREDENTIALS = {
@@ -315,54 +316,60 @@ def _deliver_through(booted, monkeypatch) -> tuple[Any, list[dict[str, Any]]]:
 _APPROVALS_MESSENGER_TOML = "[modules.telegram]\n\n[modules.email]\n\n[modules.approvals]\n"
 
 
-async def _approvals_messenger(booted_daemon, tmp_path: Path, *, owner_telegram: str = ""):
-    """A fresh Messenger whose Approvals module parks into its real ``pending_actions``.
+@pytest.fixture(scope="module")
+async def approvals_messenger(postgres_container, tmp_path_factory):
+    """One fresh Messenger for this module's approvals tests, with real ``pending_actions``.
 
     Approvals startup registers the production recipient guards, park and replay
     matcher on the daemon's pool, and the daemon wires its own approved-tool
-    executor. The relationship chain gives ``public.resolve_owner_triple`` the
-    ``entity_facts`` it reads, so an owner channel can be seeded for real.
+    executor. The three park/approve/replay tests share this one boot to bound the
+    integration-lane cost: each reads back only the actions it created
+    (``_ActionLog``), and patches only through its own ``monkeypatch``.
     """
-    from butlers.testing.db import open_pool
+    from butlers.testing.daemon import DaemonBooter
 
-    booted = await booted_daemon(
-        write_butler_config(
-            tmp_path, "messenger", schema="messenger", extra_toml=_APPROVALS_MESSENGER_TOML
-        ),
-        "core",
-        "messenger",
-        "approvals",
-        registered=True,
-        credentials=_SYNTHETIC_CREDENTIALS,
-        chain_schemas={"relationship": "relationship"},
-    )
-    statuses = {name: status.status for name, status in booted.daemon._module_statuses.items()}
-    assert statuses == dict.fromkeys(("telegram", "email", "approvals"), "active")
-    if owner_telegram:
-        admin = await open_pool(booted.admin_url)
+    patcher = pytest.MonkeyPatch()
+    root = tmp_path_factory.mktemp("approvals-messenger")
+    booter = DaemonBooter(postgres_container, patcher, root)
+    try:
+        booted = await booter.boot(
+            write_butler_config(
+                root, "messenger", schema="messenger", extra_toml=_APPROVALS_MESSENGER_TOML
+            ),
+            "core",
+            "messenger",
+            "approvals",
+            registered=True,
+            credentials=_SYNTHETIC_CREDENTIALS,
+        )
+        statuses = {name: status.status for name, status in booted.daemon._module_statuses.items()}
+        assert statuses == dict.fromkeys(("telegram", "email", "approvals"), "active")
+        yield booted
+    finally:
         try:
-            owner_id = await admin.fetchval(
-                "SELECT id FROM public.entities WHERE 'owner' = ANY(roles)"
-            ) or await admin.fetchval(
-                "INSERT INTO public.entities (canonical_name, entity_type, roles)"
-                " VALUES ('Owner', 'person', ARRAY['owner']) RETURNING id"
-            )
-            await admin.execute(
-                "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src)"
-                " VALUES ($1, 'has-handle', $2, 'literal', 'test')",
-                owner_id,
-                f"telegram:{owner_telegram}",
-            )
+            await booter.close()
         finally:
-            await admin.close()
-    return booted
+            patcher.undo()
 
 
-async def _pending_actions(booted) -> list[dict[str, Any]]:
-    rows = await booted.daemon.db.pool.fetch(
-        "SELECT id, status, tool_name, tool_args, why FROM pending_actions ORDER BY requested_at"
-    )
-    return [dict(row) for row in rows]
+class _ActionLog:
+    """The ``pending_actions`` rows created since this log was opened, oldest first."""
+
+    def __init__(self, booted, seen: set[Any]) -> None:
+        self._pool = booted.daemon.db.pool
+        self._seen = seen
+
+    @classmethod
+    async def open(cls, booted) -> _ActionLog:
+        rows = await booted.daemon.db.pool.fetch("SELECT id FROM pending_actions")
+        return cls(booted, {row["id"] for row in rows})
+
+    async def rows(self) -> list[dict[str, Any]]:
+        rows = await self._pool.fetch(
+            "SELECT id, status, tool_name, tool_args, why FROM pending_actions"
+            " ORDER BY requested_at"
+        )
+        return [dict(row) for row in rows if row["id"] not in self._seen]
 
 
 async def _execution_failures(booted, action_id: Any) -> list[str]:
@@ -521,7 +528,7 @@ async def test_registered_approval_self_link_resolves_or_delivers_inert(
 
 @_booted
 async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_replay(
-    booted_daemon, tmp_path, monkeypatch
+    approvals_messenger, monkeypatch
 ):
     """Spec: REQ-butler-messenger-003. A non-owner delivery parks its exact envelope.
 
@@ -532,7 +539,8 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
     from butlers.core.delivery_rendering import inert_delivery_content
     from butlers.core.tool_call_capture import get_current_runtime_session_id
 
-    booted = await _approvals_messenger(booted_daemon, tmp_path)
+    booted = approvals_messenger
+    actions = await _ActionLog.open(booted)
     approvals = _module(booted, "approvals")
     delivery, routed = _deliver_through(booted, monkeypatch)
     cases = [
@@ -555,7 +563,7 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
                 _switchboard_pool(), source_butler="health", notify_request=request
             )
         send.assert_not_awaited()
-        parked = [row for row in await _pending_actions(booted) if row["status"] == "pending"]
+        parked = [row for row in await actions.rows() if row["status"] == "pending"]
         assert len(parked) == 1, (channel, delivered, routed)
         row = parked[0]
         assert row["tool_name"] == "route.execute"
@@ -567,7 +575,7 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
         result = await approvals._approve_action(str(row["id"]), actor=_HUMAN_OWNER)
 
         assert "error" not in result, (channel, result)
-        executed = {r["id"]: r for r in await _pending_actions(booted)}[row["id"]]
+        executed = {r["id"]: r for r in await actions.rows()}[row["id"]]
         assert executed["status"] == "executed"
         if channel == "telegram":
             send.assert_awaited_once_with(
@@ -584,16 +592,16 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
         await approvals._dispatch_approved_action_by_id(str(row["id"]))
         assert send.await_count == 1
     # One park per channel, each approved and executed once.
-    assert [row["status"] for row in await _pending_actions(booted)] == ["executed", "executed"]
+    assert [row["status"] for row in await actions.rows()] == ["executed", "executed"]
 
 
 @_booted
 async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifies(
-    booted_daemon, tmp_path, monkeypatch
+    approvals_messenger, monkeypatch
 ):
     """Spec: REQ-butler-messenger-003 / REQ-core-notify-033 applied to files.
 
-    Inert-required delivery with files parks even for the seeded owner; a non-owner
+    Inert-required delivery with files parks even for the owner; a non-owner
     send parks under the recipient gate. The parked envelope pins each file's
     sha256, and approved replay re-reads the blob and refuses changed bytes.
     """
@@ -602,7 +610,18 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
 
     from butlers.core.delivery_rendering import inert_delivery_content
 
-    booted = await _approvals_messenger(booted_daemon, tmp_path, owner_telegram="12345")
+    booted = approvals_messenger
+    actions = await _ActionLog.open(booted)
+    # The owner-identity lookup stands in (as ``verified_owner_transport`` does); the
+    # approvals store and guards stay real.
+    owner = SimpleNamespace(roles=["owner"])
+
+    async def resolve(_pool, channel, target):
+        return owner if (channel, target) == ("telegram", "12345") else None
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolve
+    )
     approvals = _module(booted, "approvals")
     telegram = _module(booted, "telegram")
     monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
@@ -650,7 +669,7 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
             )
         upload.assert_not_awaited()
         send.assert_not_awaited()
-        parked = [row for row in await _pending_actions(booted) if row["status"] == "pending"]
+        parked = [row for row in await actions.rows() if row["status"] == "pending"]
         assert len(parked) == 1, inert
         row = parked[0]
         parked_request = row["tool_args"]["input"]["context"]["notify_request"]
@@ -661,7 +680,7 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
 
         result = await approvals._approve_action(str(row["id"]), actor=_HUMAN_OWNER)
 
-        status = {r["id"]: r["status"] for r in await _pending_actions(booted)}[row["id"]]
+        status = {r["id"]: r["status"] for r in await actions.rows()}[row["id"]]
         failures = await _execution_failures(booted, row["id"])
         if inert:
             assert "error" not in result, result
@@ -689,12 +708,12 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
             delivery._log_notification_best_effort.await_args_list
         )
         assert "rows.csv" in logged and "private-row" not in logged
-    assert len(await _pending_actions(booted)) == 2
+    assert len(await actions.rows()) == 2
 
 
 @_booted
 async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_task(
-    booted_daemon, tmp_path, monkeypatch
+    approvals_messenger, monkeypatch
 ):
     """An approval context authorizes only its exact tool, arguments and task.
 
@@ -712,7 +731,8 @@ async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_
         set_approval_execution_context,
     )
 
-    booted = await _approvals_messenger(booted_daemon, tmp_path)
+    booted = approvals_messenger
+    actions = await _ActionLog.open(booted)
     # In process: the approval context is a task-local the MCP transport cannot carry.
     route_execute = (await booted.daemon.mcp.get_tool("route.execute")).fn
     telegram = _module(booted, "telegram")
@@ -749,7 +769,7 @@ async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_
             reset_approval_execution_context(token)
         assert result["status"] == "error", case
         sent_args.append(altered)
-        assert [row["tool_args"] for row in await _pending_actions(booted)] == sent_args, case
+        assert [row["tool_args"] for row in await actions.rows()] == sent_args, case
         send.assert_not_awaited()
 
     token = bind()
@@ -759,7 +779,7 @@ async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_
         reset_approval_execution_context(token)
     assert control["status"] == "ok", control
     send.assert_awaited_once()
-    assert len(await _pending_actions(booted)) == 3
+    assert len(await actions.rows()) == 3
 
 
 @_booted
