@@ -883,8 +883,27 @@ async def test_a_tainted_stored_record_joins_its_writer_invocations_label(broker
         assert row["label_data"] == ["external:mail-7", "owner"]  # precise, not {world}
         assert row["label_sens"] == ["finance", "health"]  # writer's plus the capability's
 
-        # A dangling pointer fails closed to the unknown label.
-        dangling, dangling_token = await w.invocation(goal, _grant(RECALL), depth=1, parent=reader)
+        # A clean, category-free writer stays precise: the reader is not exposed
+        # and carries only the capability's category.
+        clean_goal = await w.goal(_grant(SEARCH))
+        clean_writer, _ = await w.invocation(clean_goal, _grant(SEARCH))
+        goal = await w.goal(_grant(RECALL))
+        reader, token = await w.invocation(goal, _grant(RECALL))
+        w.forwarder.receipt = DomainReceipt(
+            "committed",
+            "r",
+            {},
+            stamped_owner_untainted=True,
+            stamped_writers=((clean_goal, clean_writer),),
+        )
+        await w.broker.call(goal, token, RECALL.identity, {})
+        row = await _label(w, reader)
+        assert (row["exposed"], row["exposure_cause"]) == (False, None)
+        assert (row["label_data"], row["label_sens"]) == (["owner"], ["health"])
+
+        # A dangling pointer fails closed to {world} and all six, cause read.
+        goal = await w.goal(_grant(RECALL))
+        dangling, token = await w.invocation(goal, _grant(RECALL))
         w.forwarder.receipt = DomainReceipt(
             "committed",
             "r",
@@ -892,9 +911,11 @@ async def test_a_tainted_stored_record_joins_its_writer_invocations_label(broker
             stamped_owner_untainted=True,
             stamped_writers=((writer_goal, uuid4()),),
         )
-        await w.broker.call(goal, dangling_token, RECALL.identity, {})
+        await w.broker.call(goal, token, RECALL.identity, {})
         row = await _label(w, dangling)
-        assert "world" in row["label_data"] and set(row["label_sens"]) == CATEGORIES
+        assert (row["exposed"], row["exposure_cause"]) == (True, "read")
+        assert row["label_data"] == ["owner", "world"]
+        assert set(row["label_sens"]) == CATEGORIES
 
 
 async def test_a_replacement_lead_inherits_its_predecessor_and_parks(broker_db_url):

@@ -87,9 +87,11 @@ authority preserved, or unknown). No domain reports its stamp account over the
 wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
 until one does.
 
-Categories come from the descriptor's D4 `output_sensitivity`: `ordinary` output
-carries none and anything else all six (`contracts.declared_categories`). A
-per-tool category declaration does not exist yet; it can only narrow.
+Until the per-tool `categories` declaration lands and is made required (a
+switch-release blocker), categories are derived from the descriptor's D4
+`output_sensitivity` (`contracts.declared_categories`): `ordinary` is an
+explicit owner-catalog declaration of no sensitive category and carries none;
+anything undeclared or not `ordinary` carries all six.
 Concurrent joins are single-statement unions under the row lock, so neither
 principal nor category is lost.
 
