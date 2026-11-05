@@ -394,7 +394,7 @@ async def test_compose_today_bypasses_coverage_gate_even_when_uncovered(chronicl
     assert payload.covered_and_available is True
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def continuation_migrated_url(postgres_container):
     """Synchronous full production bootstrap and chains before any async pool."""
     from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
@@ -591,6 +591,13 @@ async def test_continuation_full_migrated_runtime_writeback_preserves_unknown_vs
 
     runtime, observer = continuation_pools
     target = date(2026, 4, 20)
+    # This scenario requests UTC and a specific closed day. Align the real
+    # migration control instead of silently exercising the repair refusal.
+    await runtime.execute(
+        "UPDATE daily_repair_control SET timezone='UTC', closed_through=$1, "
+        "replay_ack=replay_epoch WHERE singleton",
+        target,
+    )
     for offset in range(1, 9):
         await upsert_daily_rollup(
             runtime,

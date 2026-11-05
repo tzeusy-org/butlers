@@ -64,7 +64,9 @@ def _apply_core_315_316_bodies(engine) -> None:
     versions = repo_root / "alembic" / "versions" / "core"
     with engine.begin() as connection:
         current = connection.scalar(text("SELECT version_num FROM public.alembic_version"))
-        if current != "core_314":
+        if (
+            current != "core_314"
+        ):  # pinned-revision: selected pre-315 disposable boundary proves missing-role refusal before applying actual 315/316 bodies
             raise AssertionError(f"expected disposable core_314 database, got {current!r}")
         migration_context = MigrationContext.configure(connection)
         with Operations.context(migration_context):
@@ -776,7 +778,7 @@ def test_late_created_allowlist_role_receives_actual_bootstrap_replay():
             with pytest.raises(BootstrapPrerequisiteError):
                 asyncio.run(run_migrations(url, chain="core"))
             with engine.connect() as conn:
-                assert (
+                assert (  # pinned-revision: selected pre-315 disposable boundary proves missing-role refusal before applying actual 315/316 bodies
                     conn.scalar(text("SELECT version_num FROM public.alembic_version"))
                     == "core_314"
                 )

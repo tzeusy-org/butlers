@@ -15,7 +15,7 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `recipients.py` | Owner rule 2: classify each `recipient_params` party (UUID, email, Telegram, WhatsApp) with the core-notify owner-resolution rule |
 | `policy.py` | Dispatch, park or refuse from effect class, exposure, park-only, approval mode and approval policy |
 | `actuation.py` | RFC 0028 risk map adapter: the tier of an `actuate` call (`ha_call_service`, `ha_activate_scene`) |
-| `ledger.py` | SQL over the sw_047 goal ledger; one goal row lock per transaction |
+| `ledger.py` | SQL over the sw_047 goal ledger and its sw_057 labels; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
@@ -50,8 +50,60 @@ last unit of budget: exactly one wins).
 The forward happens after commit, signed with the D7 field list. Tools declaring
 `idempotency = key_required` receive the `effect_id` as the idempotency key. The
 broker retries once only on a `not_received` receipt; any other transport
-failure settles the effect `unknown`. Untrusted output, and stamped output the
-domain does not vouch for, exposes the invocation (and so the goal).
+failure settles the effect `unknown`. A committed receipt's output label is
+joined into the calling invocation in the settling transaction, before the
+result reaches the model (see [Invocation labels](#invocation-labels-s1-bu-dhloi16)).
+
+## Invocation labels (S1, bu-dhloi1.6)
+
+Policy reads the calling invocation's own S1 label (`Principal.label`, from
+`sw_057`), never the goal's union: `Principal.exposed` is the label's exposure
+(or a legacy Boolean, which sw_057 keeps equal to it). A clean sibling keeps
+dispatching after another sibling reads untrusted content. An unreadable,
+missing or unknown label refuses `authentication_refused`. The label is not
+added to the signed assertion; the assertion's `exposed` is the invocation's.
+`butlers.core.goal_labels` is the Python grammar; sw_057 CHECKs are the store's.
+
+Every producer, deferred path and reader of a label:
+
+| Path | Label effect | Where |
+| --- | --- | --- |
+| Admission | admitted label from `admitted_exposed` (unknown or owner), joined with a causing effect's label | sw_057 `goal_label_goal`; `goal_admission.effect_exposed` |
+| Invocation start | admitted label; a child joins its caller; a replacement lead joins every earlier lead and recorded effect (`child` / `recovery`) | sw_057 `goal_label_invocation` |
+| Broker read | committed output joins `{owner}` (trusted) or `{world}` (untrusted) plus the capability's categories; stamped output, see D6 stores (`read`) | `BrokerLedger.settle` |
+| Child result | the lead joins its child's label (`child`) | `Broker.read_child_result` |
+| Joined reply | inbox row = owner ∪ answered effect's label ∪ unknown for outside content; the reader joins it on consumption (`inbox`) | sw_057 `goal_label_inbox`; `GoalLedger.deliver`; `Broker.consume_inbox` |
+| Effect | snapshots its requesting label at insert; immutable | sw_057 `goal_label_effect` |
+| Park, approval, edit, retry | the approved call runs under the requesting invocation's current label, which must cover the effect's snapshot; an edited effect row snapshots that label | `BrokerLedger.begin_approved` |
+| Receipt / unknown / not_received | no output join unless committed; the effect label never changes | `Broker._forward` |
+| Goal union | every invocation and inbox label joins it; reporting only | sw_057 `goal_invocation_exposure` |
+| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no complete stamp account from the store, joins `{world}` and all six | `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
+| Reply evidence | a reply to a prompt of an exposed goal is outside content (goal union; conservative) | `accepted_source.py` `_reply` |
+
+Stored labels resolve through the writer pointer (lead decision on
+bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
+Unstamped legacy records keep their content-authority behaviour (original
+authority preserved, or unknown). No domain reports its stamp account over the
+wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
+until one does.
+
+Until the per-tool `categories` declaration lands and is made required
+(bu-dhloi1.27, a switch-release blocker), categories are derived from the descriptor's D4
+`output_sensitivity` (`contracts.declared_categories`): `ordinary` is an
+explicit owner-catalog declaration of no sensitive category and carries none;
+anything undeclared or not `ordinary` carries all six.
+Concurrent joins are single-statement unions under the row lock, so neither
+principal nor category is lost.
+
+`switchboard.invocation_exposure_measurements` (owner-only view) counts
+invocations, effects and approval-routed effects by role, `exposure_cause`, the
+retained pre-switch gate (`goal_union_exposed`: the goal aggregate sw_047 used)
+and the switched gate (`invocation_exposed`). Rows with the first true and the
+second false are the invocations the switch stopped restricting. There is no
+target value; it is evidence for the rollout.
+
+Not activated here (bu-4c7nvp.1.2): typed reminders, cited-evidence steering
+and containment.
 
 ## Recipients and owner rules
 

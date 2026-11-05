@@ -491,6 +491,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "roster/switchboard/migrations/057_invocation_labels.py",
+        "<dynamic:switchboard.{table}>",
+    ): "dynamic-local: owning migration's loop over its fixed labelled ledger table tuple (bu-dhloi1.6); not a foreign-schema exception",
+    (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
@@ -820,6 +824,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "sanctioned:RFC-0038: D7 durable broker refusal records in the Switchboard-owned "
         "ledger (sw_056); qualified SQL allocated to capability_broker/ledger.py (bu-m1u7zy.12)"
     ),
+    **{
+        ("src/butlers/capability_broker/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S1 label joins at the runner's reads over the "
+            "Switchboard-owned goal ledger (sw_057); qualified SQL allocated to "
+            "capability_broker/ledger.py (bu-dhloi1.6)"
+        )
+        for relation in ("goal_inbox", "goal_label_exposed", "goal_label_union")
+    },
     (
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
@@ -1108,6 +1120,42 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/testing/recall_bench.py",
         "<dynamic:{table}>",
     ): "dynamic-local: benchmark-selected memory table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/api/routers/data_ops.py",
+        "<dynamic:{relation}>",
+    ): "dynamic-local: configured owning memory facts relation; visibility branch is restricted to chronicler_mem by local_fact_visibility_condition and uses fixed facts table; database ACLs remain authority, this inventory grants no privilege",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{from_clause}>",
+    ): "dynamic-local: current _fact_select_query and _count_memory_table callers use validated owning-schema episodes, facts or rules relations; facts alone adds the fixed facts alias and visibility filter; database ACLs remain authority, this inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_fact_dispositions",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned fact dispositions used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_retention_spans",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned bounded retention cursor spans used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_source_redactions",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned retention source redactions used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.enqueue_daily_repair",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned bounded daily repair enqueue function used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.episodes",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned canonical source episode retention discovery used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.redact_retention_facts",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned retention fact redaction function used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/rollups.py",
+        "chronicler.daily_repair_source_redactions",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned retention redaction barrier for rollup source reads; schema and relation are code constants, not caller-selected; inventory grants no privilege",
 }
 
 

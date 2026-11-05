@@ -56,7 +56,7 @@ def test_chronicler_030_refuses_missing_private_facts_before_schema_changes(post
             assert conn.execute(
                 text("SELECT to_regclass('chronicler.daily_repair_control') IS NULL")
             ).scalar_one()
-            assert (
+            assert (  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
                 conn.execute(
                     text("SELECT version_num FROM chronicler.alembic_version")
                 ).scalar_one()
@@ -393,7 +393,7 @@ def test_chronicler_030_requires_effective_runtime_projection_privileges_before_
             assert conn.execute(
                 text("SELECT to_regclass('chronicler.daily_repair_control') IS NULL")
             ).scalar_one()
-            assert (
+            assert (  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
                 conn.execute(
                     text("SELECT version_num FROM chronicler.alembic_version")
                 ).scalar_one()
@@ -3045,7 +3045,7 @@ def test_chronicler_030_refuses_malformed_memory_storage_before_schema_changes(
     valid_engine = create_engine(valid_url)
     try:
         with valid_engine.connect() as conn:
-            assert (
+            assert (  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
                 conn.execute(
                     text("SELECT version_num FROM chronicler.alembic_version")
                 ).scalar_one()
@@ -3187,7 +3187,7 @@ def test_chronicler_030_refuses_malformed_memory_storage_before_schema_changes(
                 ).scalar_one()
                 == 0
             )
-            assert (
+            assert (  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
                 conn.execute(
                     text("SELECT version_num FROM chronicler.alembic_version")
                 ).scalar_one()
@@ -3265,8 +3265,12 @@ memory_schema = "chronicler_mem"
             }
     finally:
         initial_engine.dispose()
-    assert "chronicler_029" in initial_versions
-    assert "chronicler_030" not in initial_versions
+    assert (
+        "chronicler_029" in initial_versions
+    )  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
+    assert (
+        "chronicler_030" not in initial_versions
+    )  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
     initial_core_versions = {version for version in initial_versions if version.startswith("core_")}
     assert initial_core_versions
     expected_versions_after_success = (initial_versions - {"chronicler_029"}) | {"chronicler_030"}
@@ -3318,16 +3322,15 @@ memory_schema = "chronicler_mem"
     daemon._module_configs = daemon._validate_module_configs()
     monkeypatch.setattr(daemon, "_build_db_url", lambda: url)
 
-    import butlers.lifecycle as lifecycle
-
     lifecycle_calls: list[tuple[str, str | None]] = []
-    real_lifecycle_migrations_run = lifecycle.run_migrations
+    real_chain_at_head = migrations._chain_at_head
 
-    async def track_lifecycle_migration(db_url, chain="all", schema=None):
+    def observe_chain_at_head(db_url, chain, schema):
+        # Observe the real per-chain admission probe, never replace a daemon phase.
         lifecycle_calls.append((chain, schema))
-        return await real_lifecycle_migrations_run(db_url, chain=chain, schema=schema)
+        return real_chain_at_head(db_url, chain, schema)
 
-    monkeypatch.setattr(lifecycle, "run_migrations", track_lifecycle_migration)
+    monkeypatch.setattr(migrations, "_chain_at_head", observe_chain_at_head)
     with pytest.raises(
         Exception, match="required canonical storage chronicler_mem.facts is missing"
     ):

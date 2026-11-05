@@ -22,6 +22,7 @@ from butlers.core.capability_json import (
     parse_json_object,
 )
 from butlers.core.goal_admission import Grant
+from butlers.core.goal_labels import Label, output_label
 
 from .actuation import rfc0028_actuation_risk
 from .assertions import LIFETIME_SECONDS, AssertionSigner
@@ -133,6 +134,16 @@ class Broker:
     async def revoke_invocation_token(self, goal_id: UUID, invocation_id: UUID) -> None:
         async with self._transaction() as ledger:
             await ledger.revoke_token(goal_id, invocation_id)
+
+    async def consume_inbox(self, goal_id: UUID, invocation_id: UUID, inbox_id: UUID) -> bool:
+        """Deliver an inbox row to a running invocation, joining its label first (S1)."""
+        async with self._transaction() as ledger:
+            return await ledger.consume_inbox(goal_id, invocation_id, inbox_id)
+
+    async def read_child_result(self, goal_id: UUID, lead_id: UUID, child_id: UUID) -> Label:
+        """A returned child contaminates the lead that reads its result (D6, S1)."""
+        async with self._transaction() as ledger:
+            return await ledger.read_child_result(goal_id, lead_id, child_id)
 
     # -- session surface --------------------------------------------------------
 
@@ -329,11 +340,19 @@ class Broker:
             await self._settle(reserved, "unknown")
             return BrokerResult("unknown", reserved.effect_id)
         status = "failed" if receipt.status == "not_received" else receipt.status
-        trust = reserved.capability.output_trust
-        expose = status == "committed" and (
-            trust == "untrusted" or (trust == "stamped" and not receipt.stamped_owner_untainted)
+        capability = reserved.capability
+        # D6/S1: a committed result's label joins the reader before it is returned.
+        output = (
+            output_label(
+                capability.output_trust, receipt.stamped_owner_untainted, capability.categories
+            )
+            if status == "committed"
+            else None
         )
-        await self._settle(reserved, status, receipt_ref=receipt.receipt_ref, expose=expose)
+        writers = receipt.stamped_writers if capability.output_trust == "stamped" else ()
+        await self._settle(
+            reserved, status, receipt_ref=receipt.receipt_ref, output=output, writers=writers
+        )
         if approval_ref is not None:
             await self._write_back(reserved, approval_ref, status, receipt.receipt_ref)
         if status != "committed":

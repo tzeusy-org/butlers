@@ -1544,8 +1544,13 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             )
 
     for code in ("invalid_grant", "unauthorized_client"):
-        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
-        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        # Independent failing grants: a successful first case must not seed
+        # this case through the intentionally shared account token cache.
+        case_config = gmail_config.model_copy(
+            update={"gmail_refresh_token": f"synthetic-grant-{code}"}
+        )
+        runtime = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
         runtime._metrics = MagicMock()
         requests = []
 

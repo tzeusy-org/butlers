@@ -326,7 +326,11 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
     connector._client_id = "client-id"
     connector._client_secret = "client-secret"
     connector._http_client = MagicMock()
-    connector._http_client.post = AsyncMock(return_value=httpx.Response(400, json=payload))
+    connector._http_client.post = AsyncMock(
+        return_value=httpx.Response(
+            400, json=payload, request=httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        )
+    )
     monkeypatch.setattr(
         "butlers.google_credentials._resolve_entity_refresh_token",
         AsyncMock(return_value="refresh-token"),
@@ -337,6 +341,19 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
 
     if expected_error is GoogleHealthCredentialError:
         assert type(exc_info.value) is GoogleHealthCredentialError
+
+    connector._shared_pool.execute = AsyncMock()
+    if expected_error is GoogleHealthTokenRevokedError:
+        await connector._mark_account_revoked(ctx.account_id)
+        args = connector._shared_pool.execute.await_args.args
+        assert "WHERE ga.id = $1" in args[0]
+        assert "ei.value = $2" in args[0]
+        assert args[1] == ctx.account_id and args[1] != ctx.entity_id
+        assert args[2] == "refresh-token"
+    else:
+        # The helper refuses a transition without qualified grant provenance.
+        await connector._mark_account_revoked(ctx.account_id)
+        connector._shared_pool.execute.assert_not_awaited()
 
 
 def test_health_state_reports_degraded_when_account_missing() -> None:

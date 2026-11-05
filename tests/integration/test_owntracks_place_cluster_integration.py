@@ -268,7 +268,11 @@ async def test_bootstrap_consensus_is_durable_atomic_and_serialized(
     # The regular fixture seeds the migrated database; use a fresh one-slot
     # pool outside the explicit parallel-writer check to expose nested acquires.
     async with asyncpg.create_pool(
-        places_url, min_size=1, max_size=1, init=register_jsonb_codec
+        places_url,
+        min_size=1,
+        max_size=1,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler, public"},
     ) as places_pool:
         point_adapter = OwnTracksPointAdapter()
         place_adapter = OwnTracksPlaceClusterAdapter()

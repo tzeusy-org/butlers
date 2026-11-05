@@ -448,6 +448,7 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
         min_size=2,
         max_size=2,
         init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler, public"},
     )
     first_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     second_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})

@@ -542,22 +542,25 @@ async def test_domain_pool_explicit_private_schema_disowns_exact_provenance_atom
         await control.execute(f'INSERT INTO chronicler_mem."{table}" {values}', *args)
         if memory_type != "episode":
             await control.execute(f'INSERT INTO chronicler."{table}" {values}', *args)
-            for schema in ("chronicler", "chronicler_mem"):
-                await control.execute(
-                    "INSERT INTO public.memory_catalog(source_schema,source_table,source_id,"
-                    "summary,confidence) VALUES($1,$2,$3,'F2 synthetic catalog',0.75)",
-                    schema,
-                    table,
-                    memory_id,
-                )
-                await control.execute(
-                    "INSERT INTO public.entity_graph_edges(source_schema,source_table,source_id,"
-                    "subject_entity_id,predicate,object_entity_id) VALUES($1,$2,$3,$4,'knows',$4)",
-                    schema,
-                    table,
-                    memory_id,
-                    entity_id,
-                )
+            # Mint exact private-fact provenance only through its actual owner.
+            async with control.transaction():
+                await control.execute("SET LOCAL ROLE butler_chronicler_rw")
+                for schema in ("chronicler", "chronicler_mem"):
+                    await control.execute(
+                        "INSERT INTO public.memory_catalog(source_schema,source_table,source_id,"
+                        "summary,confidence) VALUES($1,$2,$3,'F2 synthetic catalog',0.75)",
+                        schema,
+                        table,
+                        memory_id,
+                    )
+                    await control.execute(
+                        "INSERT INTO public.entity_graph_edges(source_schema,source_table,source_id,"
+                        "subject_entity_id,predicate,object_entity_id) VALUES($1,$2,$3,$4,'knows',$4)",
+                        schema,
+                        table,
+                        memory_id,
+                        entity_id,
+                    )
         await control.execute(
             "INSERT INTO chronicler.memory_events(event_type,memory_type,memory_id,payload) "
             "VALUES('F2_domain_control',$1,$2,'{}'::jsonb)",
@@ -734,26 +737,29 @@ async def test_legacy_unqualified_correction_uses_callers_schema_for_event_and_p
                 memory_id,
                 f"f2-legacy-{memory_id}",
             )
-            await control.execute(
-                "INSERT INTO public.memory_catalog(source_schema,source_table,source_id,summary,confidence) "
-                "VALUES($1,'facts',$2,'F2 legacy projection',0.75)",
-                schema,
-                memory_id,
-            )
-            await control.execute(
-                "INSERT INTO public.entity_graph_edges(source_schema,source_table,source_id,"
-                "subject_entity_id,predicate,object_entity_id) VALUES($1,'facts',$2,$3,'knows',$3)",
-                schema,
-                memory_id,
-                entity_id,
-            )
+            async with control.transaction():
+                await control.execute("SET LOCAL ROLE butler_chronicler_rw")
+                await control.execute(
+                    "INSERT INTO public.memory_catalog(source_schema,source_table,source_id,summary,confidence) "
+                    "VALUES($1,'facts',$2,'F2 legacy projection',0.75)",
+                    schema,
+                    memory_id,
+                )
+                await control.execute(
+                    "INSERT INTO public.entity_graph_edges(source_schema,source_table,source_id,"
+                    "subject_entity_id,predicate,object_entity_id) VALUES($1,'facts',$2,$3,'knows',$3)",
+                    schema,
+                    memory_id,
+                    entity_id,
+                )
         await control.execute(
             "INSERT INTO chronicler.memory_events(event_type,memory_type,memory_id,payload) "
             "VALUES('F2_legacy_control','fact',$1,'{}'::jsonb)",
             memory_id,
         )
         domain_events_before = await control.fetch(
-            "SELECT * FROM chronicler.memory_events WHERE memory_id=$1 ORDER BY id", memory_id
+            "SELECT * FROM chronicler.memory_events WHERE memory_id=$1 ORDER BY created_at,id",
+            memory_id,
         )
         private_events_before = await control.fetch(
             "SELECT * FROM chronicler_mem.memory_events WHERE memory_id=$1 ORDER BY id", memory_id
@@ -794,7 +800,8 @@ async def test_legacy_unqualified_correction_uses_callers_schema_for_event_and_p
         assert private_fact_after == private_fact_before
 
         domain_events_after = await control.fetch(
-            "SELECT * FROM chronicler.memory_events WHERE memory_id=$1 ORDER BY id", memory_id
+            "SELECT * FROM chronicler.memory_events WHERE memory_id=$1 ORDER BY created_at,id",
+            memory_id,
         )
         private_events_after = await control.fetch(
             "SELECT * FROM chronicler_mem.memory_events WHERE memory_id=$1 ORDER BY id", memory_id
@@ -882,18 +889,20 @@ async def test_invoker_underlying_acl_failure_rolls_back_private_correction(
             memory_id,
             f"acl-{memory_id}",
         )
-        await control.execute(
-            "INSERT INTO public.memory_catalog(source_schema,source_table,source_id,summary,confidence) "
-            "VALUES('chronicler_mem','facts',$1,'synthetic ACL summary',0.75)",
-            memory_id,
-        )
-        await control.execute(
-            "INSERT INTO public.entity_graph_edges(source_schema,source_table,source_id,"
-            "subject_entity_id,predicate,object_entity_id) "
-            "VALUES('chronicler_mem','facts',$1,$2,'knows',$2)",
-            memory_id,
-            entity_id,
-        )
+        async with control.transaction():
+            await control.execute("SET LOCAL ROLE butler_chronicler_rw")
+            await control.execute(
+                "INSERT INTO public.memory_catalog(source_schema,source_table,source_id,summary,confidence) "
+                "VALUES('chronicler_mem','facts',$1,'synthetic ACL summary',0.75)",
+                memory_id,
+            )
+            await control.execute(
+                "INSERT INTO public.entity_graph_edges(source_schema,source_table,source_id,"
+                "subject_entity_id,predicate,object_entity_id) "
+                "VALUES('chronicler_mem','facts',$1,$2,'knows',$2)",
+                memory_id,
+                entity_id,
+            )
         before = await control.fetchrow("SELECT * FROM chronicler_mem.facts WHERE id=$1", memory_id)
         catalog = await control.fetchrow(
             "SELECT * FROM public.memory_catalog WHERE source_id=$1", memory_id

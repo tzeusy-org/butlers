@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ProgrammingError
 
+from alembic import command
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
@@ -130,12 +131,11 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     fresh database, then applies real Alembic migrations.  No calendar table is
     hand-created by this fixture: ``core_003`` creates the initial target
     surface and ``core_076`` creates the late participant-table companion.
-    Running Chronicler at its head before ``core_076`` simulates the
+    Running the selected Chronicler 026 before ``core_076`` simulates the
     independent-chain ordering that previously left the optional companion
     table without a grant.
     """
     from butlers.migrations import run_migrations
-    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 
     db_url = create_migrated_test_db(
         postgres_container,
@@ -157,7 +157,15 @@ def test_fresh_bootstrap_converges_calendar_grants_after_late_core_tables(
     finally:
         engine.dispose()
 
-    prepare_chronicler_current_head_sync(db_url, domain_schema="chronicler")
+    # Selected 026 proves the historical grant-before-late-core ordering.
+    # Current 030 additionally requires current core/private-memory preparation,
+    # which cannot precede this deliberately partial core_075 fixture.
+    from butlers.migrations import _build_alembic_config
+
+    command.upgrade(
+        _build_alembic_config(db_url, ["chronicler"], target_schema="chronicler"),
+        "chronicler@chronicler_026",
+    )
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
 
     calendar_tables = (
@@ -244,11 +252,14 @@ def test_chronicler_026_grants_effective_select_to_the_runtime_role(postgres_con
     finally:
         engine.dispose()
 
-    from butlers.migrations import run_migrations
-    from tests.chronicler._private_memory_setup import prepare_chronicler_private_memory_sync
+    from butlers.migrations import _build_alembic_config
 
-    prepare_chronicler_private_memory_sync(db_url)
-    asyncio.run(run_migrations(db_url, chain="chronicler", schema="chronicler"))
+    # The selected 026 privilege-only contract deliberately uses minimal grant
+    # targets. Do not replay unrelated current core/030 over those test tables.
+    command.upgrade(
+        _build_alembic_config(db_url, ["chronicler"], target_schema="chronicler"),
+        "chronicler@chronicler_026",
+    )
 
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
