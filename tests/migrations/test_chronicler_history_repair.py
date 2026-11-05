@@ -3155,7 +3155,7 @@ def test_chronicler_030_refuses_malformed_memory_storage_before_schema_changes(
         if malformation == "facts_missing_content":
             with pytest.raises(RuntimeError, match="late-guard observer control"):
                 with engine.begin() as conn:
-                    conn.execute(text("CREATE TEMP TABLE f1_030_observer_control (id integer)"))
+                    conn.execute(text("CREATE TEMP VIEW f1_030_observer_control AS SELECT 1 AS id"))
                     raise RuntimeError("late-guard observer control")
             assert observed_write_kinds == ["CREATE"]
             observed_write_kinds.clear()
