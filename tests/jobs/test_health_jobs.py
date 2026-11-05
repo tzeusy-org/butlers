@@ -201,11 +201,8 @@ async def test_measurement_gap_submits_typed_door_metadata():
 
 async def test_adherence_symptom_correlation_submits_via_mcp_tool():
     """An adherence dip followed by a symptom flare submits a correlation candidate."""
-    from datetime import UTC, datetime, timedelta
-
     from butlers.api.briefing.lint import voice_lint_passes
 
-    now = datetime.now(UTC)
     med_id = "11111111-1111-1111-1111-111111111111"
 
     pool = _scan_pool(
