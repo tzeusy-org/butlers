@@ -28,8 +28,7 @@ from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_admission import Grant, digest, encode_grants
 from butlers.core.goal_labels import CATEGORIES
 from butlers.core.tool_catalog import RecipientParameters
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from tests.capability_broker.helpers import capability, notify
+from tests.capability_broker.helpers import BROKER_DOMAIN, capability, notify
 from tests.switchboard.goal_ledger_fixtures import codec, reset_ledger
 
 docker_available = shutil.which("docker") is not None
@@ -39,7 +38,7 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 
-DOMAIN = "messenger"
+DOMAIN = BROKER_DOMAIN
 OWNER = uuid4()
 SEARCH = capability("search", "read", DOMAIN, resource_params=("account",))
 UNTRUSTED = capability("read_mail", "read", DOMAIN, output_trust="untrusted")
@@ -59,25 +58,6 @@ RECALL = capability(
     "recall", "read", DOMAIN, output_trust="stamped", categories=frozenset({"health"})
 )
 CATALOG = Catalog("catalog-v1", (SEARCH, UNTRUSTED, SEND, NOTIFY, PAY, RULES, RECALL))
-
-
-@pytest.fixture(scope="module")
-def broker_db_url(postgres_container):
-    from butlers.migrations import run_migrations
-
-    url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        ["core", "switchboard", "relationship"],
-        schemas={
-            "core": "switchboard",
-            "switchboard": "switchboard",
-            "relationship": "relationship",
-        },
-    )
-    for chain in ("core", "approvals"):
-        asyncio.run(run_migrations(url, chain=chain, schema=DOMAIN))
-    return url
 
 
 class StaticCatalog:

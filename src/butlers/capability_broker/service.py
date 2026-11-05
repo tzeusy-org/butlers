@@ -26,6 +26,7 @@ from butlers.core.goal_labels import Label, output_label
 
 from .actuation import rfc0028_actuation_risk
 from .assertions import LIFETIME_SECONDS, AssertionSigner
+from .boundaries import BoundaryLedger, Extractor, content_bytes, extraction_key
 from .catalog import CatalogSource
 from .contracts import (
     ActuationRisk,
@@ -41,6 +42,7 @@ from .domains import DomainReceipt, Domains, ParkReceipt
 from .ledger import UNPUBLISHED_CAPABILITY, BrokerLedger
 from .policy import decide, listable
 from .recipients import classify_recipients
+from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,15 @@ def _in_scope(capability: Capability, grant: Grant, args: dict[str, Any]) -> boo
     return True
 
 
+def _holds(reader: Label, output: Label) -> bool:
+    """Whether a result must be quarantined: it would newly expose its reader (M7).
+
+    Categories alone never quarantine (they are not exposure); a reader that
+    already holds every principal of the output gains nothing from a handle.
+    """
+    return output.exposed and not (reader.instr >= output.instr and reader.data >= output.data)
+
+
 class Broker:
     def __init__(
         self,
@@ -83,9 +94,16 @@ class Broker:
         clock: Callable[[], float] = time.time,
         transaction_timeout: float = 5,
         forward_timeout: float = 30,
+        extractor: Extractor | None = None,
+        quarantine_reads: bool = False,
     ):
         self.pool, self.catalog, self.domains, self.signer = pool, catalog, domains, signer
         self.actuation_risk = actuation_risk
+        # M7 (bu-4c7nvp.1.2), dark: the quarantined extraction model, and whether
+        # a committed result that would newly expose its reader is held behind a
+        # handle. Off, the first-switch read path is unchanged.
+        self.extractor = extractor
+        self.quarantine_reads = quarantine_reads
         self.clock = clock
         self.transaction_timeout = transaction_timeout
         self.forward_timeout = forward_timeout
@@ -350,9 +368,13 @@ class Broker:
             else None
         )
         writers = receipt.stamped_writers if capability.output_trust == "stamped" else ()
-        await self._settle(
-            reserved, status, receipt_ref=receipt.receipt_ref, output=output, writers=writers
-        )
+        handle = None
+        if output is not None and self.quarantine_reads:
+            handle = await self._settle_holding(reserved, status, receipt, output, writers)
+        else:
+            await self._settle(
+                reserved, status, receipt_ref=receipt.receipt_ref, output=output, writers=writers
+            )
         if approval_ref is not None:
             await self._write_back(reserved, approval_ref, status, receipt.receipt_ref)
         if status != "committed":
@@ -361,8 +383,181 @@ class Broker:
             "returned" if reserved.effect_id is None else "committed",
             reserved.effect_id,
             approval_ref,
-            receipt.value,
+            receipt.value if handle is None else {"handle": str(handle)},
         )
+
+    async def _settle_holding(
+        self,
+        reserved: Reservation,
+        status: str,
+        receipt: DomainReceipt,
+        output: Label,
+        writers: tuple[tuple[Any, Any], ...],
+    ) -> UUID | None:
+        """Settle a committed result, quarantining it if it would expose its reader.
+
+        The full output label (with every stamped writer's) is computed under
+        the goal lock. A result the reader already covers, or content that has
+        no canonical form to hold, takes the ordinary join instead; either way
+        the receipt and its label commit together.
+        """
+        try:
+            raw = content_bytes(receipt.value)
+        except InvalidArguments:
+            raw = None
+        async with self._transaction() as ledger:
+            await ledger._lock_goal(reserved.principal.goal_id)
+            label = output
+            for pointer in writers:
+                label = label.join(await ledger.writer_label(pointer))
+            if raw is None or not _holds(reserved.principal.label, label):
+                await ledger.settle(reserved, status, receipt_ref=receipt.receipt_ref, output=label)
+                return None
+            await ledger.settle(reserved, status, receipt_ref=receipt.receipt_ref)
+            return await BoundaryLedger(ledger).quarantine(
+                reserved.principal, reserved.effect_id, label, raw
+            )
+
+    # -- M7 typed boundaries: goal tools (D8, bu-4c7nvp.1.2) --------------------
+
+    async def read_handle(self, goal_id: UUID, token: str, handle_id: Any) -> object:
+        """Free-text dereference: the reader joins the handle's label first."""
+        self._require_available()
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            boundary = BoundaryLedger(ledger)
+            content, _, label = await boundary.handle(principal, handle_id)
+            exhausted = await boundary.charge(principal)
+            if exhausted is None:
+                await boundary.join(principal, label, "read")
+        if exhausted is not None:
+            raise exhausted
+        return content
+
+    async def extract(
+        self, goal_id: UUID, token: str, handle_id: Any, schema_document: Any
+    ) -> dict[str, Any]:
+        """Quarantined extraction of one closed-shape value from a handle.
+
+        The extraction model sees only the handle's content and the schema. Its
+        output must match the schema exactly or the call refuses (and nothing is
+        cached). The caller joins the handle's whole label before the extractor
+        runs, so every outcome, refusals included, is accounted for; the typed
+        value carries that label too (relaxation held on bu-4c7nvp.1.1).
+        Refusals before any content is touched (schema, handle slots, a foreign
+        handle, budget) join nothing.
+        """
+        self._require_available()
+        extractor = self.extractor
+        if extractor is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        try:
+            schema = parse_schema(schema_document)
+        except TypedRefused:
+            raise BrokerRefused(Reason.POLICY) from None
+        if schema.has_handles:
+            # Content may not select which handle a reader dereferences next.
+            raise BrokerRefused(Reason.POLICY)
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            boundary = BoundaryLedger(ledger)
+            content, content_digest, label = await boundary.handle(principal, handle_id)
+            key = extraction_key(content_digest, label, schema, extractor.identity)
+            exhausted = await boundary.charge(principal)
+            cached = await boundary.cached(key) if exhausted is None else None
+            if exhausted is None:
+                # Joined before the content reaches the extractor, with the charge:
+                # whatever the outcome (a value, a refusal, a raise or a timeout)
+                # depends on content the caller is now accountable for. A refusal
+                # must not carry an adversary-chosen bit to an unexposed reader.
+                seen = label if cached is None else label.join(cached[1])
+                await boundary.join(principal, typed_value_label(seen), "read")
+        if exhausted is not None:
+            raise exhausted
+        if cached is not None:
+            return cached[0]
+        try:
+            async with asyncio.timeout(self.forward_timeout):
+                candidate = await extractor.extract(content, schema.document)
+            if type(candidate) is not dict:
+                raise TypedRefused("value_outside_schema")
+            value = validate_value(schema, parse_json_object(canonical_bytes(candidate)))
+        except asyncio.CancelledError:
+            raise
+        except (TypedRefused, InvalidArguments, TypeError):
+            raise BrokerRefused(Reason.POLICY) from None
+        except Exception:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            boundary = BoundaryLedger(ledger)
+            _, _, label = await boundary.handle(principal, handle_id)
+            stored, stored_label = await boundary.remember(
+                key, schema, extractor.identity, value, label
+            )
+            await boundary.join(principal, typed_value_label(label.join(stored_label)), "read")
+        return stored
+
+    async def fix_child_result_schema(
+        self, goal_id: UUID, child_id: UUID, schema_document: Any
+    ) -> None:
+        """Runner-private, at child launch: the brief's expected result schema (D9)."""
+        try:
+            schema = parse_schema(schema_document)
+        except TypedRefused:
+            raise BrokerRefused(Reason.POLICY) from None
+        async with self._transaction() as ledger:
+            await BoundaryLedger(ledger).fix_result_schema(goal_id, child_id, schema)
+
+    async def goal_return(self, goal_id: UUID, token: str, value: Any) -> None:
+        """``goal.return``: a child's result, only in its fixed closed schema, ends it."""
+        self._require_available()
+        try:
+            snapshot = parse_json_object(canonical_bytes(value))
+        except (InvalidArguments, TypeError):
+            raise BrokerRefused(Reason.POLICY) from None
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            if principal.depth != 1:
+                raise BrokerRefused(Reason.CAPABILITY)
+            boundary = BoundaryLedger(ledger)
+            schema = await boundary.result_schema(principal)
+            try:
+                validate_value(schema, snapshot)
+            except TypedRefused:
+                raise BrokerRefused(Reason.POLICY) from None
+            if not await boundary.goal_handles(goal_id, schema.handle_refs(snapshot)):
+                raise BrokerRefused(Reason.RESOURCE)
+            exhausted = await boundary.charge(principal)
+            if exhausted is None:
+                await boundary.record_return(principal, snapshot)
+        if exhausted is not None:
+            raise exhausted
+
+    async def goal_await(self, goal_id: UUID, token: str, child_id: Any) -> dict[str, Any]:
+        """``goal.await``: the lead reads its child's status, result and effects.
+
+        Whatever the lead learns about a child (its result, its effects' statuses,
+        even that it is still running) comes from that child's behaviour, so the
+        lead joins the child's label on every read (D6 cause ``child``).
+        """
+        self._require_available()
+        async with self._transaction() as ledger:
+            principal = await ledger.authenticate(goal_id, token)
+            if principal.depth != 0:
+                raise BrokerRefused(Reason.CAPABILITY)
+            boundary = BoundaryLedger(ledger)
+            status, result, label, effects = await boundary.child_outcome(principal, child_id)
+            exhausted = await boundary.charge(principal)
+            if exhausted is None:
+                await boundary.join(principal, label, "child")
+        if exhausted is not None:
+            raise exhausted
+        return {
+            "status": status,
+            "result": result if status == "returned" else None,
+            "effects": effects,
+        }
 
     # -- trusted owner-decision path (D13) --------------------------------------
 

@@ -245,6 +245,10 @@ backup while denying other runtimes after bootstrap regrants. `sw_057` adds the
 S1 label columns (`label_*`, `admitted_label_*`, `exposure_cause`) to goals,
 invocations, effects and inbox rows, their validating CHECKs and join triggers,
 and the owner-only `switchboard.invocation_exposure_measurements` view; it adds
-no table and no second `control.goals` schema. See
+no table and no second `control.goals` schema. `sw_058` (M7, bu-4c7nvp.1.2) adds
+the dark typed-boundary stores `goal_handles`, `extraction_cache`,
+`goal_child_results` and `source_containments`, each labelled with the sw_057
+grammar where it holds content, insert-only for the runtime (a child result
+row gains its one result) and guarded against update, delete and truncate. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.

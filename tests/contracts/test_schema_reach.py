@@ -792,6 +792,41 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         )
         for relation in ("goal_inbox", "goal_label_exposed", "goal_label_union")
     },
+    **{
+        ("src/butlers/capability_broker/boundaries.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: M7 typed boundaries (handles, extraction cache, child "
+            "results; sw_058) over the Switchboard-owned goal ledger; qualified SQL allocated "
+            "to capability_broker/boundaries.py (bu-4c7nvp.1.2)"
+        )
+        for relation in (
+            "effects",
+            "extraction_cache",
+            "goal_child_results",
+            "goal_handles",
+            "invocations",
+        )
+    },
+    **{
+        ("src/butlers/capability_broker/m7_report.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: M7 gate report, content-blind counts over the owner-only "
+            "S1 measurements view and sw_058 stores (bu-4c7nvp.1.2)"
+        )
+        for relation in (
+            "admission_decisions",
+            "extraction_cache",
+            "goal_child_results",
+            "goal_handles",
+            "invocation_exposure_measurements",
+            "source_containments",
+        )
+    },
+    **{
+        ("src/butlers/core/source_containment.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D13 Contain over the Switchboard-owned admission ledger "
+            "(sw_058); qualified SQL allocated to core/source_containment.py (bu-4c7nvp.1.2)"
+        )
+        for relation in ("admission_decisions", "goals", "source_containments")
+    },
     (
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",

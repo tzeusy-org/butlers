@@ -395,6 +395,8 @@ class GoalAdmission:
 
     async def _transaction(self, source: SourceRef, attempt_id: UUID) -> AdmissionResult:
         from butlers.core.goal_ledger import GoalLedger
+        from butlers.core.source_containment import contained as source_contained
+        from butlers.core.source_containment import lock_key as containment_lock_key
 
         try:
             async with self.pool.acquire() as connection, connection.transaction():
@@ -418,7 +420,13 @@ class GoalAdmission:
                         or len(facts.source_partition) > 256
                     ):
                         raise EvidenceRefused("source_context_invalid")
-                    if facts.record_only:
+                    # M7 Contain: a contained source's envelopes are recorded with
+                    # no goal, joined reply or wake. The shared partition lock
+                    # orders this read against a concurrent containment.
+                    await ledger.lock_keys([containment_lock_key(facts.source_partition)])
+                    if facts.record_only or await source_contained(
+                        connection, facts.source_partition
+                    ):
                         # A successfully recorded feed with no subscription has
                         # a durable no-goal disposition, even after registry drift.
                         return await ledger.decide(

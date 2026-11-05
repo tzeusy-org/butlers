@@ -95,6 +95,28 @@ an ordinary verified owner goal with delivery/effect
 reference and no caused-goal link. Unknown/foreign/mismatched bindings follow
 ordinary message admission without guessing continuity.
 
+### Contained sources (M7, bu-4c7nvp.1.2)
+
+`core.source_containment.contain_source` is the owner's D13 Contain for one
+admission `source_partition`. It runs only under a verified dashboard step-up
+(bu-dhloi1.5) bound to kind `contain`, the partition digest and the current
+containment state, consumed atomically with the `sw_058`
+`switchboard.source_containments` insert. Without an admitted consumption it
+writes nothing and returns the open-dashboard handoff. The installed step-up
+interface admits only the rule kinds today, so every Contain returns the
+handoff until its trusted installer gains `contain`.
+
+A containment is permanent evidence: it records the goals already descended
+from the partition (admitted or joined from it, then goals caused by those,
+transitively) and changes none of them. After it commits, every new envelope
+from the partition takes the terminal `recorded_without_goal` decision: no
+goal, inbox row or wake, and replay returns that decision. There is no release.
+Admission takes the per-partition lock (`contain:<partition>`) after loading
+its evidence and before any decision; Contain takes the same lock before
+reading descendants, so an envelope either committed first (and is a
+descendant) or is recorded without a goal. Descendants follow admission and
+cause lineage: S1 labels carry no per-source principal yet.
+
 Database errors, failed decision persistence and cancellation roll back partial
 writes. Commit uncertainty raises `AdmissionUnavailable`; retrying the same
 durable source resolves any committed association without replenishing budget.

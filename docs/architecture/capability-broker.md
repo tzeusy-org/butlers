@@ -20,6 +20,9 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
 | `server.py` | MCP streamable HTTP goal endpoint at `/goals/{goal_id}/mcp`, `BrokerSwitch`, `session_app` |
+| `typed.py` | M7: the one adopted closed typed shape, exact value validation, the held typed-value relaxation |
+| `boundaries.py` | M7: SQL over the sw_058 handles, extraction cache and child results; the `Extractor` seam |
+| `m7_report.py` | M7: content-blind gate report and the exact held owner decisions |
 
 `src/butlers/core/capability_json.py` holds the one RFC 8785 canonicalizer and
 the golden vectors (`capability_digest_vectors.json`, `golden_vectors()`) that
@@ -102,8 +105,43 @@ and the switched gate (`invocation_exposed`). Rows with the first true and the
 second false are the invocations the switch stopped restricting. There is no
 target value; it is evidence for the rollout.
 
-Not activated here (bu-4c7nvp.1.2): typed reminders, cited-evidence steering
-and containment.
+Typed boundaries and containment are built (next section) but dark; no
+typed-value or cited-evidence relaxation is adopted.
+
+## Typed boundaries (M7, bu-4c7nvp.1.2)
+
+Built dark and unconditional on the owner's typed-value choice: they constrain
+what reaches a model, never what a value may do. Every row below joins the
+label it reads; none narrows one.
+
+| Boundary | Behaviour | Where |
+| --- | --- | --- |
+| Quarantine | With `quarantine_reads` on, a committed result whose label would newly expose the reader (exposed I/D the reader does not hold) is stored in `goal_handles` with that full label, writers included, and the model gets only `{"handle": <id>}`. A reader already holding the label, or content with no canonical form, takes the ordinary join. Categories alone never quarantine | `Broker._settle_holding` |
+| `handle.read` | Free-text dereference: joins the handle's label (cause `read`) before the content is returned. Only a handle of the caller's goal, by exact id; anything else is `resource_outside_grant` | `Broker.read_handle` |
+| Extract | The injected `Extractor` sees only the handle's content and the schema. The schema must be the closed shape and may not hold handle slots (content never selects the next dereference); the output must match exactly or the call refuses and nothing is cached. The caller joins the handle's whole label | `Broker.extract` |
+| Extraction cache | Keyed by content digest, source label, schema digest and extractor identity; no caller identity. A hit joins the cached (source) label into each reader | `extraction_cache` |
+| `goal.return` | Only a child, only once, only a value matching the result schema the runner fixed at launch (`fix_child_result_schema`); handle values must be handles of the same goal. Stores the result and ends the child | `Broker.goal_return` |
+| `goal.await` | The lead's own child: status, result (when returned) and effect statuses from the ledger. Every await joins the child's label (cause `child`), since all of it reflects the child's behaviour | `Broker.goal_await` |
+| Contain | Owner D13 action under dashboard step-up; later envelopes from the source are record-only. See [goal ledger and admission](goal-ledger-and-admission.md#contained-sources-m7-bu-4c7nvp12) | `core.source_containment` |
+
+The adopted shape (`typed.parse_schema`) is an object of at most 16 named
+slots, each a boolean, a bounded integer or number, a token from a bounded enum
+(identifier characters only), a calendar date, a UTC instant (`...Z`), an
+opaque same-goal handle, or a bounded unique array (`maxItems` <= 32,
+`uniqueItems`) of one of those. A free or patterned string, URL, hostname,
+address, UUID selector (recipient, device or resource), nested object, `$ref`,
+description, default or any unknown keyword refuses the whole schema.
+
+`typed.TYPED_VALUE_RELAXATION` is `None` and `typed.typed_value_label` returns
+the source label unchanged: with the typed-value decision held on
+bu-4c7nvp.1.1, a typed date or amount carries its source's exposure into the
+next effect, which therefore keeps the under-exposure policy. Recipient,
+device and resource selectors are not typed values at all.
+`m7_report.m7_report` (owner connection) returns the exposure and
+approval-cause rows of `invocation_exposure_measurements`, sw_058 store counts,
+the exact typed-value question and the cited-label hold (bu-7ry1sy);
+`release_gate_satisfied()` is false until an adopted decision replaces the
+held constant.
 
 ## Recipients and owner rules
 
@@ -289,3 +327,6 @@ unchanged.
 - The runner (token issuance on launch, goal tools, Stop itself) and the M6
   switch that constructs the broker and turns domain verification on.
 - The service-plane tool inventory that domain verification exempts.
+- The M7 goal tools on the MCP endpoint (`handle.read`, extract, `goal.return`,
+  `goal.await`), a production `Extractor`, `quarantine_reads`, the step-up
+  installer's `contain` kind and an owner Contain route.
