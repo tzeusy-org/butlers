@@ -65,17 +65,25 @@ async def test_host_cost_is_reported(tool_host, tmp_path) -> None:
     print(f"tool_host setup: {host.setup_seconds:.3f}s (wall {elapsed:.3f}s)")
 
 
-async def test_a_db_free_host_registers_the_same_tools_on_a_given_pool(tool_host, tmp_path) -> None:
+async def test_a_db_free_host_registers_the_same_tools_on_a_given_pool(
+    tool_host, tmp_path, monkeypatch
+) -> None:
     # Handler tests whose subject is not SQL hand the host a DB-free pool: no clone,
-    # no lifecycle, the daemon's real registration.
+    # no lifecycle, the daemon's real registration. What makes that host cheap is
+    # that it never clones the template or connects a pool, so assert exactly that
+    # rather than a wall-clock bound, which CI load broke (bu-5aclrp).
     from butlers.testing.fake_pool import fake_pool
 
+    def no_db_work(*_args, **_kwargs):
+        raise AssertionError("a DB-free host cloned the template or connected a pool")
+
+    monkeypatch.setattr("butlers.testing.db.migrated_url", no_db_work)
+    monkeypatch.setattr("butlers.db.Database.connect", no_db_work)
     pool = fake_pool()
     host = await tool_host(write_butler_config(tmp_path, "general"), pool=pool)
 
     assert host.pool is pool
     assert host.admin_url == ""
-    assert host.setup_seconds < 0.5
     names = {tool.name for tool in await host.mcp.list_tools()}
     assert {"remind", "notify", "status"} <= names
 
