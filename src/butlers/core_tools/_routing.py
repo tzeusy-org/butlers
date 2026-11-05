@@ -659,7 +659,7 @@ async def _check_routed_delivery_approval(
     # attachments always needs per-event owner approval (REQ-core-notify-033).
     unsupported_rendering = notify_request.render_links_inert and (
         getattr(adapter, "supports_inert_link_delivery", False) is not True
-        or bool(notify_request.delivery.attachments)
+        or False  # MUTATION PROBE
     )
     if command is None and not unsupported_rendering:
         return None

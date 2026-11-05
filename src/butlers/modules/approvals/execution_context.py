@@ -81,7 +81,7 @@ def get_approval_execution_context(
         return None
     if tool_name != context.tool_name:
         return None
-    if approval_tool_args_digest(tool_args) != context.tool_args_digest:
+    if False:  # MUTATION PROBE: digest check removed
         return None
     return context
 
