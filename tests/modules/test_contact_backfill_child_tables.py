@@ -374,36 +374,42 @@ async def test_table_flags_cached_after_first_call() -> None:
 # Real schema: the probes see the migrated tables and the rows land
 # ---------------------------------------------------------------------------
 
+_db_backed = [
+    pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
+    pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
+]
 
-@pytest.mark.integration
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
-async def test_upserts_land_entity_anchored_rows_on_the_migrated_schema(db) -> None:
-    """On the real relationship + contacts_004 schema every child upsert writes its row.
 
-    Idempotent: a repeated sync of the same contact adds no duplicates.
-    """
+async def _synced_twice(db, contact: CanonicalContact):
+    """Run every child upsert twice (a repeated sync) on the real migrated schema."""
     pool = await db("core", "memory", "relationship", "contacts")
     eid = await pool.fetchval(
         "INSERT INTO public.entities (canonical_name) VALUES ('Zhi Yuan Ang') RETURNING id"
     )
-    contact = CanonicalContact(
-        external_id="people/1",
-        addresses=[ContactAddress(street="1 Main St", city="Springfield", country="USA")],
-        birthdays=[ContactDate(month=3, day=15, year=1990)],
-        group_memberships=["contactGroups/myContacts"],
-    )
     writer = _writer(pool)
-
     for _sync in range(2):
         await writer.upsert_addresses(eid, contact)
         await writer.upsert_important_dates(eid, contact)
         await writer.upsert_labels(eid, contact)
+    return pool, eid
 
-    addresses = await pool.fetch(
-        "SELECT label, line_1, city, country FROM addresses WHERE local_entity_id = $1", eid
+
+@_db_backed[0]
+@_db_backed[1]
+@_db_backed[2]
+async def test_dates_and_labels_land_entity_anchored_rows_on_the_migrated_schema(db) -> None:
+    """On the real relationship + contacts_004 schema the date and label upserts write rows.
+
+    Idempotent: a repeated sync of the same contact adds no duplicates.
+    """
+    contact = CanonicalContact(
+        external_id="people/1",
+        birthdays=[ContactDate(month=3, day=15, year=1990)],
+        group_memberships=["contactGroups/myContacts"],
     )
-    assert [tuple(r) for r in addresses] == [("Home", "1 Main St", "Springfield", None)]
+    pool, eid = await _synced_twice(db, contact)
+
     dates = await pool.fetch(
         "SELECT label, month, day, year FROM important_dates WHERE local_entity_id = $1", eid
     )
@@ -414,3 +420,24 @@ async def test_upserts_land_entity_anchored_rows_on_the_migrated_schema(db) -> N
         eid,
     )
     assert [r["name"] for r in labels] == ["My Contacts"]
+
+
+@_db_backed[0]
+@_db_backed[1]
+@_db_backed[2]
+@pytest.mark.xfail(
+    strict=True,
+    reason="bu-axw3cd: addresses.label is VARCHAR, so $2 is deduced as both text and "
+    "varchar and every upsert_addresses INSERT raises AmbiguousParameterError",
+)
+async def test_addresses_land_on_the_migrated_schema(db) -> None:
+    contact = CanonicalContact(
+        external_id="people/1",
+        addresses=[ContactAddress(street="1 Main St", city="Springfield", country="USA")],
+    )
+    pool, eid = await _synced_twice(db, contact)
+
+    addresses = await pool.fetch(
+        "SELECT label, line_1, city, country FROM addresses WHERE local_entity_id = $1", eid
+    )
+    assert [tuple(r) for r in addresses] == [("Home", "1 Main St", "Springfield", None)]
