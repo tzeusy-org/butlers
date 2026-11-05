@@ -359,6 +359,7 @@ class DaemonBooter:
         self._monkeypatch = monkeypatch
         self._tmp_root = tmp_root
         self._booted: list[BootedDaemon] = []
+        self._clones: list[str] = []
         self.runtime = FakeRuntime()
         self._production_adapters = {
             name: get_adapter(name) for name in list_registered_runtime_types()
@@ -419,6 +420,7 @@ class DaemonBooter:
             None, contextvars.Context().run, build
         )
         db_name = urlparse(url).path.lstrip("/")
+        self._clones.append(db_name)
         if registered:
             await self._seed_roster_row(url, config_dir)
         if credentials:
@@ -495,10 +497,16 @@ class DaemonBooter:
             await pool.close()
 
     async def close(self) -> None:
-        """Shut down every daemon still running, newest first, and restore the adapter."""
+        """Shut down every daemon still running, newest first, drop their clones, and
+        restore the adapter."""
+        from butlers.testing.migration import drop_test_db
+
         try:
             for booted in reversed(self._booted):
                 await booted.shutdown()
+            clones, self._clones = self._clones, []
+            for name in clones:
+                await asyncio.to_thread(drop_test_db, self._container, name)
         finally:
             for name, adapter in self._production_adapters.items():
                 register_adapter(name, adapter)

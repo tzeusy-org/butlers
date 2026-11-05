@@ -135,9 +135,15 @@ class ToolHosts:
         return host
 
     async def close(self) -> None:
+        """Close each host's pool, then drop its clone."""
+        from butlers.testing.migration import drop_test_db
+
         hosts, self._hosts = self._hosts, []
         for host in hosts:
             await host.daemon.db.close()
+            if host.admin_url:
+                name = urlparse(host.admin_url).path.lstrip("/")
+                await asyncio.to_thread(drop_test_db, self._container, name)
 
 
 async def host_tools(config_dir: Path, *, pool: Any) -> ToolHost:
