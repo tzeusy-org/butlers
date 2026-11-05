@@ -87,8 +87,8 @@ authority preserved, or unknown). No domain reports its stamp account over the
 wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
 until one does.
 
-Until the per-tool `categories` declaration lands and is made required (a
-switch-release blocker), categories are derived from the descriptor's D4
+Until the per-tool `categories` declaration lands and is made required
+(bu-dhloi1.27, a switch-release blocker), categories are derived from the descriptor's D4
 `output_sensitivity` (`contracts.declared_categories`): `ordinary` is an
 explicit owner-catalog declaration of no sensitive category and carries none;
 anything undeclared or not `ordinary` carries all six.
