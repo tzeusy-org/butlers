@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import StrictInt
 
@@ -1051,16 +1051,17 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
     @_tool("analytics")
     async def anomaly_scan(
         days_back: int = 7,
-        sensitivity: float = 2.5,
+        sensitivity: Literal["high", "medium", "low"] = "medium",
     ) -> dict[str, Any]:
         """Scan recent transactions for anomalies against statistical baselines.
 
-        Flags amount anomalies (deviation beyond sensitivity * stddev), new merchants,
-        and category velocity anomalies. Each flagged transaction includes anomaly type,
-        severity, and a human-readable explanation.
+        Flags amount anomalies (deviation beyond a sensitivity-chosen stddev multiple),
+        new merchants, and category velocity anomalies. Each flagged transaction includes
+        anomaly type, severity, and a human-readable explanation.
 
         days_back: Number of days back to scan (default 7).
-        sensitivity: Standard deviation multiplier for anomaly threshold (default 2.5).
+        sensitivity: "high" (1.5 stddev, flags more), "medium" (2.0, default) or
+            "low" (3.0, flags less).
 
         Returns: {anomalies: [{transaction_id, merchant, amount, anomaly_type,
                   severity, explanation}], total, status}
@@ -1175,13 +1176,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
     @_tool("analytics")
     async def spending_trends(
-        comparison: str = "month_over_month",
+        comparison: Literal["mom", "yoy"] = "mom",
         months: int = 6,
         category: str | None = None,
     ) -> dict[str, Any]:
         """Analyze spending trends over time with period-over-period comparisons.
 
-        comparison: "month_over_month" or "year_over_year".
+        comparison: "mom" (month-over-month) or "yoy" (year-over-year).
         months: Number of months of history to include (default 6).
         category: Optional filter to a specific spending category.
 
@@ -1349,7 +1350,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         """
         return await _alerts.alert_configure(
             module._get_pool(),
-            type=type,
+            alert_type=type,
             threshold=threshold,
             currency=currency,
             enabled=enabled,
