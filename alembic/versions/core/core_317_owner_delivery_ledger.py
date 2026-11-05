@@ -26,12 +26,13 @@ table                           invariant (trigger-enforced unless noted)
 ``owner_delivery_tokens``       only a SHA-256 verifier is stored; minted only at the
                                 current generation of an open subject; every binding
                                 immutable; consumed exactly once
-``owner_delivery_receipts``     append-only
-``owner_delivery_source_map``   append-only old-store id -> subject map
+``owner_delivery_receipts``     append-only; its presentation belongs to its subject
+``owner_delivery_source_map``   append-only old-store id -> subject map (same rule)
 ``owner_delivery_rollout``      singleton, default off; no runtime write policy
 ==============================  ===================================================
 
-No row is ever deleted by a runtime role. Row security is ENABLE (not FORCE), the
+No row is ever deleted or truncated, by any role (statement-level TRUNCATE guards).
+Row security is ENABLE (not FORCE), the
 core_303 posture: the table owner (dashboard, migrations, backups) keeps its bypass, and
 a runtime connection sees only rows whose ``owning_schema`` is its own
 (``butler_<schema>_rw``), whatever ``init-db.sql`` re-grants. ``connector_writer`` holds
@@ -159,7 +160,7 @@ CREATE TABLE IF NOT EXISTS public.owner_delivery_receipts (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     subject_id      UUID NOT NULL,
     owning_schema   TEXT NOT NULL,
-    presentation_id UUID REFERENCES public.owner_delivery_presentations (id),
+    presentation_id UUID,
     kind            TEXT NOT NULL CHECK (kind IN (
                         'opened', 'presented', 'sent', 'send_failed', 'send_unknown',
                         'acknowledged', 'decided', 'closed', 'refused', 'retracted',
@@ -168,7 +169,10 @@ CREATE TABLE IF NOT EXISTS public.owner_delivery_receipts (
     detail          JSONB NOT NULL DEFAULT '{{}}'::jsonb CHECK (jsonb_typeof(detail) = 'object'),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     FOREIGN KEY (subject_id, owning_schema)
-        REFERENCES public.owner_delivery_subjects (id, owning_schema)
+        REFERENCES public.owner_delivery_subjects (id, owning_schema),
+    -- A receipt can never name another subject's presentation.
+    FOREIGN KEY (presentation_id, subject_id)
+        REFERENCES public.owner_delivery_presentations (id, subject_id)
 );
 CREATE INDEX IF NOT EXISTS ix_owner_delivery_receipts_subject
     ON public.owner_delivery_receipts (subject_id, created_at);
@@ -180,11 +184,13 @@ CREATE TABLE IF NOT EXISTS public.owner_delivery_source_map (
                         'rfc0023_attempt', 'messenger_handoff', 'attention')),
     source_id       TEXT NOT NULL CHECK (char_length(source_id) BETWEEN 1 AND 256),
     subject_id      UUID NOT NULL,
-    presentation_id UUID REFERENCES public.owner_delivery_presentations (id),
+    presentation_id UUID,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (owning_schema, source_store, source_id),
     FOREIGN KEY (subject_id, owning_schema)
-        REFERENCES public.owner_delivery_subjects (id, owning_schema)
+        REFERENCES public.owner_delivery_subjects (id, owning_schema),
+    FOREIGN KEY (presentation_id, subject_id)
+        REFERENCES public.owner_delivery_presentations (id, subject_id)
 );
 """
 
@@ -298,6 +304,12 @@ BEGIN
     RETURN NEW;
 END $$;
 
+CREATE OR REPLACE FUNCTION public.owner_delivery_no_truncate() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+    RAISE EXCEPTION '% cannot be truncated', TG_TABLE_NAME USING ERRCODE = '42501';
+END $$;
+
 CREATE OR REPLACE FUNCTION public.owner_delivery_append_only() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -335,6 +347,21 @@ CREATE TRIGGER owner_delivery_source_map_append_only BEFORE UPDATE OR DELETE
     ON public.owner_delivery_source_map
     FOR EACH ROW EXECUTE FUNCTION public.owner_delivery_append_only();
 """
+
+#: Row triggers do not fire on TRUNCATE (core_287/core_293 precedent): every durable table
+#: gets a statement-level refusal, owner included.
+_TRUNCATE_GUARDS = "\n".join(
+    f"DROP TRIGGER IF EXISTS {table}_no_truncate ON public.{table};\n"
+    f"CREATE TRIGGER {table}_no_truncate BEFORE TRUNCATE ON public.{table}\n"
+    "    FOR EACH STATEMENT EXECUTE FUNCTION public.owner_delivery_no_truncate();"
+    for table in (
+        "owner_delivery_subjects",
+        "owner_delivery_presentations",
+        "owner_delivery_tokens",
+        "owner_delivery_receipts",
+        "owner_delivery_source_map",
+    )
+)
 
 
 def _grants_and_policies() -> None:
@@ -421,6 +448,7 @@ def upgrade() -> None:
     op.execute(_LOCK)
     op.execute(_DDL)
     op.execute(_TRIGGERS)
+    op.execute(_TRUNCATE_GUARDS)
     _grants_and_policies()
 
 
@@ -448,5 +476,6 @@ def downgrade() -> None:
         "owner_delivery_presentation_guard",
         "owner_delivery_token_guard",
         "owner_delivery_append_only",
+        "owner_delivery_no_truncate",
     ):
         op.execute(f"DROP FUNCTION IF EXISTS public.{function}()")

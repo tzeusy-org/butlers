@@ -354,12 +354,43 @@ async def present(
     return Presentation(row["id"], subject_id, generation, surface, state, tokens)
 
 
+#: Lock order, everywhere: the authority row (held by the caller), then the subject row,
+#: before any of that subject's presentation or token rows is locked or written. The
+#: subject lock serializes every writer of one subject, so they queue instead of
+#: deadlocking (``tests/core/test_owner_delivery_lock_order.py``).
+LOCK_ORDER: Final = ("authority", "subject", "presentation|token")
+
+
+async def _lock_subject_then_presentation(conn: Any, presentation_id: UUID) -> tuple[Any, Any]:
+    """``(subject, presentation)`` rows, locked in :data:`LOCK_ORDER`, or ``(None, None)``."""
+    # subject_id is immutable (trigger-enforced), so reading it unlocked is safe.
+    subject_id = await conn.fetchval(
+        "SELECT subject_id FROM public.owner_delivery_presentations WHERE id = $1",
+        presentation_id,
+    )
+    if not isinstance(subject_id, UUID):
+        return None, None
+    subject = await conn.fetchrow(
+        "SELECT * FROM public.owner_delivery_subjects WHERE id = $1 FOR UPDATE", subject_id
+    )
+    presentation = await conn.fetchrow(
+        "SELECT * FROM public.owner_delivery_presentations WHERE id = $1 FOR UPDATE",
+        presentation_id,
+    )
+    if subject is None or presentation is None:
+        return None, None
+    return subject, presentation
+
+
 async def begin_send(conn: Any, presentation_id: UUID) -> bool:
     """Mark a presentation as handed to its provider before the call (pending -> unknown).
 
     From here a crash leaves an honest ``unknown`` rather than an unsent ``pending`` that a
     retry would mint fresh tokens for and send again.
     """
+    subject, _ = await _lock_subject_then_presentation(conn, presentation_id)
+    if subject is None:
+        return False
     tag = await conn.execute(
         "UPDATE public.owner_delivery_presentations SET state = 'unknown' "
         "WHERE id = $1 AND state = 'pending'",
@@ -378,12 +409,7 @@ async def record_send(
     """Settle a handed-off presentation; an ambiguous provider result stays ``unknown``."""
     if outcome not in ("sent", "failed", "unknown"):
         raise OwnerDeliveryRefused("send_outcome_invalid")
-    row = await conn.fetchrow(
-        "SELECT p.*, s.state AS subject_state FROM public.owner_delivery_presentations p "
-        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
-        "WHERE p.id = $1 FOR UPDATE OF p, s",
-        presentation_id,
-    )
+    subject, row = await _lock_subject_then_presentation(conn, presentation_id)
     if row is None:
         raise OwnerDeliveryRefused("presentation_unavailable")
     kind = {"sent": "sent", "failed": "send_failed", "unknown": "send_unknown"}[outcome]
@@ -401,7 +427,7 @@ async def record_send(
             presentation_id,
             provider_ref,
         )
-    if outcome == "sent" and row["subject_state"] in ("pending", "unknown"):
+    if outcome == "sent" and subject["state"] in ("pending", "unknown"):
         await conn.execute(
             "UPDATE public.owner_delivery_subjects SET state = 'delivered' WHERE id = $1",
             row["subject_id"],
@@ -461,6 +487,7 @@ async def redeem(
     *,
     kind: str,
     source_ref: str,
+    expected_action: Action,
     owner_entity: UUID,
     surface: Surface,
     current_action_digest: str,
@@ -471,7 +498,9 @@ async def redeem(
 
     Call inside the transaction that holds the lock of the authority row named by
     ``kind``/``source_ref`` in the current schema; a token for any other subject is
-    refused before anything else. Order: lock token, lock subject, verify, CAS the
+    refused before anything else, and so is a token for any action but
+    ``expected_action`` (an ack token never reaches approve or deny). Order: lock subject,
+    lock token, verify, CAS the
     subject (generation + 1, so every competing token is stale), run ``decide`` for
     approve/reject, consume the token, receipt. A replay of the winning token answers
     ``duplicate`` without acting again. Refusals change no state other than an
@@ -480,18 +509,25 @@ async def redeem(
     verifier = token_verifier(token)
     if verifier is None:
         return Redemption("refused", "token_malformed")
+    # Token bindings are immutable, so its subject id can be read before locking; the
+    # locks then follow LOCK_ORDER (subject before token).
+    subject_id = await conn.fetchval(
+        "SELECT subject_id FROM public.owner_delivery_tokens WHERE verifier = $1", verifier
+    )
+    if not isinstance(subject_id, UUID):
+        return Redemption("refused", "token_unknown")
+    subject = await conn.fetchrow(
+        "SELECT *, current_schema() AS here FROM public.owner_delivery_subjects "
+        "WHERE id = $1 FOR UPDATE",
+        subject_id,
+    )
+    if subject is None:
+        return Redemption("refused", "subject_unavailable")
     row = await conn.fetchrow(
         "SELECT * FROM public.owner_delivery_tokens WHERE verifier = $1 FOR UPDATE", verifier
     )
     if row is None:
         return Redemption("refused", "token_unknown")
-    subject = await conn.fetchrow(
-        "SELECT *, current_schema() AS here FROM public.owner_delivery_subjects "
-        "WHERE id = $1 FOR UPDATE",
-        row["subject_id"],
-    )
-    if subject is None:
-        return Redemption("refused", "subject_unavailable")
     # Never act on one authority row with another subject's token. A foreign schema's
     # subject is not ours to receipt either (row security would refuse the write).
     if subject["owning_schema"] != subject["here"]:
@@ -504,6 +540,8 @@ async def redeem(
         return await _refuse(conn, row, "wrong_owner", subject["generation"])
     if surface != row["surface"]:
         return await _refuse(conn, row, "wrong_surface", subject["generation"])
+    if row["action"] != expected_action:
+        return await _refuse(conn, row, "action_mismatch", subject["generation"])
     if row["consumed_at"] is not None:
         raw = row["outcome"]
         outcome = dict(raw if isinstance(raw, dict) else json.loads(raw))
@@ -600,8 +638,11 @@ async def close_for_authority(
     ):
         return ()
     row = await conn.fetchrow(
+        # A close outside a token names no winning surface; an earlier acknowledgement's
+        # surface would also violate the decided_surface/state CHECK on expiry or cancel.
         "UPDATE public.owner_delivery_subjects SET state = $3, decision = $4, "
-        "resolved_at = clock_timestamp(), generation = generation + 1 "
+        "decided_surface = NULL, resolved_at = clock_timestamp(), "
+        "generation = generation + 1 "
         "WHERE owning_schema = current_schema() AND kind = $1 AND source_ref = $2 "
         "AND state NOT IN ('decided', 'cancelled', 'expired') RETURNING id, generation",
         kind,
@@ -619,16 +660,16 @@ async def close_for_authority(
 async def record_retraction(
     conn: Any, presentation_id: UUID, *, retracted: bool, reason: str | None = None
 ) -> None:
-    """Receipt a provider retraction attempt; failure leaves only harmless stale UI."""
-    row = await conn.fetchrow(
-        "SELECT p.subject_id, p.generation, p.state, s.state AS subject_state "
-        "FROM public.owner_delivery_presentations p "
-        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
-        "WHERE p.id = $1 FOR UPDATE OF p",
-        presentation_id,
-    )
+    """Receipt a provider retraction attempt; failure leaves only harmless stale UI.
+
+    Only a stale card (subject resolved, or moved past the card's generation) can be marked
+    retracted: a live card's buttons are still the owner's way to decide.
+    """
+    subject, row = await _lock_subject_then_presentation(conn, presentation_id)
     if row is None:
         raise OwnerDeliveryRefused("presentation_unavailable")
+    if subject["state"] not in RESOLVED and row["generation"] == subject["generation"]:
+        raise OwnerDeliveryRefused("presentation_live")
     if retracted and row["state"] in ("sent", "unknown"):
         await conn.execute(
             "UPDATE public.owner_delivery_presentations SET state = 'retracted' WHERE id = $1",
@@ -647,7 +688,7 @@ async def record_retraction(
 async def pending_retractions(
     conn: Any, *, surface: Surface, limit: int = 50
 ) -> tuple[RetractTarget, ...]:
-    """Live provider presentations whose actions are stale, oldest first.
+    """This schema's live provider presentations whose actions are stale, oldest first.
 
     A presentation is stale once its subject resolved or moved past its generation, by
     whichever path. The surface owner drains this and reports each attempt through
@@ -659,7 +700,7 @@ async def pending_retractions(
         "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
         "WHERE p.owning_schema = current_schema() AND p.surface = $1 "
         "AND p.state IN ('sent', 'unknown') "
-        "AND (s.state IN ('decided', 'cancelled', 'expired', 'acknowledged') "
+        "AND (s.state IN ('decided', 'cancelled', 'expired') "
         "     OR p.generation < s.generation) "
         "ORDER BY p.updated_at, p.id LIMIT $2",
         surface,
@@ -759,6 +800,7 @@ async def record_holding_reason(conn: Any, subject_id: UUID, receipt: dict[str, 
 
 __all__ = [
     "ACTIONS",
+    "LOCK_ORDER",
     "append_receipt",
     "DeliveryInputs",
     "delivery_inputs",

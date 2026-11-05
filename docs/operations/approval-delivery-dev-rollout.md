@@ -134,3 +134,9 @@ the RFC 0023 rollout rows and is **not** part of this runbook's activation. Enab
 `bridge_existing` backfill and the `parity` check that must precede it are described in
 [Owner delivery](../api_and_protocols/owner-delivery.md#rfc-0023-successor-map-and-cutover)
 and need their own authorization. Include its value in the safe baselines of step 1.6.
+
+The flag governs minting only. Turning it off stops new `od1` tokens, but tokens already
+minted stay redeemable (their decisions still go through `transition_pending_action`) and the
+connector's retraction drain keeps running. A rollback therefore leaves live `od1` cards
+working until their actions close; see
+[Flag semantics](../api_and_protocols/owner-delivery.md#flag-semantics).

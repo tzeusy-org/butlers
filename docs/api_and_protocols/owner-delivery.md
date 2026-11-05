@@ -1,7 +1,8 @@
 # Owner delivery: subjects, presentations and single-use action tokens
 
-> **Status:** source-complete and **dark**. Everything here is inert until
-> `public.owner_delivery_rollout.enabled` is set (default `false`). Contract: RFC 0038 S6,
+> **Status:** source-complete and **dark**. No token is minted until
+> `public.owner_delivery_rollout.enabled` is set (default `false`); see
+> [Flag semantics](#flag-semantics). Contract: RFC 0038 S6,
 > `openspec/changes/generalist-lead-focused-delegation/specs/owner-delivery/spec.md`
 > (REQ-owner-delivery-001..004). Bead: bu-dhloi1.13.
 
@@ -23,15 +24,24 @@ through `transition_pending_action` in the same transaction as the token redempt
 | `owner_delivery_subjects` | one row per `(owning_schema, kind, source_ref)`: owner entity, content and action digests, `generation`, `state`, typed `urgency_class` / `holding_reason` slots | identity and digests immutable; generation never decreases; closed state edges; resolved rows frozen; `decision` set only when `decided` |
 | `owner_delivery_presentations` | one row per `(subject, surface, generation)` (`retry_key`), route, provider ref, `pending/sent/failed/unknown/retracted` | inserted only at an open subject's current generation; provider ref set once; a provider-proven `failed` send may return to `pending` (its tokens are revoked) |
 | `owner_delivery_tokens` | SHA-256 **verifier** only, plus the bindings: subject, presentation, action, action digest, owner, surface, generation, expiry; `consumed_at` + closed `outcome` | minted only at the current generation of an open subject; bindings immutable; consumed once |
-| `owner_delivery_receipts` | append-only history: opened, presented, sent, send_failed, send_unknown, acknowledged, decided, closed, refused, retracted, retract_failed, bridged | append-only |
-| `owner_delivery_source_map` | old-store id → subject (and presentation) | append-only |
+| `owner_delivery_receipts` | append-only history: opened, presented, sent, send_failed, send_unknown, acknowledged, decided, closed, refused, retracted, retract_failed, bridged | append-only; a presentation is referenced by `(presentation_id, subject_id)`, so it must belong to the same subject |
+| `owner_delivery_source_map` | old-store id → subject (and presentation) | append-only; same composite presentation reference |
 | `owner_delivery_rollout` | singleton `enabled` flag | readable by runtimes; no runtime write policy |
 
 Subject states: `pending → delivered/unknown → acknowledged → decided/cancelled/expired`.
+`decided_surface` is set only on `decided`; an acknowledged subject that later expires or is
+cancelled clears it.
 Row security is ENABLE (not FORCE), as in core_303: the table owner (dashboard, migrations,
 backups) bypasses it and a butler role sees only rows whose `owning_schema` is its own. RLS is
-not the only fence: the triggers above apply to every role, and every runtime query also
-filters on `current_schema()`.
+not the only fence: the triggers above apply to every role, every runtime query also filters
+on `current_schema()`, and a statement-level `BEFORE TRUNCATE` trigger on each of the five
+ledger tables refuses truncation (`42501`) for every role, owner included (the core_287 /
+core_293 precedent).
+
+Lock order, for every writer: the authority row (`pending_actions`), then the subject, then
+its presentations and tokens (`owner_delivery.LOCK_ORDER`). A writer that starts from a
+presentation or token reads its `subject_id` unlocked, locks the subject, then the child, so
+a send settlement and a redemption on the same subject cannot deadlock.
 
 ## Tokens
 
@@ -44,9 +54,11 @@ from how the request authenticated**, never from the body.
 Redemption (`butlers.core.owner_delivery.redeem`) runs inside the transaction that already
 holds the authority row's lock, in this order:
 
-1. lock token, lock subject; the subject must be the one named by the locked authority row
+1. lock subject, lock token; the subject must be the one named by the locked authority row
    in the current schema (`subject_mismatch`);
-2. owner (`wrong_owner`) and surface (`wrong_surface`) are checked before any replay answer;
+2. owner (`wrong_owner`) and surface (`wrong_surface`) are checked before any replay answer,
+   then the token's action must be the caller's `expected_action` (`action_mismatch`), so an
+   acknowledgement token can never reach approve or deny even without the router's filter;
 3. a consumed token answers `duplicate` and acts again never; a revoked one refuses;
 4. expiry, open state (`subject_resolved`), generation (`stale_generation`) and the exact
    action digest — token, subject and the currently locked call must all match
@@ -68,7 +80,7 @@ routes (`_is_approval_callback_route`).
 | --- | --- | --- |
 | `POST /actions {token}` | connector (surface `telegram`, needs `X-Butlers-Decision-Actor: owner@telegram`) or owner browser session (surface `dashboard`) | Redeems through the normal approve/deny path (audit, dispatch). `200` with the action on a win or a replay (a replay dispatches nothing); `409 {"error":"owner_delivery_refused","reason":…}` otherwise. |
 | `GET /retractions` | connector only | This deployment's stale Telegram cards: `{presentation_id, route_ref, provider_ref}`. |
-| `POST /retractions/{presentation_id} {retracted, reason?}` | connector only | Receipts one retraction attempt. `retracted=false` keeps the card listed; it never claims success. |
+| `POST /retractions/{presentation_id} {retracted, reason?}` | connector only | Receipts one retraction attempt. `retracted=false` keeps the card listed; it never claims success. A live card (open subject, current generation) is refused with `409 presentation_live`. |
 
 ## Delivery path
 
@@ -126,5 +138,20 @@ Cutover (operator, separately authorized; not executed by this change), per sche
 3. Enable `public.owner_delivery_rollout`. From then on new cards carry only `od1` tokens,
    so this is the sole token writer.
 
-Rollback: disable the flag. Verifiers, receipts and source maps stay; consumed and stale
-tokens stay unusable; core_317's downgrade refuses while any subject exists.
+Rollback: disable the flag (see below). Verifiers, receipts and source maps stay; consumed
+and stale tokens stay unusable; core_317's downgrade refuses while any subject exists.
+
+## Flag semantics
+
+The rollout flag governs **minting only**:
+
+- off: `prepare_owner_delivery` and the dashboard dossier mint nothing; new cards carry
+  `apr1` buttons as before.
+- tokens already minted stay redeemable after the flag is turned off, so live `od1` cards are
+  not stranded. Their decisions still run through `transition_pending_action` with the same
+  checks.
+- the retraction drain (`GET/POST /retractions`) runs regardless of the flag, so stale cards
+  from an enabled period are still retracted after a rollback.
+
+To stop `od1` decisions entirely, the subject must close (decide, expire or cancel the
+action), which stales its tokens; turning the flag off is not a kill switch for live cards.

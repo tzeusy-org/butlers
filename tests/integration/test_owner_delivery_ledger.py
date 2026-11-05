@@ -146,8 +146,13 @@ async def _redeem(
     now: datetime | None = None,
     digest: str | None = None,
     calls: list[str] | None = None,
+    expect: str | None = None,
 ) -> od.Redemption:
-    """Redeem inside the authority transaction, deciding through the real approvals ops."""
+    """Redeem inside the authority transaction, deciding through the real approvals ops.
+
+    ``expect`` is the action the caller's route stands for; by default the token's own
+    (the routes derive it the same way before redeeming).
+    """
 
     async def decide(conn: Any, verb: str) -> dict[str, Any]:
         if calls is not None:
@@ -163,11 +168,16 @@ async def _redeem(
             "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
         )
         _, current = approval_digests(action["tool_name"], action["tool_args"])
+        verifier = od.token_verifier(token)
+        expected = expect or await conn.fetchval(
+            "SELECT action FROM public.owner_delivery_tokens WHERE verifier = $1", verifier
+        )
         return await od.redeem(
             conn,
             token,
             kind="approval",
             source_ref=str(action_id),
+            expected_action=expected or "approve",
             owner_entity=owner or await od.owner_entity_id(conn),  # type: ignore[arg-type]
             surface=surface,  # type: ignore[arg-type]
             current_action_digest=digest or current,
@@ -619,3 +629,263 @@ async def test_dashboard_dossier_is_a_presentation_with_its_own_tokens(pool) -> 
     assert (stale.outcome, stale.reason) == ("refused", "subject_resolved")
     assert [t.provider_ref for t in won.retract] == ["55"]
     assert await approvals_router._dashboard_owner_delivery_card(pool, action_id) is None
+
+
+async def test_ack_then_expiry_or_cancellation_still_closes_the_subject(pool) -> None:
+    """An acknowledgement's surface must not block a later expiry or cancellation."""
+    for target in (ActionStatus.EXPIRED, ActionStatus.CANCELLED):
+        action_id = await _park(pool, ordinal=int(target is ActionStatus.CANCELLED))
+        _, cards = await _present(pool, action_id, "telegram", "dashboard")
+        ack = await _redeem(pool, action_id, cards["telegram"].tokens["ack"], surface="telegram")
+        assert ack.outcome == "won"
+
+        transition = await transition_pending_action(
+            pool,
+            action_id=action_id,
+            target_status=target,
+            decided_by="system:expiry",
+            event_actor="system:expiry",
+            event_reason="synthetic close after ack",
+        )
+
+        assert transition.changed
+        row = await pool.fetchrow(
+            "SELECT pa.status, s.state, s.decided_surface, s.generation "
+            "FROM pending_actions pa JOIN public.owner_delivery_subjects s "
+            "ON s.source_ref = pa.id::text WHERE pa.id = $1",
+            action_id,
+        )
+        assert dict(row) == {
+            "status": target.value,
+            "state": target.value,
+            "decided_surface": None,
+            "generation": 3,
+        }
+
+
+async def test_an_ack_token_never_reaches_approve_or_deny(pool) -> None:
+    action_id = await _park(pool)
+    _, cards = await _present(pool, action_id, "telegram")
+    calls: list[str] = []
+    for route_action in ("approve", "reject"):
+        refused = await _redeem(
+            pool,
+            action_id,
+            cards["telegram"].tokens["ack"],
+            surface="telegram",
+            expect=route_action,
+            calls=calls,
+        )
+        assert (refused.outcome, refused.reason) == ("refused", "action_mismatch")
+    assert calls == []
+    assert await _state(pool, action_id) == ("pending", "delivered", 1)
+
+
+async def test_no_owner_delivery_table_can_be_truncated(pool) -> None:
+    for table in ("subjects", "presentations", "tokens", "receipts", "source_map"):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await pool.execute(f"TRUNCATE public.owner_delivery_{table} CASCADE")
+
+
+async def test_a_live_card_cannot_be_marked_retracted(pool) -> None:
+    action_id = await _park(pool)
+    _, cards = await _present(pool, action_id, "telegram")
+    async with pool.acquire() as conn:
+        with pytest.raises(od.OwnerDeliveryRefused, match="presentation_live"):
+            async with conn.transaction():
+                await od.record_retraction(conn, cards["telegram"].id, retracted=True)
+    assert (
+        await pool.fetchval(
+            "SELECT state FROM public.owner_delivery_presentations WHERE id = $1",
+            cards["telegram"].id,
+        )
+        == "sent"
+    )
+
+
+async def test_receipts_cannot_name_another_subjects_presentation(pool) -> None:
+    first = await _park(pool)
+    second = await _park(pool, ordinal=1)
+    subject, _ = await _present(pool, first, "telegram")
+    _, other = await _present(pool, second, "telegram")
+    with pytest.raises(asyncpg.ForeignKeyViolationError):
+        await pool.execute(
+            "INSERT INTO public.owner_delivery_receipts "
+            "(subject_id, owning_schema, presentation_id, kind, generation) "
+            "SELECT id, owning_schema, $2, 'sent', 1 FROM public.owner_delivery_subjects "
+            "WHERE id = $1",
+            subject.id,
+            other["telegram"].id,
+        )
+    with pytest.raises(asyncpg.ForeignKeyViolationError):
+        await pool.execute(
+            "INSERT INTO public.owner_delivery_source_map "
+            "(owning_schema, source_store, source_id, subject_id, presentation_id) "
+            "SELECT owning_schema, 'attention', 'x', id, $2 FROM public.owner_delivery_subjects "
+            "WHERE id = $1",
+            subject.id,
+            other["telegram"].id,
+        )
+
+
+async def test_settling_a_send_and_redeeming_concurrently_never_deadlock(pool) -> None:
+    """record_send and redeem both lock the subject first, so they queue."""
+    for ordinal in range(8):
+        action_id = await _park(pool, ordinal=ordinal)
+        _, cards = await _present(pool, action_id, "telegram", "dashboard", sent=False)
+        async with pool.acquire() as conn, conn.transaction():
+            assert await od.begin_send(conn, cards["telegram"].id)
+
+        async def settle(presentation_id: uuid.UUID = cards["telegram"].id) -> None:
+            async with pool.acquire() as conn, conn.transaction():
+                await od.record_send(conn, presentation_id, outcome="sent", provider_ref="60")
+
+        results = await asyncio.gather(
+            settle(),
+            _redeem(pool, action_id, cards["dashboard"].tokens["reject"], surface="dashboard"),
+            return_exceptions=True,
+        )
+        assert not any(isinstance(r, BaseException) for r in results), results
+        assert results[1].outcome == "won"
+
+
+async def test_minted_tokens_stay_redeemable_after_the_flag_is_turned_off(pool) -> None:
+    """The flag governs minting only: live cards are not stranded, the drain keeps going."""
+    await _enable(pool)
+    action_id = await _park(pool)
+    _, cards = await _present(pool, action_id, "telegram", "dashboard")
+    await _enable(pool, False)
+
+    assert await approvals_router._dashboard_owner_delivery_card(pool, action_id) is None
+    won = await _redeem(pool, action_id, cards["dashboard"].tokens["approve"], surface="dashboard")
+    assert won.outcome == "won"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(pool)), base_url="http://dashboard-api:41200"
+    ) as client:
+        listed = await client.get(
+            "/api/owner-delivery/retractions",
+            headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN},
+        )
+    assert [item["presentation_id"] for item in listed.json()["data"]] == [
+        str(cards["telegram"].id)
+    ]
+
+
+@pytest.fixture
+async def role_pools(db, fresh_db) -> tuple[asyncpg.Pool, asyncpg.Pool]:
+    """``(owner, runtime)`` pools on a general-schema database; runtime is the butler role."""
+    url = fresh_db("core", "approvals", schemas={"core": "general", "approvals": "general"})
+    owner = await db.open(url, schema="general")
+    await owner.execute(
+        "UPDATE public.approvals_policy SET quiet_start_hour = NULL, "
+        "quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"
+    )
+    if await owner.fetchval("SELECT count(*) FROM public.entities WHERE 'owner' = ANY(roles)") == 0:
+        await owner.execute(
+            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+            "VALUES ('Synthetic owner', 'person', ARRAY['owner'])"
+        )
+
+    async def as_butler(connection: asyncpg.Connection) -> None:
+        await connection.execute("SET ROLE butler_general_rw")
+
+    runtime = await asyncpg.create_pool(
+        url,
+        min_size=1,
+        max_size=3,
+        init=as_butler,
+        server_settings={"search_path": "general,public"},
+    )
+    try:
+        assert await runtime.fetchval("SELECT current_user") == "butler_general_rw"
+        assert not await runtime.fetchval(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+        )
+        yield owner, runtime
+    finally:
+        await runtime.close()
+
+
+async def _foreign_subject(owner: asyncpg.Pool) -> uuid.UUID:
+    """A subject another schema owns, written through the owner's RLS bypass."""
+    owner_entity = await owner.fetchval(
+        "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+    )
+    return await owner.fetchval(
+        "INSERT INTO public.owner_delivery_subjects (id, kind, owning_schema, source_ref, "
+        "owner_entity, content_digest, action_digest) "
+        "VALUES (gen_random_uuid(), 'approval', 'finance', 'foreign-action', $1, $2, $2) "
+        "RETURNING id",
+        owner_entity,
+        "a" * 64,
+    )
+
+
+async def test_runtime_role_cannot_see_or_write_another_schemas_rows(role_pools) -> None:
+    owner, runtime = role_pools
+    foreign = await _foreign_subject(owner)
+
+    assert (
+        await runtime.fetchval(
+            "SELECT count(*) FROM public.owner_delivery_subjects WHERE id = $1", foreign
+        )
+        == 0
+    )
+    assert (
+        await runtime.execute(
+            "UPDATE public.owner_delivery_subjects SET state = 'cancelled', "
+            "resolved_at = now() WHERE id = $1",
+            foreign,
+        )
+        == "UPDATE 0"
+    )
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await runtime.execute(
+            "INSERT INTO public.owner_delivery_subjects (id, kind, owning_schema, source_ref, "
+            "owner_entity, content_digest, action_digest) SELECT gen_random_uuid(), "
+            "'approval', 'finance', 'forged', owner_entity, content_digest, action_digest "
+            "FROM (SELECT $1::uuid AS owner_entity, $2 AS content_digest, $2 AS action_digest) v",
+            uuid.uuid4(),
+            "b" * 64,
+        )
+    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+        await runtime.execute(
+            "INSERT INTO public.owner_delivery_receipts (subject_id, owning_schema, kind, "
+            "generation) VALUES ($1, 'finance', 'sent', 1)",
+            foreign,
+        )
+    assert (
+        await owner.fetchval(
+            "SELECT state FROM public.owner_delivery_subjects WHERE id = $1", foreign
+        )
+        == "pending"
+    )
+
+
+async def test_runtime_role_cannot_flip_the_rollout_flag(role_pools) -> None:
+    owner, runtime = role_pools
+    assert await runtime.fetchval("SELECT enabled FROM public.owner_delivery_rollout") is False
+    try:
+        tag = await runtime.execute("UPDATE public.owner_delivery_rollout SET enabled = true")
+    except asyncpg.InsufficientPrivilegeError:
+        tag = "refused"
+    assert tag in ("UPDATE 0", "refused")
+    assert await owner.fetchval("SELECT enabled FROM public.owner_delivery_rollout") is False
+
+
+async def test_runtime_role_redeems_its_own_schemas_card(role_pools) -> None:
+    owner, runtime = role_pools
+    action_id = await _park(runtime)
+    _, cards = await _present(runtime, action_id, "telegram")
+
+    won = await _redeem(runtime, action_id, cards["telegram"].tokens["reject"], surface="telegram")
+
+    assert won.outcome == "won"
+    assert await _state(owner, action_id) == ("rejected", "decided", 2)
+    assert (
+        await owner.fetchval(
+            "SELECT owning_schema FROM public.owner_delivery_subjects WHERE source_ref = $1",
+            str(action_id),
+        )
+        == "general"
+    )

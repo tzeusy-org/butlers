@@ -10,8 +10,11 @@ transaction, audit and dispatch as the established approval routes.
 Telegram connector drain stale cards (decided elsewhere, expired, cancelled) and receipt
 each attempt; they accept only the connector credential.
 
-Everything is inert until ``public.owner_delivery_rollout`` is enabled: no subject, card
-token or presentation exists before then, so every token is unknown.
+``public.owner_delivery_rollout`` governs **minting** only. Before it is first enabled no
+subject or token exists, so every token is unknown. Turning it off stops new cards, but
+tokens already minted stay redeemable (their decision still runs through
+``transition_pending_action``) and the retraction drain keeps running, so live cards are
+neither stranded nor left un-retracted.
 """
 
 from __future__ import annotations
@@ -161,8 +164,8 @@ async def list_owner_delivery_retractions(
 
 
 async def _schema_retractions(conn: Any) -> tuple[owner_delivery.RetractTarget, ...]:
-    if not await owner_delivery.rollout_enabled(conn):
-        return ()
+    # Not gated on the rollout flag: it governs minting only, and stale cards minted while
+    # it was on must still be retracted after it is turned off.
     return await owner_delivery.pending_retractions(conn, surface="telegram")
 
 
@@ -195,8 +198,8 @@ async def report_owner_delivery_retraction(
                     conn, parsed, retracted=request.retracted, reason=request.reason
                 )
                 return ApiResponse(data={"recorded": True})
-        except owner_delivery.OwnerDeliveryRefused:
-            break
+        except owner_delivery.OwnerDeliveryRefused as refused:
+            raise HTTPException(status_code=409, detail=refused.reason) from None
         except Exception:
             logger.warning("owner-delivery retraction receipt failed for one schema")
             continue
