@@ -6,18 +6,6 @@
     "_FakeConn",
     "_FakePool"
   ],
-  "tests/api/test_butler_detail_blind_spots.py": [
-    "_FakePool"
-  ],
-  "tests/api/test_butler_friction_summary.py": [
-    "_make_pool"
-  ],
-  "tests/api/test_calendar_accounts_sources.py": [
-    "_FakePool"
-  ],
-  "tests/api/test_chat_stream.py": [
-    "_FakePool"
-  ],
   "tests/api/test_fleet_events_bridge.py": [
     "_FakeConnection"
   ],
@@ -27,23 +15,11 @@
   "tests/api/test_schedules.py": [
     "_make_row"
   ],
-  "tests/api/test_secrets_reserved_runtime_probe_signing_key.py": [
-    "_make_pool"
-  ],
-  "tests/api/test_webhooks.py": [
-    "_make_pool"
-  ],
   "tests/chronicler/test_occupation_adapter.py": [
     "_FakeConn"
   ],
   "tests/connectors/test_owntracks_device_identity.py": [
     "_FakeConn"
-  ],
-  "tests/core/qa/test_infra_state.py": [
-    "_FakePool"
-  ],
-  "tests/core/qa/test_retention.py": [
-    "_FakePool"
   ],
   "tests/core/test_core_sessions_unicode.py": [
     "_FakePool"
@@ -75,9 +51,6 @@
   ],
   "tests/core/test_sync_schedules_timezone_and_quiet_lint.py": [
     "_FakePool"
-  ],
-  "tests/dashboard/test_briefing_attention_contract.py": [
-    "_make_pool"
   ],
   "tests/integration/test_migrated_core_postgres_pool.py": [
     "_FakePool"
@@ -133,9 +106,6 @@
     "_FakePool"
   ],
   "tests/modules/test_module_google_health.py": [
-    "_FakePool"
-  ],
-  "tests/test_benchmark_orchestration.py": [
     "_FakePool"
   ]
 }
