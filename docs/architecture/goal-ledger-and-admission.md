@@ -24,13 +24,13 @@ All seven tables live in Switchboard's schema:
 
 | Table | Retained invariant |
 | --- | --- |
-| `goals` | Unique normalized source identity; immutable origin, admitted exposure, ceiling and policy digests; monotone exposure derived from admission, invocations and joins; `thread_id` bound at most once; same-goal cause/effect FK; D11 state |
-| `invocations` | Same-goal parent which is a lead; depth 0/1 shape; one launching/running lead; immutable grants/scopes and finite inert turn/token caps; monotone per-invocation exposure that starts at the goal's and marks the goal exposed; timing placeholders and token hash only |
-| `effects` | Same-goal invocation FK; capability/argument digests and D11 state; exact unique delivery, verified recipient and finite prompt expiry |
+| `goals` | Unique normalized source identity; immutable origin, admitted exposure and admitted label, ceiling and policy digests; monotone reporting label union and exposure; `thread_id` bound at most once; same-goal cause/effect FK; D11 state |
+| `invocations` | Same-goal parent which is a lead; depth 0/1 shape; one launching/running lead; immutable grants/scopes and finite inert turn/token caps; monotone S1 label and derived exposure (starts at the admitted label joined with its caller or predecessors), once-set `exposure_cause`; timing placeholders and token hash only |
+| `effects` | Same-goal invocation FK; capability/argument digests and D11 state; immutable requesting label; exact unique delivery, verified recipient and finite prompt expiry |
 | `budgets` | One per goal; explicit finite maxima, reserved/used counters and child occupancy; sums bounded by maxima; absolute deadline and config snapshot |
 | `admission_decisions` | Append-only attempts; at most one accepted association per source; fixed refusal reasons, immutable quota window/retry-after, delivery/effect and valid cause references |
 | `admission_attempt_bindings` | Every returned server attempt maps immutably to its canonical decision and exact source, including a retry which reuses another attempt's accepted decision; composite FK, no extra goal/budget/decision |
-| `goal_inbox` | One row per joined reply: its decision, source, delivery and same-goal prompt effect; immutable except a once-set `consumed_at`; never deleted by the runtime |
+| `goal_inbox` | One row per joined reply: its decision, source, delivery, same-goal prompt effect and immutable label; immutable except a once-set `consumed_at`; never deleted by the runtime |
 
 No message body, arguments, results, bearer token, approval permission or
 executable predicate is stored here. Telemetry consumers must use identifiers
@@ -53,7 +53,7 @@ digest and pinned catalog digest, with a closed list of exact capability IDs,
 exact resource ID sets and park-only restrictions. Missing/stale contracts,
 unknown/duplicate/excluded capabilities and wildcard constraints refuse. All
 ceilings exclude transact; admission never bypasses later approval policy.
-Caused goals inherit current causing-goal exposure, intersect the declaration
+Caused goals inherit the causing effect's label, intersect the declaration
 with that goal's origin ceiling, and persist valid cause references even when
 the configured chain limit (default two) refuses further admission.
 
@@ -84,9 +84,11 @@ mutators are implemented here.
 An owner reply joins only an exact server-held delivery/effect bound to the
 verified owner entity/channel and a live goal whose prompt accepts input. Expiry
 is checked after lock waits. Joining preserves origin, ceiling, cause and budget;
-exposure can only increase, and no invocation or approval is produced. The join
-writes one `goal_inbox` row in the same transaction; that row is the goal's only
-delivery path for the reply, and the M2 runner marks it consumed. A `settling`
+the goal's reporting union can only grow, no running invocation is exposed by
+the join itself, and no invocation or approval is produced. The join writes one
+labelled `goal_inbox` row in the same transaction; that row is the goal's only
+delivery path for the reply, and the M2 runner consumes it through
+`Broker.consume_inbox`, which joins its label into the reader. A `settling`
 goal is not live for joins (D11 has no settling -> running edge, so nothing could
 consume its inbox row). A reply to a settling, terminal or expired prompt creates
 an ordinary verified owner goal with delivery/effect
@@ -99,12 +101,39 @@ durable source resolves any committed association without replenishing budget.
 
 ## Isolation and verification
 
-RFC0038 D6 tracks exposure per invocation. The goal's `exposed` flag is the
-derived report: a trigger refuses an unexposed invocation on an exposed goal and
-marks the goal exposed when any invocation becomes exposed. The richer
-per-invocation label plane (bu-dhloi1.6) and the waiting lifecycle with its
-owner thread (bu-dhloi1.7) await their RFC amendments; until then `status`
-keeps the D11 set and `thread_id` is an unreferenced, bind-once column.
+RFC0038 D6 tracks exposure per invocation. Since `sw_057` (bu-dhloi1.6, S1
+first switch, REQ-capability-authorization-019) every goal, invocation, effect
+and inbox row carries a version 1 label (`label_instr`, `label_data`,
+`label_sens`) and `exposed` is derived from it:
+
+- a goal keeps an immutable admitted label (D5's `admitted_exposed`, joined with
+  the causing effect's label for a caused admission, never the causing goal's
+  union) and a monotone reporting union; call policy never reads the union;
+- an invocation starts from the admitted label, joined with its caller (a
+  child) or with every earlier lead and recorded effect (a replacement lead).
+  A clean sibling is not contaminated; `exposure_cause` records why an
+  invocation first became exposed (`ingress`, `read`, `child`, `inbox`,
+  `recovery`, `legacy_unknown`);
+- an effect snapshots its requesting label, so park, approval, edit and retry
+  never narrow it; an inbox row carries the owner reply joined with the
+  answered effect's label, plus the unknown label for forwarded outside content;
+- labels only grow; a Boolean-only exposure joins the unknown label (`{world}`,
+  all six categories); an unknown principal or category is refused by CHECK;
+- invocation and effect rows are durable: a statement-level trigger refuses
+  DELETE and TRUNCATE (SQLSTATE 42501) for the runtime role and the owner, and
+  their runtime DELETE policies admit nothing, so a replacement lead's
+  recovery context cannot be erased first;
+- the runtime role holds TRIGGER (core_001 re-grants it), so every label rule
+  also runs as an AFTER ROW constraint trigger on the final row: an insert must
+  cover the label it inherits, and an update cannot narrow or rewrite a fixed
+  label, whatever a later-sorting BEFORE trigger did;
+- legacy rows keep their restriction: Boolean exposure becomes `{world}` or
+  `{owner}`, every legacy row assumes all six categories, and the downgrade
+  refuses while any goal exists.
+
+The waiting lifecycle with its owner thread (bu-dhloi1.7) awaits its RFC
+amendment; until then `status` keeps the D11 set and `thread_id` is an
+unreferenced, bind-once column.
 
 `sw_047` uses enabled **non-FORCE RLS** with exact `current_user` Switchboard
 runtime policies, following `sw_035`. The existing trusted migration/table owner
