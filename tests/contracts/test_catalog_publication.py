@@ -86,6 +86,7 @@ async def registered_catalog(
                 idempotency="none",
                 owner_authority=False,
                 recipient_params=RecipientParameters(),
+                categories=(),
             ),
         },
     )

@@ -11,6 +11,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from butlers.core.goal_labels import CATEGORIES
+
 LoadPosture = Literal["eager", "deferred"]
 
 EffectClass = Literal["read", "record", "communicate", "transact", "actuate", "administer"]
@@ -30,6 +32,7 @@ AUTHORIZATION_FIELDS = (
     "owner_authority",
     "recipient_params",
     "alias_free_params",
+    "categories",
 )
 
 
@@ -114,6 +117,9 @@ class ToolMetadata(Protocol):
     # resource only by that identifier (strict UUID), with no "primary"/"me"
     # shortcut or name/email alternative. Only these can narrow an owner term.
     alias_free_params: tuple[str, ...] | None = ()
+    # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
+    # of the six. Required: undeclared (None) is ungrantable.
+    categories: tuple[str, ...] | None = None
 
 
 def _owner_only_tool(name: str) -> bool:
@@ -184,6 +190,9 @@ class ToolPresentation:
     # resource only by that identifier (strict UUID), with no "primary"/"me"
     # shortcut or name/email alternative. Only these can narrow an owner term.
     alias_free_params: tuple[str, ...] | None = ()
+    # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
+    # of the six. Required: undeclared (None) is ungrantable.
+    categories: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         _validate_posture(self.load_posture)
@@ -261,6 +270,9 @@ class ToolDescriptor:
     # resource only by that identifier (strict UUID), with no "primary"/"me"
     # shortcut or name/email alternative. Only these can narrow an owner term.
     alias_free_params: tuple[str, ...] | None = ()
+    # RFC 0038 S1 sensitivity categories the output may carry: a sorted subset
+    # of the six. Required: undeclared (None) is ungrantable.
+    categories: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         _validate_posture(self.load_posture)
@@ -450,6 +462,13 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
         or len(alias_free) != len(set(alias_free))
     ):
         problems.append("alias_free_params")
+    categories = descriptor.categories
+    if (
+        not isinstance(categories, tuple)
+        or any(not isinstance(item, str) or item not in CATEGORIES for item in categories)
+        or list(categories) != sorted(set(categories))
+    ):
+        problems.append("categories")
     recipients = descriptor.recipient_params
     if not isinstance(recipients, RecipientParameters):
         problems.append("recipient_params")
@@ -591,11 +610,13 @@ async def build_tool_catalog(
                         else getattr(declared, field_name, None)
                     )
                     for field_name in AUTHORIZATION_FIELDS
-                    if field_name != "alias_free_params"
+                    if field_name not in {"alias_free_params", "categories"}
                 },
                 # Undeclared means no identifier is alias-free: nothing can
                 # narrow an owner term on this tool.
                 alias_free_params=tuple(getattr(declared, "alias_free_params", None) or ()),
+                # Carried as declared: undeclared stays None, which is ungrantable.
+                categories=getattr(declared, "categories", None),
                 read_stores=tuple(getattr(declared, "read_stores", ())),
                 write_stores=tuple(getattr(declared, "write_stores", ())),
                 unknown_output_source=getattr(declared, "unknown_output_source", True),

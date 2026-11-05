@@ -84,10 +84,40 @@ async def test_outside_transaction_refuses():
         await BrokerCatalogReader().load(Connection(store, "switchboard"))
 
 
-@pytest.mark.parametrize("fault", ["missing_mode", "unknown_mode", "foreign_owner", "recipient"])
-async def test_invalid_final_authority_descriptor_refuses(fault):
-    from butlers.core.catalog_publication import digest
+def _republish(row) -> None:
+    """Re-seal an edited body so only the descriptor fault can refuse it.
 
+    Every digest the reader checks is recomputed, so a refusal is the reader's
+    verdict on the descriptor, not a stale-digest mismatch.
+    """
+    from butlers.core.catalog_publication import (
+        authorization_digest,
+        decode_publication,
+        digest,
+    )
+
+    row["body"]["generation_digest"] = generation(row["body"]["descriptors"])
+    row["body_digest"] = digest(row["body"])
+    try:
+        row["authorization_digest"] = authorization_digest(
+            decode_publication(row["body"], row["domain"])
+        )
+    except Exception:  # noqa: BLE001 - a body the decoder refuses keeps its seal
+        pass
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_mode",
+        "unknown_mode",
+        "foreign_owner",
+        "recipient",
+        "missing_categories",
+        "unknown_category",
+    ],
+)
+async def test_invalid_final_authority_descriptor_refuses(fault):
     store, _ = await complete_fleet()
     connection = Connection(store, "switchboard")
     async with connection.transaction():
@@ -100,12 +130,36 @@ async def test_invalid_final_authority_descriptor_refuses(fault):
             item["approval_policy"]["mode"] = "sometimes"
         elif fault == "foreign_owner":
             item["owner_domain"] = "finance"
+        elif fault == "missing_categories":
+            item["categories"] = None
+        elif fault == "unknown_category":
+            item["categories"] = ["horoscope"]
         else:
             item["recipient_params"]["argument_names"] = ["nonexistent"]
-        row["body"]["generation_digest"] = generation(row["body"]["descriptors"])
-        row["body_digest"] = digest(row["body"])
+        _republish(row)
         with pytest.raises(EvidenceRefused):
             await BrokerCatalogReader().load(connection)
+
+
+async def test_the_broker_reads_declared_categories_and_refuses_a_missing_declaration():
+    """REQ-capability-authorization-019: missing categories are ungrantable."""
+    from butlers.capability_broker.catalog import PublishedCatalogSource
+    from butlers.capability_broker.contracts import BrokerRefused, Reason
+
+    store, _ = await complete_fleet()
+    connection = Connection(store, "switchboard")
+    async with connection.transaction():
+        row = store.current["health"]
+        item = row["body"]["descriptors"][0]
+        catalog = await PublishedCatalogSource().load(connection)
+        capability = catalog.get(f"health__{item['canonical_name']}")
+        assert capability is not None
+        assert capability.categories == frozenset(item["categories"])
+        item["categories"] = None
+        _republish(row)
+        with pytest.raises(BrokerRefused) as refused:
+            await PublishedCatalogSource().load(connection)
+        assert refused.value.reason is Reason.UNAVAILABLE
 
 
 async def test_real_messenger_finalizer_publication_maps_declared_mode(monkeypatch):

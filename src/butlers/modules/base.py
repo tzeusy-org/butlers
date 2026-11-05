@@ -157,6 +157,7 @@ class ToolMeta:
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
     alias_free_params: tuple[str, ...] | None = None
+    categories: tuple[str, ...] | None = None
 
 
 class Module(abc.ABC):
