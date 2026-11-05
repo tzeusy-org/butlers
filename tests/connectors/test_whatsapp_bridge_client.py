@@ -41,13 +41,27 @@ def ack_wire(body: bytes | None = None, *, status: int = 200, chunked: bool = Fa
 
 @asynccontextmanager
 async def bridge_server(
-    tmp_path, response: bytes, *, keep_open: bool = False, fragments: int = 0, delay: float = 0
+    tmp_path,
+    response: bytes,
+    *,
+    keep_open: bool = False,
+    fragments: int = 0,
+    delay: float = 0,
+    response_eof: bool = False,
 ) -> AsyncIterator[SimpleNamespace]:
     """One bounded server fixture; every accepted task/writer is settled in finally."""
     path = str(tmp_path / "bridge.sock")
     tasks: set[asyncio.Task] = set()
     writers: set[asyncio.StreamWriter] = set()
-    state = SimpleNamespace(path=path, requests=[], closed=0, ready=asyncio.Event())
+    state = SimpleNamespace(
+        path=path,
+        requests=[],
+        closed=0,
+        ready=asyncio.Event(),
+        peer_closed=asyncio.Event(),
+        peer_close_kind=None,
+        tearing_down=False,
+    )
 
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = asyncio.current_task()
@@ -73,24 +87,38 @@ async def bridge_server(
                 await writer.drain()
                 if delay:
                     await asyncio.sleep(delay)
-            if keep_open:
-                await reader.read()
+            if response_eof:
+                writer.write_eof()
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
-            writer.close()
-            with contextlib.suppress(ConnectionError):
-                await writer.wait_closed()
-            state.closed += 1
-            writers.discard(writer)
-            tasks.discard(task)
+            try:
+                # Only peer EOF/reset while the fixture is still live proves client
+                # ownership. Neither our writer.close nor teardown may set this.
+                if keep_open and not state.tearing_down:
+                    try:
+                        remaining = await reader.read()
+                    except ConnectionError:
+                        state.peer_close_kind = "reset"
+                    else:
+                        assert remaining == b""
+                        state.peer_close_kind = "eof"
+                    if not state.tearing_down:
+                        state.peer_closed.set()
+            finally:
+                writer.close()
+                with contextlib.suppress(ConnectionError):
+                    await writer.wait_closed()
+                state.closed += 1
+                writers.discard(writer)
+                tasks.discard(task)
 
     server = await asyncio.start_unix_server(serve, path=path)
     try:
         yield state
     finally:
+        state.tearing_down = True
         server.close()
-        await server.wait_closed()
         for writer in list(writers):
             writer.close()
         if tasks:
@@ -98,7 +126,17 @@ async def bridge_server(
             for task in pending:
                 task.cancel()
             await asyncio.gather(*done, *pending, return_exceptions=True)
+        await server.wait_closed()
         assert not tasks and not writers
+
+
+async def assert_peer_closed(server: SimpleNamespace) -> None:
+    """Observe the real peer before any fixture-owned close/cancel can help."""
+    assert not server.tearing_down
+    async with asyncio.timeout(2):
+        await server.peer_closed.wait()
+    assert server.peer_close_kind in {"eof", "reset"}
+    assert not server.tearing_down
 
 
 def connector_for(path: str) -> WhatsAppUserClientConnector:
@@ -131,6 +169,7 @@ async def test_framed_ack_does_not_require_eof(tmp_path, caplog, monkeypatch) ->
     caplog.set_level(logging.INFO, logger="butlers.connectors.whatsapp_user_client")
     async with bridge_server(tmp_path, ack_wire(), keep_open=True) as server:
         await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "Backfill request accepted by bridge" in caplog.text
     assert len(server.requests) == 1
     assert server.closed == 1
@@ -166,12 +205,15 @@ def sized_wire(size: int, kind: str) -> bytes:
 async def test_raw_ack_limit_precedes_http_normalization(tmp_path, kind, size):
     from butlers.whatsapp_bridge_client import BridgeClient
 
-    async with bridge_server(tmp_path, sized_wire(size, kind), fragments=31) as server:
+    async with bridge_server(
+        tmp_path, sized_wire(size, kind), fragments=31, keep_open=True
+    ) as server:
         if size == 4096:
             assert await BridgeClient(server.path).request_backfill(24) == 2
         else:
             with pytest.raises(RuntimeError, match="bridge_ack_raw_limit"):
                 await BridgeClient(server.path).request_backfill(24)
+        await assert_peer_closed(server)
     assert len(server.requests) == 1
     assert server.closed == 1
 
@@ -188,9 +230,15 @@ async def test_raw_ack_limit_precedes_http_normalization(tmp_path, kind, size):
 async def test_ack_refusal_has_no_write_retry(tmp_path, response, error):
     from butlers.whatsapp_bridge_client import BridgeClient
 
-    async with bridge_server(tmp_path, response) as server:
+    async with bridge_server(
+        tmp_path,
+        response,
+        keep_open=True,
+        response_eof=response == b"HTTP/1.1 200 OK\r\nContent-Length: 9999999999999\r\n\r\n",
+    ) as server:
         with pytest.raises(error):
             await BridgeClient(server.path).request_backfill(24)
+        await assert_peer_closed(server)
     assert len(server.requests) == 1
     assert server.closed == 1
 
@@ -198,9 +246,12 @@ async def test_ack_refusal_has_no_write_retry(tmp_path, response, error):
 async def test_ack_deadline_is_absolute_during_trickle(tmp_path):
     from butlers.whatsapp_bridge_client import BridgeClient
 
-    async with bridge_server(tmp_path, ack_wire(), fragments=1, delay=0.005) as server:
+    async with bridge_server(
+        tmp_path, ack_wire(), fragments=1, delay=0.005, keep_open=True
+    ) as server:
         with pytest.raises(TimeoutError):
             await BridgeClient(server.path).request_backfill(24, deadline_s=0.03)
+        await assert_peer_closed(server)
     assert len(server.requests) == 1
     assert server.closed == 1
 
@@ -221,6 +272,7 @@ async def test_ack_cancellation_closes_owned_connection(tmp_path, prefix):
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        await assert_peer_closed(server)
     assert server.closed == 1
 
 
@@ -235,7 +287,9 @@ async def test_json_status_policy_and_proxy_isolation(tmp_path, monkeypatch, sta
     for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:
         monkeypatch.setenv(key, "http://127.0.0.1:9")
     monkeypatch.setenv("NO_PROXY", "")
-    async with bridge_server(tmp_path, ack_wire(b'{"ok":true}', status=status)) as server:
+    async with bridge_server(
+        tmp_path, ack_wire(b'{"ok":true}', status=status), keep_open=True
+    ) as server:
         if check_status and status != 200:
             with pytest.raises(httpx.HTTPStatusError):
                 await BridgeClient(server.path).request_json("POST", "/send", {}, check_status=True)
@@ -243,6 +297,7 @@ async def test_json_status_policy_and_proxy_isolation(tmp_path, monkeypatch, sta
             assert await BridgeClient(server.path).request_json(
                 "POST", "/send", {}, check_status=check_status
             ) == {"ok": True}
+        await assert_peer_closed(server)
     assert len(server.requests) == 1
     assert server.closed == 1
 
@@ -270,6 +325,7 @@ async def test_event_lines_fragmentation_and_early_close(tmp_path, caplog):
             assert await anext(events) == {"value": 1}
         finally:
             await events.aclose()
+        await assert_peer_closed(server)
     assert server.closed == 1
     assert "not-json" not in caplog.text
     assert "redacted" in caplog.text
@@ -291,13 +347,16 @@ async def test_event_partial_chunks_do_not_reset_complete_line_deadline(tmp_path
     from butlers.whatsapp_bridge_client import BridgeClient
 
     response = b"HTTP/1.1 200 OK\r\n\r\ndata: {" + b" " * 100 + b'"value":1}\n'
-    async with bridge_server(tmp_path, response, fragments=1, delay=0.002) as server:
+    async with bridge_server(
+        tmp_path, response, fragments=1, delay=0.002, keep_open=True
+    ) as server:
         events = BridgeClient(server.path).stream_events(line_timeout=0.02)
         try:
             with pytest.raises(TimeoutError):
                 await anext(events)
         finally:
             await events.aclose()
+        await assert_peer_closed(server)
     assert server.closed == 1
 
 
@@ -311,15 +370,17 @@ async def test_event_header_deadline_and_bounded_line(tmp_path):
                 await anext(events)
         finally:
             await events.aclose()
+        await assert_peer_closed(server)
     # A second server has a fresh socket, independently positioned after valid headers.
     response = b"HTTP/1.1 200 OK\r\n\r\ndata: " + b"x" * 65537
-    async with bridge_server(tmp_path, response) as server:
+    async with bridge_server(tmp_path, response, keep_open=True) as server:
         events = BridgeClient(server.path).stream_events()
         try:
             with pytest.raises(BridgeProtocolError, match="bridge_event_line_limit"):
                 await anext(events)
         finally:
             await events.aclose()
+        await assert_peer_closed(server)
     assert server.closed == 1
 
 
@@ -362,11 +423,14 @@ async def test_shared_factory_is_explicitly_env_independent_and_caller_owned():
 async def test_dashboard_wrappers_keep_status_policy(tmp_path, method, status):
     from butlers.api.routers.whatsapp import _bridge_get, _bridge_post
 
-    async with bridge_server(tmp_path, ack_wire(b'{"ok":true}', status=status)) as server:
+    async with bridge_server(
+        tmp_path, ack_wire(b'{"ok":true}', status=status), keep_open=True
+    ) as server:
         if method == "GET":
             actual = await _bridge_get(server.path, "/status")
         else:
             actual = await _bridge_post(server.path, "/disconnect")
+        await assert_peer_closed(server)
     assert actual == ({"ok": True} if status == 200 else None)
     assert len(server.requests) == 1
     assert server.closed == 1
@@ -389,4 +453,5 @@ async def test_events_cancellation_closes_owned_client(tmp_path):
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             await events.aclose()
+        await assert_peer_closed(server)
     assert server.closed == 1

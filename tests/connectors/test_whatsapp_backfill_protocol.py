@@ -7,14 +7,21 @@ import logging
 
 import pytest
 
-from tests.connectors.test_whatsapp_bridge_client import ACK, ack_wire, bridge_server, connector_for
+from tests.connectors.test_whatsapp_bridge_client import (
+    ACK,
+    ack_wire,
+    assert_peer_closed,
+    bridge_server,
+    connector_for,
+)
 
 
 async def test_request_backfill_uses_versioned_request_and_requires_accepted_ack(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="butlers.connectors.whatsapp_user_client")
-    async with bridge_server(tmp_path, ack_wire()) as server:
+    async with bridge_server(tmp_path, ack_wire(), keep_open=True) as server:
         connector = connector_for(server.path)
         await connector._request_backfill()
+        await assert_peer_closed(server)
     assert len(server.requests) == 1
     assert server.path == connector._config.bridge_socket
     headers, body = server.requests[0]
@@ -28,8 +35,11 @@ async def test_request_backfill_uses_versioned_request_and_requires_accepted_ack
 
 async def test_request_backfill_accepts_fragmented_http_acknowledgement(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="butlers.connectors.whatsapp_user_client")
-    async with bridge_server(tmp_path, ack_wire(), fragments=17, delay=0.0001) as server:
+    async with bridge_server(
+        tmp_path, ack_wire(), fragments=17, delay=0.0001, keep_open=True
+    ) as server:
         await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "Backfill request accepted by bridge" in caplog.text
     assert "Failed to request backfill from bridge" not in caplog.text
     assert server.closed == 1
@@ -40,6 +50,7 @@ async def test_request_backfill_rejects_oversized_acknowledgement_before_eof(tmp
     response = b"HTTP/1.1 200 OK\r\nX-Pad: " + b"x" * 65536
     async with bridge_server(tmp_path, response, keep_open=True) as server:
         await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "WhatsApp backfill request failed" in caplog.text
     assert "Bridge /backfill acknowledgement exceeded" not in caplog.text
     record = next(
@@ -61,6 +72,7 @@ async def test_request_backfill_times_out_without_eof_without_stopping_connector
         tmp_path, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n", keep_open=True
     ) as server:
         await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "WhatsApp backfill request failed" in caplog.text
     assert "Backfill request accepted by bridge" not in caplog.text
     record = next(
@@ -85,8 +97,11 @@ async def test_request_backfill_times_out_without_eof_without_stopping_connector
 )
 async def test_request_backfill_rejects_nonaccepted_ack_without_raising(tmp_path, caplog, override):
     caplog.set_level(logging.WARNING, logger="butlers.connectors.whatsapp_user_client")
-    async with bridge_server(tmp_path, ack_wire(json.dumps(ACK | override).encode())) as server:
+    async with bridge_server(
+        tmp_path, ack_wire(json.dumps(ACK | override).encode()), keep_open=True
+    ) as server:
         await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "WhatsApp backfill request failed" in caplog.text
     record = next(
         item for item in caplog.records if item.message == "WhatsApp backfill request failed"
