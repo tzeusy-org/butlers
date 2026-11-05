@@ -146,7 +146,8 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **`frontend-dev` installs with `npm ci`** (never `npm install`), so startup never rewrites the
   tracked `frontend/package-lock.json`; `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
   holds that invariant. It runs only under the `dev` profile that `scripts/compose.sh` activates.
-- **`migrations` is a one-shot** (`db migrate`) that every app service depends on via
+- **`migrations` is a one-shot** that prepares Chronicler's configured private memory schema, then
+  runs the ordinary `db migrate` command. Every app service depends on it via
   `service_completed_successfully`. See [Production Deploys](#production-deploys-butlers-deploy)
   for why redeploys run it with `run --rm`.
 - **One container per connector**, sharing the `x-connector-env` anchor.
@@ -271,8 +272,10 @@ uv run butlers deploy --dir /path/to/repo --timeout 180
 It runs, in order:
 
 1. **Build** — `docker build --build-arg GIT_SHA=$(git rev-parse HEAD) -t butlers-app:latest .`
-2. **Migrate** — runs the merged Compose input with `run --rm migrations`,
-   always a fresh container. A direct Compose lifecycle command only reruns the one-shot
+2. **Prepare and migrate** — runs the merged Compose input with `run --rm migrations`. That
+   one-shot first applies Chronicler's explicit private-schema prerequisite, then runs the ordinary
+   core/domain/module migration order, always in a fresh container. A direct Compose lifecycle
+   command only reruns the one-shot
    `migrations` service if its `service_completed_successfully` condition
    isn't already satisfied — once that container has exited 0 *once*, compose
    treats it as permanently satisfied even after the image is rebuilt with

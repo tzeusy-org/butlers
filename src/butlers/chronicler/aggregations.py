@@ -49,6 +49,8 @@ CATEGORIES: frozenset[str] = frozenset(
 _CATEGORY_MAP: dict[tuple[str, str], str] = {
     ("spotify.session_summary", "listening_episode"): "music",
     ("steam.play_history", "play_episode"): "gaming",
+    ("steam.status_history", "play_session"): "gaming",
+    ("chronicler.situation_inferred", "play_block"): "gaming",
     ("owntracks.points", "movement_episode"): "travel",
     # GPS place-cluster stays (bu-ac2pg) are evidence-layer since bu-r3fmja:
     # they say where the owner was and never count on their own. The category
@@ -150,7 +152,7 @@ def category_for(
 
 # Top-level life-balance lanes. The frontend LANE_TAXONOMY maps these to
 # display labels/colours/icons. These — not data sources — are what every
-# time/balance aggregate buckets by. ``music``/``gaming`` fold into Play;
+# time/balance aggregate buckets by. counted gaming folds into Play; music remains evidence;
 # ``calendar`` is intent and never reaches a lane. See design.md §"Activity
 # lane taxonomy".
 LANES: frozenset[str] = frozenset(
@@ -178,7 +180,6 @@ _CATEGORY_TO_LANE: dict[str, str] = {
     # occupation + focus/reading/screen) counts as Work.
     "conversations": "butler_ops",
     "tasks": "butler_ops",
-    "music": "play",
     "gaming": "play",
     "meal": "eat",
     "home": "rest",

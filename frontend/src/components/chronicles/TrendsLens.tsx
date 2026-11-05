@@ -38,29 +38,39 @@ export interface TrendsLensProps {
 }
 
 function laneConfig(lane: string) {
-  return (LANE_TAXONOMY as Record<string, (typeof LANE_TAXONOMY)[Category]>)[lane] ?? LANE_TAXONOMY.other;
+  return (
+    (LANE_TAXONOMY as Record<string, (typeof LANE_TAXONOMY)[Category]>)[lane] ??
+    LANE_TAXONOMY.other
+  );
 }
 
 function LaneSparkline({ series }: { series: ChroniclerTrendLaneSeries }) {
   const config = laneConfig(series.lane);
   const maxSeconds = Math.max(1, ...series.days.map((d) => d.seconds));
   return (
-    <div className="flex items-center gap-3" data-testid={`trends-lane-${series.lane}`}>
+    <div
+      className="flex items-center gap-3"
+      data-testid={`trends-lane-${series.lane}`}
+    >
       <span className="w-16 shrink-0 text-xs font-medium">{config.label}</span>
       <div className="flex h-10 flex-1 items-end gap-0.5">
         {series.days.map((d) => {
           const heightPct = Math.max(3, (d.seconds / maxSeconds) * 100);
-          const title = d.unavailable
-            ? `${d.local_date}: unavailable`
-            : `${d.local_date}: ${formatSeconds(d.seconds)}`;
+          const pending = d.status === "pending_repair";
+          const title = pending
+            ? `${d.local_date}: pending repair`
+            : d.unavailable
+              ? `${d.local_date}: unavailable`
+              : `${d.local_date}: ${formatSeconds(d.seconds)}`;
           return (
             <div
               key={d.local_date}
               className="flex-1 rounded-sm"
               style={{
                 height: `${heightPct}%`,
-                backgroundColor: d.unavailable ? "var(--muted)" : config.color,
-                ...(d.unavailable
+                backgroundColor:
+                  d.unavailable || pending ? "var(--muted)" : config.color,
+                ...(d.unavailable || pending
                   ? {
                       backgroundImage:
                         "repeating-linear-gradient(45deg, var(--muted-foreground) 0, var(--muted-foreground) 1px, transparent 1px, transparent 4px)",
@@ -70,14 +80,22 @@ function LaneSparkline({ series }: { series: ChroniclerTrendLaneSeries }) {
               }}
               title={title}
               data-testid={
-                d.unavailable ? `trends-bar-unavailable-${series.lane}` : undefined
+                pending
+                  ? `trends-bar-pending-${series.lane}`
+                  : d.unavailable
+                    ? `trends-bar-unavailable-${series.lane}`
+                    : undefined
               }
             />
           );
         })}
       </div>
-      {series.streak_days > 0 && (
-        <Badge variant="outline" className="shrink-0 text-[10px]" data-testid={`trends-streak-${series.lane}`}>
+      {series.streak_days !== null && series.streak_days > 0 && (
+        <Badge
+          variant="outline"
+          className="shrink-0 text-[10px]"
+          data-testid={`trends-streak-${series.lane}`}
+        >
           {series.streak_days}-day streak
         </Badge>
       )}
@@ -120,7 +138,12 @@ export function TrendsLens({
 
   if (isLoading) {
     body = (
-      <div className="space-y-2" role="status" aria-label="Loading trends" data-testid="trends-skeleton">
+      <div
+        className="space-y-2"
+        role="status"
+        aria-label="Loading trends"
+        data-testid="trends-skeleton"
+      >
         {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-10 w-full rounded-md" />
         ))}
@@ -128,17 +151,34 @@ export function TrendsLens({
     );
   } else if (isError || data?.trends_source_error) {
     body = (
-      <SourceDegradedNote label="Trends" detail="data source unreachable" onRetry={onRetry} />
+      <SourceDegradedNote
+        label="Trends"
+        detail="data source unreachable"
+        onRetry={onRetry}
+      />
     );
   } else if (!data) {
     body = null;
   } else {
+    const pendingRepair = data.lanes.some((lane) =>
+      lane.days.some((day) => day.status === "pending_repair"),
+    );
     const activeLanes = data.lanes
       .filter((l) => l.days.some((d) => d.seconds > 0 || d.unavailable))
-      .sort((a, b) => laneConfig(a.lane).sortOrder - laneConfig(b.lane).sortOrder);
+      .sort(
+        (a, b) => laneConfig(a.lane).sortOrder - laneConfig(b.lane).sortOrder,
+      );
 
     if (activeLanes.length === 0) {
-      body = (
+      body = pendingRepair ? (
+        <p
+          className="text-sm text-muted-foreground"
+          data-testid="trends-pending-repair"
+        >
+          Some trend values are temporarily hidden while affected days are
+          repaired.
+        </p>
+      ) : (
         <p className="text-sm text-muted-foreground" data-testid="trends-empty">
           No lane activity across this window yet.
         </p>
@@ -146,6 +186,14 @@ export function TrendsLens({
     } else {
       body = (
         <div className="space-y-4" data-testid="trends-lens">
+          {pendingRepair && (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="trends-pending-repair"
+            >
+              Affected days are temporarily hidden while repair is in progress.
+            </p>
+          )}
           <div className="space-y-2">
             {activeLanes.map((series) => (
               <LaneSparkline key={series.lane} series={series} />
@@ -162,11 +210,15 @@ export function TrendsLens({
                     key={`${a.lane}-${a.local_date}-${a.direction}`}
                     className="text-xs text-muted-foreground"
                   >
-                    <span className="font-medium" style={{ color: laneConfig(a.lane).color }}>
+                    <span
+                      className="font-medium"
+                      style={{ color: laneConfig(a.lane).color }}
+                    >
                       {laneConfig(a.lane).label}
                     </span>{" "}
-                    {a.direction === "spike" ? "spiked" : "dropped"} on {a.local_date} (
-                    {formatSeconds(a.seconds)} vs {formatSeconds(a.baseline_seconds)} usual)
+                    {a.direction === "spike" ? "spiked" : "dropped"} on{" "}
+                    {a.local_date} ({formatSeconds(a.seconds)} vs{" "}
+                    {formatSeconds(a.baseline_seconds)} usual)
                   </li>
                 ))}
               </ul>

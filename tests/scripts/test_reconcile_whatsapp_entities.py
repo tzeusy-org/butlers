@@ -306,7 +306,11 @@ async def test_pep_723_apply_path_runs_with_only_declared_dependencies(fresh_db)
             "approvals": "relationship",
             "chronicler": "chronicler",
         },
+        revisions={"chronicler": "chronicler_029"},
     )
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    await asyncio.to_thread(prepare_chronicler_current_head_sync, database_url)
 
     conn = await asyncpg.connect(database_url)
     try:

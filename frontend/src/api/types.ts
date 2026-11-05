@@ -7023,7 +7023,7 @@ export interface ChroniclerBalanceResponse {
    * - `"not_yet_materialized"` — no rows yet (legitimate absence, not error);
    * - `"unknown"` — the query failed (see `balance_source_error`).
    */
-  status: "materialized" | "not_yet_materialized" | "unknown";
+  status: "materialized" | "not_yet_materialized" | "pending_repair" | "unknown";
   baseline_lookback_days: number;
   /** Empty when `status !== "materialized"`; one entry per lane otherwise. */
   lanes: ChroniclerBalanceLaneRow[];
@@ -7048,7 +7048,7 @@ export interface ChroniclerBalanceParams {
 /** One lane's balance for one day within a trends window. */
 export interface ChroniclerTrendLaneDay {
   local_date: string;
-  status: "materialized" | "not_yet_materialized" | "unknown";
+  status: "materialized" | "not_yet_materialized" | "pending_repair" | "unknown";
   seconds: number;
   baseline_seconds: number | null;
   delta_seconds: number | null;
@@ -7065,8 +7065,8 @@ export interface ChroniclerTrendLaneSeries {
   lane: string;
   /** Ordered by local_date ASC, one entry per day in [start_date, end_date]. */
   days: ChroniclerTrendLaneDay[];
-  /** Trailing run of consecutive non-zero-activity days ending at end_date. */
-  streak_days: number;
+  /** Null while a visible day is pending repair; otherwise trailing non-zero run. */
+  streak_days: number | null;
 }
 
 /** One day where a lane's total deviated sharply from its baseline. */
@@ -7154,7 +7154,7 @@ export interface ChroniclerRollupDay {
    *   {@link ChroniclerRollupsResponse.rollups_source_error}); this day's
    *   `lanes`/`flags` are empty because nothing could be read.
    */
-  status: "materialized" | "not_yet_materialized" | "unknown";
+  status: "materialized" | "not_yet_materialized" | "pending_repair" | "unknown";
   lanes: ChroniclerRollupLaneRow[];
   flags: ChroniclerRollupFlagRow[];
   /**

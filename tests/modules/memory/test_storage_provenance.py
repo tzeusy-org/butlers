@@ -372,3 +372,86 @@ class TestFactConfidence:
 
         engine.embed.assert_not_called()
         pool.acquire.assert_not_called()
+
+
+@pytest.mark.parametrize("correction", [False, True])
+async def test_rule_forget_stamps_transition_in_same_update_and_preserves_legacy_null(correction):
+    conn = AsyncMock()
+    conn.execute.return_value = "UPDATE 1"
+    conn.transaction = lambda: AsyncCtx(None)
+    pool = _PoolStub(conn)
+    with patch.object(storage, "_cascade_catalog_disownment", new_callable=AsyncMock) as cascade:
+        if correction:
+            await storage._forget_with_correction_provenance(
+                pool, "rule", uuid.uuid4(), correction_id="correction", correction_reason=None
+            )
+        else:
+            await storage._forget_plain(pool, "rule", uuid.uuid4())
+    sql = conn.execute.await_args_list[0].args[0]
+    assert "forgotten_at = CASE" in sql
+    assert "WHEN (metadata->>'forgotten')::boolean IS TRUE THEN forgotten_at" in sql
+    assert ("ELSE $3 END" if correction else "ELSE $2 END") in sql
+    assert conn.execute.await_args_list[0].args[-1] == cascade.await_args.kwargs["invalid_at"]
+    assert "COALESCE(forgotten_at" not in sql
+    assert "metadata" in sql
+    cascade.assert_awaited_once()
+
+
+@pytest.mark.parametrize("metadata", [{}, {"forgotten": True}, {"forgotten": False}])
+async def test_store_rule_insert_has_transition_timestamp_bound_to_created_at(metadata):
+    from types import SimpleNamespace
+
+    pool = AsyncMock()
+    engine = MagicMock(model_name="model")
+    engine.embed.return_value = [0.1]
+    with patch.object(
+        storage,
+        "_stamp_authority",
+        new_callable=AsyncMock,
+        return_value=SimpleNamespace(authority="owner", entity_id=None),
+    ):
+        await storage.store_rule(pool, "rule", engine, metadata=metadata)
+    sql, *args = pool.execute.await_args.args
+    sql = " ".join(sql.split())
+    assert "forgotten_at" in sql
+    assert (
+        "CASE WHEN ($10::jsonb->>'forgotten')::boolean IS TRUE THEN $8::timestamptz ELSE NULL END"
+        in sql
+    )
+    assert args[9] == metadata
+    assert args[7].tzinfo is not None
+    assert "taint_goal_id, taint_invocation_id" in sql
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("src/butlers/modules/memory/storage.py", 4),
+        ("src/butlers/entity_fact_repoint.py", 4),
+        ("roster/finance/tools/alerts.py", 1),
+        ("roster/relationship/tools/facts.py", 1),
+        ("roster/relationship/tools/loans.py", 1),
+        ("roster/relationship/tools/gifts.py", 1),
+    ],
+)
+def test_all_counted_fact_writer_sql_preserves_terminal_transition_time(source, expected):
+    # Static SQL coverage, explicitly not native execution/rollback evidence.
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    strings = [
+        n.value
+        for n in ast.walk(ast.parse((root / source).read_text()))
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    ]
+    writes = [s for s in strings if "validity = 'superseded'" in s or "validity = 'expired'" in s]
+    writes = [s for s in writes if "UPDATE facts" in s or s.lstrip().startswith("SET validity")]
+    assert len(writes) == expected
+    for sql in writes:
+        sql = " ".join(sql.split())
+        assert (
+            "dropped_at = CASE WHEN validity IN ('superseded', 'expired') THEN dropped_at ELSE"
+            in sql
+        )
+        assert "COALESCE(dropped_at" not in sql

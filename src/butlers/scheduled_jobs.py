@@ -1807,6 +1807,16 @@ async def _run_chronicler_project_steam_job(
     return await run_project_steam(pool, job_args)
 
 
+async def _run_chronicler_project_steam_status_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's timed Steam session evidence projection."""
+    from butlers.chronicler.jobs import run_project_steam_status
+
+    return await run_project_steam_status(pool, job_args)
+
+
 async def _run_chronicler_project_meals_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1925,6 +1935,16 @@ async def _run_chronicler_project_occupation_inferred_job(
     from butlers.chronicler.jobs import run_project_occupation_inferred
 
     return await run_project_occupation_inferred(pool, job_args)
+
+
+async def _run_chronicler_rebuild_daily_rollups_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run a bounded historical quantitative rebuild."""
+    from butlers.chronicler.jobs import run_rebuild_daily_rollups
+
+    return await run_rebuild_daily_rollups(pool, job_args)
 
 
 async def _run_chronicler_project_situation_inferred_job(
@@ -2237,6 +2257,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,
+            "chronicler_project_steam_status": _run_chronicler_project_steam_status_job,
             "chronicler_project_meals": _run_chronicler_project_meals_job,
             "chronicler_project_home_assistant": _run_chronicler_project_home_assistant_job,
             "chronicler_project_home_assistant_sensor_activity": (
@@ -2261,6 +2282,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_occupation_inferred": (
                 _run_chronicler_project_occupation_inferred_job
             ),
+            "chronicler_rebuild_daily_rollups": _run_chronicler_rebuild_daily_rollups_job,
             "chronicler_project_situation_inferred": (
                 _run_chronicler_project_situation_inferred_job
             ),

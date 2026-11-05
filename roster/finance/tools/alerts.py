@@ -173,8 +173,11 @@ async def alert_configure(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE facts SET validity = 'superseded' WHERE id = $1",
+                    "UPDATE facts SET validity = 'superseded', dropped_at = CASE WHEN "
+                    "validity IN ('superseded', 'expired') THEN dropped_at ELSE $2 END "
+                    "WHERE id = $1",
                     old_id,
+                    now,
                 )
                 taint = taint_insert(7)
                 new_row = await conn.fetchrow(

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
 from butlers.modules.memory.knowledge_class import NOT_EVENT_CLASS_SQL
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
@@ -70,6 +71,7 @@ async def _fetch_profile_facts(
     *,
     limit: int = 50,
     allowed_sensitivities: tuple[str, ...] | list[str] | None = None,
+    memory_schema: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch owner-authored facts anchored to the owner entity.
 
@@ -97,6 +99,9 @@ async def _fetch_profile_facts(
         "f.content_authority IN ('owner', 'owner_device')",
     ]
     params: list[Any] = [tenant_id]
+    visibility = await local_fact_visibility_condition(pool, memory_schema=memory_schema, alias="f")
+    if visibility is not None:
+        conditions.append(visibility)
     conditions.append(NOT_EVENT_CLASS_SQL)
     if allowed_sensitivities is not None:
         params.append(list(allowed_sensitivities))
@@ -116,17 +121,21 @@ async def _fetch_profile_facts(
         rows = await pool.fetch(sql, *params)
         facts = [dict(r) for r in rows]
     except Exception:
+        if memory_schema == "chronicler_mem":
+            raise
         logger.debug("Profile facts query failed (likely missing public.entities)", exc_info=True)
         return [], 0
 
     if allowed_sensitivities is None:
         return facts, 0
 
+    visibility_filter = visibility or "TRUE"
     withheld_sql = f"""
         SELECT COUNT(*)
         FROM facts f
         JOIN public.entities e ON f.entity_id = e.id
-        WHERE f.tenant_id = $1
+        WHERE {visibility_filter}
+          AND f.tenant_id = $1
           AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
           AND f.content_authority IN ('owner', 'owner_device')
@@ -136,6 +145,8 @@ async def _fetch_profile_facts(
     try:
         withheld = await pool.fetchval(withheld_sql, tenant_id, list(allowed_sensitivities))
     except Exception:
+        if memory_schema == "chronicler_mem":
+            raise
         logger.debug("Profile facts withheld-count query failed", exc_info=True)
         withheld = 0
 
@@ -197,24 +208,32 @@ async def _fetch_fleet_knowledge(
     excludes rows this butler owns — Task-Relevant Facts already surfaces
     the butler's own knowledge, so this section is additive, not duplicative.
 
-    Best-effort: any failure (catalog table absent, embedding failure, etc.)
-    is logged at debug and returns an empty list rather than failing context
-    assembly — matches ``_fetch_profile_facts``/``_fetch_recent_episodes``.
+    An absent public catalog table and embedding failures remain best-effort.
+    Errors from PostgreSQL visibility-filtered queries propagate instead of
+    looking like an empty result set.
     """
-    try:
-        results = await _search.search_catalog(
-            pool,
-            trigger_prompt,
-            embedding_engine,
-            tenant_id=tenant_id,
-            memory_type=None,
-            limit=limit,
-            mode="hybrid",
-            read_policy=read_policy,
-        )
-    except Exception:
-        logger.debug("Fleet knowledge catalog search failed", exc_info=True)
+    catalog_relation = await pool.fetchval("SELECT pg_catalog.to_regclass('public.memory_catalog')")
+    if catalog_relation is None:
+        logger.debug("Fleet knowledge catalog is not installed")
         return []
+
+    try:
+        query_embedding = embedding_engine.embed(trigger_prompt)
+    except Exception:
+        logger.debug("Fleet knowledge embedding failed")
+        return []
+
+    results = await _search.search_catalog(
+        pool,
+        trigger_prompt,
+        embedding_engine,
+        tenant_id=tenant_id,
+        memory_type=None,
+        limit=limit,
+        mode="hybrid",
+        read_policy=read_policy,
+        _query_embedding=query_embedding,
+    )
     return [r for r in results if r.get("source_butler") != butler]
 
 
@@ -410,6 +429,7 @@ async def memory_context(
     include_fleet_knowledge: bool = False,
     catalog_read_policy=None,
     request_context: dict[str, Any] | None = None,
+    memory_schema: str | None = None,
 ) -> str:
     """Build a deterministic, sectioned memory context block for CC system prompt injection.
 
@@ -485,7 +505,10 @@ async def memory_context(
 
     # --- 1. Fetch profile facts (owner entity) ---
     profile_facts, profile_withheld = await _fetch_profile_facts(
-        pool, tenant_id, allowed_sensitivities=allowed_sensitivities
+        pool,
+        tenant_id,
+        allowed_sensitivities=allowed_sensitivities,
+        memory_schema=memory_schema,
     )
     profile_facts = [f for f in profile_facts if _is_confidence_renderable(f)]
     profile_ids: set = {r.get("id") for r in profile_facts if r.get("id") is not None}
@@ -501,6 +524,7 @@ async def memory_context(
         limit=30,
         tenant_id=tenant_id,
         read_policy=read_policy,
+        memory_schema=memory_schema,
     )
     task_facts = [
         r

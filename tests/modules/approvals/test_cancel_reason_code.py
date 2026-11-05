@@ -3,6 +3,11 @@
 approvals_022 admits the code in the delivery reason CHECKs; the canonical
 transition and the recovery sweep write it for ``cancelled`` actions, and
 ``action_rejected`` keeps meaning an owner rejection.
+
+The migrated owner policy has a quiet window (core_160: 23:00-08:00
+Asia/Singapore, 15:00-00:00 UTC), and admission reads it against the database
+clock, so ``approvals_pool`` clears it: an open prompt's reason is then ``None``
+at any hour (bu-l6vxjk).
 """
 
 from __future__ import annotations
@@ -17,12 +22,13 @@ import asyncpg
 import pytest
 
 from butlers.core.approval_delivery_worker import SAFE_REASON_CODES
+from butlers.core.approvals_policy import get_approvals_policy_quiet_hours
 from butlers.modules.approvals import delivery_lifecycle
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.goal_park import cancel_goal_effects
 from butlers.modules.approvals.models import ActionStatus
-from butlers.modules.approvals.park import park_pending_action
+from butlers.modules.approvals.park import approval_push_deliver_at, park_pending_action
 
 _pg = pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
 
@@ -59,7 +65,25 @@ async def approvals_pool(db):
     await pool.execute(
         "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
     )
+    # No quiet window: these tests are about fence reasons, not delivery timing.
+    await pool.execute(
+        "UPDATE public.approvals_policy SET quiet_start_hour = NULL, quiet_end_hour = NULL, "
+        "timezone = 'UTC' WHERE id = 1"
+    )
     return pool
+
+
+@_pg
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_fixture_policy_defers_nothing_inside_the_migrated_quiet_window(
+    db, approvals_pool
+):
+    in_window = datetime(2026, 11, 5, 17, 0, tzinfo=UTC)  # 01:00 Asia/Singapore
+    migrated = await get_approvals_policy_quiet_hours(await db("core", "approvals"))
+    assert approval_push_deliver_at(migrated, now=in_window) is not None  # the trap
+    policy = await get_approvals_policy_quiet_hours(approvals_pool)
+    assert approval_push_deliver_at(policy, now=in_window) is None
 
 
 async def _park(pool, goal_id: uuid.UUID | None = None) -> uuid.UUID:

@@ -1984,6 +1984,9 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     "BUTLER_TELEGRAM_TOKEN": ("telegram",),
     "APPROVAL_CALLBACK_SECRET": ("approvals", "telegram"),
     "APPROVAL_CALLBACK_CONNECTOR_TOKEN": ("approvals", "telegram"),
+    # Owner-audio authorship HMAC key (bu-dhloi1.20) — resolved once at Telegram connector
+    # startup; absent means voice transcripts carry no owner authorship at goal admission.
+    "AUDIO_AUTHORSHIP_KEY": ("telegram",),
     # Finance payment-destination fingerprint key (bu-s11n0s.21) — HMAC key resolved
     # once at FinanceModule startup; absent means bill destinations read as unverifiable.
     "FINANCE_PAYMENT_DESTINATION_KEY": ("finance",),

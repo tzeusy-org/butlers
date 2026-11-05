@@ -53,8 +53,10 @@ pytestmark = [
 
 
 @pytest.fixture
-async def chronicler_pool(db) -> asyncpg.Pool:
-    pool = await db("chronicler", max_size=5)
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
     await seed_source_registry(pool, sources=INITIAL_SOURCES)
     return pool
 
@@ -271,9 +273,11 @@ async def test_adjust_missing_routine_returns_none(chronicler_pool) -> None:
 
 
 @pytest.fixture
-async def full_pool(db):
+async def full_pool(db, fresh_db):
     """core + chronicler chains, so the KV ``state`` table exists for dedupe."""
-    pool = await db("core", "chronicler", max_size=5)
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "core", "chronicler", max_size=5)
     await seed_source_registry(pool, sources=INITIAL_SOURCES)
     return pool
 

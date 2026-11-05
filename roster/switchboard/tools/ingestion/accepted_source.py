@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
 
+from butlers.audio_authorship import usable_key
 from butlers.core.fact_authority import FactWriteContext, dashboard_origin_digest
 from butlers.core.goal_admission import Evidence, EvidenceRefused, SourceRef, digest
 from butlers.identity import resolve_owner_channel_via_definer
@@ -25,6 +26,8 @@ from butlers.tools.switchboard.ingestion.goal_input import (
     prepare_goal_input,
     scoped_reply_ref,
 )
+
+from .audio_admission import owner_speech_verified, speech_derived
 
 
 class ClosedGoalProfile(Enum):
@@ -73,10 +76,19 @@ async def _live_owner(connection, expected=None):
 
 
 class AcceptedSourceEvidence:
-    def __init__(self, *, profile: ClosedGoalProfile, feeds: DeterministicFeeds | None = None):
+    def __init__(
+        self,
+        *,
+        profile: ClosedGoalProfile,
+        feeds: DeterministicFeeds | None = None,
+        audio_key: str | bytes | None = None,
+    ):
+        """``audio_key`` is the server-held ``AUDIO_AUTHORSHIP_KEY`` from the trusted
+        constructor; without it no transcript can verify as owner speech."""
         if profile is not ClosedGoalProfile.HARNESS:
             raise EvidenceRefused("goal_profile_unavailable")
         self.feeds = feeds
+        self.audio_key = usable_key(audio_key)
 
     async def _dashboard_owner(self, connection, raw, text):
         metadata = (raw.get("payload") or {}).get("raw") or {}
@@ -173,8 +185,23 @@ class AcceptedSourceEvidence:
                     # verdict are not authenticated owner-principal evidence (mail
                     # import can supply those headers). No owner stamp exists here.
                     entity = None
+        # A transcript is the owner's input only when its producer's keyed binding verifies
+        # against this row (REQ-audio-authorship-001/002). Otherwise the owner stays the
+        # enclosing sender, but the whole transcript is fenced as data and the goal starts
+        # exposed, as for forwarded material.
+        unverified_speech = (
+            entity is not None
+            and speech_derived(src.get("provider"), payload, text)
+            and not owner_speech_verified(
+                key=self.audio_key, context=context, raw=raw, payload=payload, text=text
+            )
+        )
         prepared = prepare_goal_input(
-            source.id, bound_digest, retained, reference, owner=entity is not None
+            source.id,
+            bound_digest,
+            retained,
+            reference,
+            owner=entity is not None and not unverified_speech,
         )
         if kind == "feed":
             if self.feeds is None:
@@ -195,7 +222,7 @@ class AcceptedSourceEvidence:
             "message",
             endpoint,
             owner=entity is not None,
-            outside_content=prepared.marked or referenced_exposed,
+            outside_content=prepared.marked or referenced_exposed or unverified_speech,
             reply_delivery=delivery,
             owner_entity=entity,
             owner_channel=channel,

@@ -868,8 +868,10 @@ def build_day_close_completion_hooks(
                 store_fact_fn=store_fact_fn,
             )
             logger.info(
-                "day_close_writer: write-back for %s (%d insights, %d self-reminders, %d errors)",
+                "day_close_writer: write-back for %s status=%s (%d insights, "
+                "%d self-reminders, %d errors)",
                 day_date.isoformat(),
+                wb.status,
                 wb.insights_written,
                 wb.self_reminders_written,
                 wb.errors,

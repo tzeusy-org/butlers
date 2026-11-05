@@ -25,13 +25,18 @@ MESSAGE = "The day settled into focused reading and an evening walk."
 
 
 @pytest.fixture
-async def chronicler_pool(db):
-    """Core and chronicler both in the chronicler schema; a fresh clone per test."""
-    return await db(
+async def chronicler_pool(db, fresh_db):
+    """Core and chronicler both in chronicler; private memory is prepared explicitly."""
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(
+        db,
+        fresh_db,
         "core",
         "chronicler",
+        domain_schema="chronicler",
+        pool_schema="chronicler",
         schemas={"core": "chronicler", "chronicler": "chronicler"},
-        schema="chronicler",
         min_size=2,
         max_size=5,
     )

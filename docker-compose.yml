@@ -122,7 +122,11 @@ services:
 
   migrations:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    command: ["db", "migrate"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
+        && exec uv run --frozen --no-dev butlers db migrate --dir /app/roster
     environment:
       <<: *postgres-env
     volumes:
