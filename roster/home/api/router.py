@@ -31,15 +31,15 @@ from butlers.api.models import (
     PaginationMeta,
 )
 from butlers.api.owner_control import require_dashboard_owner_control
-from butlers.connectors.home_assistant_statistics import (
-    HAStatisticsClient,
-    HAStatisticsError,
-    parse_statistics_change_series,
-)
 from butlers.core.audit import append as append_audit
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.state import decode_jsonb, state_set
 from butlers.credential_store import upsert_owner_entity_info
+from butlers.home_assistant_client import (
+    HAStatisticsClient,
+    HAStatisticsError,
+    parse_statistics_change_series,
+)
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 from butlers.roster_imports import roster_module
 

@@ -1,12 +1,109 @@
-"""Shared Home Assistant recorder statistics WebSocket client."""
+"""Home Assistant transports; callers retain their sessions, retries and authority."""
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
+import httpx
+
+
+class HAAuthInvalidError(RuntimeError):
+    """Authentication rejected; no provider message or credential is retained."""
+
+
+class HAHandshakeProtocolError(RuntimeError):
+    """An unexpected closed handshake state."""
+
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+        super().__init__("Unexpected HA handshake " + stage)
+
+
+def ws_url(base_url: str) -> str:
+    """Map supported HTTP/WS schemes to the HA WebSocket endpoint."""
+    parsed = urlsplit(base_url.rstrip("/"))
+    schemes = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}
+    if parsed.scheme not in schemes or not parsed.netloc:
+        raise ValueError("Unsupported HA URL")
+    return urlunsplit(
+        (
+            schemes[parsed.scheme],
+            parsed.netloc,
+            parsed.path + "/api/websocket",
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+async def authenticate(websocket: Any, token: str) -> dict[str, Any]:
+    """Authenticate once. The caller owns connection closure and feature negotiation."""
+    greeting = await websocket.receive_json(timeout=10.0)
+    if not isinstance(greeting, dict) or greeting.get("type") != "auth_required":
+        raise HAHandshakeProtocolError("greeting")
+    await websocket.send_json({"type": "auth", "access_token": token})
+    result = await websocket.receive_json(timeout=10.0)
+    if isinstance(result, dict) and result.get("type") == "auth_invalid":
+        raise HAAuthInvalidError("HA authentication rejected")
+    if not isinstance(result, dict) or result.get("type") != "auth_ok":
+        raise HAHandshakeProtocolError("response")
+    return result
+
+
+def decode_ws_text(data: str | bytes) -> list[dict[str, Any]]:
+    """Decode one JSON dictionary or coalesced dictionaries, withholding raw text."""
+    try:
+        payload = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        raise ValueError("Invalid HA WebSocket JSON") from None
+    if isinstance(payload, dict):
+        return [payload]
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def rest_client(
+    base_url: str | None,
+    token: str | None,
+    *,
+    verify_ssl: bool = True,
+    timeout: httpx.Timeout | float | None = 5.0,
+    trust_env: bool = True,
+    follow_redirects: bool = False,
+) -> httpx.AsyncClient:
+    """Create a caller-owned client, without implicit retries or credential fallback.
+
+    The per-phase HTTPX timeout is separate from a caller's total request budget.
+    Existing HTTPX owners retain environment policy; migrated aiohttp owners pass
+    trust_env=False and follow_redirects=True to preserve their prior transport defaults.
+    """
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return httpx.AsyncClient(
+        base_url=base_url or "",
+        headers=headers,
+        verify=verify_ssl,
+        timeout=timeout,
+        trust_env=trust_env,
+        follow_redirects=follow_redirects,
+    )
+
+
+async def get_json(
+    client: httpx.AsyncClient, url: str, *, params: dict[str, str] | None = None
+) -> Any:
+    """GET, retain HTTPX status/transport exceptions, then decode the response."""
+    response = await client.get(url, params=params)
+    response.raise_for_status()
+    return response.json()
+
 
 StatisticsErrorScope = Literal["connection", "command"]
 
@@ -153,14 +250,10 @@ class HAStatisticsClient:
     ) -> dict[str, Any]:
         assert self._ha_url is not None
         assert self._ha_token is not None
-        base_url = self._ha_url.rstrip("/")
-        if base_url.startswith("https://"):
-            websocket_url = base_url.replace("https://", "wss://", 1)
-        elif base_url.startswith("http://"):
-            websocket_url = base_url.replace("http://", "ws://", 1)
-        else:
-            raise HAStatisticsError("invalid_url", scope="connection")
-        websocket_url = f"{websocket_url}/api/websocket"
+        try:
+            websocket_url = ws_url(self._ha_url)
+        except ValueError:
+            raise HAStatisticsError("invalid_url", scope="connection") from None
 
         client_timeout = aiohttp.ClientTimeout(total=timeout + 45.0, connect=10.0)
         command_sent = False
@@ -171,17 +264,13 @@ class HAStatisticsClient:
                     heartbeat=None,
                     ssl=self._verify_ssl,
                 ) as websocket:
-                    auth_required = await websocket.receive_json(timeout=10.0)
-                    if (
-                        not isinstance(auth_required, dict)
-                        or auth_required.get("type") != "auth_required"
-                    ):
-                        raise HAStatisticsError("protocol_error", scope="connection")
-
-                    await websocket.send_json({"type": "auth", "access_token": self._ha_token})
-                    auth_result = await websocket.receive_json(timeout=10.0)
-                    if not isinstance(auth_result, dict) or auth_result.get("type") != "auth_ok":
-                        raise HAStatisticsError("unauthorized", scope="connection")
+                    try:
+                        await authenticate(websocket, self._ha_token)
+                    except HAAuthInvalidError:
+                        raise HAStatisticsError("unauthorized", scope="connection") from None
+                    except HAHandshakeProtocolError as error:
+                        code = "protocol_error" if error.stage == "greeting" else "unauthorized"
+                        raise HAStatisticsError(code, scope="connection") from None
 
                     payload = dict(command)
                     payload["id"] = 1
