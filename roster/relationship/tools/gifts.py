@@ -254,7 +254,9 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     # We do NOT rely on store_fact's entity-keyed supersession because that would
     # collapse all gifts for the same entity+predicate into one row.
     await pool.execute(
-        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+        "UPDATE facts SET validity = 'superseded', invalid_at = $2, dropped_at "
+        "= CASE WHEN validity IN ('superseded', 'expired') THEN dropped_at "
+        "ELSE $2 END WHERE id = $1",
         gift_id,
         now,
     )

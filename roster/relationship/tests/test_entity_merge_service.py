@@ -221,9 +221,17 @@ _MERGE_SCHEMAS = {
 
 
 @pytest.fixture
-async def merge_pool(db):
-    return await db(
-        *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS, schema="relationship", min_size=2, max_size=8
+async def merge_pool(db, fresh_db):
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(
+        db,
+        fresh_db,
+        *_MERGE_CHAINS,
+        schemas=_MERGE_SCHEMAS,
+        pool_schema="relationship",
+        min_size=2,
+        max_size=8,
     )
 
 
@@ -236,7 +244,15 @@ async def _insert_entity(pool, name: str) -> UUID:
 @pytest.fixture
 async def owner_merge_pools(fresh_db):
     """Fresh main chains with bootstrap-established runtime identities (``SET ROLE``)."""
-    db_url = await asyncio.to_thread(fresh_db, *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS)
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    db_url = await asyncio.to_thread(
+        fresh_db,
+        *_MERGE_CHAINS,
+        schemas=_MERGE_SCHEMAS,
+        revisions={"chronicler": "chronicler_029"},
+    )
+    await asyncio.to_thread(prepare_chronicler_current_head_sync, db_url)
 
     async def relationship_role(conn):
         await conn.execute("SET ROLE butler_relationship_rw")
@@ -606,7 +622,15 @@ async def rebind_pools(db, fresh_db):
     Episodes belong to Chronicler (``chronicler_014``), so their references are
     rebound by Chronicler's own receipt, never by Relationship's.
     """
-    db_url = await asyncio.to_thread(fresh_db, *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS)
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    db_url = await asyncio.to_thread(
+        fresh_db,
+        *_MERGE_CHAINS,
+        schemas=_MERGE_SCHEMAS,
+        revisions={"chronicler": "chronicler_029"},
+    )
+    await asyncio.to_thread(prepare_chronicler_current_head_sync, db_url)
     return (
         await db.open(db_url, schema="relationship"),
         await db.open(db_url, schema="chronicler"),

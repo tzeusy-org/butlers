@@ -27,8 +27,10 @@ pytestmark = [
 
 
 @pytest.fixture
-async def chronicler_pool(db) -> asyncpg.Pool:
-    return await db("chronicler")
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(db, fresh_db, "chronicler")
 
 
 _URL = "/api/chronicler/location-retention"

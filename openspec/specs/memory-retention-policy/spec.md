@@ -145,6 +145,17 @@ Rules have no `validity` column. Their terminal soft-delete state is the boolean
 
 ---
 
+#### Scenario: Drop transitions have dedicated event timestamps
+
+- **WHEN** an active/fading fact becomes superseded or expired
+- **THEN** its same canonical UPDATE SHALL set nullable `dropped_at` to the operation timestamp without changing `invalid_at`'s bitemporal meaning
+- **AND** an already superseded/expired fact SHALL preserve its old timestamp, including NULL
+- **WHEN** a rule's persisted forgotten predicate changes from not true to true
+- **THEN** that same UPDATE SHALL set nullable `forgotten_at`; an already true row SHALL preserve its timestamp, including NULL
+- **AND** an initially forgotten rule SHALL use its insertion `created_at`, while ordinary insertions remain NULL
+- **AND** migration SHALL add no defaults or legacy backfill, and a later nonterminal-to-terminal transition SHALL receive its new operation time
+- **AND** existing canonical/projection transactional rollback boundaries SHALL be preserved.
+
 ### Requirement: Retention class on memory store operations
 
 All memory write tools SHALL accept an optional `retention_class` parameter that is persisted on the stored row. The retention class determines the memory's lifecycle policy.

@@ -261,6 +261,13 @@ source_modules = ["butlers.modules"]
 forbidden_modules = ["butlers.core.spawner"]
 allow_indirect_imports = true
 
+[[tool.importlinter.contracts]]
+name = "modules, jobs and chronicler do not import connectors"
+type = "forbidden"
+source_modules = ["butlers.modules", "butlers.jobs", "butlers.chronicler"]
+forbidden_modules = ["butlers.connectors"]
+allow_indirect_imports = true
+
 [tool.pyright]
 # No whole-file retirement or generated-Python exclusion has been established.
 # Historical mixed RFC0038 paths and their surviving successors stay checked.

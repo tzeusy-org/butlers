@@ -92,7 +92,7 @@ def test_ingest_v1_valid_envelope() -> None:
     assert envelope.source.channel == "telegram_bot"
     assert envelope.payload.normalized_text == "ping"
 
-    from butlers.connectors.catalog import ingress_pairs
+    from butlers.connector_catalog import ingress_pairs
 
     for channel, provider in ingress_pairs():
         payload = _valid_ingest_payload()

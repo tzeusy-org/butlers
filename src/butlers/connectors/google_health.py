@@ -104,7 +104,7 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import REGISTRY, Counter, Gauge
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -136,16 +136,15 @@ from butlers.google_account_registry import (
     list_health_scoped_accounts,
 )
 from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
+    GoogleTokenCache,
     InvalidGoogleCredentialsError,
+    _mark_account_revoked,
     google_oauth_error_code,
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_CAPABILITY, CHANNEL_KIND_FEED
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
 
 _DESCRIPTOR = connector_descriptor("google_health")
 
@@ -175,7 +174,7 @@ GOOGLE_HEALTH_SCOPES: frozenset[str] = frozenset(
     }
 )
 
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
 _TOKEN_REFRESH_BUFFER_S = 60  # refresh access token 60s before expiry
 
 # Default per-resource polling cadences (seconds).
@@ -839,6 +838,10 @@ class OwnerContext:
     auth_error: bool = False
     auth_error_message: str | None = None
     auth_error_at: datetime | None = None  # when the error was last set, for observability
+
+    if TYPE_CHECKING:
+        _google_token_cache: GoogleTokenCache | None = None
+        _revoked_refresh_token: str | None = None
 
     @classmethod
     def from_registry(cls, account: HealthScopedAccount) -> OwnerContext:
@@ -1506,7 +1509,9 @@ class GoogleHealthConnector:
         self._client_secret = creds.client_secret
         return True
 
-    async def _mint_access_token(self, account_uuid: uuid.UUID) -> str:
+    async def _mint_access_token(
+        self, account_uuid: uuid.UUID, *, force_refresh: bool = False
+    ) -> str:
         """Mint a fresh access token for the given account.
 
         Per design.md ADR-4: uses ``_resolve_entity_refresh_token`` to fetch
@@ -1546,71 +1551,51 @@ class GoogleHealthConnector:
             )
 
         assert self._http_client is not None
+        cache = getattr(ctx, "_google_token_cache", None)
+        if cache is None:
+            cache = ctx._google_token_cache = GoogleTokenCache(
+                ctx, "cached_access_token", "token_expires_at", account=str(account_uuid)
+            )
+
+        async def credential_is_current() -> bool:
+            shared_pool = self._shared_pool
+            return (
+                self._accounts.get(account_uuid) is ctx
+                and shared_pool is not None
+                and await _resolve_entity_refresh_token(shared_pool, ctx.entity_id) == refresh_token
+            )
+
+        assert self._client_id is not None and self._client_secret is not None
         try:
-            resp = await self._http_client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    # Down-scope the access token to health scopes only. The
-                    # per-account refresh token is scope-widened (Gmail, Drive,
-                    # Calendar, Contacts, …), but the Google Health API rejects
-                    # any token carrying non-health scopes with
-                    # 403 DISALLOWED_OAUTH_SCOPES. Requesting a subset here mints
-                    # a health-only access token the API accepts.
-                    "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPES)),
-                },
+            return await cache.get_token(
+                self._http_client,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                refresh_token=refresh_token,
+                scopes=frozenset(GOOGLE_HEALTH_SCOPES),
+                credential_is_current=credential_is_current,
                 timeout=15,
+                force_refresh=force_refresh,
             )
-        except httpx.TransportError as exc:
-            raise GoogleHealthError(f"Token refresh transport error: {exc}") from exc
-
-        if resp.status_code != 200:
-            body = resp.text[:200]
-            # The shared helper reads only the token endpoint's exact top-level
-            # OAuth code. Nested data-API prose mentioning ``invalid_grant`` is
-            # not evidence that this account's refresh grant was revoked.
-            oauth_error = google_oauth_error_code(resp)
-            if oauth_error == "invalid_grant":
-                raise GoogleHealthTokenRevokedError(
-                    f"Google refresh token revoked/expired for {ctx.email}: "
-                    f"HTTP {resp.status_code}: {body}"
-                )
-            if oauth_error == "unauthorized_client":
-                raise GoogleHealthOAuthCredentialError(
-                    f"Google OAuth client unauthorized for {ctx.email}: "
-                    f"HTTP {resp.status_code}: {body}"
-                )
+        except httpx.HTTPStatusError as exc:
+            code = google_oauth_error_code(exc.response)
+            if code == "invalid_grant":
+                ctx._revoked_refresh_token = refresh_token
+                raise GoogleHealthTokenRevokedError("Google refresh grant revoked") from exc
+            if code == "unauthorized_client":
+                raise GoogleHealthOAuthCredentialError("Google OAuth client unauthorized") from exc
             raise GoogleHealthCredentialError(
-                f"Google token refresh failed for {ctx.email}: HTTP {resp.status_code}: {body}"
-            )
-
-        # Validate the whole payload before touching the account context, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
-        try:
-            token = validate_oauth_token_payload(resp.json())
-        except OAuthTokenValidationError as exc:
+                f"Google token refresh failed: HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.TransportError as exc:
+            raise GoogleHealthError("Token refresh transport error") from exc
+        except ValueError as exc:
             raise GoogleHealthCredentialError(
                 f"Google token refresh returned an invalid token payload for {ctx.email}"
             ) from exc
 
-        ctx.cached_access_token = token.access_token
-        ctx.token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
-        return token.access_token
-
     async def _get_access_token(self, account_uuid: uuid.UUID) -> str:
-        """Return a usable access token for the given account, refreshing if near expiry."""
-        ctx = self._accounts.get(account_uuid)
-        if ctx is not None:
-            now = datetime.now(UTC)
-            if (
-                ctx.cached_access_token
-                and ctx.token_expires_at
-                and now < ctx.token_expires_at - timedelta(seconds=_TOKEN_REFRESH_BUFFER_S)
-            ):
-                return ctx.cached_access_token
+        """Resolve the actual account credential and reuse its scoped cache."""
         return await self._mint_access_token(account_uuid)
 
     async def _mark_account_revoked(self, account_uuid: uuid.UUID) -> None:
@@ -1623,15 +1608,13 @@ class GoogleHealthConnector:
         if self._shared_pool is None:
             return
         try:
-            async with self._shared_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE public.google_accounts
-                    SET status = 'revoked'
-                    WHERE id = $1
-                    """,
-                    account_uuid,
-                )
+            ctx = self._accounts.get(account_uuid)
+            grant = getattr(ctx, "_revoked_refresh_token", None)
+            if grant is None:
+                return
+            await _mark_account_revoked(
+                self._shared_pool, account_id=account_uuid, expected_refresh_token=grant
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "GoogleHealthConnector: failed to mark account %s revoked (non-fatal): %s",

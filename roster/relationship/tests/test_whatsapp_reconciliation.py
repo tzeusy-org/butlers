@@ -28,6 +28,7 @@ from butlers.tools.relationship.whatsapp_reconciliation import (
     build_whatsapp_reconciliation_plan,
     validate_empty_shell_locked,
 )
+from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
 
 pytestmark = [
     pytest.mark.integration,
@@ -37,14 +38,16 @@ pytestmark = [
 
 
 @pytest.fixture
-async def reconciliation_pool(db):
+async def reconciliation_pool(db, fresh_db):
     """Relationship's real schema (memory + approvals local) beside Chronicler's.
 
     Chronicler intentionally carries entity anchors without public.entities FKs
     (chronicler_013 through chronicler_016); its real chain supplies them as
     explicit protected references, not discoverable through pg_constraint.
     """
-    pool = await db(
+    pool = await open_prepared_chronicler_pool(
+        db,
+        fresh_db,
         "core",
         "memory",
         "relationship",
@@ -56,7 +59,7 @@ async def reconciliation_pool(db):
             "approvals": "relationship",
             "chronicler": "chronicler",
         },
-        schema="relationship",
+        pool_schema="relationship",
         min_size=2,
         max_size=8,
     )

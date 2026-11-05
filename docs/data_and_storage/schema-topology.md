@@ -241,6 +241,29 @@ for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
 `runtime_config.goal_admission_config` snapshot in each migrated core schema;
 only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
 non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
-backup while denying other runtimes after bootstrap regrants. See
+backup while denying other runtimes after bootstrap regrants. `sw_057` adds the
+S1 label columns (`label_*`, `admitted_label_*`, `exposure_cause`) to goals,
+invocations, effects and inbox rows, their validating CHECKs and join triggers,
+and the owner-only `switchboard.invocation_exposure_measurements` view; it adds
+no table and no second `control.goals` schema. `sw_058` (M7, bu-4c7nvp.1.2) adds
+the dark typed-boundary stores `goal_handles`, `extraction_cache`,
+`goal_child_results` and `source_containments`, each labelled with the sw_057
+grammar where it holds content, insert-only for the runtime (a child result
+row gains its one result) and guarded against update, delete and truncate.
+`sw_059` adds the owner tighten-only law:
+`switchboard.owner_policy_{state,terms,receipts,holds}` (the generation
+singleton, the terms, one receipt per owner action, and the content-blind
+holds). Under RLS the runtime may only read terms and the generation and append
+holds. Durability and tighten-only triggers guard every role; see the
+[capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110). See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
+
+### Steam status evidence
+
+`connectors.steam_status_history` (core_314) is append-only observed Steam
+status evidence for the Chronicler projection, unique on `(steam_id, observed_at)`.
+The connector records detected changes independently of ingest; Chronicler reads
+through its SELECT-only runtime role. The established `connector_writer` role
+writes the table. Bootstrap replay maintains the read grant. The table survives
+source downgrade so rolling back a producer cannot erase captured observations.

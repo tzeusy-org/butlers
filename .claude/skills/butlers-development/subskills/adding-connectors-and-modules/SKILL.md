@@ -79,7 +79,7 @@ Key requirements:
 
 ### Phase 4: Connector Spec
 
-Give each connector one canonical frozen row in `src/butlers/connectors/catalog.py`
+Give each connector one canonical frozen row in `src/butlers/connector_catalog.py`
 and obtain runtime identity through `connector_descriptor()`. Keep aliases,
 secondary pairs and stored-event spellings explicit; do not add configurable
 identity environment variables or duplicate connector lists. A descriptor row

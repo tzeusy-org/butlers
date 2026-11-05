@@ -1046,25 +1046,25 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 79,
-    "direct_files": 36,
-    "container": 88,
-    "supplementary": 41,
+    "direct": 81,
+    "direct_files": 37,
+    "container": 90,
+    "supplementary": 42,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 53,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 54,
       "NON_NAME_ENUM_OR_MODULE": 26,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 25,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 26,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
-      "SCHEMA_OWNERSHIP": 10
+      "SCHEMA_OWNERSHIP": 11
     },
     "direct_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 36,
       "NON_NAME_ENUM_OR_MODULE": 5,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 20,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 21,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
-      "SCHEMA_OWNERSHIP": 7
+      "SCHEMA_OWNERSHIP": 8
     }
   },
   "selectors": [
@@ -4276,6 +4276,80 @@
       ],
       "baseline_ids": [],
       "reason": "bu-kqnum.13.9: fixed target/provenance boundary for the owner-authorized controlled drain, never configurable per host and never deletion authority."
+    },
+    {
+      "baseline_ids": [],
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Butler Identity and Wire Contract"
+        },
+        {
+          "path": "openspec/specs/chronicler-intent-evidence-activity/spec.md",
+          "requirement": "Memory Write-Back Within Own Schema"
+        }
+      ],
+      "container": false,
+      "direct": false,
+      "expression": "configs.get('chronicler')",
+      "id": "e2d5c9ea57841a51608fbd5d451b9a0a398ecbc0fe0cfc519ffeb4c5dfd73a81",
+      "kind": "lookup",
+      "line": 718,
+      "occurrence": 1,
+      "path": "src/butlers/cli.py",
+      "public_source_commit": "6ce7f5d3f9fd3193da9d70f78538e56a9d717475",
+      "purpose": "Select the canonical Chronicler configuration for its explicit private-memory preparation command; the lookup does not route preparation to another butler.",
+      "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
+      "symbol": "_prepare_chronicler_memory"
+    },
+    {
+      "baseline_ids": [],
+      "category": "SCHEMA_OWNERSHIP",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Butler Identity and Wire Contract"
+        },
+        {
+          "path": "openspec/specs/chronicler-intent-evidence-activity/spec.md",
+          "requirement": "Memory Write-Back Within Own Schema"
+        }
+      ],
+      "container": true,
+      "direct": true,
+      "expression": "config.db_schema != 'chronicler'",
+      "id": "5388810c85a26d9935502730f5a43504a7665898e10c151e083af391bc496071",
+      "kind": "compare",
+      "line": 725,
+      "occurrence": 1,
+      "path": "src/butlers/cli.py",
+      "public_source_commit": "6ce7f5d3f9fd3193da9d70f78538e56a9d717475",
+      "purpose": "Require the existing Chronicler domain schema before preparing its separate private-memory schema; this is not a configurable destination.",
+      "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
+      "symbol": "_prepare_chronicler_memory"
+    },
+    {
+      "baseline_ids": [],
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Butler Identity and Wire Contract"
+        }
+      ],
+      "container": true,
+      "direct": true,
+      "expression": "config.name != 'chronicler'",
+      "id": "d09736b62d6564541125bbab4b0f74b000d2bc6f721d8bb1f488216acf544785",
+      "kind": "compare",
+      "line": 725,
+      "occurrence": 1,
+      "path": "src/butlers/cli.py",
+      "public_source_commit": "6ce7f5d3f9fd3193da9d70f78538e56a9d717475",
+      "purpose": "Refuse the explicit Chronicler memory-preparation command unless the loaded configuration has the canonical Chronicler identity.",
+      "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
+      "symbol": "_prepare_chronicler_memory"
     }
   ],
   "retired": [

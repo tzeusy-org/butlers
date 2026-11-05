@@ -73,8 +73,17 @@ note from the verified owner becomes its transcript in `payload.normalized_text`
   (`source_media`, `status`, `confidence`, `language`, `stt_backend`), which Switchboard stores with
   the message so the responding session can tell the owner a note was not transcribed. The counter
   `connector_telegram_voice_transcription_total{status}` counts outcomes.
+- **Authorship.** A successful owner transcript also carries `payload.audio_authorship`, an
+  HMAC-SHA256 binding (`src/butlers/audio_authorship.py`) of the channel, endpoint, original
+  idempotency key and event id, sender, the voice note's `file_unique_id` and audio SHA-256, the
+  declared transform for the configured protocol and the transcript's SHA-256. It is keyed by the
+  Tier-1 `AUDIO_AUTHORSHIP_KEY` and omitted when that credential is absent. Goal admission keeps the
+  transcript as owner input only when the binding verifies against the accepted row; without it,
+  the transcript is fenced as third-party data and the goal starts exposed
+  (`docs/architecture/goal-ledger-and-admission.md`, Owner audio). Audio files (`[Audio]`) are not
+  transcribed by this transport.
 - **Privacy.** Audio stays in memory for one note and is never written to disk, attached, logged or
-  put in a metric label. Logs never carry transcript text.
+  put in a metric label. Logs never carry transcript text. The binding carries digests only.
 - **Deployment.** No STT service is deployed today. Enabling needs a reachable Wyoming, WebSocket
   or HTTP endpoint in `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL`; the runtime image ships `ffmpeg`.
 

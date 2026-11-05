@@ -95,7 +95,8 @@ def _build_app(rows: list[Record]):
         ("core.sessions", "work", "butler_ops"),
         # Calendar is intent: no lane → "other" (and dropped from counting).
         ("google_calendar.completed", "scheduled_block", "other"),
-        ("spotify.session_summary", "listening_episode", "play"),
+        ("spotify.session_summary", "listening_episode", "other"),
+        ("chronicler.situation_inferred", "play_block", "play"),
         ("steam.play_history", "play_episode", "play"),
         ("totally.unknown_source", "mystery_type", "other"),
     ],

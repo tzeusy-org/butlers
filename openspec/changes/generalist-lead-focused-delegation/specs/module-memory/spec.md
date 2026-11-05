@@ -16,7 +16,12 @@ write made under an exposed assertion SHALL additionally be stamped tainted,
 every read that returns an episode, fact or rule SHALL return its authority and
 taint stamp, and Profile Facts SHALL admit only untainted owner-class facts. A
 write whose authority cannot be stamped SHALL fail rather than store an
-unstamped steering artifact.
+unstamped steering artifact. The taint stamp is the writer pointer
+(`taint_goal_id`, `taint_invocation_id`); a stored record's S1 label SHALL
+resolve through it to the writer invocation's persisted label, with no
+per-record label column, and a missing, dangling or unreadable pointer SHALL
+resolve to the unknown label (`{world}`, all six categories)
+(REQ-capability-authorization-019).
 - Consolidation SHALL derive each fact and rule's authority as the weakest across
   that artifact's validated evidence episodes: all owner-class evidence yields
   `owner` (or `owner_device` when every episode is), evidence of one identical

@@ -11,7 +11,7 @@ environment and health-server requirements remain where their mechanisms survive
 
 ## S1 model and projections
 
-`butlers.connectors.catalog` contains frozen data with no environment, application,
+`butlers.connector_catalog` contains frozen data with no environment, application,
 DB or credential reads. Its thirteen canonical identities match the existing
 heartbeat registration set. The three additional preview labels (`telegram`,
 `telegram_user`, `live-listener`) remain explicit display aliases. They confer no

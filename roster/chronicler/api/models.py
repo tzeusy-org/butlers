@@ -588,6 +588,7 @@ class RollupDay(BaseModel):
       legitimate absence, not a degraded/error state: never render this as a
       false all-clear zero, but also never set
       ``RollupsResponse.rollups_source_error`` for it.
+    - ``pending_repair`` — source repair is still running; numeric values and prose are hidden.
     - ``unknown`` — the query for this window failed (see
       ``RollupsResponse.rollups_source_error``); this day's ``lanes``/
       ``flags`` are empty because nothing could be read, not because nothing
@@ -687,8 +688,9 @@ class BalanceResponse(BaseModel):
     local_date: str
     timezone: str
     status: str
-    """One of ``materialized`` / ``not_yet_materialized`` / ``unknown`` —
-    same three-state contract as ``RollupDay.status``."""
+    """One of ``materialized`` / ``not_yet_materialized`` / ``pending_repair`` /
+    ``unknown`` — same status contract as ``RollupDay.status``. A pending target
+    or baseline date hides all lanes until repair completes."""
     baseline_lookback_days: int
     lanes: list[BalanceLaneRow] = Field(default_factory=list)
     """Empty when ``status != 'materialized'``; one entry per
@@ -704,7 +706,8 @@ class TrendLaneDay(BaseModel):
 
     local_date: str
     status: str
-    """One of ``materialized`` / ``not_yet_materialized`` / ``unknown``."""
+    """One of ``materialized`` / ``not_yet_materialized`` / ``pending_repair`` /
+    ``unknown``. Pending target or baseline dates hide their values."""
     seconds: int = 0
     baseline_seconds: float | None = None
     delta_seconds: float | None = None
@@ -726,10 +729,10 @@ class TrendLaneSeries(BaseModel):
     lane: str
     days: list[TrendLaneDay] = Field(default_factory=list)
     """Ordered by local_date ASC, one entry per day in [start_date, end_date]."""
-    streak_days: int = 0
+    streak_days: int | None = 0
     """Trailing run of consecutive non-zero-activity days ending at
     ``end_date`` (``balance.compute_lane_streak``). 0 when the most recent
-    day has no activity in this lane."""
+    day has no activity in this lane. Null while a visible day is pending repair."""
 
 
 class TrendAnomaly(BaseModel):

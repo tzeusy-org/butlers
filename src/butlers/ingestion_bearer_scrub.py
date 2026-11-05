@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
-from butlers.connectors.catalog import scrub_connector_labels
+from butlers.connector_catalog import scrub_connector_labels
 from butlers.ingestion_spans import collapse_spans
 
 #: Telegram's service account that delivers login codes.

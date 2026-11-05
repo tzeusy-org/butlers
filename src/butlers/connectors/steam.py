@@ -57,7 +57,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from prometheus_client import Counter, Histogram, generate_latest
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -1298,6 +1298,31 @@ class SteamAccountPoller:
             prev_game = prev_snapshot.get("game_extra_info")
 
             if prev_persona != persona_state or prev_game != game_extra_info:
+                try:
+                    await self._db_pool.execute(
+                        """
+                        INSERT INTO connectors.steam_status_history
+                            (steam_id, steam_account_id, observed_at, persona_state,
+                             game_id, game_name, prev_game_name)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ON CONFLICT (steam_id, observed_at) DO NOTHING
+                        """,
+                        self._state.steam_id,
+                        self._state.steam_account_id,
+                        datetime.fromisoformat(poll_ts),
+                        persona_state,
+                        str(player["gameid"]) if player.get("gameid") else None,
+                        game_extra_info,
+                        prev_game,
+                    )
+                except Exception as exc:
+                    # Persist evidence independently of ingest, and still advance the cursor.
+                    logger.warning(
+                        "Steam status history insert failed: endpoint=%s: %s",
+                        self._state.endpoint_identity,
+                        exc,
+                    )
+                    submission_error = exc
                 envelope = build_status_change_envelope(
                     steam_id=self._state.steam_id,
                     endpoint_identity=self._state.endpoint_identity,

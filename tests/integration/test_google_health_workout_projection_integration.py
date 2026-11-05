@@ -56,7 +56,9 @@ class _ProjectionPools:
 @pytest.fixture
 def projection_db_url(fresh_db) -> str:
     # chronicler_003 restricts Health grants; mem_011 must apply afterwards.
-    return fresh_db(
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db(
         "core",
         "chronicler",
         "memory",
@@ -67,7 +69,10 @@ def projection_db_url(fresh_db) -> str:
             "memory": "health",
             "health": "health",
         },
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 async def _runtime_pool(db_url: str, schema: str, role: str) -> asyncpg.Pool:

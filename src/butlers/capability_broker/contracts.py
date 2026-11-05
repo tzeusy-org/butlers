@@ -18,6 +18,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from butlers.core.goal_admission import Grant
+from butlers.core.goal_labels import CATEGORIES, Label
+from butlers.core.owner_policy import PolicyHold
 from butlers.core.tool_catalog import RecipientParameters, declared_approval_mode
 
 Origin = Literal["owner", "obligation", "third_party", "staffer"]
@@ -36,6 +38,8 @@ class Reason(StrEnum):
     CATALOG = "catalog_changed"
     RESOURCE = "resource_outside_grant"
     POLICY = "policy_refused"
+    # An owner always_ask term on a read: a read cannot park yet, so it refuses.
+    ASK_ON_READ = "owner_policy_ask_on_read"
     BUDGET = "budget_exhausted"
     DUPLICATE = "effect_already_recorded"
     UNAVAILABLE = "broker_unavailable"
@@ -44,10 +48,15 @@ class Reason(StrEnum):
 class BrokerRefused(RuntimeError):
     """A refusal; never carries a token, arguments or a downstream error."""
 
-    def __init__(self, reason: Reason, *, effect_id: UUID | None = None):
+    def __init__(
+        self, reason: Reason, *, effect_id: UUID | None = None, hold: PolicyHold | None = None
+    ):
         super().__init__(reason.value)
         self.reason = reason
         self.effect_id = effect_id
+        # The owner-law terms that refused it (S1 typed receipt); never sent
+        # to the session, which sees only the closed reason.
+        self.hold = hold
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
@@ -80,9 +89,21 @@ class Principal:
     exposed: bool
     catalog_digest: str
     grants: tuple[Grant, ...]
+    # The invocation's S1 label as read under the goal lock.
+    label: Label
 
     def grant_for(self, capability: str) -> Grant | None:
         return next((g for g in self.grants if g.capability == capability), None)
+
+
+def declared_categories(descriptor: Any) -> frozenset[str]:
+    """The S1 categories a descriptor's output may carry.
+
+    D4 declares sensitivity, not categories, so this is conservative: only
+    ``ordinary`` output reads as none; ``sensitive`` or anything else is all six.
+    """
+    ordinary = getattr(descriptor, "output_sensitivity", None) == "ordinary"
+    return frozenset() if ordinary else CATEGORIES
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +117,9 @@ class Capability:
     recipient_params: RecipientParameters
     resource_params: tuple[str, ...] = ()
     selection_bound: frozenset[str] = frozenset()
+    # Resource params whose identifiers have no alias; only these can narrow
+    # an owner-law term (any other narrowing selects every call).
+    alias_free_params: frozenset[str] = frozenset()
     safety_args: tuple[str, ...] = ()
     owner_authority: bool = False
     always_per_event: bool = False
@@ -104,6 +128,8 @@ class Capability:
     # ...and has an approvals gate configured for this tool (approval policy).
     approval_gate: bool = False
     idempotency: Literal["none", "key_required"] = "none"
+    # S1 sensitivity categories its output may carry; unknown is all six.
+    categories: frozenset[str] = CATEGORIES
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"}, repr=False)
 
@@ -125,12 +151,14 @@ class Capability:
             selection_bound=frozenset(
                 name for name, bound in (descriptor.selection_bound or {}).items() if bound
             ),
+            alias_free_params=frozenset(getattr(descriptor, "alias_free_params", None) or ()),
             safety_args=tuple(descriptor.safety_args or ()),
             owner_authority=bool(descriptor.owner_authority),
             always_per_event=declared_approval_mode(policy) == "always_per_event",
             approvals_enabled=policy.get("enabled") is True,
             approval_gate=policy.get("enabled") is True and policy.get("configured_gate") is True,
             idempotency=descriptor.idempotency,
+            categories=declared_categories(descriptor),
             description=descriptor.description,
             input_schema=input_schema,
         )

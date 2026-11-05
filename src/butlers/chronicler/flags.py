@@ -109,6 +109,7 @@ SOURCE_CRON_MINUTES: dict[str, int] = {
     "core.sessions": 15,
     "spotify.session_summary": 30,
     "steam.play_history": 30,
+    "steam.status_history": 5,
     "owntracks.points": 30,
     "owntracks.place_cluster": 30,
     "owntracks.ssid_presence": 30,
@@ -378,7 +379,7 @@ def compute_lane_share_outliers(
 
 
 async def _occupation_block_covers_window(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     start_at: datetime,
     end_at: datetime,
@@ -394,7 +395,7 @@ async def _occupation_block_covers_window(
 
 
 async def _unavailable_sources(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     now: datetime,
 ) -> tuple[set[str], set[str]]:
@@ -418,7 +419,7 @@ async def _unavailable_sources(
 
 
 async def _routine_break_candidates(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: date,
     default_timezone: str,
@@ -451,7 +452,7 @@ async def _routine_break_candidates(
 
 
 async def _reconcile_flag(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: date,
     flag_type: str,
@@ -468,7 +469,7 @@ async def _reconcile_flag(
 
 
 async def evaluate_and_write_daily_flags(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: date,
     timezone: str,

@@ -40,15 +40,27 @@ Usage — loading at module startup::
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
+import time
 import uuid
-from collections.abc import AsyncIterator
+import weakref
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.credential_store import CredentialStore
+from butlers.oauth_token_payload import (
+    OAuthTokenPayload,
+    OAuthTokenValidationError,
+    validate_oauth_token_payload,
+)
 
 if TYPE_CHECKING:
     import asyncpg
@@ -698,13 +710,64 @@ async def delete_google_credentials(
     return deleted
 
 
-async def _mark_account_revoked(pool: asyncpg.Pool, entity_id: uuid.UUID) -> None:
-    """Set the google_accounts row status to 'revoked' for the given companion entity."""
-    async with _pool_acquire(pool) as conn:
-        await conn.execute(
-            "UPDATE public.google_accounts SET status = 'revoked' WHERE entity_id = $1",
-            entity_id,
+async def _mark_account_revoked(
+    pool: asyncpg.Pool,
+    entity_id: uuid.UUID | None = None,
+    *,
+    account_id: uuid.UUID | None = None,
+    email: str | None = None,
+    primary: bool = False,
+    expected_refresh_token: str | None = None,
+) -> None:
+    """Persist explicit deletion or a caller-qualified invalid grant for one account.
+
+    The caller owns the grant provenance and stale-token check. Pure probes and
+    authorization-code errors never call this transition.
+    """
+    if sum((entity_id is not None, account_id is not None, email is not None, primary)) != 1:
+        raise ValueError("exactly one Google account selector is required")
+    if expected_refresh_token is not None:
+        # Bind provider evidence atomically to the exact stored grant. A later
+        # reauthorization must not be revoked by an older in-flight refresh.
+        if email is not None:
+            selector, identity = "email = $1", email
+        elif primary:
+            selector, identity = "ga.is_primary = $1", True
+        elif entity_id is not None:
+            selector, identity = "ga.entity_id = $1", entity_id
+        else:
+            selector, identity = "ga.id = $1", account_id
+        await pool.execute(
+            "UPDATE public.google_accounts ga SET status = 'revoked' WHERE "
+            + selector
+            + " AND EXISTS (SELECT 1 FROM public.entity_info ei "
+            "WHERE ei.entity_id = ga.entity_id AND ei.type = 'google_oauth_refresh' "
+            "AND ei.value = $2)",
+            identity,
+            expected_refresh_token,
         )
+        return
+    if email is not None:
+        await pool.execute(
+            "UPDATE public.google_accounts SET status = 'revoked' WHERE email = $1",
+            email,
+        )
+    elif primary:
+        await pool.execute(
+            "UPDATE public.google_accounts SET status = 'revoked' WHERE is_primary = true",
+        )
+    else:
+        async with _pool_acquire(pool) as conn:
+            if entity_id is not None:
+                await conn.execute(
+                    "UPDATE public.google_accounts SET status = 'revoked' WHERE entity_id = $1",
+                    entity_id,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE public.google_accounts SET status = 'revoked' WHERE id = $1",
+                    account_id,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -860,3 +923,354 @@ class GoogleAppCredentials(BaseModel):
         )
 
     __str__ = __repr__
+
+
+# One transport for Google token grants. Status probes intentionally keep their
+# scope-only verdict adapter; only consumers of minted tokens use strict parsing.
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+TOKEN_REFRESH_MARGIN_S = 60
+
+
+async def exchange_google_token(
+    client: httpx.AsyncClient,
+    data: Mapping[str, str],
+    **request_options: Any,
+) -> httpx.Response:
+    """Send one Google token grant without logging credentials or changing state."""
+    return await client.post(GOOGLE_TOKEN_URL, data=dict(data), **request_options)
+
+
+async def exchange_google_refresh(
+    client: httpx.AsyncClient,
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    scopes: frozenset[str] = frozenset(),
+    **request_options: Any,
+) -> httpx.Response:
+    """Single refresh request builder; the caller retains its status adapter."""
+    data = {
+        "grant_type": "refresh_token",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "refresh_token": refresh_token,
+    }
+    if scopes:
+        data["scope"] = " ".join(sorted(scopes))
+    return await exchange_google_token(client, data, **request_options)
+
+
+class GoogleTokenPayloadError(OAuthTokenValidationError):
+    """Closed token failure category for existing read-only status adapters."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        super().__init__("Google token endpoint returned an invalid token payload")
+
+
+async def mint_access_token(
+    client: httpx.AsyncClient,
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    scopes: frozenset[str] = frozenset(),
+    **request_options: Any,
+) -> OAuthTokenPayload:
+    """Mint and validate a refresh grant before returning any mutable state.
+
+    HTTP errors keep their actual response for the existing source adapters.
+    Only an exact top-level invalid_grant is revocation evidence; callers that
+    own a persistent account transition apply that evidence to their own account.
+    """
+    response = await exchange_google_refresh(
+        client,
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        scopes=scopes,
+        **request_options,
+    )
+    if response.status_code != 200:
+        # Google refresh grants require 200; status adapters keep their exact
+        # HTTP code, with a fixed request identity and no credential body.
+        raise httpx.HTTPStatusError(
+            "Google token refresh failed",
+            request=httpx.Request("POST", GOOGLE_TOKEN_URL),
+            response=response,
+        )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise GoogleTokenPayloadError("invalid_json") from exc
+    if not isinstance(data, dict) or not data.get("access_token"):
+        raise GoogleTokenPayloadError("no_access_token")
+    try:
+        return validate_oauth_token_payload(data)
+    except OAuthTokenValidationError as exc:
+        raise GoogleTokenPayloadError("invalid_token_payload") from exc
+
+
+@dataclass
+class _GoogleTokenEntry:
+    token: str | None = field(default=None, repr=False)
+    expires_at: float = 0.0
+    generation: int = 0
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+# Weak ownership gives one record per live event loop/account/scope/generation,
+# without retaining closed clients, credentials or event loops indefinitely.
+_GOOGLE_TOKEN_ENTRIES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+class StaleGoogleCredentialsError(RuntimeError):
+    """A completed refresh no longer belongs to the source credential generation."""
+
+
+class GoogleTokenCache:
+    """One in-process cache per credential generation and requested scope set.
+
+    Source fields remain the invalidation boundary (including Health's API401).
+    Separate clients for the same account share the token and refresh lock.
+    Only validated mints publish state; records and credential fingerprints are
+    memory-only and live no longer than their source cache owners.
+    """
+
+    def __init__(
+        self,
+        state: Any,
+        token_field: str = "_access_token",
+        expiry_field: str = "_token_expires_at",
+        clock: Callable[[], Any] | None = None,
+        *,
+        account: str | None = None,
+        current_credentials: Callable[[], tuple[str, str, str]] | None = None,
+    ) -> None:
+        try:
+            self._state_ref = weakref.ref(state)
+        except TypeError:
+            # Non-weak-referenceable explicit state containers have no cache
+            # backreference in production; the cache still owns no global state.
+            self._state_ref = lambda: state
+        # Unknown account identities stay owner-local; credentials alone never
+        # establish that two sources represent the same account.
+        self._account = account if account is not None else object()
+        self._current_credentials = current_credentials
+        self._token_field = token_field
+        self._expiry_field = expiry_field
+        self._clock = clock or (lambda: datetime.now(UTC))
+        # Source fields may use monotonic floats or UTC datetimes. Production
+        # records always use the same monotonic clock; an injected test clock
+        # gets its own domain and cannot seed a production record.
+        self._record_clock = clock if clock is not None else time.monotonic
+        self._clock_domain = clock if clock not in (None, time.monotonic) else None
+        self._loop_ref: weakref.ReferenceType | None = None
+        self._credential_key: bytes | None = None
+        self._entry: _GoogleTokenEntry | None = None
+        self._last_state: tuple[Any, Any] | None = None
+
+    def _read_state(self) -> tuple[Any, Any]:
+        state = self._state_ref()
+        if state is None:
+            raise RuntimeError("Google token cache owner has closed")
+        return (getattr(state, self._token_field, None), getattr(state, self._expiry_field, None))
+
+    def _publish(self, token: str, remaining: float) -> None:
+        now = self._clock()
+        if isinstance(now, datetime):
+            expiry = now + timedelta(seconds=remaining)
+        else:
+            expiry = now + remaining
+        state = self._state_ref()
+        if state is None:
+            raise RuntimeError("Google token cache owner has closed")
+        setattr(state, self._token_field, token)
+        setattr(state, self._expiry_field, expiry)
+        self._last_state = (token, expiry)
+
+    async def get_token(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        client_id: str,
+        client_secret: str,
+        refresh_token: str,
+        scopes: frozenset[str] = frozenset(),
+        force_refresh: bool = False,
+        on_refreshed: Callable[[], Awaitable[None]] | None = None,
+        credential_is_current: Callable[[], Awaitable[bool]] | None = None,
+        **request_options: Any,
+    ) -> str:
+        key = hashlib.sha256(
+            repr((client_id, client_secret, refresh_token, sorted(scopes))).encode()
+        ).digest()
+        loop = asyncio.get_running_loop()
+        loop_changed = self._loop_ref is not None and self._loop_ref() is not loop
+        self._loop_ref = weakref.ref(loop)
+        entries = _GOOGLE_TOKEN_ENTRIES.setdefault(loop, weakref.WeakValueDictionary())
+        previous_key = self._credential_key
+        self._credential_key = key
+        credentials = (client_id, client_secret, refresh_token)
+
+        async def require_current() -> None:
+            current_loop_ref = self._loop_ref
+            if (
+                current_loop_ref is None
+                or current_loop_ref() is not loop
+                or self._credential_key != key
+                or (
+                    self._current_credentials is not None
+                    and self._current_credentials() != credentials
+                )
+                or (credential_is_current is not None and not await credential_is_current())
+            ):
+                raise StaleGoogleCredentialsError("Google credentials changed during refresh")
+
+        record_key = (self._account, key, self._clock_domain)
+        entry = entries.get(record_key)
+        if entry is None:
+            entry = _GoogleTokenEntry()
+            entries[record_key] = entry
+        self._entry = entry
+        observed_generation = entry.generation
+        current_state = self._read_state()
+        invalidated = self._last_state is not None and current_state != self._last_state
+        async with entry.lock:
+            await require_current()
+            now = self._record_clock()
+            # A queued caller's invalidation is already satisfied when another
+            # caller minted a newer generation while it waited for the lock.
+            must_refresh = (
+                force_refresh or invalidated
+            ) and entry.generation == observed_generation
+            # Preserve an already-live local token without promoting mutable
+            # legacy fields into a shared minted-token record. Only the strict
+            # mint below publishes cross-client state.
+            if (
+                entry.token is None
+                and previous_key in (None, key)
+                and not loop_changed
+                and not must_refresh
+            ):
+                token, expiry = current_state
+                if token and expiry:
+                    remaining = expiry - self._clock()
+                    if isinstance(remaining, timedelta):
+                        remaining = remaining.total_seconds()
+                    if remaining > TOKEN_REFRESH_MARGIN_S:
+                        self._last_state = current_state
+                        self._credential_key = key
+                        self._entry = None
+                        return token
+            if not must_refresh and entry.token and now < entry.expires_at - TOKEN_REFRESH_MARGIN_S:
+                if self._read_state()[0] != entry.token:
+                    self._publish(entry.token, entry.expires_at - now)
+                else:
+                    self._last_state = self._read_state()
+                self._credential_key = key
+                return entry.token
+            try:
+                token = await mint_access_token(
+                    client,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    refresh_token=refresh_token,
+                    scopes=scopes,
+                    **request_options,
+                )
+            except Exception:
+                # Even a genuine invalid_grant belongs to the old grant only.
+                await require_current()
+                raise
+            await require_current()
+            entry.generation += 1
+            entry.token = token.access_token
+            entry.expires_at = self._record_clock() + token.expires_in
+            self._publish(token.access_token, token.expires_in)
+            self._credential_key = key
+            if on_refreshed is not None:
+                await on_refreshed()
+            return token.access_token
+
+
+class GoogleOAuthClient:
+    """Module adapter for the shared cache, retaining bounded refresh retries."""
+
+    def __init__(
+        self,
+        credentials: Any,
+        http_client: httpx.AsyncClient,
+        on_token_refreshed: Callable[[], Awaitable[None]] | None = None,
+        on_token_revoked: Callable[[], Awaitable[None]] | None = None,
+        *,
+        error_type: type[Exception] = RuntimeError,
+        account: str | None = None,
+        retry_invalid_grant: bool = False,
+    ) -> None:
+        self._credentials = credentials
+        self._http_client = http_client
+        self._access_token: str | None = None
+        self._access_token_expires_at: datetime | None = None
+        self._cache = GoogleTokenCache(
+            self,
+            expiry_field="_access_token_expires_at",
+            account=account,
+            current_credentials=lambda: (
+                self._credentials.client_id,
+                self._credentials.client_secret,
+                self._credentials.refresh_token,
+            ),
+        )
+        self._retry_invalid_grant = retry_invalid_grant
+        self._on_token_refreshed = on_token_refreshed
+        self._on_token_revoked = on_token_revoked
+        self._error_type = error_type
+
+    async def _notify_refreshed(self) -> None:
+        if self._on_token_refreshed is not None:
+            try:
+                await self._on_token_refreshed()
+            except Exception:
+                logger.debug("Google token refresh callback failed (best-effort)")
+
+    async def get_access_token(self, *, force_refresh: bool = False) -> str:
+        for attempt in range(3):
+            try:
+                return await self._cache.get_token(
+                    self._http_client,
+                    client_id=self._credentials.client_id,
+                    client_secret=self._credentials.client_secret,
+                    refresh_token=self._credentials.refresh_token,
+                    force_refresh=force_refresh,
+                    on_refreshed=self._notify_refreshed,
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.HTTPStatusError as exc:
+                code = google_oauth_error_code(exc.response)
+                if code == "invalid_grant":
+                    if self._retry_invalid_grant and attempt < 2:
+                        await asyncio.sleep(2**attempt)
+                        continue
+                    if self._on_token_revoked is not None:
+                        try:
+                            await self._on_token_revoked()
+                        except Exception:
+                            logger.debug("Google revocation callback failed (best-effort)")
+                    raise self._error_type(
+                        "Google OAuth token refresh failed (invalid_grant)"
+                    ) from exc
+                if attempt < 2:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                raise self._error_type(
+                    f"Google OAuth token refresh failed ({exc.response.status_code})"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise self._error_type("Google OAuth token refresh request failed") from exc
+            except ValueError as exc:
+                raise self._error_type(
+                    "Google OAuth token endpoint returned an invalid token payload"
+                ) from exc
+        raise AssertionError("unreachable refresh retry state")

@@ -96,6 +96,7 @@ from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
 from butlers.api.routers.webhooks import dispatch_event
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +569,23 @@ async def _build_export_zip(pool: object, scope: str, db: object) -> bytes:
                 with zf.open(f"{safe_name}.ndjson", "w") as member_file:
                     for query, butler in sources:
                         source = pool if butler is None else db.pool(butler)  # type: ignore[attr-defined]
+                        if butler is not None and table_name.endswith(".memory.facts"):
+                            memory_schema = db.memory_schema_for_butler(butler)  # type: ignore[attr-defined]
+                            visibility = await local_fact_visibility_condition(
+                                source,
+                                memory_schema=memory_schema,
+                                alias="facts",
+                            )
+                            if visibility is not None:
+                                relation = (
+                                    f'"{memory_schema}"."facts"'
+                                    if memory_schema is not None
+                                    else "facts"
+                                )
+                                query = (
+                                    f"SELECT facts.* FROM {relation} AS facts "
+                                    f"WHERE {visibility} ORDER BY facts.created_at"
+                                )
                         rows = await source.fetch(query)  # type: ignore[attr-defined]
                         for row in rows:
                             cleaned = {k: v for k, v in dict(row).items() if k not in _SKIP_COLUMNS}

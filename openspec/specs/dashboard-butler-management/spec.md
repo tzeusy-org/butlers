@@ -857,6 +857,13 @@ The dashboard SHALL expose per-butler memory tier access.
 - **WHEN** `GET /api/butlers/{name}/memory-access` is called
 - **THEN** the response is `ApiResponse[MemoryAccess]` with `read: ("short"|"mid"|"long")[]`, `write: ("short"|"mid"|"long")[]`, `namespace: str`, `embedding_model: str`, `drops_7d: int`.
 
+#### Scenario: Seven-day drop count uses actual lifecycle transition times
+
+- **WHEN** memory access computes `drops_7d`
+- **THEN** it SHALL capture one database `as_of` and count only superseded/expired facts by `dropped_at`, expired episodes by `expires_at`, and forgotten rules by `forgotten_at` in inclusive `[as_of - 7 days, as_of]`
+- **AND** NULL and future timestamps SHALL be excluded, with no retracted facts or retired rules added
+- **AND** legacy terminal rows with unknown timestamps SHALL remain unknown and uncounted; the integer can undercount legacy history.
+
 ### Requirement: Butler detail header schedule facts are truthful
 
 `ButlerDetailHeader` SHALL derive schedule facts only from enabled schedule

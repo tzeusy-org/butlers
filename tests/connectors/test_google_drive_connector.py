@@ -22,9 +22,9 @@ from butlers.connectors.google_drive import (
     _CHANGE_TYPE_RENAMED,
     _CHANGE_TYPE_SHARING_CHANGED,
     _CHANGE_TYPE_TRASHED,
+    DriveAccountSource,
     GDriveAccountConfig,
     GDriveAccountLoop,
-    GDriveConnectorManager,
     _build_ingest_envelope,
     _classify_source_api_error,
     _detect_change_type,
@@ -230,7 +230,7 @@ async def test_run_connector_threads_health_overrides_into_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """run_google_drive_connector must pass the parsed health-port + heartbeat
-    overrides through to GDriveConnectorManager (regression guard for bu-v7qu5:
+    overrides through to DriveAccountSource (regression guard for bu-v7qu5:
     the construction call previously omitted them, so the health server always
     bound the default 40088 and CONNECTOR_HEARTBEAT_INTERVAL_S was dropped)."""
     import asyncpg
@@ -265,7 +265,7 @@ async def test_run_connector_threads_health_overrides_into_manager(
     monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "45321")
     monkeypatch.setenv("CONNECTOR_HEARTBEAT_INTERVAL_S", "53")
 
-    monkeypatch.setattr(gd, "GDriveConnectorManager", _StubManager)
+    monkeypatch.setattr(gd, "DriveAccountSource", _StubManager)
     monkeypatch.setattr(asyncpg, "create_pool", _fake_create_pool)
     monkeypatch.setattr(cursor_store, "create_cursor_pool_from_env", _fake_cursor_pool)
     monkeypatch.setattr(credential_store, "shared_db_name_from_env", lambda: "butlers")
@@ -324,6 +324,27 @@ def test_classify_source_api_error_distinguishes_google_revocation_from_api_fail
     else:
         assert str(status_code) in detail
 
+    nested = _google_token_http_error(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (False, "code=503, message=Retry")
+    request = httpx.Request("GET", "https://www.googleapis.com/synthetic")
+    for body, expected in (
+        (b"", "HTTP 503"),
+        (b"synthetic plain body", "HTTP 503: synthetic plain body"),
+        (b"[]", "HTTP 503: []"),
+        (b'{"error": {}}', 'HTTP 503: {"error": {}}'),
+        (b"x" * 220, "HTTP 503: " + "x" * 200),
+    ):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, expected)
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "ReadTimeout: synthetic timeout",
+    )
+
 
 @pytest.mark.parametrize(
     "url",
@@ -361,6 +382,8 @@ def test_drive_account_health_reports_revocation_as_error_and_api_failure_as_deg
     )
 
     health = account.get_health()
+    assert health.email == "us***@example.com"
+    assert health.email is not None and _FAKE_EMAIL not in health.email
     assert health.status == "degraded"
     assert health.error == "code=503, message=Backend Error"
 
@@ -388,7 +411,7 @@ def test_drive_manager_heartbeat_preserves_degraded_source_error() -> None:
     account._record_source_api_failure(
         _google_token_http_error({"error": {"code": 503, "message": "Backend Error"}}, 503)
     )
-    manager = GDriveConnectorManager(db_pool=None, credential_store=object())
+    manager = DriveAccountSource(db_pool=None, credential_store=object())
     manager._loops[_FAKE_EMAIL] = account
 
     assert manager._get_health_state_for_heartbeat() == (
@@ -466,3 +489,360 @@ async def test_scrubbed_cache_reloaded_after_restart_does_not_fake_a_rename() ->
     live = _make_cached(name="Code of Conduct 2025.pdf")
     change["file"]["name"] = "Code of Conduct 2026.pdf"
     assert _detect_change_type(change, live) == _CHANGE_TYPE_RENAMED
+
+
+@pytest.mark.parametrize("source", ["gmail", "calendar", "drive"])
+async def test_google_fleet_real_adapters_reconcile_and_keep_source_policy(monkeypatch, source):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.connectors import gmail, google_calendar, google_drive
+
+    assert (
+        gmail.AccountHealthStatus
+        is google_calendar.AccountHealthStatus
+        is google_drive.AccountHealthStatus
+    )
+    assert (
+        gmail.MultiAccountHealthStatus
+        is google_calendar.MultiAccountHealthStatus
+        is google_drive.MultiAccountHealthStatus
+    )
+
+    loop_type = {
+        "gmail": "GmailAccountLoop",
+        "calendar": "CalendarAccountLoop",
+        "drive": "GDriveAccountLoop",
+    }[source]
+    module = {"gmail": gmail, "calendar": google_calendar, "drive": google_drive}[source]
+    made = []
+
+    def loop_factory(**kwargs):
+        loop = SimpleNamespace(
+            start=MagicMock(),
+            stop=AsyncMock(),
+            is_running=True,
+            _error=None,
+            config=kwargs["config"],
+        )
+        made.append((kwargs, loop))
+        return loop
+
+    monkeypatch.setattr(module, loop_type, loop_factory)
+    if source == "gmail":
+        fleet = gmail.GmailAccountSource(
+            gmail.GmailProcessConfig(switchboard_mcp_url="http://switchboard.invalid/mcp"),
+            None,
+            None,
+        )
+    elif source == "calendar":
+        fleet = google_calendar.CalendarAccountSource(
+            google_calendar.CalendarProcessConfig(
+                switchboard_mcp_url="http://switchboard.invalid/mcp"
+            ),
+            None,
+            None,
+        )
+    else:
+        fleet = DriveAccountSource(db_pool=None, credential_store=object())
+    selected = []
+    # Exercise real source discovery, scope filtering and source configuration.
+    connection = AsyncMock()
+    connection.fetch.side_effect = lambda *args: selected.copy()
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=connection)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=None)
+    fleet._db_pool = pool
+    creds = dict(client_id="id", client_secret="secret", refresh_token="refresh")
+    if source == "drive":
+        monkeypatch.setattr(
+            module, "resolve_google_credentials", AsyncMock(return_value=SimpleNamespace(**creds))
+        )
+    else:
+        fleet._resolve_credentials_for_account = AsyncMock(return_value=creds)
+    assert await fleet.reload_accounts() == {"added": [], "removed": [], "unchanged": []}
+    scope = {
+        "gmail": "https://www.googleapis.com/auth/gmail.readonly",
+        "calendar": "https://www.googleapis.com/auth/calendar.readonly",
+        "drive": "https://www.googleapis.com/auth/drive.readonly",
+    }[source]
+    selected[:] = [
+        dict(email="a@example.invalid", granted_scopes=[scope], metadata={}),
+        dict(email="excluded@example.invalid", granted_scopes=["email"], metadata={}),
+    ]
+    assert (await fleet.reload_accounts())["added"] == ["a@example.invalid"]
+    original = fleet._loops["a@example.invalid"]
+    original.start.assert_called_once_with()
+    assert made[0][0]["email"] == "a@example.invalid"
+    assert (
+        getattr(made[0][1].config, "gmail_refresh_token" if source == "gmail" else "refresh_token")
+        == "refresh"
+    )
+    assert (await fleet.reload_accounts())["unchanged"] == ["a@example.invalid"]
+    assert fleet._loops["a@example.invalid"] is original
+    original.is_running = False
+    await fleet.reload_accounts()
+    assert (fleet._loops["a@example.invalid"] is original) is (source != "calendar")
+    selected.clear()  # a revoked account no longer qualifies for this discovery
+    assert (await fleet.reload_accounts())["removed"] == ["a@example.invalid"]
+    assert fleet._loops == {}
+    import asyncio
+    import signal
+
+    callbacks = []
+    event_loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        event_loop, "add_signal_handler", lambda sig, callback: callbacks.append((sig, callback))
+    )
+    monkeypatch.setattr(event_loop, "remove_signal_handler", lambda sig: None)
+    fleet._main_loop = event_loop
+    fleet._setup_sighup()
+    assert callbacks[0][0] == signal.SIGHUP
+    fleet._running = True
+    task = asyncio.create_task(fleet._run_rescan_loop())
+    selected[:] = [dict(email="signal@example.invalid", granted_scopes=[scope], metadata={})]
+    changed = asyncio.Event()
+    original_sync = fleet._sync_accounts
+
+    async def observe_sync():
+        result = await original_sync()
+        changed.set()
+        return result
+
+    monkeypatch.setattr(fleet, "_sync_accounts", observe_sync)
+    callbacks[0][1]()
+    await asyncio.wait_for(changed.wait(), timeout=1)
+    assert "signal@example.invalid" in fleet._loops
+    selected.clear()
+    changed.clear()
+    callbacks[0][1]()
+    await asyncio.wait_for(changed.wait(), timeout=1)
+    assert not fleet._loops
+    await fleet.stop()
+    await task
+    assert not fleet._running
+
+
+@pytest.mark.parametrize("ending", ["cancel", "startup_error", "normal"])
+async def test_google_fleet_owns_reload_signal_and_cleanup_even_before_ready(monkeypatch, ending):
+    import asyncio
+    import signal
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.connectors.google_fleet import GoogleAccountFleet
+
+    class Fleet(GoogleAccountFleet):
+        rescan_interval = 0.001
+
+        def _start_health_server(self):
+            self._health_server = SimpleNamespace(should_exit=False)
+
+        async def _discover_accounts(self):
+            return {}
+
+    fleet = Fleet()
+    fleet._close_source = AsyncMock()
+    event_loop = asyncio.get_running_loop()
+    registered = []
+    monkeypatch.setattr(
+        event_loop, "add_signal_handler", lambda sig, callback: registered.append((sig, callback))
+    )
+    remove = MagicMock()
+    monkeypatch.setattr(event_loop, "remove_signal_handler", remove)
+    if ending == "startup_error":
+        fleet._close_source.side_effect = RuntimeError("synthetic cleanup failure")
+
+        async def fail():
+            raise RuntimeError("synthetic startup failure")
+
+        fleet._fleet_ready = fail
+        with pytest.raises(RuntimeError, match="synthetic startup failure"):
+            await fleet.start()
+    else:
+        task = asyncio.create_task(fleet.start())
+        await asyncio.sleep(0.01)  # actual timer runs without network or account bodies
+        assert registered[0][0] == signal.SIGHUP
+        registered[0][1]()
+        await asyncio.sleep(0)
+        if ending == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            fleet._running = False
+            fleet._reload_event.set()
+            await task
+    assert fleet._health_server.should_exit
+    fleet._close_source.assert_awaited_once_with()
+    remove.assert_called_once_with(signal.SIGHUP)
+    assert not fleet._running
+
+
+@pytest.mark.parametrize("source", ["gmail", "calendar", "drive"])
+@pytest.mark.parametrize("ending", ["partial_start", "cancel", "normal"])
+async def test_real_fleet_source_hooks_and_partial_lifecycle_cleanup(monkeypatch, source, ending):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.connectors import gmail, google_calendar, google_drive
+
+    module = {"gmail": gmail, "calendar": google_calendar, "drive": google_drive}[source]
+    if source == "gmail":
+        fleet = gmail.GmailAccountSource(
+            gmail.GmailProcessConfig(switchboard_mcp_url="http://switchboard.invalid/mcp"),
+            None,
+            None,
+        )
+    elif source == "calendar":
+        fleet = google_calendar.CalendarAccountSource(
+            google_calendar.CalendarProcessConfig(
+                switchboard_mcp_url="http://switchboard.invalid/mcp"
+            ),
+            None,
+            None,
+        )
+    else:
+        fleet = DriveAccountSource(db_pool=None, credential_store=object())
+
+    health = SimpleNamespace(should_exit=False)
+    thread = MagicMock()
+    thread.is_alive.return_value = False
+
+    def start_health():
+        fleet._health_server, fleet._health_thread = health, thread
+
+    monkeypatch.setattr(fleet, "_start_health_server", start_health)
+    event_loop = asyncio.get_running_loop()
+    removed = MagicMock()
+    monkeypatch.setattr(event_loop, "add_signal_handler", MagicMock())
+    monkeypatch.setattr(event_loop, "remove_signal_handler", removed)
+    monkeypatch.setattr(fleet, "_discover_accounts", AsyncMock(return_value={"a": None}))
+
+    owner_task = None
+    resource_closed = AsyncMock()
+
+    async def account_body():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await resource_closed()
+
+    def start_account():
+        nonlocal owner_task
+        owner_task = asyncio.create_task(account_body())
+        if ending == "partial_start":
+            raise RuntimeError("synthetic partial start")
+
+    async def stop_account():
+        owner_task.cancel()
+        await asyncio.gather(owner_task, return_exceptions=True)
+
+    account = SimpleNamespace(start=start_account, stop=AsyncMock(side_effect=stop_account))
+    monkeypatch.setattr(fleet, "_make_account_loop", AsyncMock(return_value=account))
+    blob = object()
+    if source == "gmail":
+        prepare = AsyncMock(return_value=blob)
+        monkeypatch.setattr(gmail, "connector_blob_store", prepare)
+    if source in {"gmail", "calendar"}:
+        monkeypatch.setattr(module, "wait_for_switchboard_ready", AsyncMock())
+    else:
+        fleet._heartbeat = SimpleNamespace(stop=AsyncMock())
+        fleet._mcp_client = SimpleNamespace(close=AsyncMock())
+        heartbeat, mcp = fleet._heartbeat, fleet._mcp_client
+        monkeypatch.setattr(fleet, "_start_heartbeat", MagicMock())
+        monkeypatch.setattr(fleet, "_publish_known_contacts", AsyncMock())
+    ready = asyncio.Event()
+
+    async def hold_or_end():
+        ready.set()
+        if ending == "cancel":
+            await asyncio.Event().wait()
+        fleet._running = False
+
+    monkeypatch.setattr(fleet, "_run_rescan_loop", hold_or_end)
+    task = asyncio.create_task(fleet.start())
+    try:
+        if ending == "partial_start":
+            with pytest.raises(RuntimeError, match="synthetic partial start"):
+                await task
+        else:
+            await asyncio.wait_for(ready.wait(), 1)
+            if ending == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                await task
+        assert owner_task is not None and owner_task.done()
+        account.stop.assert_awaited_once()
+        assert not fleet._loops and not fleet._running
+        assert health.should_exit
+        thread.join.assert_called_once_with(5)
+        removed.assert_called_once()
+        # A reload queued after shutdown cannot recreate account ownership.
+        assert await fleet.reload_accounts() == {"added": [], "removed": [], "unchanged": []}
+        if source == "gmail":
+            prepare.assert_awaited_once()
+            assert fleet._blob_store is blob
+        if source == "drive":
+            heartbeat.stop.assert_awaited_once()
+            mcp.close.assert_awaited_once()
+            if ending != "partial_start":
+                fleet._publish_known_contacts.assert_awaited_once()
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if owner_task is not None and not owner_task.done():
+            owner_task.cancel()
+            await asyncio.gather(owner_task, return_exceptions=True)
+
+
+async def test_google_fleet_serializes_inflight_reload_and_shutdown(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.connectors.google_fleet import GoogleAccountFleet
+
+    fleet = GoogleAccountFleet()
+    monkeypatch.setattr(fleet, "_discover_accounts", AsyncMock(return_value={"a": None}))
+    entered, release = asyncio.Event(), asyncio.Event()
+    made = []
+
+    async def make(email, metadata):
+        loop = SimpleNamespace(start=MagicMock(), stop=AsyncMock())
+        made.append(loop)
+        entered.set()
+        await release.wait()
+        return loop
+
+    monkeypatch.setattr(fleet, "_make_account_loop", make)
+    first = asyncio.create_task(fleet.reload_accounts())
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        second = asyncio.create_task(fleet.reload_accounts())
+        await asyncio.sleep(0)  # position the second reload while creation is suspended
+        release.set()
+        results = await asyncio.gather(first, second)
+        assert len(made) == 1
+        assert results == [
+            {"added": ["a"], "removed": [], "unchanged": []},
+            {"added": [], "removed": [], "unchanged": ["a"]},
+        ]
+        made[0].start.assert_called_once()
+        await fleet.stop()
+        made[0].stop.assert_awaited_once()
+        assert not fleet._loops
+    finally:
+        release.set()
+        tasks = [task for task in (first, second) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if fleet._loops:
+            await fleet.stop()

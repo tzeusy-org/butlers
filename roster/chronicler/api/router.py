@@ -62,6 +62,7 @@ from butlers.chronicler.day_close_cache import (
     resolve_day_close_timezone,
 )
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START, day_window_utc
+from butlers.chronicler.history_repair import pending_numeric_repair_dates, try_shared_lock
 from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
@@ -165,6 +166,39 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="Chronicler butler database is not available",
         ) from exc
+
+
+async def _numeric_snapshot(
+    pool: Any,
+    *,
+    start_date: date,
+    end_date: date,
+    flag_start_date: date,
+    flag_end_date: date,
+) -> tuple[list[Any], list[Any], set[date], bool]:
+    """Read rollups, flags and repair status under one shared repair fence.
+
+    If an invalidator owns the exclusive fence, fail closed by marking the
+    whole requested interval pending rather than returning stale materialized
+    values.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await try_shared_lock(conn):
+                pending = set()
+                current = start_date
+                while current <= end_date:
+                    pending.add(current)
+                    current += timedelta(days=1)
+                return [], [], pending, True
+            pending = await pending_numeric_repair_dates(
+                conn, start_date=start_date, end_date=end_date
+            )
+            rollups = await list_daily_rollups_range(conn, start_date=start_date, end_date=end_date)
+            flags = await list_daily_rollup_flags_range(
+                conn, start_date=flag_start_date, end_date=flag_end_date
+            )
+            return rollups, flags, pending, False
 
 
 def _coerce_payload(value: Any) -> dict[str, Any]:
@@ -1905,11 +1939,12 @@ async def get_rollups(
 
         rollups_source_error = False
         try:
-            rollup_rows = await list_daily_rollups_range(
-                pool, start_date=range_start, end_date=range_end
-            )
-            flag_rows = await list_daily_rollup_flags_range(
-                pool, start_date=range_start, end_date=range_end
+            rollup_rows, flag_rows, pending_dates, _read_busy = await _numeric_snapshot(
+                pool,
+                start_date=range_start,
+                end_date=range_end,
+                flag_start_date=range_start,
+                flag_end_date=range_end,
             )
         except Exception:
             logger.exception(
@@ -1936,6 +1971,8 @@ async def get_rollups(
 
             if rollups_source_error:
                 status = "unknown"
+            elif current in pending_dates:
+                status = "pending_repair"
             elif day_rollups:
                 status = "materialized"
             else:
@@ -1988,7 +2025,9 @@ async def get_rollups(
             # first rollup row. None when not materialized (no rows carry it) or
             # when the labeling pass has not run — a legitimate absence, not an
             # error, so ``rollups_source_error`` is unaffected.
-            day_narrative = day_rollups[0].narrative if day_rollups else None
+            day_narrative = (
+                day_rollups[0].narrative if status == "materialized" and day_rollups else None
+            )
 
             days.append(
                 RollupDay(
@@ -2071,7 +2110,6 @@ async def get_daily_balance(
     ``feeder_dark``-marks-lane-unavailable cross-reference.
     """
     baseline_start = balance_date - timedelta(days=lookback_days)
-    baseline_end = balance_date - timedelta(days=1)
 
     _tracer = trace.get_tracer("butlers.chronicler")
     with _tracer.start_as_current_span("chronicler.balance") as span:
@@ -2079,15 +2117,20 @@ async def get_daily_balance(
 
         balance_source_error = False
         try:
-            target_rows = await list_daily_rollups_range(
-                pool, start_date=balance_date, end_date=balance_date
+            (
+                snapshot_rows,
+                target_flags,
+                pending_dates,
+                _read_busy,
+            ) = await _numeric_snapshot(
+                pool,
+                start_date=baseline_start,
+                end_date=balance_date,
+                flag_start_date=balance_date,
+                flag_end_date=balance_date,
             )
-            baseline_rows = await list_daily_rollups_range(
-                pool, start_date=baseline_start, end_date=baseline_end
-            )
-            target_flags = await list_daily_rollup_flags_range(
-                pool, start_date=balance_date, end_date=balance_date
-            )
+            target_rows = [row for row in snapshot_rows if row.local_date == balance_date]
+            baseline_rows = [row for row in snapshot_rows if row.local_date < balance_date]
         except Exception:
             logger.exception("chronicler.balance: query failed for date=%s", balance_date)
             balance_source_error = True
@@ -2097,6 +2140,8 @@ async def get_daily_balance(
 
         if balance_source_error:
             status = "unknown"
+        elif pending_dates:
+            status = "pending_repair"
         elif target_rows:
             status = "materialized"
         else:
@@ -2199,12 +2244,14 @@ async def get_trends(
         pool = _pool(db)
 
         trends_source_error = False
+        pending_dates: set[date] = set()
         try:
-            all_rows = await list_daily_rollups_range(
-                pool, start_date=fetch_start, end_date=resolved_end
-            )
-            all_flags = await list_daily_rollup_flags_range(
-                pool, start_date=start_date, end_date=resolved_end
+            all_rows, all_flags, pending_dates, _read_busy = await _numeric_snapshot(
+                pool,
+                start_date=fetch_start,
+                end_date=resolved_end,
+                flag_start_date=start_date,
+                flag_end_date=resolved_end,
             )
         except Exception:
             logger.exception(
@@ -2231,6 +2278,11 @@ async def get_trends(
             day_rows = rows_by_date.get(current, [])
             if trends_source_error:
                 day_status = "unknown"
+            elif any(
+                current - timedelta(days=lookback_days) <= pending_day <= current
+                for pending_day in pending_dates
+            ):
+                day_status = "pending_repair"
             elif day_rows:
                 day_status = "materialized"
             else:
@@ -2295,7 +2347,12 @@ async def get_trends(
             TrendLaneSeries(
                 lane=lane,
                 days=lane_series[lane],
-                streak_days=compute_lane_streak(lane_daily_seconds[lane]),
+                streak_days=(
+                    None
+                    if trends_source_error
+                    or any(day.status == "pending_repair" for day in lane_series[lane])
+                    else compute_lane_streak(lane_daily_seconds[lane])
+                ),
             )
             for lane in sorted(LANES)
         ]

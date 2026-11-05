@@ -11,10 +11,12 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
+from butlers.modules.memory.search import CatalogReadPolicy
 from butlers.modules.memory.tools import memory_stats, predicate_list
-from butlers.modules.memory.tools.context import memory_context
+from butlers.modules.memory.tools.context import _fetch_fleet_knowledge, memory_context
 
 pytestmark = pytest.mark.unit
 
@@ -46,6 +48,25 @@ class TestMemoryStats:
             "forgotten",
             "retired",
         }
+
+    async def test_chronicler_stats_filter_every_fact_count_before_aggregation(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        queries: list[str] = []
+
+        async def _fetchval(query: str, *args: object) -> int | bool:
+            if "to_regclass('chronicler_mem.facts_readable')" in query:
+                return True
+            queries.append(query)
+            return 0
+
+        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+
+        await memory_stats(mock_pool, memory_schema="chronicler_mem")
+
+        fact_queries = [query for query in queries if "FROM facts AS f" in query]
+        assert len(fact_queries) == 4
+        assert all("chronicler_mem.facts_readable" in query for query in fact_queries)
 
     async def test_returns_integer_counts(self, mock_pool: AsyncMock) -> None:
         mock_pool.fetchval = AsyncMock(return_value=5)
@@ -377,6 +398,115 @@ def _catalog_row(source_butler: str, title: str) -> dict:
 
 
 class TestMemoryContextFleetKnowledge:
+    async def test_fleet_search_uses_one_precomputed_embedding_with_real_catalog_search(
+        self,
+    ) -> None:
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="public.memory_catalog")
+        own_row = _catalog_row("general", "Own knowledge")
+        other_row = _catalog_row("finance", "Budget rule")
+        pool.fetch = AsyncMock(return_value=[own_row, other_row])
+        engine = MagicMock()
+        vector = [0.25, -0.5]
+        engine.embed.return_value = vector
+
+        results = await _fetch_fleet_knowledge(
+            pool,
+            engine,
+            "prompt",
+            "general",
+            "shared",
+            CatalogReadPolicy("normal", ("normal",)),
+        )
+
+        assert {row["source_butler"] for row in results} == {"finance"}
+        engine.embed.assert_called_once_with("prompt")
+        pool.fetchval.assert_awaited_once_with(
+            "SELECT pg_catalog.to_regclass('public.memory_catalog')"
+        )
+        assert pool.fetch.await_count == 2
+        semantic_call, keyword_call = pool.fetch.await_args_list
+        assert "embedding <=> $1" in semantic_call.args[0]
+        assert "chronicler_catalog_row_visible(memory_catalog.id)" in semantic_call.args[0]
+        assert semantic_call.args[1] == str(vector)
+        assert "plainto_tsquery" in keyword_call.args[0]
+
+    async def test_absent_public_catalog_remains_best_effort(self) -> None:
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value=None)
+        engine = MagicMock()
+        engine.embed.return_value = [0.0] * 384
+
+        with patch(
+            "butlers.modules.memory.tools.context._search.search_catalog",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as guarded_search:
+            result = await _fetch_fleet_knowledge(
+                pool,
+                engine,
+                "prompt",
+                "general",
+                "shared",
+                CatalogReadPolicy("normal", ("normal",)),
+            )
+
+        assert result == []
+        pool.fetchval.assert_awaited_once_with(
+            "SELECT pg_catalog.to_regclass('public.memory_catalog')"
+        )
+        guarded_search.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("error_type", "message"),
+        [
+            pytest.param(TimeoutError, "catalog query timed out", id="timeout"),
+            pytest.param(asyncpg.InterfaceError, "catalog connection failed", id="interface"),
+            pytest.param(RuntimeError, "unexpected catalog execution failure", id="unexpected"),
+            pytest.param(
+                asyncpg.InsufficientPrivilegeError,
+                "catalog visibility denied",
+                id="visibility-acl",
+            ),
+        ],
+    )
+    async def test_guarded_catalog_execution_error_propagates(
+        self, error_type: type[Exception], message: str
+    ) -> None:
+        """Errors from the guarded SQL call must propagate without becoming empty results."""
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="memory_catalog")
+        queries: list[str] = []
+        expected_error = error_type(message)
+
+        async def _fetch(query: str, *args: object) -> list[dict[str, Any]]:
+            queries.append(query)
+            assert "FROM public.memory_catalog AS memory_catalog" in query
+            assert "public.chronicler_catalog_row_visible(memory_catalog.id)" in query
+            raise expected_error
+
+        pool.fetch = AsyncMock(side_effect=_fetch)
+        engine = MagicMock()
+        engine.embed.return_value = [0.0] * 384
+
+        with pytest.raises(error_type) as caught:
+            await _fetch_fleet_knowledge(
+                pool,
+                engine,
+                "prompt",
+                "general",
+                "shared",
+                CatalogReadPolicy("normal", ("normal",)),
+            )
+
+        assert caught.value is expected_error
+        assert engine.embed.call_count == 1
+        assert engine.embed.call_args.args == ("prompt",)
+        assert len(queries) == 1
+        pool.fetchval.assert_awaited_once_with(
+            "SELECT pg_catalog.to_regclass('public.memory_catalog')"
+        )
+
     async def _pool(self) -> AsyncMock:
         pool = AsyncMock()
         pool.fetch = AsyncMock(return_value=[])
@@ -426,7 +556,7 @@ class TestMemoryContextFleetKnowledge:
         assert "Own knowledge" not in result
         assert "memory_ref=" not in result
 
-    async def test_catalog_search_failure_degrades_to_empty_section(self) -> None:
+    async def test_catalog_search_failure_propagates(self) -> None:
         mock_pool = await self._pool()
         with (
             patch(
@@ -437,11 +567,33 @@ class TestMemoryContextFleetKnowledge:
             patch(
                 "butlers.modules.memory.tools.context._search.search_catalog",
                 new_callable=AsyncMock,
-                side_effect=RuntimeError("catalog table missing"),
+                side_effect=RuntimeError("catalog execution failed"),
             ),
+            pytest.raises(RuntimeError, match="catalog execution failed"),
         ):
-            result = await memory_context(
+            await memory_context(
                 mock_pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
             )
 
-        assert "Fleet Knowledge" not in result
+    async def test_embedding_failure_remains_best_effort(self) -> None:
+        pool = AsyncMock()
+        pool.fetchval = AsyncMock(return_value="memory_catalog")
+        pool.fetch = AsyncMock(return_value=[])
+        engine = MagicMock()
+        engine.embed.side_effect = RuntimeError("embedding backend unavailable")
+
+        result = await _fetch_fleet_knowledge(
+            pool,
+            engine,
+            "prompt",
+            "general",
+            "shared",
+            CatalogReadPolicy("normal", ("normal",)),
+        )
+
+        assert result == []
+        engine.embed.assert_called_once_with("prompt")
+        pool.fetchval.assert_awaited_once_with(
+            "SELECT pg_catalog.to_regclass('public.memory_catalog')"
+        )
+        pool.fetch.assert_not_awaited()

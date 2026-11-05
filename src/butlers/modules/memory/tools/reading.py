@@ -32,6 +32,7 @@ async def memory_search(
     min_confidence: float = 0.2,
     filters: dict[str, Any] | None = None,
     read_policy: _search.CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search across memory types using hybrid, semantic, or keyword mode.
 
@@ -57,6 +58,7 @@ async def memory_search(
         min_confidence=min_confidence,
         filters=filters,
         read_policy=read_policy,
+        memory_schema=memory_schema,
     )
     return [_serialize_row(r) for r in results]
 
@@ -71,6 +73,7 @@ async def memory_recall(
     filters: dict[str, Any] | None = None,
     request_context: dict[str, Any] | None = None,
     read_policy: _search.CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -101,6 +104,7 @@ async def memory_recall(
         filters=filters,
         tenant_id=tenant_id,
         read_policy=read_policy,
+        memory_schema=memory_schema,
     )
     return [_serialize_row(r) for r in results]
 
@@ -111,6 +115,7 @@ async def memory_get(
     memory_id: str,
     *,
     read_policy: _search.CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> dict[str, Any] | None:
     """Retrieve a specific memory by type and ID.
 
@@ -126,6 +131,7 @@ async def memory_get(
         memory_type,
         uuid.UUID(memory_id),
         allowed_sensitivities=read_policy.allowed_sensitivities,
+        memory_schema=memory_schema,
     )
     if result is None:
         return None

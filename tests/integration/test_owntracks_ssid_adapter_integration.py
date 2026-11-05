@@ -40,12 +40,21 @@ _ENDPOINT = "owntracks:alice"
 
 @pytest.fixture
 def ssid_url(fresh_db) -> str:
-    return fresh_db("core", "chronicler")
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db(
+        "core",
+        "chronicler",
+        schemas={"chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
+    )
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture
 async def ssid_pool(db, ssid_url: str):
-    p = await db.open(ssid_url, max_size=5)
+    p = await db.open(ssid_url, schema="chronicler", max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await p.execute("DELETE FROM state WHERE key = $1", SSID_PLACE_STATE_KEY)
@@ -439,6 +448,7 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
         min_size=2,
         max_size=2,
         init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler, public"},
     )
     first_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})
     second_adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "work"})

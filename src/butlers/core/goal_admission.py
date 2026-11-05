@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from opentelemetry import trace
 
+from butlers.core.goal_labels import Label, LabelRefused
 from butlers.core.runtime_config import read_goal_admission_config
 
 Origin = Literal["owner", "obligation", "third_party", "staffer"]
@@ -335,6 +336,26 @@ def derive_admission(evidence: Evidence, catalog: CatalogView) -> AdmissionPlan:
     return AdmissionPlan("obligation", exposed, checked(grants), obligation.digest)
 
 
+def effect_exposed(effect, goal) -> bool:
+    """Whether an answered or causing effect carries exposure (RFC 0038 S1).
+
+    The effect's own label (sw_057) decides, not its goal's reporting union. A
+    row from a schema before sw_057 has no label and keeps the old Boolean
+    restriction of its goal; an unreadable label fails closed.
+    """
+    if "label_version" not in effect.keys():
+        return goal["exposed"] is not False
+    try:
+        return Label.from_row(
+            effect["label_version"],
+            effect["label_instr"],
+            effect["label_data"],
+            effect["label_sens"],
+        ).exposed
+    except LabelRefused:
+        return True
+
+
 @dataclass(frozen=True)
 class AdmissionResult:
     decision_id: UUID
@@ -374,6 +395,8 @@ class GoalAdmission:
 
     async def _transaction(self, source: SourceRef, attempt_id: UUID) -> AdmissionResult:
         from butlers.core.goal_ledger import GoalLedger
+        from butlers.core.source_containment import contained as source_contained
+        from butlers.core.source_containment import lock_key as containment_lock_key
 
         try:
             async with self.pool.acquire() as connection, connection.transaction():
@@ -397,7 +420,13 @@ class GoalAdmission:
                         or len(facts.source_partition) > 256
                     ):
                         raise EvidenceRefused("source_context_invalid")
-                    if facts.record_only:
+                    # M7 Contain: a contained source's envelopes are recorded with
+                    # no goal, joined reply or wake. The shared partition lock
+                    # orders this read against a concurrent containment.
+                    await ledger.lock_keys([containment_lock_key(facts.source_partition)])
+                    if facts.record_only or await source_contained(
+                        connection, facts.source_partition
+                    ):
                         # A successfully recorded feed with no subscription has
                         # a durable no-goal disposition, even after registry drift.
                         return await ledger.decide(
@@ -470,7 +499,8 @@ class GoalAdmission:
             chain_depth = cause["chain_depth"] + 1
             if chain_depth > config.chain_limit:
                 return await ledger.decide(source, attempt_id, "refused", "causal_chain_limit")
-            exposed |= cause["exposed"]
+            # S1: the causing effect's label, not the causing goal's union.
+            exposed |= effect_exposed(effect, cause)
             ceiling = intersect(ceiling, decode_grants(cause["ceiling"]))
         if reply:
             binding = await ledger.effect(reply["id"])
@@ -487,9 +517,9 @@ class GoalAdmission:
             )
             ledger.reply_effect = binding["id"] if matches else None
             if matches:
-                # Read actual producing-goal exposure under the goal lock, also
+                # Read the answered effect's label under the goal lock, also
                 # when an expired/terminal prompt becomes new owner intent.
-                exposed |= goal["exposed"]
+                exposed |= effect_exposed(binding, goal)
             if (
                 matches
                 and binding["prompt_accepts_input"]
@@ -499,11 +529,12 @@ class GoalAdmission:
                 # consume an inbox row, so a reply to it is admitted as new intent.
                 and goal["status"] in {"admitted", "running", "awaiting_approval", "recovering"}
             ):
-                await ledger.increase_exposure(goal["id"], exposed)
                 joined = await ledger.decide(
                     source, attempt_id, "joined", "reply_joined", goal["id"]
                 )
-                await ledger.deliver(joined, source)
+                # The inbox row carries the reply's label (sw_057); its reader
+                # joins it. Only the reply's own outside content is added here.
+                await ledger.deliver(joined, source, outside_content=plan.exposed)
                 return joined
         await ledger.lock_keys(
             [

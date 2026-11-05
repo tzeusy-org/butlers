@@ -326,7 +326,7 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
     """)
 
 
-def _get_table_columns(db_url: str) -> dict[str, frozenset[str]]:
+def _get_table_columns(db_url: str, *, schema: str = "public") -> dict[str, frozenset[str]]:
     """Return {table_name: frozenset(column_names)} for all BASE TABLEs in public schema."""
     engine = create_engine(db_url)
     try:
@@ -335,14 +335,15 @@ def _get_table_columns(db_url: str) -> dict[str, frozenset[str]]:
                 text(
                     "SELECT table_name, column_name "
                     "FROM information_schema.columns "
-                    "WHERE table_schema = 'public' "
+                    "WHERE table_schema = :schema "
                     "  AND table_name IN ("
                     "    SELECT table_name FROM information_schema.tables"
-                    "    WHERE table_schema = 'public'"
+                    "    WHERE table_schema = :schema"
                     "      AND table_type = 'BASE TABLE'"
                     "  ) "
                     "ORDER BY table_name, column_name"
-                )
+                ),
+                {"schema": schema},
             ).fetchall()
     finally:
         engine.dispose()
@@ -378,8 +379,8 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) 
     FAILS if any column appears in one DB but not the other, with a diff that
     identifies the exact table and missing column so the fix is unambiguous.
     """
-    from alembic import command as alembic_command
-    from butlers.migrations import _build_alembic_config
+    from butlers.testing.migration import create_migrated_test_db
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 
     # ── Provision DB-A: inline DDL ────────────────────────────────────────
     db_a_name = f"test_drift_inline_{uuid.uuid4().hex[:10]}"
@@ -389,14 +390,20 @@ def test_inline_ddl_matches_alembic_migration_chain(postgres_container: object) 
 
     # ── Provision DB-B: Alembic migration chain ───────────────────────────
     db_b_name = f"test_drift_migrated_{uuid.uuid4().hex[:10]}"
-    db_b_url = create_migration_db(postgres_container, db_b_name)
-
-    config = _build_alembic_config(db_b_url, chains=[_CHRONICLER_MIGRATION_CHAIN])
-    alembic_command.upgrade(config, f"{_CHRONICLER_MIGRATION_CHAIN}@head")
+    # 030 requires its real canonical private-memory prerequisite and fixed
+    # Chronicler domain. Compare that actual schema, not a public-domain alias.
+    db_b_url = create_migrated_test_db(
+        postgres_container,
+        db_b_name,
+        ["core", _CHRONICLER_MIGRATION_CHAIN],
+        schemas={_CHRONICLER_MIGRATION_CHAIN: "chronicler"},
+        revisions={_CHRONICLER_MIGRATION_CHAIN: "chronicler_029"},
+    )
+    prepare_chronicler_current_head_sync(db_b_url, domain_schema="chronicler")
 
     # ── Introspect column sets ────────────────────────────────────────────
     inline_cols = _get_table_columns(db_a_url)
-    migrated_cols = _get_table_columns(db_b_url)
+    migrated_cols = _get_table_columns(db_b_url, schema="chronicler")
 
     inline_names = set(inline_cols.keys())
     migrated_names = set(migrated_cols.keys())
