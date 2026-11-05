@@ -10,34 +10,19 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import row as record
 
 pytestmark = pytest.mark.unit
 
 
-class _FakePool:
-    """Minimal fake asyncpg pool."""
-
-    def __init__(
-        self,
-        *,
-        fetchrow_result: dict[str, Any] | None = None,
-        execute_result: str = "INSERT 0 1",
-    ) -> None:
-        self._fetchrow_result = fetchrow_result
-        self._execute_result = execute_result
-        self.execute_calls: list[tuple[str, tuple]] = []
-        self.fetchrow_calls: list[tuple[str, tuple]] = []
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.execute_calls.append((sql, args))
-        return self._execute_result
-
-    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        self.fetchrow_calls.append((sql, args))
-        return self._fetchrow_result
+def _write_args(pool) -> tuple:
+    """Bound parameters of the single upsert ``write()`` issued."""
+    pool.execute.assert_awaited_once()
+    return pool.execute.await_args.args[1:]
 
 
 # ---------------------------------------------------------------------------
@@ -52,31 +37,31 @@ async def test_write_and_stderr_cap() -> None:
     max_stderr = 32 * 1024
 
     # Over limit: trimmed with marker
-    pool = _FakePool()
+    pool = fake_pool(execute="INSERT 0 1")
     await write(pool, uuid.uuid4(), stderr="x" * (max_stderr + 500))
-    stored = pool.execute_calls[0][1][4]
+    stored = _write_args(pool)[4]
     assert stored.endswith("... [trimmed]")
     assert len(stored) == max_stderr + len("\n... [trimmed]")
 
     # Exactly at limit: not trimmed
-    pool2 = _FakePool()
+    pool2 = fake_pool(execute="INSERT 0 1")
     exact = "y" * max_stderr
     await write(pool2, uuid.uuid4(), stderr=exact)
-    assert pool2.execute_calls[0][1][4] == exact
+    assert _write_args(pool2)[4] == exact
 
     # None: unchanged
-    pool3 = _FakePool()
+    pool3 = fake_pool(execute="INSERT 0 1")
     await write(pool3, uuid.uuid4(), stderr=None)
-    assert pool3.execute_calls[0][1][4] is None
+    assert _write_args(pool3)[4] is None
 
     # Default ttl=14; custom ttl overrides
-    pool4 = _FakePool()
+    pool4 = fake_pool(execute="INSERT 0 1")
     await write(pool4, uuid.uuid4())
-    assert pool4.execute_calls[0][1][-1] == 14
+    assert _write_args(pool4)[-1] == 14
 
-    pool5 = _FakePool()
+    pool5 = fake_pool(execute="INSERT 0 1")
     await write(pool5, uuid.uuid4(), ttl_days=30)
-    assert pool5.execute_calls[0][1][-1] == 30
+    assert _write_args(pool5)[-1] == 30
 
 
 # ---------------------------------------------------------------------------
@@ -98,13 +83,13 @@ async def test_get_behavior() -> None:
         "created_at": now,
         "expires_at": now + timedelta(days=14),
     }
-    pool = _FakePool(fetchrow_result=row)
+    pool = fake_pool(fetchrow=record(**row))
     result = await get(pool, uuid.uuid4())
     assert result is not None
     assert result["pid"] == 9999
     assert result["command"] == "claude --print"
 
-    pool2 = _FakePool(fetchrow_result=None)
+    pool2 = fake_pool(fetchrow=None)
     assert await get(pool2, uuid.uuid4()) is None
 
 
@@ -113,22 +98,12 @@ async def test_get_behavior() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _CleanupFakePool:
-    def __init__(self, *, delete_count: int = 0) -> None:
-        self._delete_count = delete_count
-        self.execute_calls: list[tuple[str, tuple]] = []
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.execute_calls.append((sql, args))
-        return f"DELETE {self._delete_count}"
-
-
 @pytest.mark.parametrize("count", [0, 5, 42])
 async def test_cleanup_count(count: int) -> None:
     """cleanup() returns the number of deleted rows as int."""
     from butlers.core.session_process_logs import cleanup
 
-    pool = _CleanupFakePool(delete_count=count)
+    pool = fake_pool(execute=f"DELETE {count}")
     deleted = await cleanup(pool)
     assert isinstance(deleted, int)
     assert deleted == count
@@ -144,7 +119,7 @@ async def test_write_retry_provenance_fields() -> None:
     from butlers.core.session_process_logs import write
 
     # Retry attempted and succeeded
-    pool = _FakePool()
+    pool = fake_pool(execute="INSERT 0 1")
     await write(
         pool,
         uuid.uuid4(),
@@ -153,7 +128,7 @@ async def test_write_retry_provenance_fields() -> None:
         result_source="retry",
         attempt_count=2,
     )
-    args = pool.execute_calls[0][1]
+    args = _write_args(pool)
     # retry_attempted=$7, retry_succeeded=$8, result_source=$9, attempt_count=$10
     assert args[6] is True  # retry_attempted
     assert args[7] is True  # retry_succeeded
@@ -161,7 +136,7 @@ async def test_write_retry_provenance_fields() -> None:
     assert args[9] == 2  # attempt_count
 
     # Retry attempted but failed, fell back to first result
-    pool2 = _FakePool()
+    pool2 = fake_pool(execute="INSERT 0 1")
     await write(
         pool2,
         uuid.uuid4(),
@@ -170,25 +145,25 @@ async def test_write_retry_provenance_fields() -> None:
         result_source="first",
         attempt_count=2,
     )
-    args2 = pool2.execute_calls[0][1]
+    args2 = _write_args(pool2)
     assert args2[6] is True
     assert args2[7] is False
     assert args2[8] == "first"
     assert args2[9] == 2
 
     # No retry (single attempt, MCP not configured)
-    pool3 = _FakePool()
+    pool3 = fake_pool(execute="INSERT 0 1")
     await write(pool3, uuid.uuid4(), attempt_count=1)
-    args3 = pool3.execute_calls[0][1]
+    args3 = _write_args(pool3)
     assert args3[6] is None  # retry_attempted
     assert args3[7] is None  # retry_succeeded
     assert args3[8] is None  # result_source
     assert args3[9] == 1  # attempt_count
 
     # All defaults None when not specified
-    pool4 = _FakePool()
+    pool4 = fake_pool(execute="INSERT 0 1")
     await write(pool4, uuid.uuid4())
-    args4 = pool4.execute_calls[0][1]
+    args4 = _write_args(pool4)
     assert args4[6] is None
     assert args4[7] is None
     assert args4[8] is None
@@ -213,7 +188,7 @@ async def test_get_includes_retry_provenance_fields() -> None:
         "created_at": now,
         "expires_at": now + timedelta(days=14),
     }
-    pool = _FakePool(fetchrow_result=row)
+    pool = fake_pool(fetchrow=record(**row))
     result = await get(pool, uuid.uuid4())
     assert result is not None
     assert result["retry_attempted"] is True

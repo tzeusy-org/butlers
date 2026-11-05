@@ -32,6 +32,7 @@ from butlers.modules.approvals.execution_context import (
     reset_approval_execution_context,
     set_approval_execution_context,
 )
+from butlers.modules.approvals.goal_fence import goal_effect_refusal, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.calendar_approval import (
     CALENDAR_APPROVAL_TOOLS,
@@ -56,6 +57,8 @@ class ExecutionResult:
     result: dict[str, Any] | None = None
     error: str | None = None
     executed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    # A typed refusal that never reached the tool (e.g. a goal effect).
+    code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -67,6 +70,8 @@ class ExecutionResult:
             d["result"] = self.result
         if self.error is not None:
             d["error"] = self.error
+        if self.code is not None:
+            d["code"] = self.code
         return d
 
 
@@ -226,12 +231,17 @@ async def execute_approved_action(
             async with _approval_write_transaction(pool) as write_target:
                 existing_row = await write_target.fetchrow(
                     "SELECT status, execution_result, session_id, decided_by, origin, "
-                    "tool_name, tool_args "
+                    "tool_name, tool_args, goal_id "
                     "FROM pending_actions WHERE id = $1 FOR UPDATE",
                     action_id,
                 )
                 if existing_row is None:
                     return ExecutionResult(success=False, error=f"Action not found: {action_id}")
+                if is_goal_effect(existing_row):
+                    refusal = goal_effect_refusal(action_id)
+                    return ExecutionResult(
+                        success=False, error=refusal["error"], code=refusal["error_code"]
+                    )
 
                 existing_status = existing_row["status"]
                 if existing_status == ActionStatus.EXECUTED.value:

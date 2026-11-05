@@ -45,35 +45,10 @@
   "tests/core/qa/test_retention.py": [
     "_FakePool"
   ],
-  "tests/core/test_core_sessions_unicode.py": [
-    "_FakePool"
-  ],
-  "tests/core/test_corrections.py": [
-    "_make_pool"
-  ],
   "tests/core/test_fleet_events.py": [
-    "_FakeConnection",
-    "_FakePool"
-  ],
-  "tests/core/test_ingest_sender_authentication_unit.py": [
-    "_FakePool"
+    "_FakeConnection"
   ],
   "tests/core/test_ingestion_events.py": [
-    "_FakePool"
-  ],
-  "tests/core/test_session_create_unit.py": [
-    "_FakePool"
-  ],
-  "tests/core/test_session_process_logs.py": [
-    "_FakePool"
-  ],
-  "tests/core/test_sessions_friction.py": [
-    "_FakePool"
-  ],
-  "tests/core/test_sessions_healing_trigger.py": [
-    "_FakePool"
-  ],
-  "tests/core/test_sync_schedules_timezone_and_quiet_lint.py": [
     "_FakePool"
   ],
   "tests/dashboard/test_briefing_attention_contract.py": [
@@ -81,27 +56,6 @@
   ],
   "tests/integration/test_migrated_core_postgres_pool.py": [
     "_FakePool"
-  ],
-  "tests/jobs/test_deploy_drift.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_health_ha_reader.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_health_jobs.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_home_energy_digest.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_home_environment_report.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_relationship_email_identity_enrichment.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_spend_jobs.py": [
-    "_make_pool"
   ],
   "tests/modules/memory/test_consolidation_runs.py": [
     "_FakeConn",

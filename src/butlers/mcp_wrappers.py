@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 import logging
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
+from butlers.core.goal_lineage import unverified_call_refusal
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import (
     MANUAL_DAY_CLOSE_TRIGGER_PREFIX,
@@ -30,6 +33,14 @@ from butlers.exceptions import ChannelEgressOwnershipError, is_channel_egress_to
 from butlers.module_state import ModuleRuntimeState
 
 logger = logging.getLogger(__name__)
+
+
+def _refuse_unverified(tool_name: str) -> None:
+    """Raise, so the refusal is an MCP error result, never a committed-looking payload."""
+    refusal = unverified_call_refusal(tool_name)
+    if refusal is not None:
+        raise ToolError(json.dumps(refusal, sort_keys=True))
+
 
 _MCP_TOOL_CALL_LOG_LINE = "MCP tool called (butler=%s module=%s tool=%s)"
 _MCP_TOOL_CALL_FAILED_LOG_LINE = "MCP tool call failed (butler=%s module=%s tool=%s): %s"
@@ -294,6 +305,9 @@ class _SpanWrappingMCP:
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                # First step: with verification enforced, a call no verified
+                # assertion was bound for never reaches policy or handler.
+                _refuse_unverified(resolved_tool_name)
                 self._log_tool_call(resolved_tool_name)
                 capture_input = _visible_capture_input(
                     kwargs,
@@ -420,6 +434,7 @@ class _ToolCallLoggingMCP:
 
             @functools.wraps(fn)
             async def instrumented(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                _refuse_unverified(resolved_tool_name)
                 self._log_tool_call(resolved_tool_name)
                 capture_input = _visible_capture_input(
                     kwargs,

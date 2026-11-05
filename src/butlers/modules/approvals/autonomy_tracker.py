@@ -109,6 +109,11 @@ def compute_fingerprint(
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def counts_toward_promotion(action: Any) -> bool:
+    """Approvals of effects requested by an exposed invocation never count (RFC 0038 D13)."""
+    return getattr(action, "goal_exposed", None) is not True
+
+
 async def record_approval(pool: Any, action: Any, *, tool_meta: ToolMeta | None = None) -> None:
     """Record a manual approval in ``autonomy_approval_history``.
 
