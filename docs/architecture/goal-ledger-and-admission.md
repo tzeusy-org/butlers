@@ -154,6 +154,14 @@ and inbox row carries a version 1 label (`label_instr`, `label_data`,
   `{owner}`, every legacy row assumes all six categories, and the downgrade
   refuses while any goal exists.
 
+`sw_059` (bu-dhloi1.10, REQ-capability-authorization-020) adds the owner's
+tighten-only law (`never` / `always_ask` terms) under the same non-FORCE RLS
+model. The runtime may only read the terms and the generation and append
+holds. Owner changes run on the trusted owner connection from the dashboard,
+behind its verified session. The broker reads the generation `FOR SHARE`
+inside the goal-locked call transaction. See
+[capability broker: owner law](capability-broker.md#owner-law-s1-bu-dhloi110).
+
 The waiting lifecycle with its owner thread (bu-dhloi1.7) awaits its RFC
 amendment; until then `status` keeps the D11 set and `thread_id` is an
 unreferenced, bind-once column.

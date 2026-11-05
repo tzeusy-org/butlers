@@ -249,6 +249,12 @@ no table and no second `control.goals` schema. `sw_058` (M7, bu-4c7nvp.1.2) adds
 the dark typed-boundary stores `goal_handles`, `extraction_cache`,
 `goal_child_results` and `source_containments`, each labelled with the sw_057
 grammar where it holds content, insert-only for the runtime (a child result
-row gains its one result) and guarded against update, delete and truncate. See
+row gains its one result) and guarded against update, delete and truncate.
+`sw_059` adds the owner tighten-only law:
+`switchboard.owner_policy_{state,terms,receipts,holds}` (the generation
+singleton, the terms, one receipt per owner action, and the content-blind
+holds). Under RLS the runtime may only read terms and the generation and append
+holds. Durability and tighten-only triggers guard every role; see the
+[capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110). See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.

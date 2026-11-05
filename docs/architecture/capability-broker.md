@@ -15,7 +15,7 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `recipients.py` | Owner rule 2: classify each `recipient_params` party (UUID, email, Telegram, WhatsApp) with the core-notify owner-resolution rule |
 | `policy.py` | Dispatch, park or refuse from effect class, exposure, park-only, approval mode and approval policy |
 | `actuation.py` | RFC 0028 risk map adapter: the tier of an `actuate` call (`ha_call_service`, `ha_activate_scene`) |
-| `ledger.py` | SQL over the sw_047 goal ledger and its sw_057 labels; one goal row lock per transaction |
+| `ledger.py` | SQL over the sw_047 goal ledger, its sw_057 labels and sw_059 owner-law holds; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
@@ -45,6 +45,8 @@ last unit of budget: exactly one wins).
    identifiers. A selection-bound parameter without a grant restriction has an
    empty scope; today's catalog declares none.
 3. Classify recipients and decide (`policy.decide`). Refusals contact no domain.
+   Then apply the owner law ([Owner law](#owner-law-s1-bu-dhloi110)), which can
+   only refuse or turn a dispatch into a per-event park.
 4. Check the budget (exhaustion commits `budget_exhausted` on the goal), refuse a
    repeat of a live, committed or unknown effect with the same capability and
    argument digest (returning that effect's id), insert the effect row
@@ -218,6 +220,108 @@ with the `action_cancelled` delivery reason, admitted by `approvals_022`, so
 `action_rejected` still means only an owner rejection) and
 approved, never-executed ones become `abandoned`. An action whose effect was
 dispatched or settled is never touched (D14).
+
+## Owner law (S1, bu-dhloi1.10)
+
+The owner can hold calls with a tighten-only overlay (REQ-capability-authorization-020).
+`butlers.core.owner_policy` is the reader and the one writer; storage is
+`sw_059`'s `switchboard.owner_policy_*`.
+
+A term is `never` or `always_ask`. It selects by one of three things: an exact
+catalog capability identity, a region (the catalog `owner_domain`) or an effect
+class. It can be narrowed by resource arguments. It is matched against the
+current catalog on every call, so a later capability in a selected region or
+class is held too. A narrowing may name only resource arguments the current
+catalog declares for the selected capabilities; any other key is refused when
+the term is written (`owner_policy_invalid`).
+
+Canonicalisation cannot make an aliasable identifier safe. Calendar's
+`calendar_id: "primary"` reaches the owner's calendar, so a deny on
+`owner@gmail.com` would be released by `primary`. A narrowing is therefore
+admitted only on params the catalog declares `alias_free_params` for every
+selected capability ([MCP model](../concepts/mcp-model.md)). Any other
+narrowing is refused at write with 422 `owner_policy_narrowing_unsupported`. At
+match time, a stored term narrowed on a param the current catalog no longer
+marks alias-free for the called capability holds every call of that capability.
+A domain alias-resolver seam would let aliasable params narrow later; it is not
+built.
+
+Identifiers are compared in canonical form, both when
+stored and when matched: a UUID in any spelling becomes its lowercase
+hyphenated form, and any other identifier is NFKC-normalised, trimmed and
+case-folded. A term is a deny-list, so matching fails closed. A narrowed term
+holds a call in any of these cases:
+
+- the call omits the narrowed argument;
+- the argument is an empty list;
+- the argument is a non-string or has no canonical form;
+- the argument names a held resource in any spelling.
+
+The term is lifted only when every identifier the call names is canonical and
+outside the narrowing.
+
+The constraint order is catalog/origin grant, then exposure/category/slot (step
+2 and `decide`), then owner law, then health/admission (budget and duplicate in
+`reserve`). The broker has no mode stage, and none is invented.
+
+- `never` refuses `policy_refused`.
+- `always_ask` turns the decision into a per-event park: no standing rule
+  applies, and the exact call is parked. Reads cannot park yet (a read has no
+  pending action), so on a `read` it refuses with its own reason,
+  `owner_policy_ask_on_read`, which sw_059 adds to the `broker_refusals` reason
+  set; the owner can tell it apart from `never`.
+- Neither grants. An ungranted, out-of-scope, transact or otherwise refused call
+  stays refused for its own reason, before the law is read.
+- A park the domain cannot hold (`approvals_enabled` false) refuses
+  `broker_unavailable`.
+
+The broker reads the singleton `owner_policy_state.generation` `FOR SHARE` in
+the goal-locked call transaction. A writer takes it `FOR UPDATE`, so a change
+lands before a call or after its effect fence, never between. The next call,
+including the next one in the same invocation, sees it. `execute_approved`
+re-reads the law before dispatch, so a `never` added after a park refuses the
+approved call. The owner's approval stays recorded (`approved`); a committed
+effect is never described as undone.
+
+A missing state row, an unreadable term or a read failure refuses
+`broker_unavailable`. Expiry is judged on the database clock and drops only its
+own term.
+
+Every held call writes one content-blind row to `owner_policy_holds`. The
+disposition is `refused` (linked to its `broker_refusals` row and, at execution,
+the effect) or `parked` (the effect id, which is also the pending action id).
+The row also carries the holding constraint, the policy generation and every
+holding term as `{id, version, term, selector_kind, selector}`, `never` first.
+Its typed receipt `{stage: owner_law, constraint, generation, terms}` is exactly
+`BrokerRefused.hold` / `PolicyHold.receipt()`; the owner read serializes it
+identically for the refusal, the effect and its pending action
+(`test_the_owner_read_and_the_broker_receipts_serialize_identically`). The
+session sees only the closed reason.
+
+Changes go through expected-version CAS, with one receipt per owner action id:
+a retry returns that receipt, and a different change under the same id
+conflicts. A change only tightens: `always_ask` to `never`, or a later or no
+expiry. A loosening refuses `dashboard_step_up_required`: the dashboard
+step-up kinds (`scripts/init-db.sql`) have no policy-loosening kind yet, so
+loosening is the one missing mutation path (activation: bu-dhloi1.29). An
+expiry still lapses its term.
+
+Mutation paths. This is the whole set, pinned by
+`tests/contracts/test_owner_policy_mutation_paths.py`.
+
+| Path | Writes | Guard |
+| --- | --- | --- |
+| `POST /api/owner-policy/terms`, `POST /api/owner-policy/terms/{id}/tighten` | terms, receipts, generation via `OwnerPolicyWriter` | verified owner dashboard session (`owner_dashboard_session_required`); tighten-only CAS |
+| `Broker` ledger `record_hold` | holds | runtime role, insert-only |
+| Switchboard daemon role (broker, every MCP tool, connector callbacks) | nothing else | sw_059 RLS: terms and generation read-only, receipts invisible |
+| Direct SQL, any role | — | triggers refuse DELETE/TRUNCATE everywhere, UPDATE of receipts/holds, and any term UPDATE that loosens, skips a version, rewrites the selector or reuses the owner action |
+
+`GET /api/owner-policy` lists every term with its version, expiry and whether it
+is active, plus the generation. `GET /api/owner-policy/holds` takes exactly
+one of `goal_id`, `effect_id` (also the pending action id) or `refusal_id` and
+returns those holds with their typed receipts. Both need the dashboard session.
+Not here: `/status` and owner cards rendering the receipt (bu-dhloi1.13, S6
+surfaces), and the policy-loosening step-up kind (bu-dhloi1.29).
 
 ## Refusal records and the goal filter (bu-m1u7zy.12)
 
