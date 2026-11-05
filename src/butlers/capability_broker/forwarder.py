@@ -15,9 +15,12 @@ Receipt mapping (D12):
 * anything after the call was sent (timeout, broken stream) propagates, and
   the broker records the effect ``unknown``; it is never retried here.
 
-Stamped output is never trusted here: no domain reports its stamp account yet
-(``stamped_owner_untainted``, ``stamped_writers``), so every stamped read joins
-the unknown label (D6, S1).
+A committed receipt carries the domain's D6 stamp account
+(``stamped_owner_untainted``, ``stamped_writers``) only when the result's
+``_meta`` holds a report naming this exact call: the reservation's capability,
+``call_id`` and ``args_digest`` (``core.stamp_account.parse_report``). A
+missing, malformed or mismatched report is no account, and a stamped read then
+joins the unknown label (D6, S1). Tool content is never read for a stamp.
 """
 
 from __future__ import annotations
@@ -27,6 +30,8 @@ from typing import Any
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+
+from butlers.core.stamp_account import parse_report
 
 from .assertions import ASSERTION_HEADER
 from .contracts import BrokerRefused, Reason, Reservation
@@ -77,4 +82,15 @@ class HttpForwarder:
             await client.__aexit__(None, None, None)
         if result.isError:
             return DomainReceipt("failed")
-        return DomainReceipt("committed", value=result.structuredContent)
+        owner_untainted, writers = parse_report(
+            result.meta,
+            capability=capability.name,
+            call_id=reservation.call_id,
+            args_digest=reservation.args_digest,
+        )
+        return DomainReceipt(
+            "committed",
+            value=result.structuredContent,
+            stamped_owner_untainted=owner_untainted,
+            stamped_writers=writers,
+        )

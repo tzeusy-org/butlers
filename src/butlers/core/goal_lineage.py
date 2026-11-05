@@ -11,7 +11,8 @@ stores they write read lineage only from here:
 * memory authority stamping derives authority from ``origin``/``exposed``
   instead of the spawner-derived routing context;
 * every D6 store stamps ``taint_goal_id``/``taint_invocation_id`` from
-  ``taint_stamp()`` when the call is exposed;
+  ``taint_stamp()`` when the call is exposed, and its readers report those
+  stamps back to the broker (``core.stamp_account``);
 * domain events and audit writes read ``event_lineage()``.
 
 When the process enforces verification (the default-off switch), a
