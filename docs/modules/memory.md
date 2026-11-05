@@ -118,6 +118,22 @@ unknown authority yields `mixed`). Steering memory is gated on that stamp:
   rules are held and legacy owner facts are not Profile Facts. They are never
   backfilled by guessing; the migration reports the counts it left unclassified.
 
+### Goal lineage and taint (RFC 0038 D6, dark)
+
+A write made inside a broker-verified call (see
+[Capability Broker](../architecture/capability-broker.md#forwarding-and-domain-verification-d7-bu-pkuny2))
+derives `content_authority` from the call's verified goal lineage, never from
+the routing context: exposed or third-party lineage is `third_party`, unexposed
+owner lineage is `owner`, obligation and staffer lineage is `system`. An explicit
+owner-class authority under an exposed lineage is refused. When the lineage is
+exposed the episode, fact or rule also stamps `taint_goal_id` and
+`taint_invocation_id` (`mem_017`), a pointer to the goal and invocation whose
+exposure wrote it rather than a boolean, so containment can find every row one
+goal wrote; an episode update keeps an existing stamp. Contact notes and decision
+memory are facts and carry the same stamp. Reads return both columns with the
+row. NULL means written outside a verified call; until the M6 switch every row is
+NULL. Rollback: downgrading `mem_017` drops both columns.
+
 ### Owner knowledge gaps
 
 A sourceless decline in the dashboard answer lane no longer ends the question. The routed butler

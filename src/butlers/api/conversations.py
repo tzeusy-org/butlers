@@ -29,6 +29,7 @@ from butlers.conversation_messages import (
 from butlers.conversation_messages import (
     message_create as message_create,
 )
+from butlers.core.goal_lineage import taint_insert, taint_read
 
 logger = logging.getLogger(__name__)
 
@@ -710,6 +711,13 @@ async def conversation_summary(
 # Message CRUD
 # ---------------------------------------------------------------------------
 
+#: One message as every reader returns it, including the RFC 0038 D6 taint
+#: stamp; the table is aliased ``m``.
+_MESSAGE_COLUMNS = f"""id, conversation_id, role, content, created_at,
+    session_id, model_name, input_tokens, output_tokens,
+    duration_ms, tool_calls, error, request_id, sources, citations,
+    routed_butler, page_context, captured_at, {taint_read("m")}"""
+
 
 async def message_create_idempotent(
     pool: asyncpg.Pool,
@@ -734,21 +742,18 @@ async def message_create_idempotent(
     """
     now = datetime.now(UTC)
     captured_at = now if page_context is not None else None
+    taint = taint_insert(8)  # empty: the owner's dashboard message is never exposed
     inserted = await pool.fetchrow(
-        """
-        INSERT INTO public.dashboard_messages
+        f"""
+        INSERT INTO public.dashboard_messages AS m
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
              duration_ms, tool_calls, error, request_id, sources, citations,
-             routed_butler, page_context, captured_at)
+             routed_butler, page_context, captured_at{taint.columns})
         VALUES ($1, $2, $3, $4, $5, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                NULL, NULL, NULL, NULL, $6, $7)
+                NULL, NULL, NULL, NULL, $6, $7{taint.placeholders})
         ON CONFLICT (id) DO NOTHING
-        RETURNING id, conversation_id, role, content, created_at,
-                  session_id, model_name, input_tokens, output_tokens,
-                  duration_ms, tool_calls, error, request_id, sources, citations,
-                  routed_butler,
-                  page_context, captured_at
+        RETURNING {_MESSAGE_COLUMNS}
         """,
         message_id,
         conversation_id,
@@ -757,20 +762,13 @@ async def message_create_idempotent(
         now,
         page_context,
         captured_at,
+        *taint.values,
     )
     if inserted is not None:
         return dict(inserted), True
 
     existing = await pool.fetchrow(
-        """
-        SELECT id, conversation_id, role, content, created_at,
-               session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources, citations,
-               routed_butler,
-               page_context, captured_at
-        FROM public.dashboard_messages
-        WHERE id = $1
-        """,
+        f"SELECT {_MESSAGE_COLUMNS} FROM public.dashboard_messages m WHERE id = $1",
         message_id,
     )
     if existing is None:
@@ -792,15 +790,7 @@ async def message_get_by_id(
 ) -> dict[str, Any] | None:
     """Fetch a dashboard message by its client-provided identity."""
     row = await pool.fetchrow(
-        """
-        SELECT id, conversation_id, role, content, created_at,
-               session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources, citations,
-               routed_butler,
-               page_context, captured_at
-        FROM public.dashboard_messages
-        WHERE id = $1
-        """,
+        f"SELECT {_MESSAGE_COLUMNS} FROM public.dashboard_messages m WHERE id = $1",
         message_id,
     )
     return dict(row) if row else None
@@ -851,13 +841,9 @@ async def message_list(
     )
 
     rows = await pool.fetch(
-        """
-        SELECT id, conversation_id, role, content, created_at,
-               session_id, model_name, input_tokens, output_tokens,
-               duration_ms, tool_calls, error, request_id, sources, citations,
-               routed_butler,
-               page_context, captured_at
-        FROM public.dashboard_messages
+        f"""
+        SELECT {_MESSAGE_COLUMNS}
+        FROM public.dashboard_messages m
         WHERE conversation_id = $1
         ORDER BY created_at ASC
         OFFSET $2 LIMIT $3
@@ -905,11 +891,11 @@ async def message_find_reply_since(
     session finishes, so polling session completion would miss it.
     """
     row = await pool.fetchrow(
-        """
+        f"""
         SELECT id, content, created_at, session_id, model_name,
                input_tokens, output_tokens, duration_ms, tool_calls, error, request_id,
-               sources, citations, routed_butler
-        FROM public.dashboard_messages
+               sources, citations, routed_butler, {taint_read("m")}
+        FROM public.dashboard_messages m
         WHERE conversation_id = $1 AND role = 'assistant' AND created_at > $2
         ORDER BY created_at ASC
         LIMIT 1

@@ -8,7 +8,7 @@ _NoOpEmbeddingEngine, and daemon registry.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -25,6 +25,8 @@ from butlers.jobs.home import (
     classify_deviation,
     run_environment_report,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -32,45 +34,35 @@ _DEFAULTS = dict(_DEFAULT_COMFORT_DEFAULTS)
 _DEVIATIONS = dict(_DEFAULT_COMFORT_DEVIATION)
 
 
-def _make_pool(
-    *, snapshot_count=3, snapshot_rows=None, facts_row=None, ha_status="healthy"
-) -> MagicMock:
-    pool = MagicMock()
+def _environment_pool(
+    *,
+    snapshot_count: int = 3,
+    snapshot_rows: list | None = None,
+    ha_status: str = "healthy",
+    areas: int = 0,
+) -> FakePool:
+    """A home pool for one report run, answering the job's reads in order.
 
-    def _fetchval_side_effect(query, *args):
-        return snapshot_count if "count(*)" in query.lower() else 1
-
-    pool.fetchval = AsyncMock(side_effect=_fetchval_side_effect)
-
-    def _fetch_side_effect(query, *args):
-        return snapshot_rows or [] if "ha_entity_snapshot" in query.lower() else []
-
-    pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
-
-    async def _fetchrow_side_effect(query, *args, **kwargs):
-        if "ha_source_health" in query.lower():
-            return (
-                {
-                    "status": ha_status,
-                    "last_success_at": datetime.now(UTC) if ha_status == "healthy" else None,
-                    "lease_current": ha_status == "healthy",
-                }
-                if ha_status
-                else None
-            )
-        return facts_row
-
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow_side_effect)
-    pool.execute = AsyncMock()
-    return pool
+    ``fetchrow``: the ``ha_source_health`` gate, then no stored ``comfort_preference``
+    fact for each of *areas* areas; ``fetchval``: the snapshot count; ``fetch``: the
+    snapshot. State-store reads are patched per test.
+    """
+    healthy = ha_status == "healthy"
+    health = row(
+        status=ha_status,
+        last_success_at=datetime.now(UTC) if healthy else None,
+        lease_current=healthy,
+    )
+    return fake_pool(
+        fetchrow=AsyncMock(side_effect=[health, *([None] * areas)]),
+        fetchval=AsyncMock(side_effect=[snapshot_count]),
+        fetch=snapshot_rows or [],
+    )
 
 
-def _make_snapshot_row(entity_id, state="72.0", attributes=None) -> MagicMock:
-    row = MagicMock()
+def _make_snapshot_row(entity_id, state="72.0", attributes=None) -> Record:
     attrs = attributes or {"friendly_name": entity_id.split(".")[-1].replace("_", " ").title()}
-    data = {"entity_id": entity_id, "state": state, "attributes": attrs}
-    row.__getitem__ = lambda self, key: data[key]
-    return row
+    return row(entity_id=entity_id, state=state, attributes=attrs)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +280,7 @@ def test_tropical_defaults_do_not_flag_ordinary_singapore_readings():
 
 async def test_run_environment_report_unmeasurable_on_ha_outage():
     """A simulated HA outage (unhealthy source) short-circuits before the snapshot check."""
-    pool = _make_pool(snapshot_count=3, ha_status="error")
+    pool = _environment_pool(snapshot_count=3, ha_status="error")
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as notify:
         result = await run_environment_report(pool, None)
     assert result == {"error": "ha_source_unmeasurable", "last_good_at": None}
@@ -299,7 +291,7 @@ async def test_run_environment_report_unmeasurable_on_ha_outage():
 
 async def test_run_environment_report_empty_snapshot():
     """Empty snapshot returns error."""
-    pool = _make_pool(snapshot_count=0)
+    pool = _environment_pool(snapshot_count=0)
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result = await run_environment_report(pool, None)
     assert result == {"error": "no_entity_snapshot"}
@@ -308,7 +300,7 @@ async def test_run_environment_report_empty_snapshot():
 async def test_run_environment_report_no_sensors_and_normal_run():
     """Non-sensor rows → zero counts; normal run returns correct counts; critical triggers store."""
     rows = [_make_snapshot_row("light.living_room", "on")]
-    pool = _make_pool(snapshot_count=1, snapshot_rows=rows)
+    pool = _environment_pool(snapshot_count=1, snapshot_rows=rows)
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
         result = await run_environment_report(pool, None)
     assert result == {"areas_checked": 0, "sensors_read": 0, "deviations_found": 0}
@@ -323,7 +315,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
             "sensor.office_co2", "800.0", {"friendly_name": "Office CO2", "area_id": "office"}
         ),
     ]
-    pool2 = _make_pool(snapshot_count=2, snapshot_rows=rows2)
+    pool2 = _environment_pool(snapshot_count=2, snapshot_rows=rows2, areas=2)
     with (
         patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home.state_get", new_callable=AsyncMock, return_value=None),
@@ -341,7 +333,7 @@ async def test_run_environment_report_no_sensors_and_normal_run():
             {"friendly_name": "Garage Temp", "area_id": "garage"},
         )
     ]
-    pool_crit = _make_pool(snapshot_count=1, snapshot_rows=rows_crit)
+    pool_crit = _environment_pool(snapshot_count=1, snapshot_rows=rows_crit, areas=1)
     with (
         patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch("butlers.jobs.home.state_get", new_callable=AsyncMock, return_value=None),

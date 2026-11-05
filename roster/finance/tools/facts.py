@@ -53,6 +53,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_insert
 from butlers.core.owner import fetch_owner_entity_id as _get_owner_entity_id
 
 logger = logging.getLogger(__name__)
@@ -1673,6 +1674,7 @@ async def bulk_record_transactions(
         searchable = preprocess_text(f"owner {predicate} {content}")
 
         try:
+            taint = taint_insert(13)
             sql = f"""
                 INSERT INTO facts (
                     id, subject, predicate, content, embedding, search_vector,
@@ -1680,7 +1682,7 @@ async def bulk_record_transactions(
                     source_episode_id, supersedes_id, validity, scope,
                     created_at, last_confirmed_at, tags, metadata, entity_id,
                     valid_at, tenant_id, idempotency_key, observed_at,
-                    retention_class, sensitivity
+                    retention_class, sensitivity{taint.columns}
                 )
                 VALUES (
                     $1, $2, $3, $4, NULL, {tsvector_sql("$5")},
@@ -1688,7 +1690,7 @@ async def bulk_record_transactions(
                     $12, NULL, 'active', 'finance',
                     $6, $6, '[]'::jsonb, $7, $8,
                     $9, 'owner', $10, $6,
-                    'operational', 'normal'
+                    'operational', 'normal'{taint.placeholders}
                 )
                 ON CONFLICT DO NOTHING
             """
@@ -1706,6 +1708,7 @@ async def bulk_record_transactions(
                 idempotency_key,  # $10
                 source_butler,  # $11
                 source_episode_id,  # $12
+                *taint.values,  # $13, $14 under exposure only
             )
             imported += 1
         except asyncpg.UniqueViolationError:

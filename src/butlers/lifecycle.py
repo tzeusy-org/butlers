@@ -570,10 +570,17 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
 async def _startup_core_tools(daemon: Any, state: StartupState) -> None:
     """Create FastMCP and register core tools."""
     # 13. Create FastMCP and register core tools
+    from butlers.capability_broker.verification import (
+        DomainVerificationSwitch,
+        attach_domain_verification,
+    )
     from butlers.core.owner_creation import OwnerCreationMiddleware
 
     daemon.mcp = FastMCP(daemon.config.name)
     daemon.mcp.add_middleware(OwnerCreationMiddleware(daemon.config.name))
+    # RFC 0038 D7 domain verification: dark until the M6 switch release turns
+    # the default-off switch on; off, this installs nothing.
+    attach_domain_verification(daemon.mcp, DomainVerificationSwitch(), audience=daemon.config.name)
     daemon._register_core_tools()
 
 

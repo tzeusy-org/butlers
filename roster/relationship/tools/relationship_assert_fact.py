@@ -71,6 +71,7 @@ import asyncpg
 from butlers.core import entity_graph_edges
 from butlers.core.approvals_hooks import park_pending_action
 from butlers.core.fact_authority import FactWriteContext, current_fact_write_context
+from butlers.core.goal_lineage import taint_stamp
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
@@ -897,7 +898,8 @@ async def _insert_active_fact(
             src, conf, last_seen, observed_at, weight, verified, "primary",
             validity, created_at, updated_at,
             assert_origin, assert_session_id, assert_action_id,
-            {PACKET_COLUMNS}, {REPORT_COLUMNS}
+            {PACKET_COLUMNS}, {REPORT_COLUMNS},
+            taint_goal_id, taint_invocation_id
         )
         VALUES (
             gen_random_uuid(), $1, $2, $3, $4,
@@ -905,7 +907,8 @@ async def _insert_active_fact(
             $20, now(), now(),
             $12, $13, $14,
             $15, $16, $17, $18, $19,
-            $21, $22, $23, $24, $25, $26, $27, $28
+            $21, $22, $23, $24, $25, $26, $27, $28,
+            $29, $30
         )
         ON CONFLICT DO NOTHING
         RETURNING id
@@ -927,6 +930,7 @@ async def _insert_active_fact(
         *temporal.sql_args(),
         validity,
         *report_sql_args(fact_context),
+        *taint_stamp(),
     )
 
 

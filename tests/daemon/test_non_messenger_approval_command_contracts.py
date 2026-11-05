@@ -467,6 +467,9 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         # Messenger parks the original registered route.execute envelope; the
         # executor's exact task/tool/argument context authorizes its replay.
         ("src/butlers/core_tools/_routing.py", "_check_routed_delivery_approval"),
+        # RFC 0038 D13: the capability broker parks a goal effect with its exact
+        # arguments; replay is the broker's execute_approved against its digest.
+        ("src/butlers/modules/approvals/goal_park.py", "park_goal_effect"),
     }
     found_sources: set[tuple[str, str]] = set()
     for root in (_REPO_ROOT / "src", _REPO_ROOT / "roster"):

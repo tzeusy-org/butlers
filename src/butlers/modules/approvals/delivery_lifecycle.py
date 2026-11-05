@@ -32,17 +32,22 @@ DeliveryTerminalReason = Literal[
     "action_rejected",
     "action_expired",
     "action_abandoned",
+    "action_cancelled",
 ]
 
 _EVENT_FOR_STATUS = {
     ActionStatus.APPROVED: ApprovalEventType.ACTION_APPROVED,
     ActionStatus.REJECTED: ApprovalEventType.ACTION_REJECTED,
     ActionStatus.EXPIRED: ApprovalEventType.ACTION_EXPIRED,
+    ActionStatus.CANCELLED: ApprovalEventType.ACTION_CANCELLED,
 }
+# A goal Stop withdraws the owner's prompt with its own reason code
+# (approvals_022), so ``action_rejected`` keeps meaning an owner rejection.
 _REASON_FOR_STATUS: dict[ActionStatus, DeliveryTerminalReason] = {
     ActionStatus.APPROVED: "action_approved",
     ActionStatus.REJECTED: "action_rejected",
     ActionStatus.EXPIRED: "action_expired",
+    ActionStatus.CANCELLED: "action_cancelled",
 }
 _PRESTART_STATES = ("ready", "claimed", "retry_wait")
 
@@ -272,7 +277,12 @@ async def transition_pending_action(
     source: Any,
     *,
     action_id: uuid.UUID,
-    target_status: Literal[ActionStatus.APPROVED, ActionStatus.REJECTED, ActionStatus.EXPIRED],
+    target_status: Literal[
+        ActionStatus.APPROVED,
+        ActionStatus.REJECTED,
+        ActionStatus.EXPIRED,
+        ActionStatus.CANCELLED,
+    ],
     decided_by: str,
     event_actor: str,
     event_reason: str,

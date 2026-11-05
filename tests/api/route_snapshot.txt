@@ -45,7 +45,7 @@ OP DELETE /api/switchboard/thread-affinity/overrides/{thread_id} bd9c46245088
 OP DELETE /api/timeline/saved-views/{view_id} 09fb33b4011f
 OP DELETE /api/webhooks/{webhook_id} 4f61449f1121
 OP GET /api/approvals d9f405870d42
-OP GET /api/approvals/actions 5eceb71a9bda
+OP GET /api/approvals/actions b8fa666a52e3
 OP GET /api/approvals/actions/executed c4be111f3689
 OP GET /api/approvals/actions/{action_id} 938eea238b32
 OP GET /api/approvals/gated-tools 4f7fed92f8ce
@@ -1550,7 +1550,7 @@ SCHEMA ApiResponse_list_TopSession__ 112ee6422509
 SCHEMA ApiResponse_list_UnroutableAttentionItem__ 668dd0d0cfa7
 SCHEMA ApiResponse_list_WebhookRow__ 9eb02b8594cb
 SCHEMA ApprovalAbandonRequest a8a92416bec3
-SCHEMA ApprovalAction 0f6db14292c3
+SCHEMA ApprovalAction 9577cb59599e
 SCHEMA ApprovalActionApproveRequest 027c8f4e9ca6
 SCHEMA ApprovalActionRejectRequest e21d651d71f6
 SCHEMA ApprovalApproveRequest 36a0c4b35e98
@@ -1562,6 +1562,7 @@ SCHEMA ApprovalDenyRequest 55a7a3a30dfb
 SCHEMA ApprovalDetail ab874b438221
 SCHEMA ApprovalEvidence a6d1fa38cb99
 SCHEMA ApprovalGatedTool 8fe8094e04a0
+SCHEMA ApprovalGoalLineage bce6af8bb80c
 SCHEMA ApprovalMetrics 7052e9ab5210
 SCHEMA ApprovalRule ca3e4799063b
 SCHEMA ApprovalRuleCreateRequest 5534967545b6
@@ -1766,7 +1767,7 @@ SCHEMA ConversationCancelResponse 15f4639a8649
 SCHEMA ConversationCitation 42efa50442dd
 SCHEMA ConversationCreateRequest 8b677eddc5ea
 SCHEMA ConversationDetail 5e6c5816b69d
-SCHEMA ConversationMessage 6b0ca8ae9da8
+SCHEMA ConversationMessage 19ef93695373
 SCHEMA ConversationSearchResult b0d1caeb0bc3
 SCHEMA ConversationStats 178cd1f3bfaf
 SCHEMA ConversationSummary d06c7bc454c4
@@ -1954,7 +1955,7 @@ SCHEMA IngestionRuleTestResult 4a77834d83ee
 SCHEMA IngestionRuleUpdate 52a10546f841
 SCHEMA IngestionWindowRollup aaeac75b7973
 SCHEMA InitialFact 908283087ff5
-SCHEMA InsightCandidate 4796bfef6f16
+SCHEMA InsightCandidate f49db833cb9a
 SCHEMA InsightDeliveryState 535cd9056b06
 SCHEMA InsightFeedbackResponse 7fe3d006ae3b
 SCHEMA InstanceFacts 11804c344f34
