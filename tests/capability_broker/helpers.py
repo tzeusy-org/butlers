@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from butlers.capability_broker.contracts import Capability, Principal
 from butlers.core.goal_admission import Grant
+from butlers.core.goal_labels import admission_label
 from butlers.core.tool_catalog import OwnerNotifyBranch, RecipientParameters
 
 NOTIFY_RECIPIENTS = RecipientParameters(
@@ -37,4 +38,7 @@ def notify(**overrides) -> Capability:
 
 
 def principal(*grants: Grant, depth=0, exposed=False, origin="owner") -> Principal:
-    return Principal(uuid4(), uuid4(), depth, origin, exposed, "catalog-digest", tuple(grants))
+    label = admission_label(exposed)
+    return Principal(
+        uuid4(), uuid4(), depth, origin, exposed, "catalog-digest", tuple(grants), label
+    )

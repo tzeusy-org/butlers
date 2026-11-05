@@ -32,9 +32,13 @@ class DomainReceipt:
     status: Literal["committed", "failed", "unknown", "not_received"]
     receipt_ref: str | None = None
     value: object = field(default=None, repr=False)
-    # Stamped output is trusted only when the owning store says every item
-    # carries owner authority and no taint (D6); absent evidence exposes.
+    # The owning store's complete stamp account of stamped output (D6, S1):
+    # every returned item is owner-authoritative and untainted, except those
+    # whose writer pointer (taint_goal_id, taint_invocation_id) is listed in
+    # ``stamped_writers``. Without the account the output is of unknown
+    # provenance and sensitivity.
     stamped_owner_untainted: bool = False
+    stamped_writers: tuple[tuple[Any, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

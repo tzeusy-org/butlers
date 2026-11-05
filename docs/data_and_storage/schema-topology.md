@@ -241,6 +241,10 @@ for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
 `runtime_config.goal_admission_config` snapshot in each migrated core schema;
 only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
 non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
-backup while denying other runtimes after bootstrap regrants. See
+backup while denying other runtimes after bootstrap regrants. `sw_057` adds the
+S1 label columns (`label_*`, `admitted_label_*`, `exposure_cause`) to goals,
+invocations, effects and inbox rows, their validating CHECKs and join triggers,
+and the owner-only `switchboard.invocation_exposure_measurements` view; it adds
+no table and no second `control.goals` schema. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
