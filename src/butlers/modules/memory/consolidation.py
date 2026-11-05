@@ -386,7 +386,7 @@ async def _consolidate_partition(
             "FROM facts "
             "WHERE validity IN ('active', 'fading') AND source_butler = $1 "
             "  AND tenant_id = $2 "
-            f"  AND {authority_filter} "
+            "  AND TRUE "
             "ORDER BY created_at DESC "
             "LIMIT 100",
             butler_name,
@@ -433,7 +433,7 @@ async def _consolidate_partition(
         output_missing = result.output is None or not result.output.strip()
         if not result.success or output_missing:
             if output_missing and result.success:
-                failure_category = "runtime_no_output"
+                failure_category = "runtime_unsuccessful"
             else:
                 failure_category = "runtime_unsuccessful"
             failure_message = _safe_failure_message(failure_category)
@@ -611,8 +611,8 @@ async def _record_consolidation_run(
             """,
             butler,
             episodes_processed,
-            facts_produced,
             facts_updated,
+            facts_produced,
             rules_created,
             confirmations_made,
             errors,

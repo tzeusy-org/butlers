@@ -810,14 +810,7 @@ class ContactBackfillWriter:
                     """
                     INSERT INTO important_dates
                         (local_entity_id, label, month, day, year)
-                    SELECT $1, $2, $3, $4, $5
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM important_dates
-                        WHERE local_entity_id = $1
-                          AND label            = $2
-                          AND month            = $3
-                          AND day              = $4
-                    )
+                    SELECT $1, $2, $3::int, $4::int, $5::int
                     """,
                     local_id,
                     label,
