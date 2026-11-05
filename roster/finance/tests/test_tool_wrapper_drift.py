@@ -20,11 +20,13 @@ from unittest.mock import create_autospec
 import pytest
 from fastmcp import FastMCP
 
-from butlers.modules._roster_finance.tools import register_tools
+from butlers.roster_imports import roster_module
 from butlers.testing.mcp import registered_tools
-from butlers.tools.finance import alerts as _alerts
-from butlers.tools.finance import anomaly_detection as _anomaly
-from butlers.tools.finance import budgets as _budgets
+
+register_tools = roster_module("finance", "modules/tools").register_tools
+_alerts = roster_module("finance", "tools/alerts")
+_anomaly = roster_module("finance", "tools/anomaly_detection")
+_budgets = roster_module("finance", "tools/budgets")
 
 pytestmark = pytest.mark.unit
 
