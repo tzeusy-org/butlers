@@ -100,27 +100,6 @@
   "tests/jobs/test_calendar_prep_message_context.py": [
     "_FakePool"
   ],
-  "tests/jobs/test_deploy_drift.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_health_ha_reader.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_health_jobs.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_home_energy_digest.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_home_environment_report.py": [
-    "_make_pool"
-  ],
-  "tests/jobs/test_relationship_email_identity_enrichment.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_spend_jobs.py": [
-    "_make_pool"
-  ],
   "tests/modules/memory/test_consolidation_runs.py": [
     "_FakeConn",
     "_FakePool"
