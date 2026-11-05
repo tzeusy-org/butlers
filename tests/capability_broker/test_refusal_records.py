@@ -100,7 +100,7 @@ async def test_an_authenticated_refusal_records_its_lineage(monkeypatch):
     async def authenticate(self, goal_id, token):
         return caller
 
-    async def authorize(self, ledger, principal, name, args, args_digest):
+    async def authorize(self, ledger, principal, name, args):
         raise BrokerRefused(Reason.RESOURCE)
 
     monkeypatch.setattr("butlers.capability_broker.ledger.BrokerLedger.authenticate", authenticate)

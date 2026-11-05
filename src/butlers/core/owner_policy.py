@@ -117,19 +117,27 @@ class DeclaredResources:
     """What the current catalog declares for a selector's capabilities."""
 
     params: frozenset[str]
-    # Params alias-free on every selected capability that declares them.
+    # Params that can narrow: on every selected capability that declares them,
+    # alias-free or resolved to a canonical id by the broker before owner law.
     alias_free: frozenset[str]
+
+
+def _resolved(capability: Any) -> frozenset[str]:
+    return frozenset(name for name, _ in getattr(capability, "alias_resolvers", ()))
 
 
 def declared_resource_params(
     capabilities: Iterable[Any], selector_kind: str, selector: str
 ) -> DeclaredResources:
-    """The resource arguments a selector's capabilities declare, and the alias-free ones."""
+    """The resource arguments a selector's capabilities declare, and the narrowable ones."""
     attribute = {"capability": "identity", "region": "domain", "effect_class": "effect_class"}
     selected = [c for c in capabilities if getattr(c, attribute[selector_kind]) == selector]
     params = frozenset(p for c in selected for p in c.resource_params)
     aliasable = frozenset(
-        p for c in selected for p in c.resource_params if p not in c.alias_free_params
+        p
+        for c in selected
+        for p in c.resource_params
+        if p not in c.alias_free_params and p not in _resolved(c)
     )
     return DeclaredResources(params, params - aliasable)
 

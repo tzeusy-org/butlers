@@ -128,6 +128,9 @@ class Capability:
     # Resource params whose identifiers have no alias; only these can narrow
     # an owner-law term (any other narrowing selects every call).
     alias_free_params: frozenset[str] = frozenset()
+    # Aliasable resource params the domain resolves before owner law, as
+    # sorted (param, kind) pairs (``aliases``); they narrow on canonical ids.
+    alias_resolvers: tuple[tuple[str, str], ...] = ()
     safety_args: tuple[str, ...] = ()
     owner_authority: bool = False
     always_per_event: bool = False
@@ -141,6 +144,10 @@ class Capability:
     categories: frozenset[str] = CATEGORIES
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"}, repr=False)
+
+    @property
+    def alias_resolved(self) -> frozenset[str]:
+        return frozenset(name for name, _ in self.alias_resolvers)
 
     @property
     def identity(self) -> str:
@@ -161,6 +168,9 @@ class Capability:
                 name for name, bound in (descriptor.selection_bound or {}).items() if bound
             ),
             alias_free_params=frozenset(getattr(descriptor, "alias_free_params", None) or ()),
+            alias_resolvers=tuple(
+                sorted(dict(getattr(descriptor, "alias_resolvers", None) or {}).items())
+            ),
             safety_args=tuple(descriptor.safety_args or ()),
             owner_authority=bool(descriptor.owner_authority),
             always_per_event=declared_approval_mode(policy) == "always_per_event",

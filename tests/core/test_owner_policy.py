@@ -136,9 +136,10 @@ async def test_a_narrowing_on_an_undeclared_resource_key_is_refused_at_write():
 
 def test_declared_resource_params_follow_the_selector():
     class Cap:
-        def __init__(self, identity, domain, effect_class, params, alias_free=()):
+        def __init__(self, identity, domain, effect_class, params, alias_free=(), resolved=()):
             self.identity, self.domain, self.effect_class = identity, domain, effect_class
             self.resource_params, self.alias_free_params = params, frozenset(alias_free)
+            self.alias_resolvers = tuple((name, "calendar") for name in resolved)
 
     catalog = [
         Cap("messenger__send", "messenger", "communicate", ("to",), ("to",)),
@@ -152,6 +153,10 @@ def test_declared_resource_params_follow_the_selector():
     # One selected capability where "to" is aliasable makes it aliasable for the class.
     cls = declared_resource_params(catalog, "effect_class", "communicate")
     assert (cls.params, cls.alias_free) == ({"to", "thread"}, set())
+    # A param the broker resolves to its canonical id (bu-dhloi1.30) can narrow.
+    calendar = [Cap("calendar__list", "calendar", "read", ("calendar_id",), (), ("calendar_id",))]
+    listed = declared_resource_params(calendar, "capability", "calendar__list")
+    assert listed.alias_free == {"calendar_id"}
 
 
 async def test_a_narrowing_on_an_aliasable_param_is_refused_at_write():
@@ -169,24 +174,43 @@ async def test_a_narrowing_on_an_aliasable_param_is_refused_at_write():
         )
 
 
-async def test_the_calendar_primary_alias_cannot_narrow_a_term_from_the_real_inventory():
+async def test_the_calendar_id_narrows_from_the_real_inventory_once_resolved():
+    """bu-dhloi1.30: the broker resolves "primary" before owner law, so it narrows."""
+    from butlers.capability_broker.contracts import Capability
+    from butlers.core.tool_catalog import RecipientParameters
     from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
 
     create = next(
         p for p in TOOL_PRESENTATION_INVENTORY if p.canonical_name == "calendar_create_event"
     )
-    assert "calendar_id" in create.resource_params
     assert "calendar_id" not in create.alias_free_params  # "primary" is an alias
-    assert "entity_ids" in create.alias_free_params
-    with pytest.raises(NarrowingUnsupported):
-        await OwnerPolicyWriter(connection=None).create(
-            uuid4(),
-            "capability",
-            "calendar__calendar_create_event",
-            "never",
-            resources={"calendar_id": ["owner@gmail.com"]},
-            resource_params=create.resource_params,
-            alias_free_params=create.alias_free_params,
+    assert dict(create.alias_resolvers) == {"calendar_id": "calendar"}
+    capability = Capability(
+        "calendar",
+        create.canonical_name,
+        "record",
+        "untrusted",
+        RecipientParameters(),
+        resource_params=tuple(create.resource_params or ()),
+        alias_free_params=frozenset(create.alias_free_params or ()),
+        alias_resolvers=tuple(sorted(dict(create.alias_resolvers or {}).items())),
+    )
+    declared = declared_resource_params([capability], "capability", capability.identity)
+    assert declared.alias_free == {"calendar_id", "entity_ids"}
+    receipt_request = dict(
+        resources={"calendar_id": ["owner@gmail.com"]},
+        resource_params=tuple(declared.params),
+        alias_free_params=tuple(declared.alias_free),
+    )
+
+    class Refusing:
+        def transaction(self):
+            raise AssertionError("validated")
+
+    # Validation passes; the write then begins (refused here by the stub).
+    with pytest.raises(AssertionError, match="validated"):
+        await OwnerPolicyWriter(Refusing()).create(
+            uuid4(), "capability", capability.identity, "never", **receipt_request
         )
 
 

@@ -170,7 +170,7 @@ class World:
 
 
 @asynccontextmanager
-async def world(url, *, catalog=None, signer=True):
+async def world(url, *, catalog=None, signer=True, aliases=None):
     async def role(connection):
         await connection.execute("SET ROLE butler_switchboard_rw")
 
@@ -204,6 +204,7 @@ async def world(url, *, catalog=None, signer=True):
             StaticCatalog() if catalog is None else catalog,
             ApprovalsParking({DOMAIN: domain}, forwarder),
             key if signer else None,
+            aliases=aliases,
         )
         yield World(owner, domain, broker, forwarder, key)
 
