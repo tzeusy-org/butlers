@@ -19,12 +19,11 @@ import logging
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import ExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -154,16 +153,6 @@ class _LifecycleMemoryScheduleModule(MemoryModule):
         blob_store: Any = None,
     ) -> None:
         await self._register_default_maintenance_schedules(db)
-
-
-class _NoopButlerDBLogHandler(logging.Handler):
-    """Keep the lifecycle test focused on scheduler recovery, not log persistence."""
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__()
-
-    def emit(self, record: logging.LogRecord) -> None:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -357,80 +346,38 @@ async def test_legacy_lifecycle_recovery_derives_public_audit_identity(
     credential_store = SimpleNamespace(
         resolve=AsyncMock(return_value=None), shared_pool=legacy_public_pool
     )
-    runtime_config = SimpleNamespace(seeded_at=None, updated_at=None)
-    runtime_config_accessor = SimpleNamespace(
-        seed_if_empty=AsyncMock(return_value=runtime_config),
-        _cache=runtime_config,
-    )
-    runtime = SimpleNamespace(binary_name="claude")
-    spawner = SimpleNamespace(stop_accepting=lambda: None, drain=AsyncMock())
+    # The daemon's own phases from config through module startup, unpatched: the
+    # database phase derives the owner identity and the memory module's startup
+    # recovers its default schedule under it (bu-rvgzmf.2).
+    import butlers.lifecycle as lifecycle
 
-    def _discard_background_task(coro: Any, *args: Any, **kwargs: Any) -> None:
-        coro.close()
+    state = lifecycle.StartupState()
+    state.credential_store = credential_store
+    try:
+        for phase in (
+            lifecycle._startup_config,
+            lifecycle._startup_modules,
+            lifecycle._startup_module_config,
+            lifecycle._startup_database,
+            lifecycle._startup_schedules,
+            lifecycle._startup_module_startup,
+        ):
+            await phase(daemon, state)
 
-    lifecycle_patches = (
-        patch("butlers.lifecycle.init_telemetry"),
-        patch("butlers.lifecycle.init_metrics"),
-        patch("butlers.lifecycle.validate_credentials"),
-        patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        patch(
-            "butlers.lifecycle.resolve_general_timezone", new_callable=AsyncMock, return_value="UTC"
-        ),
-        patch("butlers.lifecycle._ensure_owner_entity", new_callable=AsyncMock),
-        patch("butlers.lifecycle.upsert_provider_feature_catalogue", new_callable=AsyncMock),
-        patch(
-            "butlers.cli_auth.persistence.restore_tokens", new_callable=AsyncMock, return_value={}
-        ),
-        patch(
-            "butlers.core.runtime_config.RuntimeConfigAccessor",
-            return_value=runtime_config_accessor,
-        ),
-        patch("butlers.lifecycle.build_runtime_adapter", return_value=runtime),
-        patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        patch("butlers.lifecycle.Spawner", return_value=spawner),
-        patch("butlers.lifecycle.FastMCP", return_value=MagicMock()),
-        patch("butlers.lifecycle.asyncio.create_task", side_effect=_discard_background_task),
-        patch("butlers.core.butler_logging.ButlerDBLogHandler", _NoopButlerDBLogHandler),
-        patch.object(
-            daemon, "_build_credential_store", new_callable=AsyncMock, return_value=credential_store
-        ),
-        patch.object(daemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None),
-        patch.object(daemon, "_connect_switchboard", new_callable=AsyncMock),
-        patch.object(daemon, "_disconnect_switchboard", new_callable=AsyncMock),
-        patch.object(daemon, "_recover_route_inbox", new_callable=AsyncMock),
-        patch.object(daemon, "_register_core_tools"),
-        patch.object(daemon, "_register_module_tools", new_callable=AsyncMock),
-        patch.object(daemon, "_apply_approval_gates", new_callable=AsyncMock, return_value={}),
-        patch.object(daemon, "_init_module_runtime_states", new_callable=AsyncMock),
-        patch.object(daemon, "_start_mcp_server", new_callable=AsyncMock),
-        patch.object(daemon, "_wire_pipelines"),
-        patch.object(daemon, "_wire_calendar_approval_enqueuer"),
-        patch.object(daemon, "_wire_module_runtime"),
-    )
-    with ExitStack() as stack:
-        for lifecycle_patch in lifecycle_patches:
-            stack.enter_context(lifecycle_patch)
-        try:
-            await daemon.start()
-
-            row = await legacy_public_pool.fetchrow(
-                "SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name
-            )
-            audit_rows = await legacy_public_pool.fetch(
-                """
-                SELECT actor, metadata
-                FROM public.audit_log
-                WHERE action = 'scheduler.module_default_recovered' AND target = $1
-                """,
-                f"schedule:{name}",
-            )
-        finally:
-            await daemon.shutdown()
+        row = await legacy_public_pool.fetchrow(
+            "SELECT source, enabled FROM scheduled_tasks WHERE name = $1", name
+        )
+        audit_rows = await legacy_public_pool.fetch(
+            """
+            SELECT actor, metadata
+            FROM public.audit_log
+            WHERE action = 'scheduler.module_default_recovered' AND target = $1
+            """,
+            f"schedule:{name}",
+        )
+    finally:
+        if daemon._db_log_handler is not None:
+            logging.getLogger().removeHandler(daemon._db_log_handler)
 
     assert db.schema is None
     assert db.owner_butler == owner_butler

@@ -27,7 +27,6 @@ from butlers.config import (
     ApprovalRiskTier,
     GatedToolConfig,
 )
-from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.email import EmailConfig, EmailModule
@@ -277,76 +276,6 @@ def butler_dir(tmp_path: Path) -> Path:
     (d / "MANIFESTO.md").write_text("# Test")
     (d / "CLAUDE.md").write_text("Test.")
     return d
-
-
-def _make_daemon_patches() -> dict[str, Any]:
-    """Create the standard patch set for daemon testing (proven pattern)."""
-    mock_pool = AsyncMock()
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock()
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    # Mock RuntimeConfigAccessor so phase 9b doesn't hit the real DB.
-    from butlers.core.runtime_config import RuntimeConfig as DBRuntimeConfig
-
-    _mock_effective_runtime = DBRuntimeConfig(butler_name="test")
-    _mock_accessor = MagicMock()
-    _mock_accessor.seed_if_empty = AsyncMock(return_value=_mock_effective_runtime)
-    _mock_accessor.get = AsyncMock(return_value=_mock_effective_runtime)
-    _mock_accessor._cache = _mock_effective_runtime
-    _mock_accessor_cls = MagicMock(return_value=_mock_accessor)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "RuntimeConfigAccessor": patch(
-            "butlers.core.runtime_config.RuntimeConfigAccessor",
-            _mock_accessor_cls,
-        ),
-    }
 
 
 async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
@@ -1303,33 +1232,28 @@ def _messenger_dir(tmp_path: Path) -> Path:
 async def _boot_messenger_with_route_execute(
     butler_dir: Path,
 ) -> tuple[Any, Any]:
-    """Boot a messenger daemon and extract the route_execute tool function."""
-    patches = _make_daemon_patches()
-    runtime_mcp = FastMCP("email-outbound-route-execute")
+    """The messenger's route.execute after its own module phases, on a DB-free host.
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["RuntimeConfigAccessor"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        route_execute_tool = await runtime_mcp.get_tool("route.execute")
-        assert route_execute_tool is not None
-        return daemon, route_execute_tool.fn
+    Module selection, config validation and the module-tools phase (tool
+    registration, approval gates, runtime wiring) run unpatched; module startup is
+    skipped, so no provider connects. The subject is route.execute's outbound
+    safety, not the boot (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock()
+    host = await host_tools(butler_dir, pool=mock_pool)
+    daemon = host.daemon
+    daemon.spawner = MagicMock(drain=AsyncMock())
+    state = lifecycle.StartupState()
+    state.pool = mock_pool
+    await lifecycle._startup_modules(daemon, state)
+    await lifecycle._startup_module_config(daemon, state)
+    await lifecycle._startup_module_startup(daemon, state)
+    await lifecycle._startup_module_tools(daemon, state)
+    return daemon, await host.tool("route.execute")
 
 
 def _make_route_envelope(
