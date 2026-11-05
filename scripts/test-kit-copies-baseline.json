@@ -22,19 +22,5 @@
   ],
   "tests/integration/test_migrated_core_postgres_pool.py": [
     "_FakePool"
-  ],
-  "tests/modules/memory/test_consolidation_runs.py": [
-    "_FakeConn",
-    "_FakePool"
-  ],
-  "tests/modules/test_contact_backfill_atomicity.py": [
-    "_FakeConn",
-    "_FakePool"
-  ],
-  "tests/modules/test_contact_backfill_child_tables.py": [
-    "_FakePool"
-  ],
-  "tests/modules/test_module_google_health.py": [
-    "_FakePool"
   ]
 }
