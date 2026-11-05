@@ -10,15 +10,14 @@ wrappers) in ``butlers.jobs.calendar_prep``:
 - fail-open when ``switchboard.message_inbox`` is unreadable
 - zero LLM (handlers take only ``(pool, job_args)``; no spawner)
 
-No real database required — ``state_*`` helpers are patched and ``pool.fetch`` is
-routed by SQL text.
+No real database required — ``state_*`` helpers are patched and the job's
+``pool.fetch`` reads answer queued rows in call order.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -31,66 +30,27 @@ from butlers.jobs.calendar_prep import (
     run_messenger_calendar_prep_contribution,
     run_travel_calendar_prep_contribution,
 )
+from butlers.testing.fake_pool import FakePool
+from tests.jobs.calendar_contribution_harness import (
+    ContributionStateStore,
+    patch_state,
+    source_reads,
+)
 
 pytestmark = pytest.mark.unit
 
 
-class _FakePool:
-    """Routes ``pool.fetch`` to the message-context job's three queries by SQL."""
-
-    def __init__(
-        self,
-        *,
-        events: list[dict[str, Any]] | None = None,
-        names: list[dict[str, Any]] | None = None,
-        threads: list[dict[str, Any]] | None = None,
-        threads_raise: bool = False,
-    ) -> None:
-        self._events = events or []
-        self._names = names or []
-        self._threads = threads or []
-        self._threads_raise = threads_raise
-        self.fetch_calls: list[str] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        self.fetch_calls.append(sql)
-        if "array_agg(DISTINCT cee.entity_id)" in sql:
-            return self._events
-        if "FROM public.entities" in sql:
-            return self._names
-        if "FROM switchboard.message_inbox" in sql:
-            if self._threads_raise:
-                raise RuntimeError("permission denied for table message_inbox")
-            return self._threads
-        raise AssertionError(f"unexpected query: {sql}")
+_MODULE = "butlers.jobs.calendar_prep"
 
 
-class _StateCapture:
-    """Captures state_set/state_list/state_delete into an in-memory dict."""
-
-    def __init__(self, seed: dict[str, Any] | None = None) -> None:
-        self.store: dict[str, Any] = dict(seed or {})
-        self.deleted: list[str] = []
-
-    async def state_set(self, _pool: Any, key: str, value: Any) -> int:
-        self.store[key] = value
-        return 1
-
-    async def state_list(self, _pool: Any, *, prefix: str) -> list[str]:
-        return [k for k in self.store if k.startswith(prefix)]
-
-    async def state_delete(self, _pool: Any, key: str) -> None:
-        self.store.pop(key, None)
-        self.deleted.append(key)
-
-
-def _patch_state(capture: _StateCapture):
-    return patch.multiple(
-        "butlers.jobs.calendar_prep",
-        state_set=capture.state_set,
-        state_list=capture.state_list,
-        state_delete=capture.state_delete,
-    )
+def _message_context_reads(
+    *,
+    events: list[dict[str, Any]],
+    names: list[dict[str, Any]],
+    threads: list[dict[str, Any]] | BaseException,
+) -> FakePool:
+    """The job's reads in order: upcoming linked events, attendee names, inbox threads."""
+    return source_reads(events, names, threads)
 
 
 def _thread_row(
@@ -116,7 +76,7 @@ async def test_populated_writes_message_context():
     """An attendee with recent email threads gets a message_context panel."""
     event_id = uuid4()
     alice, bob = uuid4(), uuid4()
-    pool = _FakePool(
+    pool = _message_context_reads(
         events=[
             {
                 "event_id": event_id,
@@ -141,9 +101,9 @@ async def test_populated_writes_message_context():
             # Bob has no threads → he is excluded from the email envelope.
         ],
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_messenger_calendar_prep_contribution(pool, None)
 
     assert result["butler"] == "messenger"
@@ -174,7 +134,7 @@ async def test_event_with_no_threads_is_skipped():
     """An entity-linked event with no recent threads writes no envelope."""
     event_id = uuid4()
     alice = uuid4()
-    pool = _FakePool(
+    pool = _message_context_reads(
         events=[
             {
                 "event_id": event_id,
@@ -186,9 +146,9 @@ async def test_event_with_no_threads_is_skipped():
         names=[{"id": alice, "name": "Alice Tan"}],
         threads=[],  # no message context for anyone
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_travel_calendar_prep_contribution(pool, None)
 
     assert result["butler"] == "travel"
@@ -211,7 +171,7 @@ async def test_thread_cap_and_subject_fallback():
         )
         for i in range(MAX_THREADS_PER_ATTENDEE + 2)
     ]
-    pool = _FakePool(
+    pool = _message_context_reads(
         events=[
             {
                 "event_id": event_id,
@@ -223,9 +183,9 @@ async def test_thread_cap_and_subject_fallback():
         names=[{"id": alice, "name": "Alice Tan"}],
         threads=threads,
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         await run_email_calendar_prep_contribution(pool, None, butler_name="messenger")
 
     ctx = cap.store[prep_key(str(event_id))]["attendees"][0]["message_context"]
@@ -238,7 +198,7 @@ async def test_fail_open_when_message_inbox_unreadable():
     """A switchboard.message_inbox read error surfaces no context (no raise)."""
     event_id = uuid4()
     alice = uuid4()
-    pool = _FakePool(
+    pool = _message_context_reads(
         events=[
             {
                 "event_id": event_id,
@@ -248,11 +208,11 @@ async def test_fail_open_when_message_inbox_unreadable():
             }
         ],
         names=[{"id": alice, "name": "Alice Tan"}],
-        threads_raise=True,
+        threads=RuntimeError("permission denied for table message_inbox"),
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_email_calendar_prep_contribution(pool, None, butler_name="travel")
 
     # Fail-open: no message context → no envelope, but the job completes.
@@ -265,7 +225,7 @@ async def test_prune_removes_stale_event_keys():
     live_event = uuid4()
     stale_event = uuid4()
     alice = uuid4()
-    pool = _FakePool(
+    pool = _message_context_reads(
         events=[
             {
                 "event_id": live_event,
@@ -286,9 +246,9 @@ async def test_prune_removes_stale_event_keys():
             )
         ],
     )
-    cap = _StateCapture(seed={f"{PREP_KEY_PREFIX}{stale_event}": {"butler": "messenger"}})
+    cap = ContributionStateStore(seed={f"{PREP_KEY_PREFIX}{stale_event}": {"butler": "messenger"}})
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_email_calendar_prep_contribution(pool, None, butler_name="messenger")
 
     assert result["pruned"] == 1
