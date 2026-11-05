@@ -1,7 +1,8 @@
 """REQ-module-approvals-003: migrated roles and real synthetic WebAuthn.
 
 The authority and signed_binding_proof fixtures are the dark reusable D13
-handoff. No future Vouch/Contain/mode consumer is registered or granted here.
+handoff. No future Vouch/mode consumer is registered or granted here; Contain
+and policy_loosen are proven in ``test_owner_stepup_consumers.py``.
 """
 
 from __future__ import annotations
@@ -633,10 +634,14 @@ async def test_restricted_login_and_runtime_cannot_mint_or_administer_a_factor(a
 
     # Shared fixtures do not silently activate any future consumer or grant.
     namespace = await pool.fetchval("SELECT current_database() || ':' || current_schema()")
-    for future_kind in ("vouch", "contain", "mode_loosen"):
+    for future_kind in ("vouch", "mode_loosen"):
         binding = RuleBinding(future_kind, "new", "a" * 64, "b" * 64, namespace)
         with pytest.raises(AuthError):
             await signed_binding_proof(authority, binding)
+    # The closed catalog admits exactly the registered consumers (bu-dhloi1.29).
+    for kind in ("contain", "policy_loosen"):
+        binding = RuleBinding(kind, "synthetic", "a" * 64, "b" * 64, namespace)
+        assert (await signed_binding_proof(authority, binding)).nonce
     role = await admin.fetchrow(
         "SELECT rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls FROM pg_roles WHERE rolname='dashboard_stepup_owner'"
     )

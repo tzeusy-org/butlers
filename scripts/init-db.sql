@@ -6526,42 +6526,16 @@ BEGIN
 END $finalize$;
 REVOKE ALL ON FUNCTION dashboard_stepup.finalize_interface() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION dashboard_stepup.install_interface() RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
-DECLARE auth_owner oid; migration_name name;
+-- The two consumer routines, defined once. install_interface creates them on
+-- a first installation; upgrade_interface replaces them in place on an
+-- existing one (bu-dhloi1.29). CREATE OR REPLACE keeps each routine's owner
+-- and ACL; finalize_interface then re-asserts both.
+CREATE OR REPLACE FUNCTION dashboard_stepup.install_routines() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $routines$
 BEGIN
- SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
- SELECT nspowner INTO auth_owner FROM pg_namespace WHERE nspname='dashboard_auth'
-  AND obj_description(oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
- IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
-  AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
-  OR to_regclass('dashboard_auth.instance') IS NULL OR to_regclass('dashboard_auth.sessions') IS NULL
-  OR to_regclass('dashboard_auth.credentials') IS NULL OR to_regclass('dashboard_auth.ceremonies') IS NULL
-  THEN RAISE EXCEPTION 'step-up requires existing trusted owner authentication'; END IF;
- IF to_regclass('dashboard_stepup.bindings') IS NOT NULL
-  OR to_regprocedure('dashboard_stepup.ceremony(text,jsonb)') IS NOT NULL
-  OR to_regprocedure('dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)') IS NOT NULL
-  THEN RAISE EXCEPTION 'step-up interface must be absent before first installation'; END IF;
- GRANT CREATE ON SCHEMA dashboard_stepup TO dashboard_stepup_owner;
-CREATE TABLE dashboard_stepup.bindings (
- id text PRIMARY KEY,
- session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
- credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
- kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion')),
- target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
- action_digest text NOT NULL CHECK(action_digest ~ '^[0-9a-f]{64}$'),
- namespace text NOT NULL, expires_at timestamptz NOT NULL,
- nonce_digest text UNIQUE CHECK(nonce_digest ~ '^[0-9a-f]{64}$'),
- revoked boolean NOT NULL DEFAULT false,
- consumed_at timestamptz, consumed_tx bigint, result jsonb,
- created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
- CHECK((consumed_at IS NULL)=(consumed_tx IS NULL)),
- CHECK(result IS NULL OR (consumed_at IS NOT NULL AND jsonb_typeof(result)='object'))
-);
-ALTER TABLE dashboard_stepup.bindings OWNER TO dashboard_stepup_owner;
-REVOKE ALL ON TABLE dashboard_stepup.bindings FROM PUBLIC,dashboard_auth_api;
-
-CREATE FUNCTION dashboard_stepup.ceremony(action text,p jsonb) RETURNS jsonb
+ IF to_regclass('dashboard_stepup.bindings') IS NULL
+  THEN RAISE EXCEPTION 'step-up routines require the bindings store'; END IF;
+CREATE OR REPLACE FUNCTION dashboard_stepup.ceremony(action text,p jsonb) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $ceremony$
 DECLARE
  s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
@@ -6583,7 +6557,7 @@ BEGIN
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  IF action='options' THEN
   IF NOT p ?& ARRAY['kind','request_digest','action_digest','ceremony_id','challenge','target','namespace']
-   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion')
+   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen')
    OR p->>'request_digest' !~ '^[0-9a-f]{64}$' OR p->>'action_digest' !~ '^[0-9a-f]{64}$'
    OR p->>'ceremony_id' !~ '^[A-Za-z0-9_-]{43}$' OR p->>'challenge' !~ '^[A-Za-z0-9_-]{43}$'
    OR length(p->>'target') NOT BETWEEN 1 AND 128
@@ -6646,7 +6620,7 @@ ALTER FUNCTION dashboard_stepup.ceremony(text,jsonb) OWNER TO dashboard_stepup_o
 REVOKE ALL ON FUNCTION dashboard_stepup.ceremony(text,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION dashboard_stepup.ceremony(text,jsonb) TO dashboard_auth_api;
 
-CREATE FUNCTION dashboard_stepup.consume(
+CREATE OR REPLACE FUNCTION dashboard_stepup.consume(
  phase text,raw_nonce text,session_digest text,kind text,target text,
  request_digest text,action_digest text,result jsonb
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $consume$
@@ -6696,6 +6670,8 @@ BEGIN
   OR result->>'rule_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   OR (kind IN ('create','from_action') AND result->>'id' IS DISTINCT FROM result->>'rule_id')
   OR (kind IN ('approve_with_rule','promotion') AND result->>'id' IS DISTINCT FROM target)
+  OR (kind='contain' AND result->>'id' IS DISTINCT FROM result->>'rule_id')
+  OR (kind='policy_loosen' AND result->>'rule_id' IS DISTINCT FROM split_part(target,':',1))
   THEN RETURN '{"state":"refused"}'; END IF;
  UPDATE dashboard_stepup.bindings x SET result=consume.result WHERE x.id=b.id;
  RETURN jsonb_build_object('state','completed');
@@ -6703,6 +6679,45 @@ END $consume$;
 ALTER FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)
  OWNER TO dashboard_stepup_owner;
 REVOKE ALL ON FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) FROM PUBLIC,dashboard_auth_api;
+END $routines$;
+REVOKE ALL ON FUNCTION dashboard_stepup.install_routines() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION dashboard_stepup.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
+DECLARE auth_owner oid; migration_name name;
+BEGIN
+ SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
+ SELECT nspowner INTO auth_owner FROM pg_namespace WHERE nspname='dashboard_auth'
+  AND obj_description(oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
+ IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
+  AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
+  OR to_regclass('dashboard_auth.instance') IS NULL OR to_regclass('dashboard_auth.sessions') IS NULL
+  OR to_regclass('dashboard_auth.credentials') IS NULL OR to_regclass('dashboard_auth.ceremonies') IS NULL
+  THEN RAISE EXCEPTION 'step-up requires existing trusted owner authentication'; END IF;
+ IF to_regclass('dashboard_stepup.bindings') IS NOT NULL
+  OR to_regprocedure('dashboard_stepup.ceremony(text,jsonb)') IS NOT NULL
+  OR to_regprocedure('dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)') IS NOT NULL
+  THEN RAISE EXCEPTION 'step-up interface must be absent before first installation'; END IF;
+ GRANT CREATE ON SCHEMA dashboard_stepup TO dashboard_stepup_owner;
+CREATE TABLE dashboard_stepup.bindings (
+ id text PRIMARY KEY,
+ session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
+ credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
+ kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen')),
+ target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+ action_digest text NOT NULL CHECK(action_digest ~ '^[0-9a-f]{64}$'),
+ namespace text NOT NULL, expires_at timestamptz NOT NULL,
+ nonce_digest text UNIQUE CHECK(nonce_digest ~ '^[0-9a-f]{64}$'),
+ revoked boolean NOT NULL DEFAULT false,
+ consumed_at timestamptz, consumed_tx bigint, result jsonb,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ CHECK((consumed_at IS NULL)=(consumed_tx IS NULL)),
+ CHECK(result IS NULL OR (consumed_at IS NOT NULL AND jsonb_typeof(result)='object'))
+);
+ALTER TABLE dashboard_stepup.bindings OWNER TO dashboard_stepup_owner;
+REVOKE ALL ON TABLE dashboard_stepup.bindings FROM PUBLIC,dashboard_auth_api;
+
+ PERFORM dashboard_stepup.install_routines();
 
  PERFORM dashboard_stepup.finalize_interface();
 END $install$;
@@ -6725,6 +6740,26 @@ BEGIN
 END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_stepup.deactivate_interface() FROM PUBLIC;
 
+-- Bring an existing installation to this file's closed consumer catalog
+-- (bu-dhloi1.29 added contain and policy_loosen). Idempotent and history
+-- preserving: every past binding and receipt row stays as it is; only the
+-- kind CHECK and the two routines are replaced, then finalize re-asserts
+-- ownership, provenance and grants. Reached only from this privileged
+-- bootstrap, never from an ordinary migration.
+CREATE OR REPLACE FUNCTION dashboard_stepup.upgrade_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $upgrade$
+BEGIN
+ IF to_regclass('dashboard_stepup.bindings') IS NULL
+  THEN RAISE EXCEPTION 'step-up upgrade requires an existing installation'; END IF;
+ LOCK TABLE dashboard_stepup.bindings IN ACCESS EXCLUSIVE MODE;
+ ALTER TABLE dashboard_stepup.bindings DROP CONSTRAINT IF EXISTS bindings_kind_check,
+  ADD CONSTRAINT bindings_kind_check CHECK(kind IN
+   ('create','from_action','approve_with_rule','promotion','contain','policy_loosen'));
+ PERFORM dashboard_stepup.install_routines();
+ PERFORM dashboard_stepup.finalize_interface();
+END $upgrade$;
+REVOKE ALL ON FUNCTION dashboard_stepup.upgrade_interface() FROM PUBLIC;
+
 DO $stepup_grant$
 DECLARE migration_name name;
 BEGIN
@@ -6733,7 +6768,7 @@ BEGIN
  EXECUTE format('GRANT SELECT ON TABLE dashboard_stepup.bootstrap_configuration TO %I',migration_name);
  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_stepup.install_interface(),dashboard_stepup.finalize_interface(),dashboard_stepup.deactivate_interface() TO %I',migration_name);
  IF to_regclass('dashboard_stepup.bindings') IS NOT NULL THEN
-  PERFORM dashboard_stepup.finalize_interface();
+  PERFORM dashboard_stepup.upgrade_interface();
  END IF;
 END $stepup_grant$;
 RESET ROLE;

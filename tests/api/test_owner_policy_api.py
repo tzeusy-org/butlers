@@ -92,6 +92,9 @@ class _Writer:
     async def tighten(self, *args, **kwargs):
         return self._result()
 
+    async def loosen(self, *args, **kwargs):
+        return self._result()
+
     def _result(self):
         if isinstance(self.outcome, Exception):
             raise self.outcome
@@ -115,8 +118,21 @@ async def test_every_route_refuses_without_the_owner_dashboard_session(writer):
                 json={"owner_action_id": str(uuid4()), "expected_version": 1, "term": "never"},
             ),
             await client.get("/api/owner-policy/holds", params={"goal_id": str(uuid4())}),
+            await client.post(
+                f"/api/owner-policy/terms/{uuid4()}/loosen",
+                json={"owner_action_id": str(uuid4()), "expected_version": 1, "term": "never"},
+            ),
+            await client.post(
+                "/api/owner-policy/step-up/options",
+                json={
+                    "owner_action_id": str(uuid4()),
+                    "term_id": str(uuid4()),
+                    "expected_version": 1,
+                    "term": "never",
+                },
+            ),
         ]
-    assert [r.status_code for r in responses] == [403] * 4
+    assert [r.status_code for r in responses] == [403] * 6
     assert {r.json()["detail"]["error"] for r in responses} == {"owner_dashboard_session_required"}
 
 
@@ -145,11 +161,12 @@ async def test_the_owner_session_creates_and_reads_back_the_typed_term(writer, m
         (PolicyUnavailable(), 503, "owner_policy_unavailable"),
     ],
 )
-async def test_writer_outcomes_map_to_closed_errors(writer, outcome, status, error):
+@pytest.mark.parametrize("change", ["tighten", "loosen"])
+async def test_writer_outcomes_map_to_closed_errors(writer, outcome, status, error, change):
     writer.outcome = outcome
     body = {"owner_action_id": str(uuid4()), "expected_version": 2, "term": "always_ask"}
     async with _client(_app("session-digest")) as client:
-        response = await client.post(f"/api/owner-policy/terms/{uuid4()}/tighten", json=body)
+        response = await client.post(f"/api/owner-policy/terms/{uuid4()}/{change}", json=body)
     assert (response.status_code, response.json()["detail"]["error"]) == (status, error)
 
 

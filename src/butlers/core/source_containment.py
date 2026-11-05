@@ -15,24 +15,23 @@ same per-partition transaction lock, so an envelope either committed before
 the containment (and is one of its descendants) or sees it.
 
 There is no release here, so a record-only decision is never replayed into a
-goal. Nothing constructs a caller until the runtime switch; the trusted
-step-up interface admits only the rule kinds until its installer gains
-``contain`` (bu-dhloi1.29), so today every call returns the handoff.
+goal. The trusted step-up interface admits the ``contain`` kind (bu-dhloi1.29):
+``contain_binding`` derives the exact action the owner confirms, and a real
+step-up for it is spent once, with the write. Nothing constructs a caller until
+the runtime switch, so the path stays dark.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
-from opentelemetry.instrumentation.utils import suppress_instrumentation
 
-from butlers.core.dashboard_stepup import dashboard_stepup_proof
+from butlers.core.dashboard_stepup import StepUpBinding, consume_stepup, dashboard_stepup_proof
 from butlers.core.goal_admission import digest
 from butlers.core.goal_ledger import GoalLedger
 
@@ -70,27 +69,8 @@ async def contained(connection: Any, source_partition: str) -> bool:
     )
 
 
-async def _consume(connection: Any, phase: str, binding: dict[str, str], result=None) -> dict:
-    proof = dashboard_stepup_proof.get()
-    if proof is None:
-        raise _Refused
-    # No SQL span may export the nonce or session digest.
-    with suppress_instrumentation():
-        raw = await connection.fetchval(
-            "SELECT dashboard_stepup.consume($1, $2, $3, $4, $5, $6, $7, ($8::text)::jsonb)",
-            phase,
-            proof.nonce,
-            proof.session_digest,
-            KIND,
-            binding["target"],
-            binding["request_digest"],
-            binding["action_digest"],
-            json.dumps(result) if result is not None else None,
-        )
-    value = json.loads(raw) if isinstance(raw, str) else raw
-    if not isinstance(value, dict):
-        raise RuntimeError("Step-up storage unavailable")
-    return value
+async def _consume(connection: Any, phase: str, binding: StepUpBinding, result=None) -> dict:
+    return await consume_stepup(connection, phase, binding, result)
 
 
 def _row(row) -> Containment:
@@ -104,6 +84,33 @@ async def _existing(connection: Any, source_partition: str):
         "SELECT id, source_partition, descendant_goals, contained_at "
         "FROM switchboard.source_containments WHERE source_partition = $1",
         source_partition,
+    )
+
+
+_UNREAD = object()
+
+
+async def contain_binding(
+    connection: Any, source_partition: str, existing: Any = _UNREAD
+) -> StepUpBinding:
+    """The exact action a Contain step-up confirms, derived from this database.
+
+    The dashboard derives it with an unlocked read to issue the confirmation;
+    ``contain_source`` re-derives it under the partition lock to spend it. The
+    action binds the current state, so a confirmation issued before the source
+    was contained cannot be spent after.
+    """
+    if existing is _UNREAD:
+        existing = await _existing(connection, source_partition)
+    namespace = await connection.fetchval("SELECT current_database() || ':' || current_schema()")
+    target = hashlib.sha256(source_partition.encode()).hexdigest()
+    request = {"kind": KIND, "target": target, "namespace": namespace, "version": 1}
+    return StepUpBinding(
+        KIND,
+        target,
+        digest(request),
+        digest([request, str(existing["id"]) if existing else None]),
+        namespace,
     )
 
 
@@ -124,19 +131,8 @@ async def contain_source(pool: Any, source_partition: str) -> Containment | dict
             ledger = GoalLedger(connection)
             await ledger.verify_role()
             await ledger.lock_keys([lock_key(source_partition)])
-            namespace = await connection.fetchval(
-                "SELECT current_database() || ':' || current_schema()"
-            )
-            target = hashlib.sha256(source_partition.encode()).hexdigest()
-            request = {"kind": KIND, "target": target, "namespace": namespace, "version": 1}
             existing = await _existing(connection, source_partition)
-            binding = {
-                "target": target,
-                "request_digest": digest(request),
-                # The action binds the current state: a confirmation issued
-                # before the source was contained cannot be spent after.
-                "action_digest": digest([request, str(existing["id"]) if existing else None]),
-            }
+            binding = await contain_binding(connection, source_partition, existing)
             admission = await _consume(connection, "begin", binding)
             if admission.get("state") == "completed":
                 result = admission.get("result") or {}
@@ -163,7 +159,7 @@ async def contain_source(pool: Any, source_partition: str) -> Containment | dict
                     "RETURNING id, source_partition, descendant_goals, contained_at",
                     uuid4(),
                     source_partition,
-                    binding["request_digest"],
+                    binding.request_digest,
                     list(descendants),
                 )
             identity = str(existing["id"])

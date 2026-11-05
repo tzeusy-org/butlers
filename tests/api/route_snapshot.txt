@@ -546,8 +546,10 @@ OP POST /api/memory/rules/{rule_id}/endorse 9d85f99576fc
 OP POST /api/notifications/ack-failed 5338c3b3047a
 OP POST /api/notifications/{notification_id}/escalate 968f63b9f6db
 OP POST /api/notifications/{notification_id}/retry 8b66dd930f06
+OP POST /api/owner-policy/step-up/options 0544807c7640
 OP POST /api/owner-policy/terms c8d698c97040
-OP POST /api/owner-policy/terms/{term_id}/tighten 55505a7d3720
+OP POST /api/owner-policy/terms/{term_id}/loosen a97524d5ed92
+OP POST /api/owner-policy/terms/{term_id}/tighten c79d9a805a95
 OP POST /api/projections 58c43352cca6
 OP POST /api/projections/{projection_id}/rotate 3a12d90d65bb
 OP POST /api/qa/circuit-breaker/reset 5fb5e25e6746
@@ -1183,7 +1185,9 @@ ROUTE APIRoute POST '/api/memory/rules/{rule_id}/endorse' name=endorse_held_rule
 ROUTE APIRoute POST '/api/notifications/ack-failed' name=ack_failed_notifications op=ack_failed_notifications_api_notifications_ack_failed_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/notifications/{notification_id}/escalate' name=escalate_notification op=escalate_notification_api_notifications__notification_id__escalate_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/notifications/{notification_id}/retry' name=retry_notification op=retry_notification_api_notifications__notification_id__retry_post tags=notifications schema=True
+ROUTE APIRoute POST '/api/owner-policy/step-up/options' name=owner_policy_stepup_options op=owner_policy_stepup_options_api_owner_policy_step_up_options_post tags=owner-policy schema=True
 ROUTE APIRoute POST '/api/owner-policy/terms' name=create_owner_policy_term op=create_owner_policy_term_api_owner_policy_terms_post tags=owner-policy schema=True
+ROUTE APIRoute POST '/api/owner-policy/terms/{term_id}/loosen' name=loosen_owner_policy_term op=loosen_owner_policy_term_api_owner_policy_terms__term_id__loosen_post tags=owner-policy schema=True
 ROUTE APIRoute POST '/api/owner-policy/terms/{term_id}/tighten' name=tighten_owner_policy_term op=tighten_owner_policy_term_api_owner_policy_terms__term_id__tighten_post tags=owner-policy schema=True
 ROUTE APIRoute POST '/api/projections' name=mint_projection op=mint_projection_api_projections_post tags=projections schema=True
 ROUTE APIRoute POST '/api/projections/{projection_id}/rotate' name=rotate_projection op=rotate_projection_api_projections__projection_id__rotate_post tags=projections schema=True
@@ -2072,9 +2076,11 @@ SCHEMA OwnerLawReceipt 66c0392973e2
 SCHEMA OwnerPlaceResponse 9ed0de620fd9
 SCHEMA OwnerPolicy 246d7cfda1e9
 SCHEMA OwnerPolicyHold 09266498299d
-SCHEMA OwnerPolicyReceipt 2de8bfa4f2f0
+SCHEMA OwnerPolicyLoosenOptions 0cd070979744
+SCHEMA OwnerPolicyReceipt a606267fb4f0
 SCHEMA OwnerPolicyTerm f8dd20849327
 SCHEMA OwnerPolicyTermCreate ed6c7c604c68
+SCHEMA OwnerPolicyTermLoosen 79b2680faf08
 SCHEMA OwnerPolicyTermRef cbe7470d5d6f
 SCHEMA OwnerPolicyTermTighten 1aef6104cfc0
 SCHEMA OwnerSetupStatus 32f995df4bb1
