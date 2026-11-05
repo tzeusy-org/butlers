@@ -48,12 +48,16 @@ SEND = capability(
     DOMAIN,
     idempotency="key_required",
     recipient_params=RecipientParameters(argument_names=("to",)),
+    categories=frozenset(),  # a delivery receipt carries no category
 )
 TO_OWNER = {"to": str(OWNER), "text": "hi"}
-NOTIFY = notify()
+NOTIFY = notify(categories=frozenset())
 PAY = capability("pay", "transact", DOMAIN)
 RULES = capability("set_rule", "administer", DOMAIN)
-CATALOG = Catalog("catalog-v1", (SEARCH, UNTRUSTED, SEND, NOTIFY, PAY, RULES))
+RECALL = capability(
+    "recall", "read", DOMAIN, output_trust="stamped", categories=frozenset({"health"})
+)
+CATALOG = Catalog("catalog-v1", (SEARCH, UNTRUSTED, SEND, NOTIFY, PAY, RULES, RECALL))
 
 
 @pytest.fixture(scope="module")
@@ -128,14 +132,12 @@ class World:
         return goal_id
 
     async def invocation(self, goal_id, *grants, depth=0, epoch=0, parent=None):
+        # sw_057 derives the start label (admission, parent, predecessors).
         invocation_id, snapshot = uuid4(), encode_grants(grants)
-        exposed = await self.owner.fetchval(
-            "SELECT exposed FROM switchboard.goals WHERE id = $1", goal_id
-        )
         await self.owner.execute(
             "INSERT INTO switchboard.invocations (id, goal_id, parent_invocation_id, depth, role, "
-            "lead_epoch, status, grant_snapshot, grant_digest, exposed, max_turns, max_tokens) "
-            "VALUES ($1, $2, $3, $4, $5, $6, 'launching', $7::jsonb, $8, $9, 5, 500)",
+            "lead_epoch, status, grant_snapshot, grant_digest, max_turns, max_tokens) "
+            "VALUES ($1, $2, $3, $4, $5, $6, 'launching', $7::jsonb, $8, 5, 500)",
             invocation_id,
             goal_id,
             parent,
@@ -144,7 +146,6 @@ class World:
             epoch,
             snapshot,
             digest(snapshot),
-            exposed,
         )
         token = await self.broker.issue_invocation_token(goal_id, invocation_id)
         await self.owner.execute(
@@ -702,3 +703,190 @@ async def test_every_refused_call_writes_a_durable_lineage_record(broker_db_url)
                 continue
             pytest.fail(f"{statement!r} ran ({status}); {await _privilege_state(w)}")
         assert await w.owner.fetchval("SELECT count(*) FROM switchboard.broker_refusals") == 5
+
+
+# -- S1 invocation labels (bu-dhloi1.6; REQ-capability-authorization-019) --------
+
+
+async def _label(w, invocation_id):
+    return await w.owner.fetchrow(
+        "SELECT exposed, exposure_cause, label_instr, label_data, label_sens "
+        "FROM switchboard.invocations WHERE id = $1",
+        invocation_id,
+    )
+
+
+def _owner_send(text):
+    return {"to": str(OWNER), "text": text}
+
+
+async def test_a_clean_sibling_still_dispatches_after_another_sibling_reads_untrusted(
+    broker_db_url,
+):
+    async with world(broker_db_url) as w:
+        grants = (_grant(UNTRUSTED), _grant(SEND))
+        goal = await w.goal(*grants)
+        lead, _ = await w.invocation(goal, *grants)
+        reader, reader_token = await w.invocation(goal, *grants, depth=1, parent=lead)
+        _, clean_token = await w.invocation(goal, *grants, depth=1, parent=lead)
+        await w.broker.call(goal, reader_token, UNTRUSTED.identity, {})
+        assert await w.owner.fetchval(
+            "SELECT exposed FROM switchboard.goals WHERE id = $1", goal
+        )  # the goal aggregate is only a reporting union
+        clean = await w.broker.call(goal, clean_token, SEND.identity, _owner_send("clean"))
+        assert clean.status == "committed"
+        assert w.verify(w.forwarder.calls[-1][2], "send", _owner_send("clean"))["exposed"] is False
+        tainted = await w.broker.call(goal, reader_token, SEND.identity, _owner_send("tainted"))
+        assert tainted.status == "parked"
+        row = await _label(w, reader)
+        assert (row["exposed"], row["exposure_cause"], row["label_data"]) == (
+            True,
+            "read",
+            ["owner", "world"],
+        )
+        assert (await _label(w, lead))["exposed"] is False
+        # AC4: the retained sw_047 gate beside the switched one, content-blind.
+        rows = await w.owner.fetch("SELECT * FROM switchboard.invocation_exposure_measurements")
+        assert {
+            (r["role"], r["exposure_cause"], r["goal_union_exposed"], r["invocation_exposed"]): (
+                r["invocations"],
+                r["effects"],
+                r["approval_routed_effects"],
+            )
+            for r in rows
+        } == {
+            ("lead", None, True, False): (1, 0, 0),
+            ("child", None, True, False): (1, 1, 0),  # un-gated by the switch
+            ("child", "read", True, True): (1, 1, 1),
+        }
+
+
+async def test_a_lead_reading_its_returned_child_is_exposed_by_it(broker_db_url):
+    async with world(broker_db_url) as w:
+        grants = (_grant(UNTRUSTED), _grant(SEND))
+        goal = await w.goal(*grants)
+        lead, lead_token = await w.invocation(goal, *grants)
+        child, child_token = await w.invocation(goal, *grants, depth=1, parent=lead)
+        await w.broker.call(goal, child_token, UNTRUSTED.identity, {})
+        before = await w.broker.call(goal, lead_token, SEND.identity, _owner_send("before"))
+        assert before.status == "committed"
+        label = await w.broker.read_child_result(goal, lead, child)
+        assert label.exposed
+        assert (await _label(w, lead))["exposure_cause"] == "child"
+        after = await w.broker.call(goal, lead_token, SEND.identity, _owner_send("after"))
+        assert after.status == "parked"
+        # Only the lead's own child can be read into it.
+        sibling, _ = await w.invocation(goal, *grants, depth=1, parent=lead)
+        stranger = await _refused(w.broker.read_child_result(goal, sibling, child))
+        assert stranger.reason is Reason.AUTHENTICATION
+
+
+async def test_a_consumed_reply_carrying_outside_content_exposes_its_reader(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEND))
+        lead, token = await w.invocation(goal, _grant(SEND))
+        prompt = await w.broker.call(goal, token, SEND.identity, _owner_send("question"))
+
+        async def inbox(*label):
+            decision, inbox_id = uuid4(), uuid4()
+            await w.owner.execute(
+                "INSERT INTO switchboard.admission_decisions (id, attempt_id, source_key, "
+                "source_ref, source_kind, goal_id, result, reason, delivery_ref, "
+                "reply_effect_id) VALUES ($1, $2, $3, 'ref', 'message', $4, 'joined', "
+                "'reply_joined', 'delivery', $5)",
+                decision,
+                uuid4(),
+                f"message:{decision}",
+                goal,
+                prompt.effect_id,
+            )
+            columns, values = "", []
+            if label:
+                columns = ", label_version, label_instr, label_data, label_sens"
+                values = [1, *label]
+            await w.owner.execute(
+                "INSERT INTO switchboard.goal_inbox (id, goal_id, decision_id, source_key, "
+                f"source_ref, delivery_ref, reply_effect_id{columns}) VALUES ($1, $2, $3, $4, "
+                f"'ref', 'delivery', $5{''.join(f', ${n}' for n in range(6, 6 + len(values)))})",
+                inbox_id,
+                goal,
+                decision,
+                f"message:{decision}",
+                prompt.effect_id,
+                *values,
+            )
+            return inbox_id
+
+        plain = await inbox()
+        assert await w.broker.consume_inbox(goal, lead, plain) is True
+        assert await w.broker.consume_inbox(goal, lead, plain) is False  # exactly once
+        assert (await _label(w, lead))["exposed"] is False
+        forwarded = await inbox(["owner", "world"], ["owner", "world"], ["health"])
+        assert await w.broker.consume_inbox(goal, lead, forwarded) is True
+        row = await _label(w, lead)
+        assert (row["exposure_cause"], row["label_sens"]) == ("inbox", ["health"])
+        assert (await w.broker.call(goal, token, SEND.identity, _owner_send("ok"))).status == (
+            "parked"
+        )
+
+
+async def test_a_stamped_read_exposes_its_reader_unless_owner_untainted(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(RECALL))
+        clean, token = await w.invocation(goal, _grant(RECALL))
+        w.forwarder.receipt = DomainReceipt("committed", "r", {}, stamped_owner_untainted=True)
+        await w.broker.call(goal, token, RECALL.identity, {})
+        row = await _label(w, clean)
+        assert (row["exposed"], row["label_data"], row["label_sens"]) == (
+            False,
+            ["owner"],
+            ["health"],
+        )
+        tainted, tainted_token = await w.invocation(goal, _grant(RECALL), depth=1, parent=clean)
+        w.forwarder.receipt = DomainReceipt("committed", "r", {})  # no stamp evidence
+        await w.broker.call(goal, tainted_token, RECALL.identity, {})
+        row = await _label(w, tainted)
+        assert (row["exposed"], row["exposure_cause"], row["label_data"]) == (
+            True,
+            "read",
+            ["owner", "world"],
+        )
+        assert (await _label(w, clean))["exposed"] is False
+
+
+async def test_a_replacement_lead_inherits_its_predecessor_and_parks(broker_db_url):
+    async with world(broker_db_url) as w:
+        grants = (_grant(UNTRUSTED), _grant(SEND))
+        goal = await w.goal(*grants)
+        first, token = await w.invocation(goal, *grants)
+        await w.broker.call(goal, token, UNTRUSTED.identity, {})
+        await w.owner.execute(
+            "UPDATE switchboard.invocations SET status = 'failed' WHERE id = $1", first
+        )
+        replacement, replacement_token = await w.invocation(goal, *grants, epoch=1)
+        row = await _label(w, replacement)
+        assert (row["exposed"], row["exposure_cause"]) == (True, "recovery")
+        result = await w.broker.call(goal, replacement_token, SEND.identity, _owner_send("hi"))
+        assert result.status == "parked"
+
+
+async def test_categories_survive_park_approval_and_an_owner_edit(broker_db_url):
+    async with world(broker_db_url) as w:
+        grants = (_grant(RECALL), _grant(NOTIFY))
+        goal = await w.goal(*grants)
+        lead, token = await w.invocation(goal, *grants)
+        w.forwarder.receipt = DomainReceipt("committed", "r", {}, stamped_owner_untainted=True)
+        await w.broker.call(goal, token, RECALL.identity, {})
+        stored = {"entity_id": str(uuid4()), "message": "Draft", "channel": "telegram"}
+        parked = await w.broker.call(goal, token, NOTIFY.identity, stored)
+        assert parked.status == "parked"
+        assert (await w.effect(parked.effect_id))["label_sens"] == ["health"]
+        w.forwarder.receipt = DomainReceipt("committed", "receipt-1", {"ok": True})
+        edited = {**stored, "message": "Owner's edit"}
+        done = await w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, edited)
+        assert done.status == "committed"
+        original, executed = await w.effect(parked.effect_id), await w.effect(done.effect_id)
+        assert original["label_sens"] == ["health"]  # parking never narrows it
+        assert set(executed["label_sens"]) >= {"health"}
+        assert set(executed["label_data"]) >= set(original["label_data"])
+        assert (await _label(w, lead))["label_sens"] == ["health"]

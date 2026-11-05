@@ -14,6 +14,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from butlers.core.goal_admission import decode_grants, digest, encode_grants
+from butlers.core.goal_labels import EXPOSURE_CAUSES, Label
 from butlers.core.goal_ledger import GoalLedger
 
 from .contracts import (
@@ -55,7 +56,7 @@ class BrokerLedger:
         await self.connection.execute("SET LOCAL lock_timeout = '5s'")
         await self.connection.execute("SET LOCAL statement_timeout = '5s'")
         return await self.connection.fetchrow(
-            "SELECT id, status, origin, exposed, catalog_digest, ceiling "
+            "SELECT id, status, origin, catalog_digest, ceiling "
             "FROM switchboard.goals WHERE id = $1 FOR UPDATE",
             goal_id,
         )
@@ -71,22 +72,60 @@ class BrokerLedger:
 
     @staticmethod
     def _principal(goal, invocation) -> Principal:
+        """The authenticated invocation; an unreadable label refuses (S1)."""
         try:
             snapshot = invocation["grant_snapshot"]
             grants = decode_grants(snapshot)
             if encode_grants(grants) != snapshot or digest(snapshot) != invocation["grant_digest"]:
                 raise ValueError("grant_snapshot")
+            label = Label.from_row(
+                invocation["label_version"],
+                invocation["label_instr"],
+                invocation["label_data"],
+                invocation["label_sens"],
+            )
             return Principal(
                 goal["id"],
                 invocation["id"],
                 invocation["depth"],
                 goal["origin"],
-                bool(goal["exposed"] or invocation["exposed"]),
+                # S1 first switch: the invocation's own chain, never the goal
+                # union. sw_057 keeps the Boolean equal to the label, so a
+                # legacy row keeps its old restriction.
+                label.exposed or invocation["exposed"] is not False,
                 goal["catalog_digest"],
                 grants,
+                label,
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             raise BrokerRefused(Reason.AUTHENTICATION) from None
+
+    async def _join(self, goal_id: UUID, invocation_id: UUID, label: Label, cause: str) -> bool:
+        """Join ``label`` into the invocation (S1); the goal must already be locked.
+
+        The union is taken against the row as it is when this statement runs,
+        so concurrent joins never lose a principal or category. ``cause`` is
+        recorded only if this join is the one that first exposes it.
+        """
+        if cause not in EXPOSURE_CAUSES:
+            raise ValueError("exposure_cause")
+        _, instr, data, sens = label.to_row()
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.invocations SET "
+            "label_instr = switchboard.goal_label_union(label_instr, $3::text[]), "
+            "label_data = switchboard.goal_label_union(label_data, $4::text[]), "
+            "label_sens = switchboard.goal_label_union(label_sens, $5::text[]), "
+            "exposure_cause = COALESCE(exposure_cause, CASE WHEN "
+            "switchboard.goal_label_exposed($3::text[], $4::text[]) THEN $6 END), "
+            "updated_at = now() WHERE goal_id = $1 AND id = $2 RETURNING id",
+            goal_id,
+            invocation_id,
+            instr,
+            data,
+            sens,
+            cause,
+        )
+        return row is not None
 
     # -- tokens (runner-private; never an MCP route) ---------------------------
 
@@ -119,6 +158,51 @@ class BrokerLedger:
             invocation_id,
             list(_ENDED_INVOCATION),
         )
+
+    # -- label joins at the runner's reads (runner-private; S1) ------------------
+
+    async def consume_inbox(self, goal_id: UUID, invocation_id: UUID, inbox_id: UUID) -> bool:
+        """Deliver one inbox row to a running invocation and join its label.
+
+        The consumption and the join commit together (cause ``inbox``), so the
+        reader is exposed before the reply can reach its model. False when the
+        row is not this goal's or was already consumed.
+        """
+        goal = await self._lock_goal(goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.goal_inbox SET consumed_at = clock_timestamp() "
+            "WHERE goal_id = $1 AND id = $2 AND consumed_at IS NULL "
+            "RETURNING label_version, label_instr, label_data, label_sens",
+            goal_id,
+            inbox_id,
+        )
+        if row is None:
+            return False
+        label = Label.from_row(*row.values())
+        if not await self._join(goal_id, invocation_id, label, "inbox"):
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        return True
+
+    async def read_child_result(self, goal_id: UUID, lead_id: UUID, child_id: UUID) -> Label:
+        """A lead reading its child's result joins the child's label (cause ``child``)."""
+        if await self._lock_goal(goal_id) is None:
+            raise BrokerRefused(Reason.GOAL)
+        child = await self.connection.fetchrow(
+            "SELECT label_version, label_instr, label_data, label_sens "
+            "FROM switchboard.invocations "
+            "WHERE goal_id = $1 AND id = $2 AND parent_invocation_id = $3",
+            goal_id,
+            child_id,
+            lead_id,
+        )
+        if child is None:
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        label = Label.from_row(*child.values())
+        if not await self._join(goal_id, lead_id, label, "child"):
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        return label
 
     # -- refusal records (sw_056) -------------------------------------------------
 
@@ -234,19 +318,19 @@ class BrokerLedger:
         status: str,
         *,
         receipt_ref: str | None = None,
-        expose: bool = False,
+        output: Label | None = None,
     ) -> None:
-        """Record a domain receipt (D11) and any exposure the output caused (D6)."""
+        """Record a domain receipt (D11) and join the label its output carries (D6, S1).
+
+        The join commits with the receipt, before the result can reach the
+        model; sw_057 raises the goal's reporting union as well.
+        """
         principal = reservation.principal
         await self._lock_goal(principal.goal_id)
-        if expose:
-            # Monotonic; the sw_047 trigger marks the goal exposed too.
-            await self.connection.execute(
-                "UPDATE switchboard.invocations SET exposed = true, updated_at = now() "
-                "WHERE goal_id = $1 AND id = $2 AND NOT exposed",
-                principal.goal_id,
-                principal.invocation_id,
-            )
+        if output is not None and not await self._join(
+            principal.goal_id, principal.invocation_id, output, "read"
+        ):
+            raise BrokerRefused(Reason.UNAVAILABLE)
         if reservation.effect_id is None:
             return
         row = await self.connection.fetchrow(
@@ -305,7 +389,10 @@ class BrokerLedger:
             raise BrokerRefused(Reason.GOAL)
         effect = await self.connection.fetchrow(
             "SELECT e.*, i.depth, i.exposed AS invocation_exposed, i.grant_snapshot, "
-            "i.grant_digest FROM switchboard.effects e JOIN switchboard.invocations i "
+            "i.grant_digest, i.label_version AS invocation_label_version, "
+            "i.label_instr AS invocation_label_instr, i.label_data AS invocation_label_data, "
+            "i.label_sens AS invocation_label_sens "
+            "FROM switchboard.effects e JOIN switchboard.invocations i "
             "ON (i.goal_id, i.id) = (e.goal_id, e.invocation_id) "
             "WHERE e.goal_id = $1 AND e.id = $2 FOR UPDATE OF e",
             goal_id,
@@ -324,14 +411,28 @@ class BrokerLedger:
                 effect_id,
             )
             return BrokerRefused(Reason.GOAL)
+        # The approved call runs under its requesting invocation's current label,
+        # which covers the effect's own snapshot: approval never narrows it.
         invocation = {
             "id": effect["invocation_id"],
             "depth": effect["depth"],
             "exposed": effect["invocation_exposed"],
             "grant_snapshot": effect["grant_snapshot"],
             "grant_digest": effect["grant_digest"],
+            "label_version": effect["invocation_label_version"],
+            "label_instr": effect["invocation_label_instr"],
+            "label_data": effect["invocation_label_data"],
+            "label_sens": effect["invocation_label_sens"],
         }
         principal = self._principal(goal, invocation)
+        effect_label = Label.from_row(
+            effect["label_version"],
+            effect["label_instr"],
+            effect["label_data"],
+            effect["label_sens"],
+        )
+        if not principal.label.covers(effect_label):
+            raise BrokerRefused(Reason.POLICY)
         if (
             catalog_capability is None
             or catalog_capability.identity != effect["capability"]

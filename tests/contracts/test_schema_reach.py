@@ -784,6 +784,14 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "sanctioned:RFC-0038: D7 durable broker refusal records in the Switchboard-owned "
         "ledger (sw_056); qualified SQL allocated to capability_broker/ledger.py (bu-m1u7zy.12)"
     ),
+    **{
+        ("src/butlers/capability_broker/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S1 label joins at the runner's reads over the "
+            "Switchboard-owned goal ledger (sw_057); qualified SQL allocated to "
+            "capability_broker/ledger.py (bu-dhloi1.6)"
+        )
+        for relation in ("goal_inbox", "goal_label_exposed", "goal_label_union")
+    },
     (
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
