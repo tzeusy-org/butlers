@@ -1,6 +1,6 @@
 """Unit tests for the model-benchmark multi-model orchestration loop (bu-mxex1).
 
-These verify the harness *mechanics* with stubs and a fake pool — never a live
+These verify the harness *mechanics* with stubs and recorded pin/unpin — never a live
 ecosystem or real LLM calls:
 
 - ``run_benchmark`` iterates models sequentially (no interleaving), pins before
@@ -24,6 +24,8 @@ from typing import Any
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+from tests.e2e import benchmark
 from tests.e2e.benchmark import (
     E2E_CURRENT_MODEL_ENV,
     BenchmarkResult,
@@ -68,29 +70,27 @@ class _FakeScenarioResult:
     error: str | None = None
 
 
-class _FakePool:
-    """Records pin/unpin events by inspecting the SQL run_benchmark issues.
+@pytest.fixture
+def events(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Shared event log; pin/unpin record into it in place of their catalog SQL.
 
-    ``pin_model`` fetchval's the model_catalog INSERT (model name is the 3rd
-    positional arg); ``unpin_model`` fetchval's the override DELETE count query.
-    Everything else (per-butler override upserts, catalog cleanup) goes through
-    ``execute`` and is a no-op here.
+    The subject is the loop's sequencing, so ``pin_model``/``unpin_model`` are
+    replaced with recorders. The pool handed to the loop is a strict fake with
+    no configured calls: the loop itself must not touch it directly.
     """
+    log: list = []
 
-    def __init__(self, events: list) -> None:
-        self.events = events
+    async def _pin(pool: Any, model_name: str, butler_names: list[str], **kwargs: Any) -> str:
+        log.append(("pin", model_name))
+        return "catalog-id"
 
-    async def fetchval(self, sql: str, *args: Any) -> Any:
-        if "INSERT INTO public.model_catalog" in sql:
-            self.events.append(("pin", args[2]))
-            return 1  # catalog id
-        if "DELETE FROM public.butler_model_overrides" in sql:
-            self.events.append(("unpin",))
-            return 1  # deleted-row count
+    async def _unpin(pool: Any) -> int:
+        log.append(("unpin",))
         return 1
 
-    async def execute(self, sql: str, *args: Any) -> str:
-        return ""
+    monkeypatch.setattr(benchmark, "pin_model", _pin)
+    monkeypatch.setattr(benchmark, "unpin_model", _unpin)
+    return log
 
 
 def _stub_runner(events: list, *, raise_on: set[str] | None = None):
@@ -119,9 +119,10 @@ def _stub_runner(events: list, *, raise_on: set[str] | None = None):
 
 
 @pytest.mark.asyncio
-async def test_run_benchmark_iterates_models_sequentially_without_interleaving() -> None:
-    events: list = []
-    pool = _FakePool(events)
+async def test_run_benchmark_iterates_models_sequentially_without_interleaving(
+    events: list,
+) -> None:
+    pool = fake_pool()
     scenarios = [_FakeScenario("s1"), _FakeScenario("s2")]
 
     await run_benchmark(
@@ -147,11 +148,11 @@ async def test_run_benchmark_iterates_models_sequentially_without_interleaving()
 @pytest.mark.asyncio
 async def test_run_benchmark_sets_and_restores_e2e_current_model(
     monkeypatch: pytest.MonkeyPatch,
+    events: list,
 ) -> None:
     # Pre-existing ambient value must be restored after the run.
     monkeypatch.setenv(E2E_CURRENT_MODEL_ENV, "preexisting")
-    events: list = []
-    pool = _FakePool(events)
+    pool = fake_pool()
 
     await run_benchmark(
         ["A", "B"],
@@ -171,10 +172,10 @@ async def test_run_benchmark_sets_and_restores_e2e_current_model(
 @pytest.mark.asyncio
 async def test_run_benchmark_removes_env_when_unset_before(
     monkeypatch: pytest.MonkeyPatch,
+    events: list,
 ) -> None:
     monkeypatch.delenv(E2E_CURRENT_MODEL_ENV, raising=False)
-    events: list = []
-    pool = _FakePool(events)
+    pool = fake_pool()
 
     await run_benchmark(
         ["only"],
@@ -189,9 +190,8 @@ async def test_run_benchmark_removes_env_when_unset_before(
 
 
 @pytest.mark.asyncio
-async def test_run_benchmark_aggregates_results_per_model_scenario() -> None:
-    events: list = []
-    pool = _FakePool(events)
+async def test_run_benchmark_aggregates_results_per_model_scenario(events: list) -> None:
+    pool = fake_pool()
     scenarios = [
         _FakeScenario("s1", expected_routing="general", expected_tool_calls=["t"]),
         _FakeScenario("s2", expected_routing="health", expected_tool_calls=[]),
@@ -213,9 +213,8 @@ async def test_run_benchmark_aggregates_results_per_model_scenario() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_benchmark_records_error_entry_and_continues() -> None:
-    events: list = []
-    pool = _FakePool(events)
+async def test_run_benchmark_records_error_entry_and_continues(events: list) -> None:
+    pool = fake_pool()
     scenarios = [_FakeScenario("boom"), _FakeScenario("ok")]
 
     result = await run_benchmark(
@@ -238,11 +237,11 @@ async def test_run_benchmark_records_error_entry_and_continues() -> None:
 @pytest.mark.asyncio
 async def test_run_benchmark_unpins_even_when_pin_or_scenario_raises(
     monkeypatch: pytest.MonkeyPatch,
+    events: list,
 ) -> None:
     """A scenario raising must not skip the finally-block unpin."""
     monkeypatch.delenv(E2E_CURRENT_MODEL_ENV, raising=False)
-    events: list = []
-    pool = _FakePool(events)
+    pool = fake_pool()
 
     await run_benchmark(
         ["A"],
@@ -264,9 +263,8 @@ async def test_run_benchmark_unpins_even_when_pin_or_scenario_raises(
 
 
 @pytest.mark.asyncio
-async def test_orchestrate_benchmark_validate_mode_is_noop() -> None:
-    events: list = []
-    pool = _FakePool(events)
+async def test_orchestrate_benchmark_validate_mode_is_noop(events: list) -> None:
+    pool = fake_pool()
 
     async def _should_not_run(_scenario: _FakeScenario) -> _FakeScenarioResult:
         raise AssertionError("run_scenario_fn must not be called in validate mode")
@@ -285,9 +283,8 @@ async def test_orchestrate_benchmark_validate_mode_is_noop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrate_benchmark_merges_into_accumulator() -> None:
-    events: list = []
-    pool = _FakePool(events)
+async def test_orchestrate_benchmark_merges_into_accumulator(events: list) -> None:
+    pool = fake_pool()
     accumulator = BenchmarkResult()
 
     returned = await orchestrate_benchmark(
@@ -307,9 +304,8 @@ async def test_orchestrate_benchmark_merges_into_accumulator() -> None:
 
 
 @pytest.mark.asyncio
-async def test_orchestrate_benchmark_returns_fresh_result_without_accumulator() -> None:
-    events: list = []
-    pool = _FakePool(events)
+async def test_orchestrate_benchmark_returns_fresh_result_without_accumulator(events: list) -> None:
+    pool = fake_pool()
 
     returned = await orchestrate_benchmark(
         benchmark_mode=True,
@@ -326,7 +322,7 @@ async def test_orchestrate_benchmark_returns_fresh_result_without_accumulator() 
 
 @pytest.mark.asyncio
 async def test_orchestrate_benchmark_empty_models_raises() -> None:
-    pool = _FakePool([])
+    pool = fake_pool()
     with pytest.raises(ValueError, match="no models"):
         await orchestrate_benchmark(
             benchmark_mode=True,

@@ -25,6 +25,7 @@ CONNECTOR_FILES = {
     "gmail_policy.py": "H:gmail",
     "google_calendar.py": "E",
     "google_drive.py": "E",
+    "google_fleet.py": "K",
     "google_health.py": "E",
     "google_health_client.py": "H:google_health",
     "health_socket.py": "K",

@@ -21,7 +21,10 @@ import-linter contracts in `pyproject.toml` enforce that direct boundary.
 When adding, moving or removing a connector/helper/kit file, update the exact
 allowlist in the same PR and explain its owner. A concurrently landing kit or
 Google fleet PR must update the allowlist when its file actually joins the
-tracked tree; absent future files must not be pre-allowed. Entry-point deletion
+tracked tree; absent future files must not be pre-allowed. Google account
+supervision, account health models, email redaction and source-error classification
+share the kit owner `google_fleet.py`. Adapters retain their health endpoints,
+aggregation policies and diagnostic formatting variants. Entry-point deletion
 (including Live Listener) and connector runtime/kit redesign remain with their
 owning work. Live Listener's transcription client is shared with Telegram and
 remains kit here. This placement guard grants no new transport or credential

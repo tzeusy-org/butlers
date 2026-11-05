@@ -41,6 +41,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.core.temporal.scheduling import SchedulingPreferences
+from butlers.google_credentials import GoogleOAuthClient
 from butlers.mcp_wrappers import _SpanWrappingMCP
 from butlers.modules.base import Module
 from butlers.modules.calendar import (
@@ -76,7 +77,6 @@ from butlers.modules.calendar import (
     _google_error_code,
     _google_event_to_calendar_event,
     _google_rfc3339,
-    _GoogleOAuthClient,
     _GoogleOAuthCredentials,
     _GoogleProvider,
     _merge_busy_windows,
@@ -88,8 +88,9 @@ from butlers.modules.calendar import (
     _subtract_busy,
     classify_sync_error_kind,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.mcp import registered_tools, tool_fn
-from butlers.testing.records import Record
+from butlers.testing.records import Record, row
 
 # The retained historical permission-test narratives describe the original enforcement.
 # Effects now refuse unavailable state; the real-lookup availability test below covers
@@ -2228,7 +2229,7 @@ class TestGoogleHelpers:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
         on_revoked = AsyncMock()
-        oauth = _GoogleOAuthClient(
+        oauth = GoogleOAuthClient(
             _GoogleOAuthCredentials(
                 client_id="client-id",
                 client_secret="client-secret",
@@ -2236,6 +2237,7 @@ class TestGoogleHelpers:
             ),
             client,
             on_token_revoked=on_revoked,
+            error_type=CalendarTokenRefreshError,
         )
 
         try:
@@ -2287,6 +2289,10 @@ class TestGoogleHelpers:
         assert len(revoked_calls) == 1
         assert "WHERE email = $1" in " ".join(revoked_calls[0].args[0].split())
         assert revoked_calls[0].args[1] == "account@example.test"
+        # Provider evidence remains bound to this grant in the UPDATE itself,
+        # so a reauthorization between the read and write cannot be revoked.
+        assert "ei.value = $2" in revoked_calls[0].args[0]
+        assert revoked_calls[0].args[2] == "refresh-token"
 
     async def test_google_provider_skips_revoked_mark_when_stored_token_differs(self):
         """Regression (live 2026-07-07): a daemon holding a stale cached token
@@ -3745,19 +3751,19 @@ class TestCalendarModuleExtraStatusFields:
 class TestCalendarProposeEvent:
     """Tests for calendar_propose_event / _propose_event."""
 
-    def _make_pool(
+    def _proposal_store(
         self, *, insert_id: uuid.UUID | None = None, existing_id: uuid.UUID | None = None
-    ) -> MagicMock:
-        """Pool stub: fetchrow returns a row with insert_id (or None on conflict), fetchval returns existing_id."""
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"id": insert_id} if insert_id is not None else None)
-        pool.fetchval = AsyncMock(return_value=existing_id)
-        return pool
+    ) -> FakePool:
+        """The INSERT returns insert_id (no row on conflict); the lookup returns existing_id."""
+        return fake_pool(
+            fetchrow=row(id=insert_id) if insert_id is not None else None,
+            fetchval=existing_id,
+        )
 
     async def test_insert_creates_pending_row(self) -> None:
         """_propose_event inserts a row and returns the new proposal id."""
         proposal_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=proposal_id)
+        pool = self._proposal_store(insert_id=proposal_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)
@@ -3780,7 +3786,7 @@ class TestCalendarProposeEvent:
     async def test_duplicate_source_event_id_returns_existing(self) -> None:
         """Duplicate source_event_id is a no-op — returns existing proposal id."""
         existing_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=None, existing_id=existing_id)
+        pool = self._proposal_store(insert_id=None, existing_id=existing_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)
@@ -3801,7 +3807,7 @@ class TestCalendarProposeEvent:
     async def test_no_provider_call_made(self) -> None:
         """_propose_event never touches the provider client."""
         proposal_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=proposal_id)
+        pool = self._proposal_store(insert_id=proposal_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)
@@ -3822,7 +3828,7 @@ class TestCalendarProposeEvent:
     async def test_mcp_tool_registered_and_returns_proposal_id(self) -> None:
         """calendar_propose_event MCP tool is registered and returns proposal_id as string."""
         proposal_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=proposal_id)
+        pool = self._proposal_store(insert_id=proposal_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)

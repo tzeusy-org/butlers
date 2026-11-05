@@ -566,6 +566,24 @@ def test_classify_source_api_error_transient_5xx_is_not_auth_revocation() -> Non
     assert is_auth_revocation is False
     assert "503" in description or "UNAVAILABLE" in description
 
+    nested = _http_error_with_response(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (
+        False,
+        "code=503, reason=syntheticReason, message=Retry",
+    )
+    request = httpx.Request("GET", "https://gmail.googleapis.com/synthetic")
+    for body in (b"", b"synthetic plain body", b"[]", b'{"error": {}}'):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, "http_error: source failure")
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "timeout: synthetic timeout",
+    )
+
 
 def test_classify_source_api_error_falls_back_for_bare_exception() -> None:
     """A network-level exception with no HTTP response still yields a real description."""
@@ -1544,8 +1562,13 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             )
 
     for code in ("invalid_grant", "unauthorized_client"):
-        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
-        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        # Independent failing grants: a successful first case must not seed
+        # this case through the intentionally shared account token cache.
+        case_config = gmail_config.model_copy(
+            update={"gmail_refresh_token": f"synthetic-grant-{code}"}
+        )
+        runtime = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
         runtime._metrics = MagicMock()
         requests = []
 

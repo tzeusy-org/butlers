@@ -54,6 +54,63 @@ def test_a_new_patched_boot_fails(tmp_path: Path, path: str, source: str) -> Non
     assert _run(_repo(tmp_path, {path: source}), {})[0] == 1
 
 
+# Object-form patches on the lifecycle module, bound at module or function scope.
+OBJECT_FORMS = {
+    "import-as": (
+        f"import {LIFECYCLE} as lc\n\n"
+        'def test_x(monkeypatch):\n    monkeypatch.setattr(lc, "run_migrations", 1)\n'
+    ),
+    "from-import": (
+        "from butlers import lifecycle\nfrom unittest.mock import patch\n\n"
+        'P = patch.object(lifecycle, "init_telemetry")\n'
+    ),
+    "from-import-as": (
+        "from unittest import mock\n\n"
+        "def test_x():\n    from butlers import lifecycle as phases\n"
+        '    with mock.patch.object(phases, "sync_schedules"):\n        pass\n'
+    ),
+    "dotted": (
+        f"import {LIFECYCLE}\n\n"
+        f'def test_x(monkeypatch):\n    monkeypatch.setattr({LIFECYCLE}, "Spawner", 1)\n'
+    ),
+    "daemon-setattr": (
+        "from butlers.daemon import ButlerDaemon\n\n"
+        'def test_x(monkeypatch):\n    monkeypatch.setattr(ButlerDaemon, "_connect_switchboard", 1)\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("form", sorted(OBJECT_FORMS))
+def test_an_object_form_lifecycle_patch_counts(form: str) -> None:
+    assert guard.boot_patches(OBJECT_FORMS[form]) == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Another module bound under the same name.
+        "from butlers.jobs import secrets_lifecycle as lifecycle\n\n"
+        'def test_x(monkeypatch):\n    monkeypatch.setattr(lifecycle, "run", 1)\n',
+        # The name is a fixture argument in this scope, not the import.
+        f"import {LIFECYCLE} as lifecycle\n\n"
+        'def test_x(monkeypatch, lifecycle):\n    monkeypatch.setattr(lifecycle, "run", 1)\n',
+        # Bound only inside another function.
+        "def helper():\n    from butlers import lifecycle\n\n"
+        'def test_x(monkeypatch):\n    monkeypatch.setattr(lifecycle, "x", 1)\n',
+        # Unbound name.
+        'def test_x(monkeypatch):\n    monkeypatch.setattr(lifecycle, "x", 1)\n',
+        # Calling a phase is not patching it.
+        f"import {LIFECYCLE} as lifecycle\n\n"
+        "async def test_x(daemon, state):\n    await lifecycle._startup_modules(daemon, state)\n",
+        # A public daemon attribute.
+        "from butlers.daemon import ButlerDaemon\n\n"
+        'def test_x(monkeypatch):\n    monkeypatch.setattr(ButlerDaemon, "start", 1)\n',
+    ],
+)
+def test_unrelated_object_forms_do_not_count(source: str) -> None:
+    assert guard.boot_patches(source) == 0
+
+
 def test_frozen_patches_pass_and_the_baseline_only_shrinks(tmp_path: Path) -> None:
     root = _repo(tmp_path, {"tests/test_a.py": PATCHED_PHASE})
     code, written = _run(root, {"tests/test_a.py": 3, "tests/gone.py": 2}, "--update-baseline")
