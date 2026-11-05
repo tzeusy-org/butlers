@@ -254,7 +254,9 @@ row gains its one result) and guarded against update, delete and truncate.
 `switchboard.owner_policy_{state,terms,receipts,holds}` (the generation
 singleton, the terms, one receipt per owner action, and the content-blind
 holds). Under RLS the runtime may only read terms and the generation and append
-holds. Durability and tighten-only triggers guard every role; see the
+holds. Durability and tighten-only triggers guard every role; `sw_060` admits a
+loosening (receipt action `loosen`) only under a `policy_loosen` dashboard
+step-up consumed in the same transaction; see the
 [capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110). See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.

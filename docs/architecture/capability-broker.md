@@ -300,11 +300,17 @@ session sees only the closed reason.
 
 Changes go through expected-version CAS, with one receipt per owner action id:
 a retry returns that receipt, and a different change under the same id
-conflicts. A change only tightens: `always_ask` to `never`, or a later or no
-expiry. A loosening refuses `dashboard_step_up_required`: the dashboard
-step-up kinds (`scripts/init-db.sql`) have no policy-loosening kind yet, so
-loosening is the one missing mutation path (activation: bu-dhloi1.29). An
-expiry still lapses its term.
+conflicts. `tighten` admits only a tightening: `always_ask` to `never`, or a
+later or no expiry. Anything else is a loosening (including an earlier expiry,
+which can lapse a term now) and goes through `loosen` under the owner's
+`policy_loosen` dashboard step-up (bu-dhloi1.29): `loosen_binding` binds the
+owner action, term, expected version, resulting constraint and expiry, the
+term row and the policy generation, so a confirmation is spent once, on that
+exact change, and a later policy change makes it stale. Without an admitted
+step-up the change refuses `dashboard_step_up_required` and writes nothing; its
+receipt has action `loosen`. sw_060's term trigger refuses any loosening whose
+resulting `id:version:term:expiry` no step-up consumed in the same transaction.
+An expiry still lapses its term.
 
 Mutation paths. This is the whole set, pinned by
 `tests/contracts/test_owner_policy_mutation_paths.py`.
@@ -312,16 +318,17 @@ Mutation paths. This is the whole set, pinned by
 | Path | Writes | Guard |
 | --- | --- | --- |
 | `POST /api/owner-policy/terms`, `POST /api/owner-policy/terms/{id}/tighten` | terms, receipts, generation via `OwnerPolicyWriter` | verified owner dashboard session (`owner_dashboard_session_required`); tighten-only CAS |
+| `POST /api/owner-policy/step-up/options`, `POST /api/owner-policy/terms/{id}/loosen` | the same, via `OwnerPolicyWriter.loosen` | verified owner dashboard session plus a `policy_loosen` step-up (`X-Dashboard-Step-Up`) bound to the exact change; CAS |
 | `Broker` ledger `record_hold` | holds | runtime role, insert-only |
 | Switchboard daemon role (broker, every MCP tool, connector callbacks) | nothing else | sw_059 RLS: terms and generation read-only, receipts invisible |
-| Direct SQL, any role | — | triggers refuse DELETE/TRUNCATE everywhere, UPDATE of receipts/holds, and any term UPDATE that loosens, skips a version, rewrites the selector or reuses the owner action |
+| Direct SQL, any role | — | triggers refuse DELETE/TRUNCATE everywhere, UPDATE of receipts/holds, and any term UPDATE that skips a version, rewrites the selector, reuses the owner action, or loosens without a matching `policy_loosen` step-up consumed in its transaction |
 
 `GET /api/owner-policy` lists every term with its version, expiry and whether it
 is active, plus the generation. `GET /api/owner-policy/holds` takes exactly
 one of `goal_id`, `effect_id` (also the pending action id) or `refusal_id` and
 returns those holds with their typed receipts. Both need the dashboard session.
 Not here: `/status` and owner cards rendering the receipt (bu-dhloi1.13, S6
-surfaces), and the policy-loosening step-up kind (bu-dhloi1.29).
+surfaces), and the dashboard UI for the loosen ceremony.
 
 ## Refusal records and the goal filter (bu-m1u7zy.12)
 
@@ -432,5 +439,5 @@ unchanged.
   switch that constructs the broker and turns domain verification on.
 - The service-plane tool inventory that domain verification exempts.
 - The M7 goal tools on the MCP endpoint (`handle.read`, extract, `goal.return`,
-  `goal.await`), a production `Extractor`, `quarantine_reads`, the step-up
-  installer's `contain` kind (bu-dhloi1.29) and an owner Contain route.
+  `goal.await`), a production `Extractor`, `quarantine_reads` and an owner
+  Contain route (the step-up interface admits `contain` since bu-dhloi1.29).
