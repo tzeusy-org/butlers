@@ -60,6 +60,7 @@ from urllib.parse import quote, urlparse
 import asyncpg
 from sqlalchemy import Connection, create_engine, text
 
+from butlers.testing.storage import database_event as _storage_database
 from butlers.testing.storage import note as _storage_note
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -109,6 +110,7 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
     db_name:
         Name of the database to create.  Must be a valid PostgreSQL identifier.
     """
+    _storage_database("intent", postgres_container, db_name, "F")
     admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
     migration_user = f"migration_{db_name}"
     migration_password = uuid.uuid4().hex
@@ -120,6 +122,7 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
             safe_db_name = db_name.replace('"', '""')
             safe_migration_user = migration_user.replace('"', '""')
             conn.execute(text(f'CREATE DATABASE "{safe_db_name}" OWNER "{safe_migration_user}"'))
+            _storage_database("created", postgres_container, db_name, "F")
     finally:
         engine.dispose()
 
@@ -134,6 +137,7 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
     # Activate required extensions before any migration chain runs.
     bootstrap_extensions(bootstrap_db_url)
     _bootstrap_migration_prerequisites(bootstrap_db_url, migration_user)
+    _storage_database("ready", postgres_container, db_name, "F")
 
     return db_url
 
@@ -436,8 +440,10 @@ def create_migrated_test_db(
     schemas = dict(schemas or {})
     revisions = dict(revisions or {})
     if os.environ.get(_TEMPLATES_ENV, "1") == "0":
+        _storage_database("migration_intent", postgres_container, db_name, "F")
         db_url = create_migration_db(postgres_container, db_name)
         _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+        _storage_database("migrated_ready", postgres_container, db_name, "F")
         return db_url
     template = _migrated_template(
         postgres_container, chains=chains, schemas=schemas, revisions=revisions
@@ -495,6 +501,7 @@ def _migrated_template(
         if template is not None:
             return template
         name = f"tmpl_{key}_{uuid.uuid4().hex[:6]}"
+        _storage_database("intent", postgres_container, name, "T")
         try:
             db_url = create_migration_db(postgres_container, name)
             _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
@@ -525,6 +532,7 @@ def _migrated_template(
             raise
         template = _Template(name=name, db_url=db_url)
         _TEMPLATES[key] = template
+        _storage_database("ready", postgres_container, name, "T")
         _storage_note("template_created", postgres_container)
         return template
 
@@ -581,6 +589,7 @@ def _replay_role_settings(conn: Connection, *, template: str, clone: str) -> Non
 
 def _clone_template(postgres_container: object, template: _Template, db_name: str) -> str:
     """Create *db_name* as a copy of *template* with the same database privileges."""
+    _storage_database("intent", postgres_container, db_name, "C")
     owner = urlparse(template.db_url).username or ""
     safe_db = db_name.replace('"', '""')
     safe_template = template.name.replace('"', '""')
@@ -594,6 +603,7 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
                     f'OWNER "{owner.replace(chr(34), chr(34) * 2)}"'
                 )
             )
+            _storage_database("created", postgres_container, db_name, "C")
             expected = _database_acl(conn, template.name)
             if expected:
                 conn.execute(text(f'REVOKE ALL ON DATABASE "{safe_db}" FROM PUBLIC'))
@@ -617,6 +627,7 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
         raise
     finally:
         engine.dispose()
+    _storage_database("ready", postgres_container, db_name, "C")
     _storage_note("clone_created", postgres_container)
     parsed = urlparse(template.db_url)
     return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()

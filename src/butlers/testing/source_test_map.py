@@ -83,6 +83,25 @@ FULL_SUITE: list[str] = configured_testpaths()
 # ---------------------------------------------------------------------------
 
 _PREFIX_MAP: list[tuple[str, list[str]]] = [
+    (
+        "src/butlers/home_assistant_client.py",
+        [
+            "tests/connectors/test_home_assistant_client.py",
+            "tests/connectors/test_home_assistant_statistics.py",
+            "tests/connectors/test_home_assistant_transport_contract.py",
+            "tests/connectors/test_home_assistant_rest_fallback.py",
+            "tests/connectors/test_home_assistant_measurement_history.py",
+            "tests/modules/test_module_home_assistant.py",
+            "tests/modules/test_home_maintenance_tools.py",
+            "tests/jobs/test_home_shared_helpers.py",
+            "tests/jobs/test_home_energy_digest.py",
+            "tests/jobs/test_health_ha_reader.py",
+            "tests/api/test_home_dashboard.py",
+            "tests/api/test_home_assistant_settings.py",
+            "tests/integration/test_home_assistant_bearer_custody.py",
+            "tests/integration/test_home_assistant_sensor_activity_integration.py",
+        ],
+    ),
     # --- Core: runtimes map to adapter tests ---
     ("src/butlers/core/runtimes/", ["tests/adapters/"]),
     # --- Core: telemetry & metrics ---
