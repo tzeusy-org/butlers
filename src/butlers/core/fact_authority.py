@@ -726,10 +726,23 @@ def accepted_source_scope(operation: Any) -> Any:
 
 
 def current_fact_write_context() -> FactWriteContext:
-    """No HTTP/MCP admission means internal SYSTEM, never inferred owner."""
+    """No HTTP/MCP admission means internal SYSTEM, never inferred owner.
+
+    A broker-forwarded call reads authority from its verified goal lineage
+    only, and an owner-class report under an exposed lineage is refused.
+    """
+    from butlers.core.goal_lineage import current_lineage, refuse_owner_authority_under_exposure
+
     context = _current_report.get()
     if context is not None:
+        refuse_owner_authority_under_exposure(context.authority)
         return context
+    lineage = current_lineage()
+    if lineage is not None:
+        if lineage.exposed or lineage.origin == "third_party":
+            return FactWriteContext("third_party")
+        # Owner origin carries no sender entity, like the owner surface.
+        return FactWriteContext("owner_device" if lineage.origin == "owner" else "system")
     from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
     if in_http_request.get():

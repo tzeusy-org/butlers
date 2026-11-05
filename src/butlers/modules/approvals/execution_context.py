@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from butlers.core.goal_lineage import approving_lineage
+
 
 @dataclass(frozen=True, slots=True)
 class ApprovalExecutionContext:
@@ -45,7 +47,29 @@ def get_approval_execution_context(
     tool_name: str | None = None,
     tool_args: dict[str, Any] | None = None,
 ) -> ApprovalExecutionContext | None:
-    """Return authority only for the exact task, tool, and arguments approved."""
+    """Return authority only for the exact task, tool, and arguments approved.
+
+    A broker-forwarded call (RFC 0038 D7) carries its approval in the verified
+    goal lineage: an ``approval_ref`` whose assertion covers this exact tool
+    and argument digest, in the task it was verified in, is the approval. It
+    has no spawner session; ``session_id`` is ``None``.
+    """
+    lineage = approving_lineage(tool_name, tool_args)
+    if lineage is not None and tool_name is not None and tool_args is not None:
+        try:
+            action_id = uuid.UUID(str(lineage.approval_ref))
+        except ValueError:
+            action_id = None
+        task = asyncio.current_task()
+        if action_id is not None and task is not None:
+            return ApprovalExecutionContext(
+                action_id=action_id,
+                session_id=None,
+                actor=f"goal:{lineage.goal_id}",
+                tool_name=tool_name,
+                tool_args_digest=approval_tool_args_digest(tool_args),
+                authorized_task=task,
+            )
     context = _current_execution.get()
     if context is None or tool_name is None or tool_args is None:
         return None

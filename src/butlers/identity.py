@@ -248,6 +248,15 @@ _IDENTITY_CHANNEL_ALIASES: dict[str, str] = {
 }
 
 
+# Notify's delivery channel -> the identity channel its recipient names. The
+# core-notify owner rule and the capability broker's recipient check share it.
+ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
+    "email": "email",
+    "telegram": "telegram",
+    "whatsapp": "whatsapp_jid",
+}
+
+
 def canonical_identity_channel_type(channel_type: str) -> str:
     """Return the shared identity channel type for a transport channel."""
     return _IDENTITY_CHANNEL_ALIASES.get(channel_type, channel_type)
@@ -318,6 +327,18 @@ def _owner_channel_authorization_candidates(
         return tuple(dict.fromkeys(values))
 
     return ()
+
+
+def owner_channel_authorization_candidates(
+    channel_type: str,
+    channel_value: str,
+) -> tuple[str, ...]:
+    """The typed candidates :func:`resolve_owner_channel_via_definer` sends.
+
+    ``phone-digits:`` entries are matched by the definer's custody suffix rule;
+    every other entry is an exact (case-normalized) fact match.
+    """
+    return _owner_channel_authorization_candidates(channel_type, channel_value)
 
 
 def _extract_whatsapp_jid_phone(jid: str) -> str | None:
