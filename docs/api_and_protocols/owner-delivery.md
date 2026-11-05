@@ -81,10 +81,12 @@ result settles it (`confirmed → sent` with the provider message id, `safe_retr
 ambiguous stays `unknown` and never marks the subject delivered). A presentation that already
 left `pending` mints nothing, so a retry renders Open only rather than a second live card.
 
-The dashboard dossier is a presentation too (`present_on_dashboard`); every render is a
-delivery into the owner's authenticated response and carries its own tokens. Wiring the
-dashboard UI to `POST /actions` is follow-up work; until then the dashboard keeps its
-displayed-call path, whose decision still closes the subject.
+The dashboard dossier is a presentation too: for a pending action, `GET /api/approvals/{id}`
+from the owner's session returns `owner_delivery: {subject_id, generation, approve_token,
+reject_token}` (null while off, for connector reads and review sources, or on any failure).
+Every render is a delivery into the owner's authenticated response and carries its own
+tokens. Wiring the dashboard UI buttons to `POST /actions` is follow-up work; until then the
+dashboard keeps its displayed-call path, whose decision still closes the subject.
 
 The Telegram connector handles `od1:` taps before `apr1:` (primary owner channel only),
 posts the token to `/actions`, edits the tapped card, then drains `/retractions`.

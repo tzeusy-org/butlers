@@ -592,3 +592,30 @@ async def test_route_decides_once_and_lists_the_stale_card_for_the_connector(poo
         str(action_id),
     )
     assert audit == 1
+
+
+async def test_dashboard_dossier_is_a_presentation_with_its_own_tokens(pool) -> None:
+    action_id = await _park(pool)
+    assert await approvals_router._dashboard_owner_delivery_card(pool, action_id) is None
+    assert await pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
+
+    await _enable(pool)
+    _, cards = await _present(pool, action_id, "telegram")
+    card = await approvals_router._dashboard_owner_delivery_card(pool, action_id)
+
+    assert card is not None and card.generation == 1
+    assert card.approve_token.startswith("od1:") and card.reject_token.startswith("od1:")
+    # Telegram (sent) and the dashboard are presentations of the same subject.
+    surfaces = await pool.fetch(
+        "SELECT surface, state FROM public.owner_delivery_presentations ORDER BY surface"
+    )
+    assert [(r["surface"], r["state"]) for r in surfaces] == [
+        ("dashboard", "sent"),
+        ("telegram", "sent"),
+    ]
+    won = await _redeem(pool, action_id, card.reject_token, surface="dashboard")
+    assert won.outcome == "won"
+    stale = await _redeem(pool, action_id, cards["telegram"].tokens["approve"], surface="telegram")
+    assert (stale.outcome, stale.reason) == ("refused", "subject_resolved")
+    assert [t.provider_ref for t in won.retract] == ["55"]
+    assert await approvals_router._dashboard_owner_delivery_card(pool, action_id) is None

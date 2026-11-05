@@ -67,6 +67,7 @@ from butlers.api.models.approval import (
     DisplayedApprovalCall,
     EntityRef,
     ExpireStaleActionsResponse,
+    OwnerDeliveryCard,
     RuleConstraintSuggestion,
     StandingReplyTemplateDraft,
     StandingReplyTemplateDraftCreateRequest,
@@ -3445,9 +3446,41 @@ async def dismiss_suggestion(
 # ---------------------------------------------------------------------------
 
 
+async def _dashboard_owner_delivery_card(pool: Any, action_id: UUID) -> OwnerDeliveryCard | None:
+    """Present a pending action on the dashboard with fresh single-use tokens.
+
+    Dark until ``public.owner_delivery_rollout`` is on. Fails closed to ``None``: the
+    dossier then keeps its displayed-call decision path, which still closes the subject.
+    """
+    from butlers.modules.approvals.owner_delivery_bridge import present_on_dashboard
+
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            if not await owner_delivery.rollout_enabled(conn):
+                return None
+            locked = await conn.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
+            )
+            if locked is None:
+                return None
+            presentation = await present_on_dashboard(conn, locked)
+    except Exception as exc:  # token material never reaches logs
+        logger.warning("owner-delivery dashboard presentation unavailable (%s)", type(exc).__name__)
+        return None
+    if presentation is None or not {"approve", "reject"} <= presentation.tokens.keys():
+        return None
+    return OwnerDeliveryCard(
+        subject_id=str(presentation.subject_id),
+        generation=presentation.generation,
+        approve_token=presentation.tokens["approve"],
+        reject_token=presentation.tokens["reject"],
+    )
+
+
 @router.get("/{action_id}")
 async def get_approval_detail(
     action_id: str,
+    http_request: Request,
     review_source: str | None = None,
     *,
     db_mgr: Db,
@@ -3510,16 +3543,23 @@ async def get_approval_detail(
             if row is not None:
                 target_contact = await _resolve_target_contact(db_mgr, pa)
                 referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
-                return ApiResponse(
-                    data=_pending_action_to_detail(
-                        pa,
-                        butler_name,
-                        target_contact,
-                        referenced_entities,
-                        denial_reason=denial_reason,
-                        delivery=_delivery_truth(row, pa),
-                    )
+                detail = _pending_action_to_detail(
+                    pa,
+                    butler_name,
+                    target_contact,
+                    referenced_entities,
+                    denial_reason=denial_reason,
+                    delivery=_delivery_truth(row, pa),
                 )
+                # Only the owner's own dashboard session is a dashboard presentation;
+                # a connector read (apr1 verification) or a review source never is.
+                if (
+                    review_source is None
+                    and pa.status.value == "pending"
+                    and not getattr(http_request.state, "approval_callback_authenticated", False)
+                ):
+                    detail.owner_delivery = await _dashboard_owner_delivery_card(pool, pa.id)
+                return ApiResponse(data=detail)
         except Exception as exc:
             if calendar_expected_args is not None:
                 if isinstance(exc, HTTPException):
