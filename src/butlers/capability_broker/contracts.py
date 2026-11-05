@@ -97,13 +97,21 @@ class Principal:
 
 
 def declared_categories(descriptor: Any) -> frozenset[str]:
-    """The S1 categories a descriptor's output may carry.
+    """The S1 categories a descriptor's output may carry, exactly as declared.
 
-    D4 declares sensitivity, not categories, so this is conservative: only
-    ``ordinary`` output reads as none; ``sensitive`` or anything else is all six.
+    Missing metadata is ungrantable (S1): an undeclared, unknown, duplicated or
+    non-tuple declaration raises rather than defaulting, so a descriptor never
+    reaches the broker on an inferred category set. D4 ``output_sensitivity``
+    is not consulted.
     """
-    ordinary = getattr(descriptor, "output_sensitivity", None) == "ordinary"
-    return frozenset() if ordinary else CATEGORIES
+    declared = getattr(descriptor, "categories", None)
+    if (
+        not isinstance(declared, tuple)
+        or any(not isinstance(item, str) or item not in CATEGORIES for item in declared)
+        or len(declared) != len(set(declared))
+    ):
+        raise ValueError("descriptor categories are missing or unknown")
+    return frozenset(declared)
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +136,8 @@ class Capability:
     # ...and has an approvals gate configured for this tool (approval policy).
     approval_gate: bool = False
     idempotency: Literal["none", "key_required"] = "none"
-    # S1 sensitivity categories its output may carry; unknown is all six.
+    # S1 sensitivity categories its output may carry; a test double that
+    # omits them is all six. Real descriptors must declare them.
     categories: frozenset[str] = CATEGORIES
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"}, repr=False)

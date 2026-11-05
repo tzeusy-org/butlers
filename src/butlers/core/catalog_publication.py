@@ -124,6 +124,7 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
                 "read_stores",
                 "write_stores",
                 "alias_free_params",
+                "categories",
             ):
                 if kwargs[key] is not None:
                     if type(kwargs[key]) is not list:

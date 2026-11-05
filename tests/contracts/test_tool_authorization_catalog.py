@@ -16,6 +16,7 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.config import load_config
+from butlers.core.goal_labels import CATEGORIES
 from butlers.core.tool_catalog import (
     ToolCatalogError,
     build_tool_catalog,
@@ -338,7 +339,11 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         assert response.approval_policy["enabled"] is True
         assert response.approval_policy["configured_gate"] is True
         assert response.approval_policy["mode"] == "always_per_event"
+        # A module-channel declaration carries categories like the inventory.
+        assert set(response.categories) == CATEGORIES
     union = {d.canonical_name: d for c in catalogs.values() for d in c.descriptors}
+    for descriptor in union.values():
+        assert descriptor.categories is not None, descriptor.canonical_name
     assert "drive_share_file" not in union
     assert "drive_write_file" in union
     assert union["drive_write_file"].effect_class == "communicate"
@@ -430,6 +435,10 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
         ("recipient_params", RecipientParameters(default_owner_condition=True)),
         ("recipient_params", RecipientParameters(undeterminable_condition=" ")),
         ("recipient_params", RecipientParameters(argument_names=("key", "key"))),
+        ("categories", ("horoscope",)),
+        ("categories", ("health", "health")),
+        ("categories", ("routine", "health")),
+        ("categories", ["health"]),
     ):
         invalid = replace(reader, **{field_name: malformed})
         assert not invalid.grantable
@@ -522,6 +531,7 @@ async def test_authorization_policy_freezes_and_changes_generation_only() -> Non
         idempotency="none",
         owner_authority=False,
         recipient_params=RecipientParameters(argument_names=parties),
+        categories=tuple(sorted(CATEGORIES)),
     )
 
     async def build():
