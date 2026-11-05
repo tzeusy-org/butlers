@@ -20,7 +20,10 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from butlers.chronicler.balance import LaneBalance
+from butlers.chronicler.history_repair import RepairAdmissionError
 from butlers.chronicler.writeback import (
     INSIGHT_CONFIDENCE_CEILING,
     INSIGHT_CONFIDENCE_FLOOR,
@@ -38,6 +41,18 @@ from butlers.chronicler.writeback import (
 )
 
 _DAY = date(2026, 7, 9)
+
+
+@pytest.fixture(autouse=True)
+def _allow_unit_writeback_repair_token(monkeypatch):
+    async def capture(_pool, **_kwargs):
+        return object()
+
+    async def guard(_conn):
+        return None
+
+    monkeypatch.setattr("butlers.chronicler.writeback.capture_fact_write_token", capture)
+    monkeypatch.setattr("butlers.chronicler.writeback.make_fact_write_guard", lambda _token: guard)
 
 
 # ── recording collaborators ────────────────────────────────────────────────
@@ -224,7 +239,8 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
 
     monkeypatch.setattr("butlers.modules.memory.storage.store_fact", _fake_store_fact)
     sentinel_pool = object()
-    writer = build_chronicler_fact_writer(sentinel_pool, object())
+    guard = AsyncMock()
+    writer = build_chronicler_fact_writer(sentinel_pool, object(), memory_schema="chronicler_mem")
     await writer(
         subject="sleep",
         predicate=PREDICATE_SLEEP_DEBT,
@@ -234,11 +250,43 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
         confidence=0.65,
         tags=["chronicler-insight"],
         metadata={"confidence": 0.65},
+        transaction_guard=guard,
     )
     assert captured["pool"] is sentinel_pool
     assert captured["confidence"] == 0.65
     assert captured["source_butler"] == SOURCE_BUTLER
-    assert captured["source_schema"] == SOURCE_BUTLER
+    assert captured["source_schema"] == "chronicler_mem"
+    assert captured["enable_shared_catalog"] is False
+    assert captured["transaction_guard"] is guard
+
+
+def test_fact_writer_rejects_schema_that_disagrees_with_chronicler_030():
+    with pytest.raises(ValueError, match="must use chronicler_mem"):
+        build_chronicler_fact_writer(object(), object(), memory_schema="chronicler")
+
+
+async def test_writeback_stops_after_generation_guard_rejects(monkeypatch):
+    facts = [
+        InsightFact("sleep", PREDICATE_SLEEP_DEBT, "first", "volatile", 6, 0.7),
+        InsightFact("work", PREDICATE_LANE_SKEW, "second", "volatile", 5, 0.7),
+    ]
+    attempts: list[dict] = []
+
+    async def store_fact(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RepairAdmissionError("daily repair state changed")
+
+    result = await execute_writeback(
+        insights=facts,
+        self_reminders=[],
+        store_fact_fn=store_fact,
+    )
+
+    assert len(attempts) == 1, "a stale generation must stop the remaining fact writes"
+    assert result.errors == 1
+    assert result.status == "waiting_repair"
+    assert result.failure_reason == "daily repair state changed"
 
 
 async def test_actual_writeback_does_not_turn_absent_or_unavailable_lanes_into_debt(monkeypatch):

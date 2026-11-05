@@ -41,8 +41,10 @@ pytestmark = [
 
 
 @pytest.fixture
-async def chronicler_pool(db) -> asyncpg.Pool:
-    return await db("chronicler", max_size=5)
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
 
 
 # ---------------------------------------------------------------------------
@@ -392,15 +394,20 @@ async def test_compose_today_bypasses_coverage_gate_even_when_uncovered(chronicl
     assert payload.covered_and_available is True
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def continuation_migrated_url(postgres_container):
     """Synchronous full production bootstrap and chains before any async pool."""
-    return create_migrated_test_db(
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         chains=["core", "chronicler"],
         schemas={"core": "chronicler", "chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 @pytest.fixture
@@ -584,6 +591,13 @@ async def test_continuation_full_migrated_runtime_writeback_preserves_unknown_vs
 
     runtime, observer = continuation_pools
     target = date(2026, 4, 20)
+    # This scenario requests UTC and a specific closed day. Align the real
+    # migration control instead of silently exercising the repair refusal.
+    await runtime.execute(
+        "UPDATE daily_repair_control SET timezone='UTC', closed_through=$1, "
+        "replay_ack=replay_epoch WHERE singleton",
+        target,
+    )
     for offset in range(1, 9):
         await upsert_daily_rollup(
             runtime,

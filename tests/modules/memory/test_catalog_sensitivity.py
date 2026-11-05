@@ -15,7 +15,7 @@ higher-sensitivity rows, while an authorized caller does.
 from __future__ import annotations
 
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -62,6 +62,34 @@ class TestServerDerivedCatalogReadPolicy:
 
         assert policy.authority == "normal"
         assert policy.allowed_sensitivities == ("normal",)
+
+
+class TestSearchCatalogEmbeddingHandoff:
+    async def test_default_semantic_search_computes_one_embedding(self) -> None:
+        pool = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+        engine = MagicMock()
+        vector = [0.125, -0.25]
+        engine.embed.return_value = vector
+
+        results = await catalog_search.search_catalog(
+            pool,
+            "prompt",
+            engine,
+            mode="semantic",
+            read_policy=catalog_search.resolve_catalog_read_policy("normal"),
+        )
+
+        assert results == []
+        engine.embed.assert_called_once_with("prompt")
+        pool.fetch.assert_awaited_once()
+        sql, embedding, tenant_id, sensitivities, limit = pool.fetch.await_args.args
+        assert "embedding <=> $1" in sql
+        assert "chronicler_catalog_row_visible(memory_catalog.id)" in sql
+        assert embedding == str(vector)
+        assert tenant_id == "shared"
+        assert sensitivities == ["normal"]
+        assert limit == 10
 
 
 # ---------------------------------------------------------------------------

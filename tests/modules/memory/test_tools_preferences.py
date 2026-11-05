@@ -205,3 +205,21 @@ class TestGetPreferences:
         mock_pool.fetch = AsyncMock(return_value=[self._row(confidence=0.9, decay_rate=0.0)])
         results = await get_preferences(mock_pool)
         assert results[0]["effective_confidence"] == 0.9
+
+    @pytest.mark.parametrize("view_exists", [True, False])
+    async def test_chronicler_preferences_use_configured_fact_visibility(
+        self, mock_pool: AsyncMock, view_exists: bool
+    ) -> None:
+        mock_pool.fetchrow = AsyncMock(
+            return_value={"id": OWNER_UUID, "canonical_name": OWNER_NAME}
+        )
+        mock_pool.fetchval = AsyncMock(return_value=view_exists)
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        assert await get_preferences(mock_pool, memory_schema="chronicler_mem") == []
+
+        query = mock_pool.fetch.await_args.args[0]
+        if view_exists:
+            assert "chronicler_mem.facts_readable" in query
+        else:
+            assert "f.predicate NOT IN" in query

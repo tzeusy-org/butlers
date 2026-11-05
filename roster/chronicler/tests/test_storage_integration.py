@@ -72,8 +72,10 @@ pytestmark = [
 
 
 @pytest.fixture
-async def chronicler_pool(db):
-    pool = await db("core", "chronicler")
+async def chronicler_pool(db, fresh_db):
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "core", "chronicler")
     await seed_source_registry(pool, sources=INITIAL_SOURCES)
     return pool
 

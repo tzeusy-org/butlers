@@ -48,14 +48,22 @@ _HOME_LON = 103.80000
 @pytest.fixture
 def places_url(fresh_db) -> str:
     """Provision both the ``connectors`` (core chain) and ``chronicler``
-    schemas real migrations create, since this adapter reads the former and
-    writes the latter."""
-    return fresh_db("core", "chronicler")
+    schemas real migrations create, plus Chronicler's explicitly prepared private memory."""
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db(
+        "core",
+        "chronicler",
+        schemas={"chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
+    )
+    prepare_chronicler_current_head_sync(url)
+    return url
 
 
 @pytest.fixture
 async def places_pool(db, places_url: str):
-    p = await db.open(places_url, max_size=5)
+    p = await db.open(places_url, schema="chronicler", max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await seed_source_registry(p, sources=INITIAL_SOURCES)
@@ -260,7 +268,11 @@ async def test_bootstrap_consensus_is_durable_atomic_and_serialized(
     # The regular fixture seeds the migrated database; use a fresh one-slot
     # pool outside the explicit parallel-writer check to expose nested acquires.
     async with asyncpg.create_pool(
-        places_url, min_size=1, max_size=1, init=register_jsonb_codec
+        places_url,
+        min_size=1,
+        max_size=1,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "chronicler, public"},
     ) as places_pool:
         point_adapter = OwnTracksPointAdapter()
         place_adapter = OwnTracksPlaceClusterAdapter()

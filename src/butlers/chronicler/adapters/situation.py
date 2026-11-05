@@ -67,6 +67,7 @@ _TITLES = {
     "outing_block": "Out",
     "airport_block": "At the airport",
     "home_block": "At home",
+    "play_block": "Playing",
 }
 
 
@@ -135,6 +136,16 @@ class SituationInferredAdapter(ProjectionAdapter):
         self.lookback_days = lookback_days
         self.timezone = timezone
         self.references = references
+        self._repair_epoch: int | None = None
+
+    async def save_checkpoint(self, pool: asyncpg.Pool, result: AdapterResult) -> None:
+        if self._repair_epoch is not None and result.success and not result.skipped:
+            from butlers.chronicler.history_repair import acknowledge_replay
+
+            async with pool.acquire() as conn:
+                await acknowledge_replay(conn, epoch=self._repair_epoch, result=result)
+        else:
+            await super().save_checkpoint(pool, result)
 
     async def project(
         self,
@@ -144,18 +155,69 @@ class SituationInferredAdapter(ProjectionAdapter):
         since: datetime | None,
         since_id: int | None = None,
     ) -> AdapterResult:
-        del since, since_id
-        from butlers.core.general_settings import resolve_general_timezone
+        del since_id
+        from butlers.chronicler.history_repair import replay_epoch
+        from butlers.core.general_settings import load_configured_general_timezone
 
+        self._repair_epoch = await replay_epoch(chronicler_pool)
+        if self._repair_epoch is not None:
+            since = None
         result = AdapterResult(source_name=self.source_name)
         now = _now()
-        tz = ZoneInfo(self.timezone or await resolve_general_timezone(chronicler_pool))
+        repair_state = await chronicler_pool.fetchrow(
+            "SELECT timezone, blocked_reason FROM chronicler.daily_repair_control WHERE singleton"
+        )
+        if repair_state is None or repair_state["blocked_reason"]:
+            raise RuntimeError("daily repair timezone state missing or blocked")
+        configured_zone = self.timezone or await load_configured_general_timezone(chronicler_pool)
+        zone = configured_zone or repair_state["timezone"]
+        if zone != repair_state["timezone"]:
+            raise RuntimeError("situation/rollup timezone mismatch")
+        tz = ZoneInfo(zone)
         references = self.references if self.references is not None else env_place_references()
         anchors = await load_anchors(chronicler_pool, tz=tz, now=now, references=references)
         entity_id = await resolve_owner_entity_id(pool)
 
         today = now.astimezone(tz).date()
         first_day = today - timedelta(days=self.lookback_days - 1)
+        if self._repair_epoch is not None:
+            pending_start = await chronicler_pool.fetchval(
+                "SELECT min(local_date) FROM chronicler.daily_repair_days WHERE totals_pending"
+            )
+            if pending_start is not None:
+                first_day = min(first_day, pending_start)
+        # Re-derive changed Steam dates as well as the usual trailing window.
+        # chronicler_030 resets this checkpoint once so historical daily totals
+        # keep counted fallback Play after their source rows become evidence.
+        # Tombstones and owner corrections invalidate the old day too. Provenance
+        # recovers intermediate dates after repeated moves of the same evidence.
+        changed_start = await chronicler_pool.fetchval(
+            """
+            WITH changed AS (
+                SELECT id, start_at, canonical_start_at
+                FROM v_episodes_corrected
+                WHERE source_name IN ('steam.status_history', 'steam.play_history')
+                  AND ($1::timestamptz IS NULL
+                       OR greatest(updated_at, corrected_at, tombstone_at) > $1)
+            ), affected AS (
+                SELECT start_at FROM changed
+                UNION ALL
+                SELECT canonical_start_at FROM changed
+                UNION ALL
+                SELECT derived.start_at FROM episodes AS derived
+                WHERE derived.source_name = 'chronicler.situation_inferred'
+                  AND derived.episode_type = 'play_block'
+                  AND EXISTS (
+                      SELECT 1 FROM changed
+                      WHERE derived.evidence_refs ? changed.id::text
+                  )
+            )
+            SELECT min(start_at) FROM affected
+            """,
+            since,
+        )
+        if changed_start is not None:
+            first_day = min(first_day, changed_start.astimezone(tz).date())
         window_start = datetime.combine(first_day, datetime.min.time(), tz).astimezone(UTC)
         hold = await self._tail_hold(chronicler_pool, since=window_start, now=now, tz=tz)
 
@@ -195,25 +257,29 @@ class SituationInferredAdapter(ProjectionAdapter):
     ) -> int:
         local_date = day.isoformat()
         async with pool.acquire() as conn:
-            segments = await self._place_segments(conn, day_start, day_end)
-            if hold is not None:
-                segments.append(hold)
-            activities = await self._activities(conn, day_start, day_end)
-            corrected = await self._corrected_own(conn, local_date)
-            corrected_refs = {ref for ref, _s, _e in corrected}
-            blocks = [
-                block
-                for block in derive_blocks(
-                    day_start=day_start,
-                    day_end=day_end,
-                    segments=segments,
-                    anchors=anchors,
-                    activities=activities,
-                    corrected=[(s, e) for _ref, s, e in corrected],
-                )
-                if block.source_ref(local_date) not in corrected_refs
-            ]
             async with owner_episode_transaction(conn):
+                from butlers.chronicler.history_repair import try_lock
+
+                if not await try_lock(conn):
+                    raise RuntimeError("daily repair busy; retry situation day")
+                segments = await self._place_segments(conn, day_start, day_end)
+                if hold is not None:
+                    segments.append(hold)
+                activities = await self._activities(conn, day_start, day_end)
+                corrected = await self._corrected_own(conn, local_date)
+                corrected_refs = {ref for ref, _s, _e in corrected}
+                blocks = [
+                    block
+                    for block in derive_blocks(
+                        day_start=day_start,
+                        day_end=day_end,
+                        segments=segments,
+                        anchors=anchors,
+                        activities=activities,
+                        corrected=[(s, e) for _ref, s, e in corrected],
+                    )
+                    if block.source_ref(local_date) not in corrected_refs
+                ]
                 refs = []
                 for block in blocks:
                     episode = await upsert_episode(conn, self._episode(block, local_date))
@@ -247,7 +313,7 @@ class SituationInferredAdapter(ProjectionAdapter):
             privacy=Privacy.NORMAL,
             layer=Layer.ACTIVITY,
             confidence=block.confidence,
-            evidence_refs=list(block.place_episode_ids),
+            evidence_refs=[*block.place_episode_ids, *block.evidence_refs],
         )
 
     @staticmethod
@@ -290,10 +356,11 @@ class SituationInferredAdapter(ProjectionAdapter):
     ) -> list[ActivitySpan]:
         rows = await conn.fetch(
             """
-            SELECT source_name, episode_type, start_at, end_at, layer, payload
+            SELECT id, source_name, episode_type, start_at, end_at, layer, payload
             FROM v_episodes_corrected
             WHERE tombstone_at IS NULL
-              AND layer = 'activity'
+              AND (layer = 'activity'
+                   OR source_name IN ('steam.status_history', 'steam.play_history'))
               AND source_name <> $3
               AND end_at IS NOT NULL
               AND start_at < $2 AND end_at > $1
@@ -302,9 +369,26 @@ class SituationInferredAdapter(ProjectionAdapter):
             day_end,
             self.source_name,
         )
+        # Status sessions suppress the daily-total guess for the local date.
+        has_sessions = any(r["source_name"] == "steam.status_history" for r in rows)
         spans = []
         for row in rows:
+            if has_sessions and row["source_name"] == "steam.play_history":
+                continue
             payload = _payload_dict(row["payload"])
+            if row["source_name"] in {"steam.status_history", "steam.play_history"}:
+                spans.append(
+                    ActivitySpan(
+                        row["start_at"],
+                        row["end_at"],
+                        row["source_name"],
+                        row["episode_type"],
+                        "play",
+                        provisional=payload.get("provisional") is True,
+                        evidence_refs=(str(row["id"]),) if row.get("id") else (),
+                    )
+                )
+                continue
             span = activity_span(
                 layer=row["layer"],
                 source_name=row["source_name"],

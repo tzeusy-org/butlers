@@ -29,6 +29,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core.metrics import record_knowledge_gap_closure_failure
 from butlers.modules.memory.content_authority import OWNER_CLASS, SYSTEM, ContentAuthority
 
@@ -231,14 +232,17 @@ async def _existing_answer(
     conn: Any, schema: str, entity_id: uuid.UUID, predicate: str
 ) -> dict[str, Any] | None:
     """The active fact that already answers ``(entity_id, predicate)``, if any."""
+    visibility = await local_fact_visibility_condition(conn, memory_schema=schema, alias="facts")
+    visibility_filter = f" AND {visibility}" if visibility is not None else ""
     row = await conn.fetchrow(
         """
-        SELECT id, content, content_authority, authority_entity_id
-        FROM facts
-        WHERE entity_id = $1 AND predicate = $2 AND validity = 'active'
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
+        SELECT facts.id, facts.content, facts.content_authority, facts.authority_entity_id
+        FROM facts AS facts
+        WHERE facts.entity_id = $1 AND facts.predicate = $2 AND facts.validity = 'active'
+        """
+        f"{visibility_filter} "
+        "ORDER BY facts.created_at DESC\n"
+        "LIMIT 1",
         entity_id,
         predicate,
     )

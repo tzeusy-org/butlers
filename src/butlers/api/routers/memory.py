@@ -68,6 +68,7 @@ from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as _audit
 from butlers.core.audit_transaction import audit_transaction
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import HELD_FACT_SQL, is_fact_held, is_rule_admitted
@@ -490,6 +491,10 @@ async def get_memory_stats(
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         facts_relation = _memory_relation(db, butler_name, "facts")
         rules_relation = _memory_relation(db, butler_name, "rules")
+        fact_visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        fact_visibility_filter = fact_visibility or "TRUE"
         return {
             "total_episodes": await pool.fetchval(f"SELECT count(*) FROM {episodes_relation}") or 0,
             "unconsolidated_episodes": await pool.fetchval(
@@ -501,13 +506,18 @@ async def get_memory_stats(
                 "WHERE consolidation_status = 'dead_letter'"
             )
             or 0,
-            "total_facts": await pool.fetchval(f"SELECT count(*) FROM {facts_relation}") or 0,
+            "total_facts": await pool.fetchval(
+                f"SELECT count(*) FROM {facts_relation} AS facts WHERE {fact_visibility_filter}"
+            )
+            or 0,
             "active_facts": await pool.fetchval(
-                f"SELECT count(*) FROM {facts_relation} WHERE validity = 'active'"
+                f"SELECT count(*) FROM {facts_relation} AS facts "
+                f"WHERE facts.validity = 'active' AND {fact_visibility_filter}"
             )
             or 0,
             "fading_facts": await pool.fetchval(
-                f"SELECT count(*) FROM {facts_relation} WHERE validity = 'fading'"
+                f"SELECT count(*) FROM {facts_relation} AS facts "
+                f"WHERE facts.validity = 'fading' AND {fact_visibility_filter}"
             )
             or 0,
             "total_rules": await pool.fetchval(f"SELECT count(*) FROM {rules_relation}") or 0,
@@ -987,12 +997,17 @@ async def list_facts(
     elif held is False:
         conditions.append(f"NOT COALESCE({HELD_FACT_SQL}, false)")
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
-
     row_limit = offset + limit
 
     async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
         relation = _memory_relation(db, butler_name, "facts")
+        pool_conditions = list(conditions)
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        if visibility is not None:
+            pool_conditions.append(visibility)
+        where = (" WHERE " + " AND ".join(pool_conditions)) if pool_conditions else ""
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
@@ -1060,6 +1075,10 @@ async def get_fact(
         relation = _memory_relation(db, butler_name, "facts")
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        visibility_filter = f" AND {visibility}" if visibility is not None else ""
         row = await pool.fetchrow(
             _with_source_episode_status(
                 "SELECT id, subject, predicate, content, importance, confidence,"
@@ -1069,7 +1088,7 @@ async def get_fact(
                 " created_at, last_referenced_at,"
                 " last_confirmed_at, tags, metadata,"
                 " endorsed_at, endorsed_by"
-                f" FROM {relation} WHERE id = $1",
+                f" FROM {relation} AS facts WHERE facts.id = $1{visibility_filter}",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
             ),
@@ -1080,7 +1099,8 @@ async def get_fact(
         # Reverse-lookup the fact that supersedes THIS one (if any).  Runs on the
         # same pool that owns the fact, so we never cross butler schemas.
         superseder = await pool.fetchrow(
-            f"SELECT id FROM {relation} WHERE supersedes_id = $1 LIMIT 1",
+            f"SELECT facts.id FROM {relation} AS facts WHERE facts.supersedes_id = $1"
+            f"{visibility_filter} LIMIT 1",
             fact_id,
         )
         return (row, superseder)
@@ -1118,10 +1138,20 @@ _FACT_SELECT_COLUMNS = (
 )
 
 
-def _fact_select_query(relation: str, *, episodes_relation: str, tombstones_relation: str) -> str:
+def _fact_select_query(
+    relation: str,
+    *,
+    episodes_relation: str,
+    tombstones_relation: str,
+    visibility_condition: str | None = None,
+) -> str:
     """Return the fact detail query pinned to its local memory relation."""
+    from_clause = f"{relation} AS facts" if visibility_condition is not None else relation
+    where = "facts.id = $1" if visibility_condition is not None else "id = $1"
+    if visibility_condition is not None:
+        where += f" AND {visibility_condition}"
     return _with_source_episode_status(
-        f"{_FACT_SELECT_COLUMNS} FROM {relation} WHERE id = $1",
+        f"{_FACT_SELECT_COLUMNS} FROM {from_clause} WHERE {where}",
         episodes_relation=episodes_relation,
         tombstones_relation=tombstones_relation,
     )
@@ -1167,6 +1197,14 @@ async def confirm_fact(
             relation = _memory_relation(db, name, "facts")
             episodes_relation = _memory_relation(db, name, "episodes")
             tombstones_relation = _memory_relation(db, name, "episode_tombstones")
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=memory_schema, alias="facts"
+            )
+            if visibility is not None and not await cast("asyncpg.Pool", pool).fetchval(
+                f"SELECT 1 FROM {relation} AS facts WHERE facts.id = $1 AND {visibility}",
+                fact_uuid,
+            ):
+                continue
             confirmed = await _storage.confirm_memory(
                 pool,
                 "fact",
@@ -1181,6 +1219,7 @@ async def confirm_fact(
                     relation,
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,
+                    visibility_condition=visibility,
                 ),
                 fact_uuid,
             )
@@ -1247,11 +1286,21 @@ async def vouch_held_fact(
     for name, source in pools:
         pool = cast("asyncpg.Pool", source)
         try:
+            memory_schema = _memory_source_schema(db, name)
+            relation = _memory_relation(db, name, "facts")
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=memory_schema, alias="facts"
+            )
+            if visibility is not None and not await pool.fetchval(
+                f"SELECT 1 FROM {relation} AS facts WHERE facts.id = $1 AND {visibility}",
+                fact_uuid,
+            ):
+                continue
             receipt = await endorse_fact(
                 pool,
                 fact_uuid,
                 endorsed_by=await fetch_owner_entity_id(pool),
-                memory_schema=_memory_source_schema(db, name),
+                memory_schema=memory_schema,
             )
         except FactNotEndorsableError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1327,6 +1376,14 @@ async def retract_fact(
             relation = _memory_relation(db, name, "facts")
             episodes_relation = _memory_relation(db, name, "episodes")
             tombstones_relation = _memory_relation(db, name, "episode_tombstones")
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=memory_schema, alias="facts"
+            )
+            if visibility is not None and not await cast("asyncpg.Pool", pool).fetchval(
+                f"SELECT 1 FROM {relation} AS facts WHERE facts.id = $1 AND {visibility}",
+                fact_uuid,
+            ):
+                continue
             retracted = await _storage.forget_memory(
                 pool,
                 "fact",
@@ -1340,6 +1397,7 @@ async def retract_fact(
                     relation,
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,
+                    visibility_condition=visibility,
                 ),
                 fact_uuid,
             )
@@ -1973,14 +2031,19 @@ async def list_activity(
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         facts_relation = _memory_relation(db, butler_name, "facts")
         rules_relation = _memory_relation(db, butler_name, "rules")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        visibility_filter = visibility or "TRUE"
         episode_rows = await pool.fetch(
             "SELECT id, butler, content, created_at"
             f" FROM {episodes_relation} ORDER BY created_at DESC LIMIT $1",
             limit,
         )
         fact_rows = await pool.fetch(
-            "SELECT id, subject, predicate, source_butler, created_at"
-            f" FROM {facts_relation} ORDER BY created_at DESC LIMIT $1",
+            "SELECT facts.id, facts.subject, facts.predicate, facts.source_butler, facts.created_at"
+            f" FROM {facts_relation} AS facts WHERE {visibility_filter}"
+            " ORDER BY facts.created_at DESC LIMIT $1",
             limit,
         )
         rule_rows = await pool.fetch(
@@ -2230,10 +2293,14 @@ async def list_entities(
 
         async def _count_facts(butler_name: str, fpool: object) -> dict[str, int]:
             relation = _memory_relation(db, butler_name, "facts")
+            visibility = await local_fact_visibility_condition(
+                fpool, memory_schema=_memory_source_schema(db, butler_name), alias="f"
+            )
+            visibility_filter = f" AND {visibility}" if visibility is not None else ""
             fc_rows = await fpool.fetch(
-                f"SELECT entity_id, count(*) AS cnt FROM {relation}"
-                " WHERE entity_id = ANY($1) AND validity IN ('active', 'fading')"
-                " GROUP BY entity_id",
+                f"SELECT f.entity_id, count(*) AS cnt FROM {relation} AS f"
+                " WHERE f.entity_id = ANY($1) AND f.validity IN ('active', 'fading')"
+                f"{visibility_filter} GROUP BY f.entity_id",
                 entity_ids,
             )
             return {str(r["entity_id"]): r["cnt"] for r in fc_rows}
@@ -2325,11 +2392,16 @@ async def get_entity(
         facts_relation = _memory_relation(db, butler_name, "facts")
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
+        visibility = await local_fact_visibility_condition(
+            fpool, memory_schema=_memory_source_schema(db, butler_name), alias="f"
+        )
+        visibility_filter = visibility or "TRUE"
         count = (
             await fpool.fetchval(
-                f"SELECT count(*) FROM {facts_relation}"
-                " WHERE (entity_id = $1 OR object_entity_id = $1)"
-                " AND validity IN ('active', 'fading')",
+                f"SELECT count(*) FROM {facts_relation} AS f"
+                " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
+                " AND f.validity IN ('active', 'fading')"
+                f" AND {visibility_filter}",
                 eid,
             )
             or 0
@@ -2352,6 +2424,7 @@ async def get_entity(
             " ON tombstone.episode_id = f.source_episode_id"
             " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
             " AND f.validity IN ('active', 'fading')"
+            f" AND {visibility_filter}"
             " ORDER BY f.created_at DESC"
             " OFFSET $2 LIMIT $3",
             eid,
@@ -2601,10 +2674,15 @@ async def delete_entity(
     # only has fading facts would silently orphan them.
     async def _count_active_facts(butler_name: str, fpool: object) -> int:
         relation = _memory_relation(db, butler_name, "facts")
+        visibility = await local_fact_visibility_condition(
+            fpool, memory_schema=_memory_source_schema(db, butler_name), alias="f"
+        )
+        visibility_filter = f" AND {visibility}" if visibility is not None else ""
         return (
             await fpool.fetchval(
-                f"SELECT count(*) FROM {relation}"
-                " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
+                f"SELECT count(*) FROM {relation} AS f"
+                " WHERE f.entity_id = $1 AND f.validity IN ('active', 'fading')"
+                f"{visibility_filter}",
                 eid,
             )
             or 0
@@ -2992,11 +3070,20 @@ async def get_butler_memory_stats(
     async def _count_memory_table(table: str) -> tuple[int, int]:
         relation = _memory_relation(db, name, table)
         try:
+            from_clause = f"FROM {relation}"
+            visibility_filter = ""
+            if table == "facts":
+                visibility = await local_fact_visibility_condition(
+                    pool, memory_schema=_memory_source_schema(db, name), alias="facts"
+                )
+                from_clause = f"FROM {relation} AS facts"
+                if visibility is not None:
+                    visibility_filter = f" WHERE {visibility}"
             row = await pool.fetchrow(
                 f"SELECT"
                 f"  count(*) AS total,"
                 f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
-                f" FROM {relation}"
+                f" {from_clause}{visibility_filter}"
             )
             return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
         except Exception as exc:
@@ -3386,15 +3473,23 @@ async def inspect_memory(
                 )
 
         if "fact" in target_kinds:
-            fact_cond = ""
+            fact_conditions: list[str] = []
             fact_args: list[object] = []
             idx = 1
             if q:
-                fact_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                fact_conditions.append(f"facts.search_vector @@ plainto_tsquery('english', ${idx})")
                 fact_args.append(q)
                 idx += 1
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+            )
+            if visibility is not None:
+                fact_conditions.append(visibility)
+            fact_cond = " WHERE " + " AND ".join(fact_conditions) if fact_conditions else ""
             pool_total += (
-                await pool.fetchval(f"SELECT count(*) FROM {facts_relation}{fact_cond}", *fact_args)
+                await pool.fetchval(
+                    f"SELECT count(*) FROM {facts_relation} AS facts{fact_cond}", *fact_args
+                )
                 or 0
             )
             fact_rows = await pool.fetch(
@@ -3405,8 +3500,8 @@ async def inspect_memory(
                     " validity, scope, reference_count,"
                     f" created_at, last_referenced_at,"
                     f" last_confirmed_at, tags, metadata"
-                    f" FROM {facts_relation}{fact_cond}"
-                    f" ORDER BY created_at DESC"
+                    f" FROM {facts_relation} AS facts{fact_cond}"
+                    f" ORDER BY facts.created_at DESC"
                     f" LIMIT ${idx}",
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,

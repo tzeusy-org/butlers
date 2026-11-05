@@ -9,6 +9,7 @@ from typing import Annotated, Any
 
 from pydantic import Field
 
+from butlers.core.chronicler_visibility import catalog_projection_visible
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._switchboard_route_dispatch import dispatch_via_switchboard_route
 
@@ -33,15 +34,17 @@ async def _catalog_pointer(
     source_table: str,
     source_id: uuid.UUID,
 ) -> Any:
+    visible = catalog_projection_visible("memory_catalog")
     return await pool.fetchrow(
-        """
+        f"""
         SELECT source_butler, memory_type, sensitivity
-        FROM public.memory_catalog
+        FROM public.memory_catalog AS memory_catalog
         WHERE tenant_id = 'shared'
           AND source_schema = $1
           AND source_table = $2
           AND source_id = $3
           AND invalid_at IS NULL
+          AND {visible}
         """,
         source_schema,
         source_table,

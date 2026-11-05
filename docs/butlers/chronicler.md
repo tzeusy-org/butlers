@@ -161,3 +161,36 @@ taken; anything else is `unknown`. Each anchor needs two fixes; `trail_outlier`,
 naive-timestamp fixes are ignored. There is no geocoding, so an event's stated place is never
 checked. Every intent also carries `reconciliation.plan_producer`: `butler` for events the calendar
 module marked `butler_generated` (or titled `BUTLER:`), else `calendar`.
+
+### Timed Steam Play and music evidence (bu-r3fmja.7)
+
+The Steam connector persists detected `personastate` / `gameextrainfo` changes in
+`connectors.steam_status_history` alongside ingest submission. `gameid` is stored
+but never changes that delta rule. A storage failure still advances the polling
+cursor and degrades health. Chronicler has SELECT only; connector writes retain
+the existing connector role boundary. Bootstrap replay preserves the read grant.
+
+`steam.status_history` projects minute-precision `play_session` evidence every
+five minutes. A game ends at the next no-game, other-game or offline change.
+Same-game persona changes keep it open. Open sessions are provisional, capped
+at twelve hours, and refreshed on replay using the same source identity. The
+adapter scans sparse history in bounded keyset pages, carrying an active game
+across page boundaries; its checkpoint does not hide an open session.
+
+Situational fusion alone emits counted `play_block` rows. Known away-from-home
+where-segments, higher-precedence activity and owner answers cut Play out;
+unknown location allows it. Only accepted Play displaces home time. A local date
+with any status session suppresses the daily-total guess; dates with none use
+the existing daily-total placed window under the same exclusions. Steam daily
+totals and Spotify listening rows are evidence, including historical rows.
+Music has no Play lane, but remains available as a quiet-run breaker.
+The migration resets the situation checkpoint once to rebuild historical fallback
+Play. Later runs also revisit dates of changed Steam evidence, so late session
+closures can replace older provisional blocks without losing old daily totals.
+Tombstones and owner corrections revisit canonical, corrected and previously
+projected provenance dates, removing stale counted Play after evidence moves.
+
+The additive core table and historical evidence survive source rollback;
+downgrade does not destroy observations or reintroduce directly counted source
+rows. Trip-span fusion belongs to `bu-r3fmja.8`, which composes its exclusions
+with this source; this change does not infer trips from calendar or PC power.

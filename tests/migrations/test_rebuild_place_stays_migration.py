@@ -38,6 +38,9 @@ def chronicler_028_db(postgres_container):
         schemas={"chronicler": "chronicler"},
         revisions={"chronicler": "chronicler_028"},
     )
+    from tests.chronicler._private_memory_setup import prepare_chronicler_private_memory_sync
+
+    prepare_chronicler_private_memory_sync(db_url)
     engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
     try:
         yield db_url, engine

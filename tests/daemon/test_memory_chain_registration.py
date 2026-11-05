@@ -147,6 +147,7 @@ class TestMemoryChainRegistration:
             "015_grant_chronicler_private_memory.py",
             "016_fact_endorsement.py",
             "017_goal_taint.py",
+            "018_drop_transition_timestamps.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -169,6 +170,7 @@ class TestMemoryChainRegistration:
             ("015_grant_chronicler_private_memory.py", "mem_015", "mem_014"),
             ("016_fact_endorsement.py", "mem_016", "mem_015"),
             ("017_goal_taint.py", "mem_017", "mem_016"),
+            ("018_drop_transition_timestamps.py", "mem_018", "mem_017"),
         ]
 
         revisions = []
@@ -186,7 +188,7 @@ class TestMemoryChainRegistration:
         root = load_migration(MEMORY_MIGRATIONS_DIR / _EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_017"
+        current = "mem_018"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -210,6 +212,7 @@ class TestMemoryChainRegistration:
             "mem_015",
             "mem_016",
             "mem_017",
+            "mem_018",
         ]
 
 

@@ -117,6 +117,16 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         optional_schema=True,
     ),
     SourceAdapterState(
+        source_name="steam.status_history",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.steam_status_history",
+        boundary_semantics=(
+            "play_session evidence from in-game changes; minute precision; "
+            "open sessions provisional, capped at 12 hours, refreshed every run"
+        ),
+        optional_schema=True,
+    ),
+    SourceAdapterState(
         source_name="owntracks.points",
         chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.owntracks_points",
