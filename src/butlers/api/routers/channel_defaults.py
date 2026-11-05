@@ -27,7 +27,7 @@ from pydantic import BaseModel
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.deps import Db
 from butlers.api.routers.audit import append as _audit_append
-from butlers.connectors.catalog import default_policy_required_keys
+from butlers.connector_catalog import default_policy_required_keys
 
 logger = logging.getLogger(__name__)
 

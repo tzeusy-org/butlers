@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 import uvicorn
 from fastapi import FastAPI, Response
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.discretion import (
     DiscretionEvaluator,
     DiscretionResult,

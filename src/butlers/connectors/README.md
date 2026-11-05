@@ -2,6 +2,31 @@
 
 Transport-only adapters for external message ingestion.
 
+## What lives here
+
+This package contains connector transport entry points (**E**), their private
+single-connector helper families (**H**, with the entry named as owner), and kit
+shared by connectors (**K**). Private helpers may be read by their existing
+control-plane API callers; that does not make them shared service clients.
+The exact tracked file set and placement decisions live in
+`tests/connectors/test_connectors_package_allowlist.py`.
+
+Framework-wide connector identity, policy, OAuth metadata and public recovery
+projections have one home in `butlers.connector_catalog`. Shared service clients
+live outside this package: `butlers.spotify_client`,
+`butlers.home_assistant_client` and `butlers.whatsapp_bridge_client`.
+Modules, jobs and Chronicler must not import this connector package. The
+import-linter contracts in `pyproject.toml` enforce that direct boundary.
+
+When adding, moving or removing a connector/helper/kit file, update the exact
+allowlist in the same PR and explain its owner. A concurrently landing kit or
+Google fleet PR must update the allowlist when its file actually joins the
+tracked tree; absent future files must not be pre-allowed. Entry-point deletion
+(including Live Listener) and connector runtime/kit redesign remain with their
+owning work. Live Listener's transcription client is shared with Telegram and
+remains kit here. This placement guard grants no new transport or credential
+authority and does not enable any connector.
+
 ## Overview
 
 Connectors are responsible for:

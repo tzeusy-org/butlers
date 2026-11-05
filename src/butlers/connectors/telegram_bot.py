@@ -44,8 +44,8 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.blob_store import connector_blob_store
-from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig

@@ -82,7 +82,7 @@ Needed only to seed the first OAuth flow; afterwards the client credentials live
 
 ## Connectors
 
-Static connector type, channel and provider come from `butlers.connectors.catalog`;
+Static connector type, channel and provider come from `butlers.connector_catalog`;
 `CONNECTOR_PROVIDER` and `CONNECTOR_CHANNEL` are no longer operator settings.
 The operational and credential variables below retain their existing behavior.
 

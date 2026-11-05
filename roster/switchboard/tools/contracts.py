@@ -19,7 +19,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-from butlers.connectors.catalog import ingress_providers_by_channel
+from butlers.connector_catalog import ingress_providers_by_channel
 from butlers.ingestion_spans import SpanKind, normalize_spans
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]

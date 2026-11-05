@@ -41,7 +41,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 
 _DESCRIPTOR = connector_descriptor("home_assistant")
 
