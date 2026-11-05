@@ -115,7 +115,7 @@ class TestLoadConversationHistory:
 async def test_historical_discord_uses_real_stored_reader_without_registration() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from butlers.connectors.catalog import canonical_connector_types, ingress_pairs
+    from butlers.connector_catalog import canonical_connector_types, ingress_pairs
 
     now = datetime.now(UTC)
     conn = AsyncMock()

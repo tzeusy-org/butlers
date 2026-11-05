@@ -69,7 +69,7 @@ from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig

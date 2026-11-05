@@ -23,7 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
-from butlers.connectors.catalog import conversation_history_strategies
+from butlers.connector_catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity

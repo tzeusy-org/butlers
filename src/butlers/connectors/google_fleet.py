@@ -10,9 +10,123 @@ import asyncio
 import logging
 import signal
 import time
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+import httpx
+from pydantic import BaseModel
+
+from butlers.connectors.metrics import get_error_type
+from butlers.google_credentials import GOOGLE_TOKEN_URL, google_oauth_requires_reauthorization
 
 logger = logging.getLogger(__name__)
+
+
+class AccountHealthStatus(BaseModel):
+    """Per-account health payload shared by the Google source adapters."""
+
+    email: str | None
+    endpoint_identity: str
+    status: Literal["healthy", "degraded", "error"]
+    last_checkpoint_save_at: str | None
+    last_ingest_submit_at: str | None
+    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
+    error: str | None = None
+
+
+class MultiAccountHealthStatus(BaseModel):
+    """Aggregate payload; each adapter retains its own aggregation policy."""
+
+    status: Literal["healthy", "degraded", "error"]
+    uptime_seconds: float
+    active_accounts: int
+    account_health: list[AccountHealthStatus]
+    timestamp: str
+
+
+def _redact_email(email: str | None) -> str | None:
+    """Expose only the first two local-part characters in health responses."""
+    if email is None:
+        return None
+    at_pos = email.find("@")
+    if at_pos <= 0:
+        return "***"
+    local = email[:at_pos]
+    domain = email[at_pos:]
+    visible = local[:2]
+    return f"{visible}***{domain}"
+
+
+def _format_google_error(
+    response: httpx.Response | None, *, gmail_detail: bool = False
+) -> str | None:
+    """Preserve each source's existing diagnostic format, without request data."""
+    if response is None:
+        return None
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            parts: list[str] = []
+            code = error.get("code")
+            if code is not None:
+                parts.append(f"code={code}")
+            status = error.get("status")
+            if isinstance(status, str) and status:
+                parts.append(f"status={status}")
+            if gmail_detail:
+                reason = None
+                nested_errors = error.get("errors")
+                if isinstance(nested_errors, list):
+                    for item in nested_errors:
+                        if isinstance(item, dict) and item.get("reason"):
+                            reason = item["reason"]
+                            break
+                if isinstance(reason, str) and reason:
+                    parts.append(f"reason={reason}")
+            message = error.get("message")
+            if isinstance(message, str) and message:
+                parts.append(f"message={message}")
+            if parts or gmail_detail:
+                return ", ".join(parts) if parts else None
+        if isinstance(error, str) and error:
+            description = payload.get("error_description")
+            if isinstance(description, str) and description:
+                return f"error={error}, description={description}"
+            return f"error={error}"
+    if gmail_detail:
+        return None
+    body = response.text.strip()
+    if body:
+        return f"HTTP {response.status_code}: {body[:200]}"
+    return f"HTTP {response.status_code}"
+
+
+def _classify_source_api_error(exc: Exception, *, gmail_detail: bool = False) -> tuple[bool, str]:
+    """Only an actual token POST response can prove OAuth revocation."""
+    response = getattr(exc, "response", None)
+    detail = (
+        _format_google_error(response, gmail_detail=gmail_detail)
+        if response is not None and (gmail_detail or isinstance(response, httpx.Response))
+        else None
+    )
+    is_auth_revocation = False
+    if isinstance(response, httpx.Response):
+        try:
+            request = response.request
+        except RuntimeError:
+            request = None
+        if (
+            request is not None
+            and request.method == "POST"
+            and str(request.url) == GOOGLE_TOKEN_URL
+        ):
+            is_auth_revocation = google_oauth_requires_reauthorization(response)
+    error_type = get_error_type(exc) if gmail_detail else type(exc).__name__
+    return is_auth_revocation, detail or f"{error_type}: {exc}"
 
 
 class AccountLoop(Protocol):

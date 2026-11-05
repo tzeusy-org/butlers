@@ -107,7 +107,7 @@ from butlers.api.models.oauth import (
     UpsertAppCredentialsRequest,
     UpsertAppCredentialsResponse,
 )
-from butlers.connectors.catalog import GOOGLE_DEFAULT_SCOPE_GROUPS, GOOGLE_SCOPE_GROUPS
+from butlers.connector_catalog import GOOGLE_DEFAULT_SCOPE_GROUPS, GOOGLE_SCOPE_GROUPS
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import (

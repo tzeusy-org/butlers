@@ -51,12 +51,24 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from functools import partial
 from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
-from butlers.connectors.google_fleet import GoogleAccountFleet
-from butlers.google_credentials import GOOGLE_TOKEN_URL, GoogleTokenCache
+from butlers.connectors.google_fleet import (
+    AccountHealthStatus,
+    GoogleAccountFleet,
+    MultiAccountHealthStatus,
+    _redact_email,
+)
+from butlers.connectors.google_fleet import (
+    _classify_source_api_error as _classify_google_source_api_error,
+)
+from butlers.connectors.google_fleet import (
+    _format_google_error as _format_google_response_error,
+)
+from butlers.google_credentials import GoogleTokenCache
 
 if TYPE_CHECKING:
     import asyncpg
@@ -66,8 +78,8 @@ import uvicorn
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.blob_store import connector_blob_store
-from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -91,7 +103,6 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
-    google_oauth_requires_reauthorization,
     load_google_credentials,
 )
 from butlers.identity import parse_email_sender
@@ -120,54 +131,13 @@ class HealthStatus(BaseModel):
     timestamp: str
 
 
-class AccountHealthStatus(BaseModel):
-    """Per-account health status for multi-account connectors."""
-
-    email: str | None
-    endpoint_identity: str
-    status: Literal["healthy", "degraded", "error"]
-    last_checkpoint_save_at: str | None
-    last_ingest_submit_at: str | None
-    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
-    error: str | None = None
-
-
-class MultiAccountHealthStatus(BaseModel):
-    """Aggregated health status for the multi-account Gmail connector manager."""
-
-    status: Literal["healthy", "degraded", "error"]
-    uptime_seconds: float
-    active_accounts: int
-    account_health: list[AccountHealthStatus]
-    timestamp: str
+_format_google_error = partial(_format_google_response_error, gmail_detail=True)
+_classify_source_api_error = partial(_classify_google_source_api_error, gmail_detail=True)
 
 
 # Gmail OAuth scope constants for account filtering.
 _GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 _GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
-
-
-def _redact_email(email: str | None) -> str | None:
-    """Redact an email address for safe inclusion in health responses.
-
-    Shows the first 2 characters of the local part, then ***, then @domain.
-    Examples:
-        "test@example.invalid" → "te***@example.invalid"
-        "a@example.invalid"    → "a***@example.invalid"
-        None             → None
-
-    This prevents PII leakage in the unauthenticated /health endpoint.
-    """
-    if email is None:
-        return None
-    at_pos = email.find("@")
-    if at_pos <= 0:
-        # No @ or empty local part — return fully masked string
-        return "***"
-    local = email[:at_pos]
-    domain = email[at_pos:]  # includes the '@'
-    visible = local[:2]
-    return f"{visible}***{domain}"
 
 
 # Default re-scan interval for dynamic account discovery (seconds).
@@ -219,105 +189,6 @@ GLOBAL_MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
 _MATERIALIZE_POLL_INTERVAL_S = 2.0
 _MATERIALIZE_BATCH = 2
 _MATERIALIZE_CLAIM_STALE_S = 120
-
-
-def _format_google_error(response: httpx.Response) -> str | None:
-    """Extract a compact Google API/OAuth error summary from response JSON."""
-    try:
-        payload = response.json()
-    except Exception:
-        return None
-
-    if not isinstance(payload, dict):
-        return None
-
-    # Gmail/Google API error shape:
-    # {"error": {"code": 404, "message": "...", "status": "...", "errors": [{"reason": "..."}]}}
-    nested_error = payload.get("error")
-    if isinstance(nested_error, dict):
-        parts: list[str] = []
-
-        code = nested_error.get("code")
-        if code is not None:
-            parts.append(f"code={code}")
-
-        status = nested_error.get("status")
-        if isinstance(status, str) and status:
-            parts.append(f"status={status}")
-
-        reason = None
-        nested_errors = nested_error.get("errors")
-        if isinstance(nested_errors, list):
-            for item in nested_errors:
-                if isinstance(item, dict) and item.get("reason"):
-                    reason = item["reason"]
-                    break
-        if isinstance(reason, str) and reason:
-            parts.append(f"reason={reason}")
-
-        message = nested_error.get("message")
-        if isinstance(message, str) and message:
-            parts.append(f"message={message}")
-
-        return ", ".join(parts) if parts else None
-
-    # OAuth token endpoint error shape:
-    # {"error": "invalid_grant", "error_description": "..."}
-    if isinstance(nested_error, str) and nested_error:
-        error_description = payload.get("error_description")
-        if isinstance(error_description, str) and error_description:
-            return f"error={nested_error}, description={error_description}"
-        return f"error={nested_error}"
-
-    return None
-
-
-def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
-    """Classify a Gmail source-API failure for honest health reporting.
-
-    Returns ``(is_auth_revocation, description)``.
-
-    ``is_auth_revocation`` is True only when the failure is Google's OAuth
-    token endpoint reporting ``invalid_grant``/``unauthorized_client`` — a
-    genuinely revoked or expired refresh token that requires owner
-    re-consent. Every other failure (timeouts, connection errors, rate
-    limits, 5xx, or any other 4xx from the Gmail data API) is transient and
-    typically clears on the very next successful poll; conflating the two
-    into a single generic "unreachable or authentication failed" state
-    (bu-dej20) made a one-off network hiccup look identical to an
-    action-required credential revocation, and discarded the actual error
-    detail needed to tell them apart.
-
-    ``description`` is the most specific error text available: Google's own
-    structured error body when the exception carries an HTTP response, else
-    a compact ``"<error_type>: <str(exc)>"`` fallback.
-
-    Revocation detection inspects the parsed JSON payload's top-level
-    ``error`` field directly (the OAuth token endpoint's exact error shape:
-    ``{"error": "invalid_grant", ...}``) rather than substring-matching the
-    formatted description — a substring check on ``google_error`` would
-    false-positive if an unrelated Gmail data-API error message happened to
-    mention "invalid_grant" in prose, and the Gmail data API's nested-dict
-    error shape (``{"error": {"code": ..., "message": ...}}``) never equals
-    one of the revocation code strings so it's safely excluded either way.
-    """
-    response = getattr(exc, "response", None)
-    google_error = _format_google_error(response) if response is not None else None
-    is_auth_revocation = False
-    if isinstance(response, httpx.Response):
-        try:
-            request = response.request
-        except RuntimeError:
-            request = None
-        # Only the actual response's token POST can supply reauthorization proof.
-        if (
-            request is not None
-            and request.method == "POST"
-            and str(request.url) == GOOGLE_TOKEN_URL
-        ):
-            is_auth_revocation = google_oauth_requires_reauthorization(response)
-    description = google_error or f"{get_error_type(exc)}: {exc}"
-    return is_auth_revocation, description
 
 
 def _header_name_is(header: Any, expected_lower_name: str) -> bool:

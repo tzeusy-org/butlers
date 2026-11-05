@@ -49,10 +49,9 @@ from butlers.api.routers.ingestion_connectors import (
 )
 from butlers.connectors.cursor_store import NO_PARENT, save_cursor
 from butlers.connectors.google_drive import (
-    AccountHealthStatus,
     DriveAccountSource,
-    MultiAccountHealthStatus,
 )
+from butlers.connectors.google_fleet import AccountHealthStatus, MultiAccountHealthStatus
 from butlers.connectors.home_assistant_checkpoint import save_ha_checkpoint
 
 docker_available = shutil.which("docker") is not None

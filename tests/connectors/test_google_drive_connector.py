@@ -324,6 +324,27 @@ def test_classify_source_api_error_distinguishes_google_revocation_from_api_fail
     else:
         assert str(status_code) in detail
 
+    nested = _google_token_http_error(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (False, "code=503, message=Retry")
+    request = httpx.Request("GET", "https://www.googleapis.com/synthetic")
+    for body, expected in (
+        (b"", "HTTP 503"),
+        (b"synthetic plain body", "HTTP 503: synthetic plain body"),
+        (b"[]", "HTTP 503: []"),
+        (b'{"error": {}}', 'HTTP 503: {"error": {}}'),
+        (b"x" * 220, "HTTP 503: " + "x" * 200),
+    ):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, expected)
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "ReadTimeout: synthetic timeout",
+    )
+
 
 @pytest.mark.parametrize(
     "url",
@@ -361,6 +382,8 @@ def test_drive_account_health_reports_revocation_as_error_and_api_failure_as_deg
     )
 
     health = account.get_health()
+    assert health.email == "us***@example.com"
+    assert health.email is not None and _FAKE_EMAIL not in health.email
     assert health.status == "degraded"
     assert health.error == "code=503, message=Backend Error"
 
@@ -474,6 +497,17 @@ async def test_google_fleet_real_adapters_reconcile_and_keep_source_policy(monke
     from unittest.mock import AsyncMock, MagicMock
 
     from butlers.connectors import gmail, google_calendar, google_drive
+
+    assert (
+        gmail.AccountHealthStatus
+        is google_calendar.AccountHealthStatus
+        is google_drive.AccountHealthStatus
+    )
+    assert (
+        gmail.MultiAccountHealthStatus
+        is google_calendar.MultiAccountHealthStatus
+        is google_drive.MultiAccountHealthStatus
+    )
 
     loop_type = {
         "gmail": "GmailAccountLoop",

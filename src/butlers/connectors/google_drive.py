@@ -52,12 +52,21 @@ from fastapi import FastAPI
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.gmail_policy import _normalize_email
-from butlers.connectors.google_fleet import GoogleAccountFleet
+from butlers.connectors.google_fleet import (
+    AccountHealthStatus,
+    GoogleAccountFleet,
+    MultiAccountHealthStatus,
+    _classify_source_api_error,
+    _redact_email,
+)
+from butlers.connectors.google_fleet import (
+    _format_google_error as _format_google_error,
+)
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.known_contact_snapshot import PriorityContactSnapshotSource
 from butlers.connectors.mcp_client import CachedMCPClient
@@ -104,79 +113,6 @@ _DEFAULT_BATCH_WINDOW_S = 0  # 0 = disabled (immediate submit); set to e.g. 7200
 _RATE_LIMIT_MAX_RETRIES = 5
 _RATE_LIMIT_BASE_DELAY_S = 1.0
 _RATE_LIMIT_MAX_DELAY_S = 60.0
-
-_OAUTH_ACTION_REQUIRED_ERROR_CODES = frozenset({"invalid_grant", "unauthorized_client"})
-
-
-def _format_google_error(response: httpx.Response | None) -> str | None:
-    """Return compact Google OAuth/API error detail without leaking request secrets."""
-    if response is None:
-        return None
-
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-
-    if isinstance(payload, dict):
-        error = payload.get("error")
-        if isinstance(error, dict):
-            parts: list[str] = []
-            code = error.get("code")
-            if code is not None:
-                parts.append(f"code={code}")
-            status = error.get("status")
-            if isinstance(status, str) and status:
-                parts.append(f"status={status}")
-            message = error.get("message")
-            if isinstance(message, str) and message:
-                parts.append(f"message={message}")
-            if parts:
-                return ", ".join(parts)
-        if isinstance(error, str) and error:
-            description = payload.get("error_description")
-            if isinstance(description, str) and description:
-                return f"error={error}, description={description}"
-            return f"error={error}"
-
-    body = response.text.strip()
-    if body:
-        return f"HTTP {response.status_code}: {body[:200]}"
-    return f"HTTP {response.status_code}"
-
-
-def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
-    """Classify Drive source failures without treating data API failures as revocation.
-
-    The shared Google refresh token is action-required only when its token
-    endpoint responds with a top-level ``invalid_grant``/``unauthorized_client``
-    error.  Drive API 401/403, quotas, and transport faults remain connector-
-    local degraded states so they neither overstate the alert nor revoke the
-    account shared by Drive, Calendar, Gmail, and Health.
-    """
-    response = getattr(exc, "response", None)
-    detail = _format_google_error(response) if isinstance(response, httpx.Response) else None
-    is_auth_revocation = False
-    if isinstance(response, httpx.Response):
-        try:
-            request = response.request
-        except RuntimeError:
-            request = None
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-        if (
-            request is not None
-            and request.method == "POST"
-            and str(request.url) == _GOOGLE_TOKEN_URL
-            and isinstance(payload, dict)
-        ):
-            error_code = payload.get("error")
-            if isinstance(error_code, str) and error_code in _OAUTH_ACTION_REQUIRED_ERROR_CODES:
-                is_auth_revocation = True
-
-    return is_auth_revocation, detail or f"{type(exc).__name__}: {exc}"
 
 
 def _http_status_error(response: httpx.Response, message: str) -> httpx.HTTPStatusError:
@@ -239,28 +175,6 @@ gdrive_metadata_cache_size = get_or_create_gauge(
 # ---------------------------------------------------------------------------
 # Health status models
 # ---------------------------------------------------------------------------
-
-
-class AccountHealthStatus(BaseModel):
-    """Per-account health status for the multi-account Drive connector."""
-
-    email: str | None
-    endpoint_identity: str
-    status: Literal["healthy", "degraded", "error"]
-    last_checkpoint_save_at: str | None
-    last_ingest_submit_at: str | None
-    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
-    error: str | None = None
-
-
-class MultiAccountHealthStatus(BaseModel):
-    """Aggregated health status across all Drive account loops."""
-
-    status: Literal["healthy", "degraded", "error"]
-    uptime_seconds: float
-    active_accounts: int
-    account_health: list[AccountHealthStatus]
-    timestamp: str
 
 
 # ---------------------------------------------------------------------------
@@ -762,19 +676,6 @@ def parse_changes_list_response(
     next_page_token: str | None = response.get("nextPageToken")
     new_start_token: str | None = response.get("newStartPageToken")
     return changes, next_page_token, new_start_token
-
-
-def _redact_email(email: str | None) -> str | None:
-    """Redact an email address for safe inclusion in health responses."""
-    if email is None:
-        return None
-    at_pos = email.find("@")
-    if at_pos <= 0:
-        return "***"
-    local = email[:at_pos]
-    domain = email[at_pos:]
-    visible = local[:2]
-    return f"{visible}***{domain}"
 
 
 def _is_retryable_403(response: Any) -> bool:

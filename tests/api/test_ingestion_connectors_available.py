@@ -86,7 +86,7 @@ async def test_available_connectors_no_db_dependency(app):
 
 async def test_available_connectors_equal_deployable_descriptor_projection(app):
     """REQ-connector-base-spec-010: actual HTTP discovery uses canonical emitter identities."""
-    from butlers.connectors.catalog import discovery_connectors
+    from butlers.connector_catalog import discovery_connectors
     from butlers.tools.switchboard.contracts import IngestSourceV1
 
     async with httpx.AsyncClient(
@@ -110,7 +110,7 @@ async def test_descriptor_retirement_drives_discovery_and_preview_only(app, monk
     """S1 consumers honor the row rather than retaining independent identity lists."""
     from dataclasses import replace
 
-    from butlers.connectors import catalog
+    from butlers import connector_catalog as catalog
     from butlers.ingestion_bearer_scrub import scrub_filtered_preview
 
     monkeypatch.setattr(

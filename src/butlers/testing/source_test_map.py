@@ -83,6 +83,20 @@ FULL_SUITE: list[str] = configured_testpaths()
 # ---------------------------------------------------------------------------
 
 _PREFIX_MAP: list[tuple[str, list[str]]] = [
+    # Shared static connector projections serve runtime, API and stored-history readers.
+    (
+        "src/butlers/connector_catalog.py",
+        [
+            "tests/contracts/test_connector_catalog.py",
+            "tests/modules/test_conversation_history.py",
+            "tests/modules/test_module_pipeline.py",
+            "tests/api/test_ingestion_connectors_available.py",
+            "tests/api/test_channel_defaults.py",
+            "tests/api/test_oauth_probe_scope_payload.py",
+            "tests/connectors/",
+            "roster/switchboard/tests/",
+        ],
+    ),
     (
         "src/butlers/home_assistant_client.py",
         [

@@ -566,6 +566,24 @@ def test_classify_source_api_error_transient_5xx_is_not_auth_revocation() -> Non
     assert is_auth_revocation is False
     assert "503" in description or "UNAVAILABLE" in description
 
+    nested = _http_error_with_response(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (
+        False,
+        "code=503, reason=syntheticReason, message=Retry",
+    )
+    request = httpx.Request("GET", "https://gmail.googleapis.com/synthetic")
+    for body in (b"", b"synthetic plain body", b"[]", b'{"error": {}}'):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, "http_error: source failure")
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "timeout: synthetic timeout",
+    )
+
 
 def test_classify_source_api_error_falls_back_for_bare_exception() -> None:
     """A network-level exception with no HTTP response still yields a real description."""
