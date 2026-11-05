@@ -1,1 +1,6 @@
-{}
+{
+  "tests/daemon/test_butler_migrations.py": 1,
+  "tests/daemon/test_daemon.py": 2,
+  "tests/daemon/test_lifecycle_toml_schedule_sync.py": 4,
+  "tests/daemon/test_runtime_credential_startup.py": 1
+}
