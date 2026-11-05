@@ -92,11 +92,60 @@ authority preserved, or unknown). No domain reports its stamp account over the
 wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
 until one does.
 
-Until the per-tool `categories` declaration lands and is made required
-(bu-dhloi1.27, a switch-release blocker), categories are derived from the descriptor's D4
-`output_sensitivity` (`contracts.declared_categories`): `ordinary` is an
-explicit owner-catalog declaration of no sensitive category and carries none;
-anything undeclared or not `ordinary` carries all six.
+A capability's categories are its descriptor's required `categories` field
+(bu-dhloi1.27), a sorted subset of the six; D4 `output_sensitivity` is not
+consulted. The field is in `AUTHORIZATION_FIELDS`, so it is part of the
+authorization and generation digests, and missing metadata is ungrantable:
+an undeclared, unknown, duplicated or unsorted value is an authorization
+problem, so the descriptor is neither `authorization_complete` nor
+`grantable`. The broker catalog reader refuses a publication that carries
+one (`catalog_unavailable`, which the broker reports as `broker_unavailable`), and
+`contracts.declared_categories` raises rather than inferring a set.
+
+Every declaration names its categories explicitly. In the inventory,
+`_declare` takes a required `categories` keyword. A module-channel `ToolMeta`,
+such as calendar's `calendar_respond`, sets the same field. `CATEGORY_SPECS` cites the domain
+spec each declaration was read from.
+
+Under-declaring is a confidentiality leak, so one rule decides. A tool names
+fewer than all six (`ALL_CATEGORIES`) only if every field it returns is
+structured. Owner, LLM or third-party free text keeps all six: notes, memos,
+descriptions, typed titles, identity fields such as display and real names,
+message bodies, raw provider payloads that can
+carry owner-named or third-party text, and error paths that echo stored text.
+Finance category labels are owner free text, and merchant, payee and service
+names can reveal health (a pharmacy or clinic), so every finance tool returning
+either keeps all six; so do third-party catalog titles (works, games,
+achievements). Inside a narrowed tool,
+dated owner activity counts as `routine`. `NARROWED_CATEGORIES` gives each
+narrowed tool a one-line justification naming its output fields. A contract
+test (`tests/contracts/test_tool_category_declarations.py`) pins the narrowed
+set, so widening a tool's output has to touch it. There are 41 narrowed tools:
+
+| Domain | Narrowed tools | Categories |
+| --- | --- | --- |
+| finance | `learn_merchant_categories` (upserted count only) | `finance` |
+| health, google_health | the four `*_delete` booleans, `nutrition_summary`, and every Google Health read except `health_sleep_history` and `health_sleep_latest` (stored fact content prose) | `health`, `routine` |
+| lifestyle | `taste_add_verdict`, `taste_backfill_ledger`, `taste_get_summary` | `routine` |
+| education | progress-only results: snapshots, trends, `spaced_repetition_record_response`, `teaching_flow_start` | `routine` |
+| education | ids, counts and statuses: `curriculum_replan`, `diagnostic_complete`, `mastery_get_map_summary`, `mind_map_create`, `mind_map_edge_delete`, `mind_map_node_create`, `spaced_repetition_schedule_cleanup`, `teaching_flow_abandon` | none |
+| spotify | the six status-only playback controls, `spotify_save_tracks`, `spotify_remove_saved_tracks` | none |
+| steam | `steam_get_player_level`, `steam_get_current_players`, `steam_resolve_vanity_url` | none |
+| fleet | `module.states`, `list_butlers`, `pending_action_count` | none |
+
+Everything else names all six. That covers:
+
+- every tool returning a whole transaction, bill, subscription, account or
+  facts row (notes, description, raw/metadata JSON, account nicknames);
+- health notes, names and research;
+- education labels, descriptions, answers and flow state;
+- every Spotify read, which returns the raw provider payload (playlist names,
+  device names);
+- `steam_get_game_news` (third-party prose), and `steam_get_player_summary` and
+  `steam_get_friend_list` (their profiles carry `personaname` and `realname`);
+- tools whose results echo a caller-supplied string;
+- calendar, email, chat, Drive, memory, relationship, chronicler, general,
+  approvals, switchboard, travel, Home Assistant and the remaining core tools.
 Concurrent joins are single-statement unions under the row lock, so neither
 principal nor category is lost.
 
