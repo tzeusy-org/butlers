@@ -622,6 +622,21 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
     return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()
 
 
+def drop_test_db(postgres_container: object, db_name: str) -> None:
+    """Drop the clone *db_name*, ending any connection still open on it.
+
+    Kit fixtures drop their clones at teardown: a shard runs thousands of tests on
+    one container, and clones kept to session end fill its disk (bu-rvgzmf.7).
+    """
+    admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS {_quote_ident(db_name)} WITH (FORCE)"))
+    finally:
+        engine.dispose()
+
+
 def _upgrade_chain_to_revision(
     db_url: str, *, chain: str, schema: str | None, revision: str
 ) -> None:
