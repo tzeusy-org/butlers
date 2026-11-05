@@ -76,6 +76,14 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
     postgres_container, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(migration._TEMPLATES_ENV, raising=False)
+    metadata_events = []
+    original_event = migration._storage_database
+
+    def record_event(event, container, name, kind):
+        metadata_events.append((event, container, name, kind))
+        original_event(event, container, name, kind)
+
+    monkeypatch.setattr(migration, "_storage_database", record_event)
     migrations: list[str] = []
     real_migrate = migration._migrate
     monkeypatch.setattr(
@@ -84,6 +92,24 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
     first = migration.create_migrated_test_db(
         postgres_container, migration.migration_db_name(), chains=["core"]
     )
+    first_name = urlparse(first).path.lstrip("/")
+    assert ("created", postgres_container, first_name, "C") in metadata_events
+    assert ("ready", postgres_container, first_name, "C") in metadata_events
+    assert any(event == "ready" and kind == "T" for event, _, _, kind in metadata_events)
+    from butlers.testing import storage
+
+    admin = create_engine(postgres_container.get_connection_url())
+    try:
+        with admin.connect() as connection:
+            metadata = storage._metadata(connection.execute(text(storage._METADATA_SQL)).all())
+            assert type(metadata[first_name]) is int and metadata[first_name] > 0
+            ready_templates = {
+                name for event, _, name, kind in metadata_events if event == "ready" and kind == "T"
+            }
+            assert ready_templates and ready_templates <= set(metadata)
+    finally:
+        admin.dispose()
+
     second = migration.create_migrated_test_db(
         postgres_container, migration.migration_db_name(), chains=["core"]
     )
@@ -232,5 +258,8 @@ def test_template_storage_observes_complete_lifecycle(monkeypatch, stage, disk_f
         assert observer.wake_event.is_set()
         assert migration._TEMPLATES == {}
         assert calls.count("dispose") == int(stage == "finalize")
+    states = list(observer.database_snapshot()[2].values())
+    assert len(states) == 1 and states[0][0] == "T"
+    assert states[0][1] == ("ready" if stage == "success" else "intent")
     assert all(not lock.locked() for lock in migration._TEMPLATE_LOCKS.values())
     assert observer.thread.ident is None

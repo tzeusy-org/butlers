@@ -114,7 +114,7 @@ def _probe_outcome(error: Exception, stage: str) -> str:
             "command_output_limit": "command_output_limit",
             "database_not_readonly": "not_readonly",
         }.get(str(error), "other")
-    if stage in PG_STAGES:
+    if stage in PG_STAGES or stage in ALLOCATION_STAGES:
         original = getattr(error, "orig", error)
         code = getattr(original, "pgcode", None) or getattr(original, "sqlstate", None)
         if isinstance(code, str):
@@ -197,7 +197,7 @@ def safe(call) -> dict:
         return _unknown("measurement_unavailable")
 
 
-def owned_pgdata(container_id: str) -> dict:
+def _owned_server(container_id: str) -> dict:
     if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
         raise Unknown("server_identity")
     state = (
@@ -230,6 +230,11 @@ def owned_pgdata(container_id: str) -> dict:
         "owned_volumes": mounts.count("volume"),
         "image_sha256": match[2],
     }
+    return result
+
+
+def owned_pgdata(container_id: str) -> dict:
+    result = _owned_server(container_id)
     for flag, fields in (
         ("-Pk", ("total_bytes", "free_bytes")),
         ("-Pi", ("total_inodes", "free_inodes")),
@@ -335,6 +340,323 @@ def database_totals(container: Any, *, steps: list[dict] | None = None) -> dict:
             _probe_step(steps, "dispose", engine.dispose)
 
 
+MAX_DATABASES = 4096
+ALLOCATION_STAGES = ("metadata_before", "allocation", "metadata_after", "wal_temp")
+_METADATA_SQL = (
+    "SELECT oid::bigint, datname, dattablespace::bigint FROM pg_database ORDER BY oid LIMIT 4097"
+)
+_WAL_TEMP_SQL = """SELECT (SELECT coalesce(sum(size), 0)::bigint FROM pg_ls_waldir()) AS wal_bytes,
+    (SELECT coalesce(sum(temp_bytes), 0)::bigint FROM pg_stat_database) AS temp_bytes_cumulative"""
+
+# One fixed command; per-OID paths and names never reach the host output. No
+# symlinks are followed, no tablespace outside this server's base is scanned.
+_ALLOCATION_SCRIPT = r"""
+set -eu
+data=/var/lib/postgresql/data
+mapping=$1
+for tool in du awk df find; do command -v "$tool" >/dev/null || exit 2; done
+[ -d "$data/base" ] && [ ! -L "$data" ] && [ ! -L "$data/base" ]
+[ -d "$data/pg_tblspc" ] && [ ! -L "$data/pg_tblspc" ]
+links=$(find "$data/base" -type l -print -quit) || exit 2
+spaces=$(find "$data/pg_tblspc" -mindepth 1 -print -quit) || exit 2
+[ -z "$links" ] && [ -z "$spaces" ] || exit 2
+(
+ for flag in -Pk -Pi; do
+   df_rows=$(df "$flag" "$data") || exit 2
+   if printf '%s\n' "$df_rows" | awk -v flag="$flag" '
+     NR==2 && NF==6 && $2~/^[0-9]+$/ && $4~/^[0-9]+$/ {
+       printf "__DF__ %s %s %s\n",flag,$2,$4; good=1
+     }
+     END {if(NR!=2 || !good)exit 2}'; then :; else exit 2; fi
+ done
+ if du -l -x -B1 -s -- "$data/base"/* 2>/dev/null; then
+   printf '__DU_EXIT__ 0\n'
+ else printf '__DU_EXIT__ 1\n'; fi
+) | awk -v mapping="$mapping" '
+BEGIN {
+ n=split(mapping,pairs,",");
+ if(mapping=="")n=0;
+ for(i=1;i<=n;i++) {
+  if(split(pairs[i],kv,":")!=2 || kv[1]!~/^[0-9]+$/ ||
+     kv[2]!~/^[TCFP]$/ || kv[1] in cls){invalid=1;continue}
+  cls[kv[1]]=kv[2];expected++;
+ }
+}
+$1=="__DF__" {
+ if(NF!=4 || ($2!="-Pk" && $2!="-Pi") || $3!~/^[0-9]+$/ ||
+    $4!~/^[0-9]+$/ || $2 in dfseen){invalid=1;next}
+ dfseen[$2]=1;total[$2]=$3;free[$2]=$4;next
+}
+$1=="__DU_EXIT__" {if(NF!=2 || $2!~/^[01]$/)invalid=1;footer++;command_exit=$2;next}
+{
+ if($1!~/^[0-9]+$/ || NF!=2){invalid=1;next}
+ records++;if(records>4096){invalid=1;exit 2}
+ oid=$2;sub(/^.*\//,"",oid);
+ if(oid!~/^[0-9]+$/){other_bytes+=$1;other_count++;next}
+ if(oid in seen){invalid=1;next}
+ seen[oid]=1;
+ if(oid in cls){count[cls[oid]]++;bytes[cls[oid]]+=$1;matched++}
+ else{unmapped++;unmapped_bytes+=$1}
+}
+END {
+ missing=0;for(oid in cls)if(!(oid in seen))missing++;
+ ok=(!invalid && footer==1 && command_exit==0 && missing==0 && matched==expected &&
+     dfseen["-Pk"] && dfseen["-Pi"]);
+ printf "scan_complete=%d\nexpected=%d\nmatched=%d\nmissing=%d\n",ok,expected,matched,missing;
+ printf "unmapped_oids=%d\nunmapped_bytes=%.0f\n",unmapped,unmapped_bytes;
+ printf "other_paths=%d\nother_bytes=%.0f\n",other_count,other_bytes;
+ printf "total_bytes=%.0f\nfree_bytes=%.0f\n",total["-Pk"]*1024,free["-Pk"]*1024;
+ printf "total_inodes=%.0f\nfree_inodes=%.0f\n",total["-Pi"],free["-Pi"];
+ split("T C F P",classes," ");
+ for(i=1;i<=4;i++){
+  c=classes[i];printf "%s_count=%d\n%s_allocated_namespace_bytes=%.0f\n",c,count[c],c,bytes[c]
+ }
+ if(!ok)exit 2;
+}'
+"""
+
+
+def _metadata(rows) -> dict[str, int]:
+    if len(rows) > MAX_DATABASES:
+        raise Unknown("database_metadata_limit")
+    result = {}
+    oids = set()
+    for oid, name, tablespace in rows:
+        if (
+            type(oid) is not int
+            or not 0 < oid < 2**32
+            or oid in oids
+            or not isinstance(name, str)
+            or not name
+            or len(name.encode()) > 63
+            or name in result
+            or type(tablespace) is not int
+            or tablespace != 1663
+        ):
+            raise Unknown("database_metadata_shape")
+        result[name] = oid
+        oids.add(oid)
+    return result
+
+
+def _allocation_filesystem(container_id: str, mapping: dict[int, str]) -> dict:
+    if len(mapping) > MAX_DATABASES or any(
+        type(oid) is not int or not 0 < oid < 2**32 or kind not in {"T", "C", "F", "P"}
+        for oid, kind in mapping.items()
+    ):
+        raise Unknown("allocation_mapping")
+    result = _owned_server(container_id)
+    if result["owned_running_servers"] != 1:
+        raise Unknown("server_not_running")
+    encoded = ",".join(f"{oid}:{kind}" for oid, kind in sorted(mapping.items()))
+    raw = _capture(
+        ["docker", "exec", container_id, "sh", "-c", _ALLOCATION_SCRIPT, "storage", encoded]
+    )
+    keys = {
+        "scan_complete",
+        "expected",
+        "matched",
+        "missing",
+        "unmapped_oids",
+        "unmapped_bytes",
+        "other_paths",
+        "other_bytes",
+        "total_bytes",
+        "free_bytes",
+        "total_inodes",
+        "free_inodes",
+    }
+    keys |= {
+        f"{kind}_{suffix}" for kind in "TCFP" for suffix in ("count", "allocated_namespace_bytes")
+    }
+    parsed = {}
+    for line in raw.decode("ascii").splitlines():
+        key, separator, value = line.partition("=")
+        if separator != "=" or key not in keys or key in parsed or not value.isdecimal():
+            raise Unknown("allocation_output_shape")
+        number = int(value)
+        if number > 2**53 - 1:
+            raise Unknown("allocation_output_range")
+        parsed[key] = number
+    if (
+        set(parsed) != keys
+        or parsed["scan_complete"] != 1
+        or parsed["expected"] != len(mapping)
+        or parsed["matched"] != len(mapping)
+        or parsed["missing"] != 0
+        or sum(parsed[f"{kind}_count"] for kind in "TCFP") != len(mapping)
+    ):
+        raise Unknown("allocation_output_incomplete")
+    return {**result, **parsed}
+
+
+def owned_database_allocation(
+    observer: StorageObserver, *, steps: list[dict] | None = None, reached: dict | None = None
+) -> dict:
+    """Fixed-count readonly metadata + one full-cohort allocated namespace scan.
+
+    The per-command and per-statement bounds are independent, not a whole-sample
+    two-second guarantee. Credentials and database names remain driver-local.
+    """
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import NullPool
+
+    sequence, overflow, registry = observer.database_snapshot()
+    if overflow:
+        raise Unknown("database_registry_limit")
+    url = _probe_step(steps, "url", observer.container.get_connection_url)
+    engine = None
+
+    def connect():
+        nonlocal engine
+        engine = create_engine(
+            url,
+            poolclass=NullPool,
+            connect_args={
+                "connect_timeout": 2,
+                "options": (
+                    "-c default_transaction_read_only=on "
+                    "-c statement_timeout=2000 -c lock_timeout=1000"
+                ),
+            },
+        )
+        return engine.connect()
+
+    try:
+        with _probe_step(steps, "connect", connect) as connection:
+            if (
+                _probe_step(
+                    steps,
+                    "readonly",
+                    lambda: connection.execute(text("SHOW transaction_read_only")).scalar_one(),
+                )
+                != "on"
+            ):
+                raise Unknown("database_not_readonly")
+            before = _probe_step(
+                steps,
+                "metadata_before",
+                lambda: _metadata(connection.execute(text(_METADATA_SQL)).all()),
+            )
+            mapping = {
+                before[name]: kind if state == "ready" else "P"
+                for name, (kind, state, _) in registry.items()
+                if name in before
+            }
+            pgdata = _probe_step(
+                steps, "allocation", lambda: _allocation_filesystem(observer.container_id, mapping)
+            )
+            physical = {key: observer.binding.get(key, "") for key in ("run", "attempt")}
+            physical["container"] = observer.container_id
+            physical_server = hashlib.sha256(
+                json.dumps(physical, sort_keys=True).encode()
+            ).hexdigest()
+            # Retain only independently validated scan evidence before later SQL
+            # or disposal can fail. Cohort revalidation has not completed yet.
+            if reached is not None:
+                reached.update(
+                    {
+                        "pgdata": {
+                            key: pgdata[key]
+                            for key in (
+                                "status",
+                                "image_sha256",
+                                "owned_running_servers",
+                                "owned_volumes",
+                                "total_bytes",
+                                "free_bytes",
+                                "total_inodes",
+                                "free_inodes",
+                            )
+                        },
+                        "owned_allocation": {
+                            **{
+                                key: value
+                                for key, value in pgdata.items()
+                                if key
+                                not in {
+                                    "status",
+                                    "image_sha256",
+                                    "owned_running_servers",
+                                    "owned_volumes",
+                                }
+                            },
+                            "status": "unknown",
+                            "reason": "cohort_not_validated",
+                            "physical_server": physical_server,
+                            "registered": len(registry),
+                            "mapped": len(mapping),
+                            "cohort_complete": False,
+                            "accounting": "allocated_namespace_not_logical_or_unique_extents",
+                            "unattributed_pgdata_status": "unknown",
+                        },
+                    }
+                )
+            after = _probe_step(
+                steps,
+                "metadata_after",
+                lambda: _metadata(connection.execute(text(_METADATA_SQL)).all()),
+            )
+            wal_temp = _probe_step(
+                steps,
+                "wal_temp",
+                lambda: dict(connection.execute(text(_WAL_TEMP_SQL)).mappings().one()),
+            )
+            if set(wal_temp) != {"wal_bytes", "temp_bytes_cumulative"} or any(
+                type(value) is not int or value < 0 for value in wal_temp.values()
+            ):
+                raise Unknown("allocation_wal_temp_shape")
+            current_sequence, current_overflow, _ = observer.database_snapshot()
+            complete = (
+                sequence == current_sequence
+                and not current_overflow
+                and before == after
+                and len(mapping) == len(registry)
+                and not pgdata["P_count"]
+            )
+            allocation = {
+                "status": "ok" if complete else "unknown",
+                "reason": "complete_owned_cohort" if complete else "cohort_changed_or_pending",
+                "physical_server": physical_server,
+                "registered": len(registry),
+                "mapped": len(mapping),
+                "cohort_complete": complete,
+                "accounting": "allocated_namespace_not_logical_or_unique_extents",
+                "unattributed_pgdata_status": "unknown",
+                **{
+                    key: value
+                    for key, value in pgdata.items()
+                    if key
+                    not in {"status", "image_sha256", "owned_running_servers", "owned_volumes"}
+                },
+            }
+            return {
+                "owned_allocation": allocation,
+                "pgdata": {
+                    key: pgdata[key]
+                    for key in (
+                        "status",
+                        "image_sha256",
+                        "owned_running_servers",
+                        "owned_volumes",
+                        "total_bytes",
+                        "free_bytes",
+                        "total_inodes",
+                        "free_inodes",
+                    )
+                },
+                "postgres": {
+                    "status": "unknown",
+                    "reason": "logical_sizes_not_sampled",
+                    "readonly": True,
+                    **wal_temp,
+                },
+            }
+    finally:
+        if engine is not None:
+            _probe_step(steps, "dispose", engine.dispose)
+
+
 def enabled() -> bool:
     return (
         os.environ.get("BUTLERS_TEST_STORAGE_EVIDENCE") == "1"
@@ -415,6 +737,11 @@ class StorageObserver:
             "create_failed": 0,
             "storage_error": 0,
         }
+        # Internal names never leave this process. Hooks only update metadata.
+        self.databases: dict[str, tuple[str, str, int]] = {}
+        self.migrating_databases: set[str] = set()
+        self.database_sequence = 0
+        self.database_overflow = False
         self.rows: list[dict] = []
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -429,20 +756,84 @@ class StorageObserver:
             if event in ("create_failed", "storage_error"):
                 self.wake_event.set()
 
+    def database_event(self, event: str, container: Any, name: str, kind: str) -> None:
+        if container is not self.container or kind not in {"T", "C", "F"}:
+            return
+        if event not in {
+            "intent",
+            "created",
+            "pending",
+            "ready",
+            "migration_intent",
+            "migrated_ready",
+        }:
+            return
+        if not isinstance(name, str) or not name or len(name.encode()) > 63:
+            return
+        with self.lock:
+            previous = self.databases.get(name)
+            if event == "migration_intent":
+                if name not in self.databases and len(self.databases) >= MAX_DATABASES:
+                    self.database_overflow = True
+                    self.database_sequence += 1
+                    return
+                self.migrating_databases.add(name)
+                event = "intent"
+            elif event == "ready" and name in self.migrating_databases:
+                return
+            elif event == "migrated_ready":
+                self.migrating_databases.discard(name)
+                event = "ready"
+            # A template declares its class before using the fresh bootstrap path.
+            if previous is not None and previous[0] != kind:
+                if previous[0] == "T" and kind == "F" and event == "created":
+                    kind = "T"
+                else:
+                    return
+            if previous is None and len(self.databases) >= MAX_DATABASES:
+                self.database_overflow = True
+                self.database_sequence += 1
+                return
+            if previous is not None and previous[1] == event:
+                return
+            self.database_sequence += 1
+            self.databases[name] = (kind, event, self.database_sequence)
+
+    def database_snapshot(self):
+        with self.lock:
+            return self.database_sequence, self.database_overflow, dict(self.databases)
+
     def sample(self, phase: str) -> None:
         with self.lock:
             if len(self.rows) >= MAX_SAMPLES:
                 return
             counters = dict(self.events)
         probes: dict[str, list[dict]] = {"docker": [], "postgres": []}
+        elapsed = _elapsed_s(self.started)
+        root = safe(lambda: filesystem("/"))
+        docker = safe(lambda: docker_totals(steps=probes["docker"]))
+        allocation = _unknown("not_observed")
+        if phase in {"periodic", "create_error"} and self.database_snapshot()[2]:
+            reached: dict = {}
+            outcome = safe(
+                lambda: owned_database_allocation(self, steps=probes["postgres"], reached=reached)
+            )
+            measured = {**reached, **outcome}
+            allocation = measured.get("owned_allocation", measured)
+            pgdata = measured.get("pgdata", _unknown("allocation_unavailable"))
+            postgres = measured.get("postgres", _unknown("logical_sizes_not_sampled"))
+        else:
+            pgdata = safe(lambda: owned_pgdata(self.container_id))
+            postgres = safe(lambda: database_totals(self.container, steps=probes["postgres"]))
         row = {
             "phase": phase,
-            "elapsed_s": _elapsed_s(self.started),
+            "elapsed_s": elapsed,
             "events": counters,
-            "root": safe(lambda: filesystem("/")),
-            "docker": safe(lambda: docker_totals(steps=probes["docker"])),
-            "pgdata": safe(lambda: owned_pgdata(self.container_id)),
-            "postgres": safe(lambda: database_totals(self.container, steps=probes["postgres"])),
+            "root": root,
+            "docker": docker,
+            "pgdata": pgdata,
+            "postgres": postgres,
+            "owned_allocation": allocation,
             "probes": probes,
         }
         row["completed_elapsed_s"] = _elapsed_s(self.started)
@@ -490,6 +881,12 @@ def note(event: str, container: Any) -> None:
     if _ACTIVE is not None:
         with contextlib.suppress(Exception):
             _ACTIVE.note(event, container)
+
+
+def database_event(event: str, container: Any, name: str, kind: str) -> None:
+    if _ACTIVE is not None:
+        with contextlib.suppress(Exception):
+            _ACTIVE.database_event(event, container, name, kind)
 
 
 @contextlib.contextmanager

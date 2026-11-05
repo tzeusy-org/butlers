@@ -447,3 +447,55 @@ whole-function wall deadline. Sampling waits 30 seconds after the previous sampl
 so its cadence also includes probe/flush/scheduling time. No capacity or causal fix
 is claimed. Disable the existing opt-in observer to roll back its measurements;
 test/fixture lifetimes, resource policy and real-PostgreSQL coverage are unchanged.
+
+
+### Exact-owned allocated database measurement
+
+The opt-in hosted integration-6 storage observer records trusted database creation
+intent, physical creation and readiness on its own existing server. These hooks
+only update bounded in-process metadata; they do not change roles, migrations,
+ACL replay, cache lifetimes, pools, cleanup, workers or pytest outcomes. A partial
+creation remains pending. Disabled observers perform no measurement or registry
+work. The 4096-identity measurement bound refuses completeness on overflow; it
+never limits database creation.
+
+Periodic and create-error slots with registered databases use four fixed readonly
+SQL statements (readonly check, before/after OID metadata and combined WAL/temp)
+and one compound owned-container filesystem scan in place of the two legacy df
+execs. Every known OID is included, including the last clone; there is no rotating
+subset and no per-database size query. Internal names, URLs and per-OID sizes stay
+inside the driver/container. Output is a bounded closed aggregate by trusted
+fresh/template/clone/pending class, plus unmapped OID/path allocation. The physical
+server digest includes run/attempt/container identity and excludes worker name.
+
+The command retains the 3-second/8192-byte capture bounds. SQL retains 2-second
+connect and per-statement bounds with 1-second lock timeout; these are not a
+2-second whole-sample guarantee. Before/after metadata and registry generations
+must agree, all registered databases must map, and none may be pending before
+`cohort_complete` is true. Missing/truncated/duplicate output, unavailable GNU
+`du -l -x -B1`, unsupported tools, symlinks, tablespaces, OID races or overflow
+produce UNKNOWN. No tool installation or fallback broadens the scan.
+
+`owned_allocation` measures allocated namespace bytes from filesystem blocks,
+not logical database size or unique physical sectors. Sparse files differ from
+logical length; hardlinks are counted per namespace, and reflink/CoW/dedup can
+make sums differ from physical usage. Root and PGDATA inode capacities remain
+separate; no per-class inode claim is made. WAL/temp are separately named and
+pg_global/logs/other residual attribution remains unknown. Legacy
+`database_totals` numeric logical/prefix-only API is unchanged; allocation slots
+explicitly mark logical sizes unsampled and cannot turn an incomplete overall
+inventory into sampled evidence.
+
+The 600-directory software fixture proves full-cohort aggregation and refusal
+logic only. Actual pgvector image tool support, loaded Docker/PG execution,
+sampler elapsed cost and complete failing/successful-run attribution require
+hosted evidence. This instrumentation is not a storage fix: the original cause,
+durable correction, repeated normal-load verification and net cost remain open.
+
+The owned-allocation observer retains independently validated PGDATA capacity and
+raw namespace allocation when a later metadata recheck, WAL/temp query, or engine
+disposal fails. Such a partial scan does not establish a current complete cohort:
+its allocation remains UNKNOWN with `cohort_complete=false`, and unavailable SQL
+metrics remain UNKNOWN. It does not retry or perform another scan. Direct probe
+callers still receive the original exception; the observer's safe boundary keeps
+the test verdict unchanged.
