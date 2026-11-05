@@ -19,6 +19,7 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
+| `forwarder.py` | `HttpForwarder`: one `tools/call` per dispatch; D12 receipt mapping; the verified stamp account |
 | `server.py` | MCP streamable HTTP goal endpoint at `/goals/{goal_id}/mcp`, `BrokerSwitch`, `session_app` |
 | `typed.py` | M7: the one adopted closed typed shape, exact value validation, the held typed-value relaxation |
 | `boundaries.py` | M7: SQL over the sw_058 handles, extraction cache and child results; the `Extractor` seam |
@@ -82,15 +83,61 @@ Every producer, deferred path and reader of a label:
 | Park, approval, edit, retry | the approved call runs under the requesting invocation's current label, which must cover the effect's snapshot; an edited effect row snapshots that label | `BrokerLedger.begin_approved` |
 | Receipt / unknown / not_received | no output join unless committed; the effect label never changes | `Broker._forward` |
 | Goal union | every invocation and inbox label joins it; reporting only | sw_057 `goal_invocation_exposure` |
-| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no complete stamp account from the store, joins `{world}` and all six | `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
+| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no verified stamp account from the domain, joins `{world}` and all six | `core.stamp_account`; `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
 | Reply evidence | a reply to a prompt of an exposed goal is outside content (goal union; conservative) | `accepted_source.py` `_reply` |
 
 Stored labels resolve through the writer pointer (lead decision on
 bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
 Unstamped legacy records keep their content-authority behaviour (original
-authority preserved, or unknown). No domain reports its stamp account over the
-wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
-until one does.
+authority preserved, or unknown). Domains report the stamp account over the
+wire ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)); until the catalog
+admits a `stamped` descriptor, every model-reachable read is `untrusted` and
+the report changes no label.
+
+### Stamp accounts (D6, bu-dhloi1.28)
+
+`butlers.core.stamp_account` is both halves of the wire contract.
+
+- **Collect.** The domain's verification middleware binds an empty account
+  around exactly one verified call. Each D6 store reader passes the rows it
+  returns to `account_records`; outside a verified call that is a no-op.
+- **Classify.** A row is clean only when both stamp columns were selected, both
+  are null, and the store's authority rule says the owner wrote it. A row with
+  both pointers set adds its writer. Anything else (a half or unreadable
+  pointer, an unselected column, legacy or `system` authority) makes the
+  account not owner-untainted. More than 256 writers report not
+  owner-untainted.
+- **Report.** After the handler returns, the middleware writes the account to
+  the result's `_meta["butlers/stamp_account"]`:
+  `{version: 1, capability, call_id, args_digest, owner_untainted, writers}`,
+  with the verified assertion's own `capability`, `call_id` and `args_digest`.
+  It first removes any value the handler (or a server it proxies) put under
+  that key. A call whose readers never ran, or an error result, reports
+  nothing.
+- **Verify.** `HttpForwarder` accepts a report only when it has exactly those
+  keys, version 1, `owner_untainted` exactly `true`, at most 256 canonical UUID
+  pairs, and names the reservation's capability, `call_id` and `args_digest`.
+  Anything else is no account. Tool content is never read for a stamp, so
+  stored text cannot vouch for itself.
+
+The report's integrity is the broker-to-domain transport's, the same as the
+result it travels with; the binding stops a report from another call (a replay
+or a proxied result) being taken for this one.
+
+| D6 store | Reader that accounts | Owner-authored when |
+| --- | --- | --- |
+| memory episodes, facts, rules (decision memory) | `memory_search`, `memory_recall`, `memory_get` | `content_authority` is `owner` or `owner_device` |
+| contact notes | `relationship.notes.note_list` | same |
+| relationship entity facts, narrative facts | `relationship_lookup` identity and narrative reads | same (rel_037 / mem_013) |
+| conversation history | `conversation_recall` (`message_search`), `conversation_thread_read` (`message_thread_window`) | a `user` turn of a `dashboard` conversation; replies and other channels never |
+| captures, insight candidates | none: no model-reachable reader | n/a |
+
+A report shows which rows the readers saw. It cannot show that a tool returned
+nothing else: one tool may also read a store whose reader does not account.
+That completeness is a per-tool audit. The catalog check still refuses every
+`stamped` descriptor (`validate_authorization_catalog`), and the broker reads
+a receipt's account only for a `stamped` capability. So precision arrives one
+audited tool at a time.
 
 Until the per-tool `categories` declaration lands and is made required
 (bu-dhloi1.27, a switch-release blocker), categories are derived from the descriptor's D4
@@ -357,6 +404,8 @@ the owning domain's endpoint with exactly one `X-Butlers-Assertion` header. A
 session that never opened is `not_received` (the one D12 retry); a result is
 `committed`; an error result, including a refused assertion, is `failed`;
 anything after the call was sent propagates and the effect becomes `unknown`.
+A committed receipt carries the domain's stamp account only when its `_meta`
+report names this call ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)).
 
 On the domain, `verification.AssertionVerificationMiddleware` is the outermost
 FastMCP middleware, so it runs before argument coercion, before the core tool

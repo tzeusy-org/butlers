@@ -259,6 +259,40 @@ async def test_message_thread_window_centers_on_anchor(db_pool: asyncpg.Pool) ->
     assert window_ids == ids[1:12]  # 5 before + anchor + 5 after
 
 
+async def test_conversation_reads_account_each_messages_d6_stamp(db_pool: asyncpg.Pool) -> None:
+    """bu-dhloi1.28: the owner's own dashboard turns are clean; a goal's write names its writer."""
+    from butlers.core.stamp_account import account_scope
+
+    conv = await _seed_conversation(db_pool, butler_name="finance")
+    await _seed_message(db_pool, conversation_id=conv, content="lighthouse owner turn")
+    tainted = await _seed_message(db_pool, conversation_id=conv, content="lighthouse goal turn")
+    writer = (uuid.uuid4(), uuid.uuid4())
+    await db_pool.execute(
+        "UPDATE public.dashboard_messages SET taint_goal_id = $2, taint_invocation_id = $3 "
+        "WHERE id = $1",
+        tainted,
+        *writer,
+    )
+
+    async def accounts():
+        with account_scope() as searched:
+            await message_search(db_pool, query="lighthouse", butler="finance")
+        with account_scope() as windowed:
+            await message_thread_window(db_pool, conv)
+        return [(a.owner_untainted, a.writers) for a in (searched, windowed)]
+
+    assert await accounts() == [(True, {writer})] * 2
+
+    # A reply is model output and a Telegram thread carries other senders.
+    await _seed_message(db_pool, conversation_id=conv, content="lighthouse reply", role="assistant")
+    assert await accounts() == [(False, {writer})] * 2
+    telegram = await _seed_conversation(db_pool, butler_name="health", source_channel="telegram")
+    await _seed_message(db_pool, conversation_id=telegram, content="lighthouse from a chat")
+    with account_scope() as account:
+        await message_search(db_pool, query="lighthouse", butler="health")
+    assert (account.opened, account.owner_untainted) == (True, False)
+
+
 async def test_message_thread_window_unknown_anchor_returns_empty(db_pool: asyncpg.Pool) -> None:
     conv = await _seed_conversation(db_pool, butler_name="finance")
     await _seed_message(db_pool, conversation_id=conv, content="hi")

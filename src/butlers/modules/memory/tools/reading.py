@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.stamp_account import account_records
 from butlers.modules.memory.content_authority import catalog_attribution
 from butlers.modules.memory.tools._helpers import (
     _search,
@@ -58,6 +59,7 @@ async def memory_search(
         filters=filters,
         read_policy=read_policy,
     )
+    account_records(results)  # D6: the stamp account a broker-forwarded read reports
     return [_serialize_row(r) for r in results]
 
 
@@ -102,6 +104,7 @@ async def memory_recall(
         tenant_id=tenant_id,
         read_policy=read_policy,
     )
+    account_records(results)
     return [_serialize_row(r) for r in results]
 
 
@@ -127,6 +130,7 @@ async def memory_get(
         uuid.UUID(memory_id),
         allowed_sensitivities=read_policy.allowed_sensitivities,
     )
+    account_records([] if result is None else [result])
     if result is None:
         return None
     return _serialize_row(result)

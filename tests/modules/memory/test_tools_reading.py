@@ -109,6 +109,30 @@ class TestMemoryGet:
         assert await memory_get(mock_pool, "fact", SAMPLE_STR) is None
 
 
+@pytest.mark.parametrize("tool", ["search", "recall", "get"])
+async def test_reads_account_each_returned_rows_d6_stamp(
+    mock_pool: AsyncMock, engine: MagicMock, tool: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bu-dhloi1.28: the broker's stamp account sees every row a memory read returns."""
+    from butlers.core.stamp_account import account_scope
+
+    writer = (uuid.uuid4(), uuid.uuid4())
+    clean = {"id": SAMPLE_UUID, "content_authority": "owner"}
+    clean |= {"taint_goal_id": None, "taint_invocation_id": None}
+    tainted = {"id": uuid.uuid4(), "content_authority": "third_party"}
+    tainted |= {"taint_goal_id": writer[0], "taint_invocation_id": writer[1]}
+    if tool == "get":
+        monkeypatch.setattr(_helpers._storage, "get_memory", AsyncMock(return_value=tainted))
+        with account_scope() as account:
+            await memory_get(mock_pool, "fact", SAMPLE_STR)
+    else:
+        monkeypatch.setattr(_helpers._search, tool, AsyncMock(return_value=[clean, tainted]))
+        read = memory_search if tool == "search" else memory_recall
+        with account_scope() as account:
+            await read(mock_pool, engine, "topic")
+    assert (account.opened, account.owner_untainted, account.writers) == (True, True, {writer})
+
+
 class TestReadPolicyForwarding:
     async def test_search_forwards_held_policy(
         self, mock_pool: AsyncMock, engine: MagicMock, monkeypatch: pytest.MonkeyPatch

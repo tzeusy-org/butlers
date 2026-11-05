@@ -2,6 +2,7 @@
 
 bu-pkuny2 AC4: entity facts (``rel_039``), narrative facts and contact notes
 (memory facts, ``mem_017``) hand back the exposed goal lineage that wrote them.
+bu-dhloi1.28: the same reads account each row's stamp for the broker.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.core.stamp_account import account_scope
 from butlers.testing.records import row
 from butlers.tools.relationship.notes import note_list
 from butlers.tools.relationship.relationship_lookup import (
@@ -96,3 +98,34 @@ async def test_an_untainted_row_reads_back_null(read):
     pool.fetch = AsyncMock(return_value=[_row(taint_goal_id=None, taint_invocation_id=None)])
     [item] = await read(pool, uuid.uuid4())
     assert (item["taint_goal_id"], item["taint_invocation_id"]) == (None, None)
+
+
+@pytest.mark.parametrize("read", [_fetch_identity_facts, _fetch_narrative_facts, note_list])
+async def test_reads_account_each_rows_stamp_and_authority(read):
+    writer = (uuid.uuid4(), uuid.uuid4())
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            _row(content_authority="owner", taint_goal_id=None, taint_invocation_id=None),
+            _row(
+                content_authority="third_party",
+                taint_goal_id=writer[0],
+                taint_invocation_id=writer[1],
+            ),
+        ]
+    )
+    with account_scope() as account:
+        await read(pool, uuid.uuid4())
+    assert (account.opened, account.owner_untainted, account.writers) == (True, True, {writer})
+    sql = " ".join(pool.fetch.await_args.args[0].split())
+    assert "content_authority" in sql
+
+    # An untainted record the owner did not author is not owner-untainted.
+    pool.fetch = AsyncMock(
+        return_value=[
+            _row(content_authority="system", taint_goal_id=None, taint_invocation_id=None)
+        ]
+    )
+    with account_scope() as account:
+        await read(pool, uuid.uuid4())
+    assert (account.opened, account.owner_untainted) == (True, False)

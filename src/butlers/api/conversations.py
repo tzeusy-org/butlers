@@ -30,6 +30,7 @@ from butlers.conversation_messages import (
     message_create as message_create,
 )
 from butlers.core.goal_lineage import taint_insert, taint_read
+from butlers.core.stamp_account import account_records
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +558,7 @@ async def message_search(
 
     fetch_limit = limit + 1
     rows = await pool.fetch(
-        """
+        f"""
         WITH q AS (
             SELECT plainto_tsquery('english', $1) AS tsq
         ),
@@ -571,7 +572,8 @@ async def message_search(
                 c.butler_name,
                 c.source_channel,
                 ts_rank(m.search_vector, q.tsq)::float8 AS rank,
-                ts_headline('english', m.content, q.tsq, $6) AS headline
+                ts_headline('english', m.content, q.tsq, $6) AS headline,
+                {taint_read("m")}
             FROM public.dashboard_messages m
             JOIN public.dashboard_conversations c ON c.id = m.conversation_id
             CROSS JOIN q
@@ -601,6 +603,7 @@ async def message_search(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
+    account_records(page_rows, owner_authored_message)
 
     items: list[dict[str, Any]] = []
     for row in page_rows:
@@ -652,12 +655,14 @@ async def message_thread_window(
     back to the wrong anchor).
     """
     rows = await pool.fetch(
-        """
+        f"""
         WITH ordered AS (
-            SELECT id, role, content, created_at, session_id, model_name,
-                   ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
-            FROM public.dashboard_messages
-            WHERE conversation_id = $1
+            SELECT m.id, m.role, m.content, m.created_at, m.session_id, m.model_name,
+                   c.source_channel, {taint_read("m")},
+                   ROW_NUMBER() OVER (ORDER BY m.created_at ASC, m.id ASC) AS rn
+            FROM public.dashboard_messages m
+            JOIN public.dashboard_conversations c ON c.id = m.conversation_id
+            WHERE m.conversation_id = $1
         ),
         anchor AS (
             SELECT CASE
@@ -665,7 +670,8 @@ async def message_thread_window(
                 ELSE (SELECT rn FROM ordered WHERE id = $2)
             END AS anchor_rn
         )
-        SELECT o.id, o.role, o.content, o.created_at, o.session_id, o.model_name
+        SELECT o.id, o.role, o.content, o.created_at, o.session_id, o.model_name,
+               o.source_channel, o.taint_goal_id, o.taint_invocation_id
         FROM ordered o, anchor
         WHERE anchor.anchor_rn IS NOT NULL
           AND o.rn BETWEEN anchor.anchor_rn - $3 AND anchor.anchor_rn + $4
@@ -676,7 +682,17 @@ async def message_thread_window(
         before,
         after,
     )
+    account_records(rows, owner_authored_message)
     return [dict(r) for r in rows]
+
+
+def owner_authored_message(row: Any) -> bool:
+    """D6 authority of a conversation-history row: the owner's own dashboard turn.
+
+    Replies are model output and other channels carry other senders, so
+    neither is owner-authored (RFC 0038 D6); their read is not owner-untainted.
+    """
+    return row.get("role") == "user" and row.get("source_channel") == "dashboard"
 
 
 async def conversation_summary(

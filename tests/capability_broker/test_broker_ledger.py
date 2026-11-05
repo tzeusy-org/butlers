@@ -83,9 +83,14 @@ class Forwarder:
 
     def __init__(self):
         self.calls, self.receipt = [], DomainReceipt("committed", "receipt-1", {"ok": True})
+        self.via = None  # a real ``HttpForwarder`` to send through instead
 
     async def dispatch(self, reservation, args, assertion, *, idempotency_key):
         self.calls.append((reservation, args, assertion, idempotency_key))
+        if self.via is not None:
+            return await self.via.dispatch(
+                reservation, args, assertion, idempotency_key=idempotency_key
+            )
         if isinstance(self.receipt, Exception):
             raise self.receipt
         return self.receipt
@@ -907,6 +912,106 @@ async def test_a_tainted_stored_record_joins_its_writer_invocations_label(broker
         assert (row["exposed"], row["exposure_cause"]) == (True, "read")
         assert row["label_data"] == ["owner", "world"]
         assert set(row["label_sens"]) == CATEGORIES
+
+
+@asynccontextmanager
+async def _relationship_domain(w, report: dict):
+    """The owning domain behind the real forwarder: verified, reading the real identity store."""
+    from fastmcp import FastMCP
+
+    from butlers.capability_broker.forwarder import HttpForwarder
+    from butlers.capability_broker.verification import (
+        AssertionVerificationMiddleware,
+        DomainVerifier,
+    )
+    from butlers.core.runtime_probe_control.keys import VerifierKey, VerifierKeyring
+    from butlers.tools.relationship.relationship_lookup import _fetch_identity_facts
+
+    server = FastMCP(DOMAIN)
+
+    @server.tool()
+    async def recall() -> dict:
+        if report["accounted"]:
+            facts = await _fetch_identity_facts(w.owner, report["entity"])
+        else:  # a read that bypasses the store reader accounts nothing
+            facts = await w.owner.fetch(
+                "SELECT object FROM relationship.entity_facts WHERE subject = $1",
+                report["entity"],
+            )
+        return {"facts": len(facts)}
+
+    public = w.signer.ed25519.public_key().public_bytes_raw()
+    keyring = VerifierKeyring(VerifierKey(w.signer.kid, public, datetime(2026, 1, 1, tzinfo=UTC)))
+    verifier = DomainVerifier(DOMAIN, keyring, started_at=int(time.time()) - 5)
+    server.middleware.insert(0, AssertionVerificationMiddleware(verifier))
+    app = server.http_app(path="/mcp", stateless_http=True, json_response=True)
+
+    def factory(**kwargs):
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), **kwargs)
+
+    async with app.lifespan(app):
+        w.forwarder.via = HttpForwarder({DOMAIN: "http://domain/mcp"}, httpx_client_factory=factory)
+        yield
+
+
+async def _identity_fact(w, entity, authority, writer=(None, None)):
+    await w.owner.execute(
+        "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src, "
+        "conf, observed_at, validity, content_authority, taint_goal_id, taint_invocation_id) "
+        "VALUES ($1, 'has-email', $2, 'literal', 'relationship', 1.0, now(), 'active', $3, $4, $5)",
+        entity,
+        f"{uuid4().hex[:8]}@example.test",
+        authority,
+        *writer,
+    )
+
+
+async def test_the_real_forwarder_joins_a_stored_records_writer_precisely(broker_db_url):
+    """bu-dhloi1.28 AC3: the domain's report, through HttpForwarder, sets the read's label."""
+    async with world(broker_db_url) as w:
+        writer_goal = await w.goal(_grant(UNTRUSTED))
+        writer, _ = await w.invocation(writer_goal, _grant(UNTRUSTED))
+        await w.owner.execute(
+            "UPDATE switchboard.invocations SET label_data = "
+            "switchboard.goal_label_union(label_data, ARRAY['external:mail-7']), "
+            "label_sens = switchboard.goal_label_union(label_sens, ARRAY['finance']), "
+            "exposure_cause = 'read' WHERE id = $1",
+            writer,
+        )
+        entity = await w.owner.fetchval(
+            "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+            "VALUES ('Stamp Reader', 'person', '{}') RETURNING id"
+        )
+        report = {"entity": entity, "accounted": True}
+
+        async def read():
+            goal = await w.goal(_grant(RECALL))
+            reader, token = await w.invocation(goal, _grant(RECALL))
+            result = await w.broker.call(goal, token, RECALL.identity, {})
+            assert result.status == "returned" and result.value == {"facts": facts}
+            return await _label(w, reader)
+
+        async with _relationship_domain(w, report):
+            await _identity_fact(w, entity, "owner")
+            facts = 1
+            row = await read()  # owner-authored and untainted: owner data
+            assert (row["exposed"], row["label_data"], row["label_sens"]) == (
+                False,
+                ["owner"],
+                ["health"],
+            )
+
+            await _identity_fact(w, entity, "third_party", (writer_goal, writer))
+            facts = 2
+            row = await read()  # the exposed writer's own label, not {world}
+            assert (row["exposed"], row["exposure_cause"]) == (True, "read")
+            assert row["label_data"] == ["external:mail-7", "owner"]
+            assert row["label_sens"] == ["finance", "health"]
+
+            report["accounted"] = False
+            row = await read()  # no account: the unknown label
+            assert (row["exposed"], row["label_data"]) == (True, ["owner", "world"])
+            assert set(row["label_sens"]) == CATEGORIES
 
 
 async def test_a_replacement_lead_inherits_its_predecessor_and_parks(broker_db_url):
