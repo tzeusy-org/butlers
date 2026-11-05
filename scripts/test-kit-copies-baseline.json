@@ -82,24 +82,6 @@
   "tests/integration/test_migrated_core_postgres_pool.py": [
     "_FakePool"
   ],
-  "tests/jobs/test_calendar_overlay.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay_health.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay_relationship.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay_travel.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_prep.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_prep_message_context.py": [
-    "_FakePool"
-  ],
   "tests/jobs/test_deploy_drift.py": [
     "_FakePool"
   ],
