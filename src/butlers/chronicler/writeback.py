@@ -312,7 +312,7 @@ async def execute_writeback(
 
     async def _store(fact: InsightFact) -> bool:
         try:
-            write_args = dict(
+            write_args: dict[str, Any] = dict(
                 subject=fact.subject,
                 predicate=fact.predicate,
                 content=fact.content,

@@ -577,7 +577,7 @@ remain in the same transaction, so a projection failure rolls them all back.
 
 The mandatory cascade and catalog-only supersession write-behind use the shared
 `public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)`
-function installed by core_314. Its invoker authority preserves the caller's
+function installed by core_315. Its invoker authority preserves the caller's
 transaction and underlying table privileges. Graph invalidation is mandatory for
 disownment; postcommit supersession remains catalog-only and best effort. The
 optional final redaction flag additionally clears copied catalog summary, title,
@@ -594,3 +594,19 @@ separate deployment property. Missing permissions fail the mandatory transaction
 A schema-local downgrade retains this shared boundary and additive grants for
 other schema/runtime consumers. No deployment can run the new helper before the
 core revision is installed.
+
+
+### Lifecycle transition timestamps
+
+`facts.dropped_at` records entry into superseded/expired; `rules.forgotten_at`
+records entry into the existing forgotten=true state. These nullable fields
+have no default or legacy backfill. Duplicate terminal writes preserve the old
+time, including NULL; initial forgotten rules use their insertion time. They do
+not replace bitemporal `invalid_at` or rule-retirement `retired_at`.
+
+The memory-access seven-day integer counts those two timestamps plus episode
+`expires_at` inside one database-clock inclusive seven-day window. Future/NULL
+times are excluded, so legacy terminal history can be undercounted. Existing
+canonical/catalog/graph rollback boundaries remain; store_fact catalog
+write-behind and quick-fact/gift separate pool calls do not acquire broader
+atomicity from these fields.

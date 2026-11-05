@@ -466,3 +466,14 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
         if config is None:
             config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
         _upgrade_chain(config, resolved_chain, normalized_schema)
+
+    # The core boundary is installed before the private memory module creates
+    # chronicler_mem.facts. Re-run its idempotent finalizer after that explicit
+    # module chain so the definer receives only the canonical columns it needs.
+    if chain == "memory" and normalized_schema == "chronicler_mem":
+        engine = create_engine(db_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("SELECT chronicler_memory_admin.finalize_interface()"))
+        finally:
+            engine.dispose()

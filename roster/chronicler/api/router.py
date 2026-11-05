@@ -2244,6 +2244,7 @@ async def get_trends(
         pool = _pool(db)
 
         trends_source_error = False
+        pending_dates: set[date] = set()
         try:
             all_rows, all_flags, pending_dates, _read_busy = await _numeric_snapshot(
                 pool,
@@ -2348,9 +2349,8 @@ async def get_trends(
                 days=lane_series[lane],
                 streak_days=(
                     None
-                    if any(
-                        start_date <= pending_day <= resolved_end for pending_day in pending_dates
-                    )
+                    if trends_source_error
+                    or any(day.status == "pending_repair" for day in lane_series[lane])
                     else compute_lane_streak(lane_daily_seconds[lane])
                 ),
             )

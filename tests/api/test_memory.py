@@ -1660,7 +1660,9 @@ class _RetractPool:
         if (
             self._fact is not None
             and (
-                "FROM facts WHERE id" in query or 'FROM "chronicler_mem"."facts" WHERE id' in query
+                "FROM facts WHERE id" in query
+                or 'FROM "chronicler_mem"."facts" WHERE id' in query
+                or "WHERE facts.id = $1" in query
             )
             and args[0] == self._fact["id"]
         ):
@@ -1672,6 +1674,14 @@ class _RetractPool:
         return []
 
     async def fetchval(self, query: str, *args: object):
+        # Model a pre-030 Chronicler schema: the readable view is absent, while
+        # a normal canonical fact remains visible to the explicit fallback.
+        if "to_regclass('chronicler_mem.facts_readable')" in query:
+            return False
+        if "WHERE facts.id = $1" in query:
+            if self._fact is not None and args and args[0] == self._fact["id"]:
+                return 1
+            return None
         # storage._cascade_catalog_disownment resolves the owning schema via
         # current_schema() before marking the catalog row stale.
         if "current_schema()" in query:
@@ -2010,7 +2020,7 @@ class _MemoryDetailPool:
     async def fetchrow(self, query: str, *args: object):
         if self._error is not None:
             raise self._error
-        if "WHERE supersedes_id" in query:
+        if "WHERE facts.supersedes_id" in query or "WHERE supersedes_id" in query:
             return None
         if "FROM episodes" in query:
             return Record(self._episode) if self._episode is not None else None
@@ -2631,11 +2641,11 @@ class _GetFactPool:
         # asyncpg coerces; the fake matches on the string form.
         wanted = str(self._fact["id"]) if self._fact is not None else None
         got = str(args[0]) if args else None
-        if "WHERE supersedes_id" in query:
+        if "WHERE facts.supersedes_id" in query or "WHERE supersedes_id" in query:
             if self._superseder_id is not None and got == wanted:
                 return Record({"id": self._superseder_id})
             return None
-        if "FROM facts WHERE id" in query and got == wanted:
+        if ("FROM facts WHERE id" in query or "WHERE facts.id = $1" in query) and got == wanted:
             return Record(self._fact)
         return None
 

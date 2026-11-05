@@ -1,7 +1,7 @@
 """Persist detected Steam changes for timed session evidence (bu-r3fmja.7).
 
-Revision ID: core_313
-Revises: core_312
+Revision ID: core_314
+Revises: core_313
 
 Additive, shared across schema-local core installations. Downgrade intentionally
 retains append-only evidence and its reader grants: source rollback disables the
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_313"
-down_revision = "core_312"
+revision = "core_314"
+down_revision = "core_313"
 branch_labels = None
 depends_on = None
 

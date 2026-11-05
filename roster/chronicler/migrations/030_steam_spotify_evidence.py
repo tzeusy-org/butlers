@@ -1231,6 +1231,199 @@ $$;
         CREATE TRIGGER overrides_daily_repair AFTER INSERT OR UPDATE OR DELETE ON overrides
             FOR EACH ROW EXECUTE FUNCTION invalidate_daily_repair_episode();
     """)
+    # Local Chronicler memory reads share the same source classification as the
+    # public projection guards, but accept only the selected canonical row. The
+    # view is used by explicitly configured chronicler_mem readers; it is absent
+    # before 030, where application SQL applies the narrow generated-predicate
+    # fallback without naming optional repair relations.
+    op.execute("""
+        CREATE OR REPLACE FUNCTION chronicler.memory_fact_row_visible(
+            p_fact chronicler_mem.facts
+        ) RETURNS boolean
+        LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, pg_temp
+        AS $visibility$
+        DECLARE
+            v_fact_date date;
+            v_closed_through date;
+            v_replay_epoch bigint;
+            v_replay_ack bigint;
+            v_blocked_reason text;
+            v_timezone text;
+            v_hidden boolean;
+            v_rows bigint;
+        BEGIN
+            IF p_fact.id IS NULL THEN
+                RETURN false;
+            END IF;
+            IF pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions') IS NOT NULL THEN
+                EXECUTE 'SELECT EXISTS ('
+                     || 'SELECT 1 FROM chronicler.daily_repair_fact_dispositions '
+                     || 'WHERE fact_id = $1 AND disposition = ''disposed'' AND redacted)'
+                  INTO v_hidden USING p_fact.id;
+                IF v_hidden THEN
+                    RETURN false;
+                END IF;
+            END IF;
+            IF p_fact.content_authority IN ('owner', 'owner_device') THEN
+                RETURN true;
+            END IF;
+            IF p_fact.predicate NOT IN (
+                'lane-skew', 'sleep-debt', 'revisit-low-confidence-block'
+            ) THEN
+                RETURN true;
+            END IF;
+            IF p_fact.source_butler IS DISTINCT FROM 'chronicler'
+               OR p_fact.validity IS NULL
+               OR p_fact.validity NOT IN ('active', 'fading')
+               OR p_fact.invalid_at IS NOT NULL
+               OR pg_catalog.jsonb_typeof(p_fact.metadata) IS DISTINCT FROM 'object'
+               OR p_fact.metadata->>'source' IS DISTINCT FROM 'chronicler'
+               OR pg_catalog.jsonb_typeof(p_fact.tags) IS DISTINCT FROM 'array' THEN
+                RETURN false;
+            END IF;
+
+            IF p_fact.predicate = 'sleep-debt' THEN
+                IF pg_catalog.jsonb_typeof(p_fact.metadata->'as_of') IS DISTINCT FROM 'string'
+                   OR p_fact.subject IS DISTINCT FROM 'sleep'
+                   OR pg_catalog.jsonb_typeof(p_fact.metadata->'debt_seconds') IS DISTINCT FROM 'number'
+                   OR pg_catalog.jsonb_typeof(p_fact.metadata->'shortfall_days') IS DISTINCT FROM 'number'
+                   OR pg_catalog.jsonb_typeof(p_fact.metadata->'window_days') IS DISTINCT FROM 'number'
+                   OR NOT p_fact.tags @> '["chronicler-insight", "sleep-debt"]'::jsonb THEN
+                    RETURN false;
+                END IF;
+                v_fact_date := NULLIF(p_fact.metadata->>'as_of', '')::date;
+            ELSIF p_fact.predicate = 'lane-skew' THEN
+                IF pg_catalog.jsonb_typeof(p_fact.metadata->'local_date') IS DISTINCT FROM 'string'
+                   OR COALESCE(p_fact.metadata->>'lane', '') = ''
+                   OR p_fact.subject IS DISTINCT FROM (p_fact.metadata->>'lane' || ' lane')
+                   OR p_fact.metadata->>'direction' IS NULL
+                   OR p_fact.metadata->>'direction' NOT IN ('up', 'down')
+                   OR pg_catalog.jsonb_typeof(p_fact.metadata->'seconds') IS DISTINCT FROM 'number'
+                   OR NOT p_fact.tags @> pg_catalog.jsonb_build_array(
+                       'chronicler-insight', 'lane-skew', p_fact.metadata->>'lane'
+                   ) THEN
+                    RETURN false;
+                END IF;
+                v_fact_date := NULLIF(p_fact.metadata->>'local_date', '')::date;
+            ELSE
+                IF pg_catalog.jsonb_typeof(p_fact.metadata->'local_date') IS DISTINCT FROM 'string'
+                   OR p_fact.metadata->>'flag_type' IS NULL
+                   OR p_fact.metadata->>'flag_type' NOT IN ('feeder_dark', 'sleep_missing')
+                   OR p_fact.metadata->>'severity' IS NULL
+                   OR p_fact.subject IS DISTINCT FROM (
+                       (p_fact.metadata->>'local_date') || ' ' || (p_fact.metadata->>'flag_type')
+                   )
+                   OR pg_catalog.jsonb_typeof(p_fact.metadata->'detail') IS DISTINCT FROM 'object'
+                   OR NOT p_fact.tags @> pg_catalog.jsonb_build_array(
+                       'chronicler-self-reminder', p_fact.metadata->>'flag_type'
+                   ) THEN
+                    RETURN false;
+                END IF;
+                v_fact_date := NULLIF(p_fact.metadata->>'local_date', '')::date;
+            END IF;
+
+            IF v_fact_date IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_control') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_days') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_source_redactions') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_retention_spans') IS NULL
+               OR pg_catalog.to_regclass('chronicler.episodes') IS NULL
+               OR pg_catalog.to_regclass('chronicler.v_episodes_corrected') IS NULL THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT closed_through, replay_epoch, replay_ack, blocked_reason, timezone '
+                 || 'FROM chronicler.daily_repair_control WHERE singleton'
+              INTO v_closed_through, v_replay_epoch, v_replay_ack, v_blocked_reason, v_timezone;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 OR v_blocked_reason IS NOT NULL OR v_timezone IS NULL OR v_timezone = ''
+               OR v_replay_epoch IS DISTINCT FROM v_replay_ack
+               OR v_fact_date > v_closed_through
+               OR NOT EXISTS (
+                   SELECT 1 FROM pg_catalog.pg_timezone_names WHERE name = v_timezone
+               ) THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT EXISTS ('
+                 || 'SELECT 1 FROM chronicler.daily_repair_days '
+                 || 'WHERE local_date = $1 AND facts_pending)'
+              INTO v_hidden USING v_fact_date;
+            IF v_hidden THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT disposition = ''disposed'' OR redacted '
+                 || 'FROM chronicler.daily_repair_fact_dispositions '
+                 || 'WHERE fact_id = $1 AND local_date = $2 '
+                 || 'ORDER BY generation DESC LIMIT 1'
+              INTO v_hidden USING p_fact.id, v_fact_date;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows > 0 AND v_hidden IS TRUE THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT EXISTS ('
+                 || 'SELECT 1 FROM chronicler.daily_repair_retention_spans AS span '
+                 || 'WHERE $1 BETWEEN span.cursor_date AND '
+                 || 'LEAST(span.last_date + 28, $2))'
+              INTO v_hidden USING v_fact_date, v_closed_through;
+            IF v_hidden THEN
+                RETURN false;
+            END IF;
+            EXECUTE $source_check$
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM chronicler.episodes AS raw
+                    JOIN chronicler.v_episodes_corrected AS effective
+                      ON effective.id = raw.id
+                    CROSS JOIN chronicler.daily_repair_control AS control
+                    WHERE (raw.privacy = 'restricted' OR raw.tombstone_at IS NOT NULL
+                           OR (raw.retention_days IS NOT NULL
+                               AND raw.start_at + pg_catalog.make_interval(days => raw.retention_days)
+                                   < pg_catalog.clock_timestamp())
+                           OR effective.privacy = 'restricted'
+                           OR effective.tombstone_at IS NOT NULL
+                           OR (effective.retention_days IS NOT NULL
+                               AND effective.start_at + pg_catalog.make_interval(days => effective.retention_days)
+                                   < pg_catalog.clock_timestamp()))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM chronicler.daily_repair_source_redactions AS redaction
+                          WHERE redaction.source_id = raw.id
+                      )
+                      AND (
+                          $1 BETWEEN (raw.start_at AT TIME ZONE control.timezone)::date
+                              AND LEAST(COALESCE(
+                                  ((raw.end_at - interval '1 microsecond')
+                                      AT TIME ZONE control.timezone)::date,
+                                  control.closed_through), control.closed_through) + 28
+                          OR $1 BETWEEN (effective.start_at AT TIME ZONE control.timezone)::date
+                              AND LEAST(COALESCE(
+                                  ((effective.end_at - interval '1 microsecond')
+                                      AT TIME ZONE control.timezone)::date,
+                                  control.closed_through), control.closed_through) + 28
+                      )
+                )
+            $source_check$ INTO v_hidden USING v_fact_date;
+            IF v_hidden THEN
+                RETURN false;
+            END IF;
+            RETURN true;
+        EXCEPTION
+            WHEN invalid_datetime_format OR datetime_field_overflow THEN
+                RETURN false;
+        END
+        $visibility$;
+        REVOKE ALL ON FUNCTION chronicler.memory_fact_row_visible(chronicler_mem.facts) FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION chronicler.memory_fact_row_visible(chronicler_mem.facts)
+            TO butler_chronicler_rw;
+        CREATE OR REPLACE VIEW chronicler_mem.facts_readable
+            WITH (security_invoker = true) AS
+            SELECT fact.* FROM chronicler_mem.facts AS fact
+            WHERE chronicler.memory_fact_row_visible(fact);
+        REVOKE ALL ON chronicler_mem.facts_readable FROM PUBLIC;
+        GRANT SELECT ON chronicler_mem.facts_readable TO butler_chronicler_rw;
+    """)
+    # The canonical and repair relations now exist. Refresh the fixed definer's
+    # exact read columns only after the migration's preflight and DDL succeed.
+    op.execute("SELECT chronicler_memory_admin.finalize_interface()")
 
 
 def downgrade() -> None:

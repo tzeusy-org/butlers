@@ -25,6 +25,7 @@ from urllib.parse import unquote, urlparse
 
 import asyncpg
 
+from butlers.core.chronicler_visibility import catalog_projection_visible
 from butlers.db import db_params_from_env
 from butlers.modules.memory.search import resolve_allowed_sensitivities
 
@@ -173,7 +174,11 @@ def _catalog_filter(
         next_parameter = 2
 
     params.append(tenant_id)
-    conditions = [f"tenant_id = ${next_parameter}", "invalid_at IS NULL"]
+    conditions = [
+        f"tenant_id = ${next_parameter}",
+        "invalid_at IS NULL",
+        catalog_projection_visible("memory_catalog"),
+    ]
     next_parameter += 1
     if memory_type is not None:
         params.append(memory_type)
@@ -445,7 +450,8 @@ async def collect_catalog_maintenance_observability(
             COUNT(*) FILTER (WHERE invalid_at IS NULL) AS active_count,
             COUNT(*) FILTER (WHERE invalid_at IS NOT NULL) AS stale_count,
             COUNT(*) FILTER (WHERE embedding IS NULL) AS missing_embedding_count
-        FROM public.memory_catalog
+        FROM public.memory_catalog AS memory_catalog
+        WHERE public.chronicler_catalog_row_visible(memory_catalog.id)
         GROUP BY COALESCE(memory_type, 'unknown')
         ORDER BY COALESCE(memory_type, 'unknown')
     """

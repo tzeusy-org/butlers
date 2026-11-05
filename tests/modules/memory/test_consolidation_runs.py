@@ -149,13 +149,20 @@ class _FakePool:
         self.executes: list[tuple] = []
         self._conn = _FakeConn(claim_rows, self.executes)
         self.fetch_results: list[list[dict]] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
         self._execute_should_raise = execute_should_raise
 
     def acquire(self):
         return _FakeAcquire(self._conn)
 
-    async def fetch(self, *args, **kwargs):
+    async def fetchval(self, query: str, *args):
+        if "to_regclass('chronicler_mem.facts_readable')" in query:
+            return True
+        return None
+
+    async def fetch(self, query: str, *args, **kwargs):
         # existing-facts / existing-rules dedup context fetches — empty is fine.
+        self.fetch_calls.append((query, args))
         return []
 
     async def execute(self, query: str, *args, **kwargs):
@@ -325,7 +332,12 @@ class TestRunConsolidationWritesAuditRow:
             pool,
             embedding_engine=None,
             cc_spawner=spawner,
+            memory_schema="chronicler_mem",
         )
+
+        fact_query = next(query for query, _args in pool.fetch_calls if "FROM facts" in query)
+        assert "chronicler_mem.facts_readable" in fact_query
+        assert fact_query.index("facts_readable") < fact_query.index("LIMIT 100")
 
         inserts = pool.consolidation_run_inserts()
         assert len(inserts) == 1, "expected exactly one audit row for one successful group"

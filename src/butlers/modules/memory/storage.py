@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from asyncpg import Connection, Pool
 
 from butlers.core import entity_graph_edges
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core.goal_lineage import refuse_owner_authority_under_exposure, taint_stamp
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
@@ -2015,7 +2016,9 @@ async def store_fact(
                     # Mark old fact as superseded and set invalid_at to record when
                     # it was known to be no longer true (i.e. when the new fact arrives).
                     await conn.execute(
-                        "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+                        "UPDATE facts SET validity = 'superseded', invalid_at = $2, dropped_at "
+                        "= CASE WHEN validity IN ('superseded', 'expired') THEN dropped_at "
+                        "ELSE $2 END WHERE id = $1",
                         old_id,
                         now,
                     )
@@ -2156,7 +2159,10 @@ async def store_fact(
                                 superseded_ids.append(_inv_old_id)
                                 await conn.execute(
                                     "UPDATE facts"
-                                    " SET validity = 'superseded', invalid_at = $2"
+                                    " SET validity = 'superseded', "
+                                    "invalid_at = $2, dropped_at = CASE WHEN "
+                                    "validity IN ('superseded', "
+                                    "'expired') THEN dropped_at ELSE $2 END"
                                     " WHERE id = $1",
                                     _inv_old_id,
                                     now,
@@ -2451,12 +2457,14 @@ async def store_rule(
                            source_episode_id, source_butler, created_at, tags, metadata,
                            tenant_id, request_id, retention_class, sensitivity,
                            embedding_model_version, content_authority, authority_entity_id,
-                           taint_goal_id, taint_invocation_id)
+                           taint_goal_id, taint_invocation_id, forgotten_at)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
                 $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17, $18, $19)
+                $15, $16, $17, $18, $19,
+                CASE WHEN ($10::jsonb->>'forgotten')::boolean IS TRUE
+                     THEN $8::timestamptz ELSE NULL END)
     """
 
     await pool.execute(
@@ -2678,6 +2686,7 @@ async def get_memory(
     memory_id: uuid.UUID,
     *,
     allowed_sensitivities: tuple[str, ...] | list[str],
+    memory_schema: str | None = None,
 ) -> dict | None:
     """Retrieve one authorized memory by type and UUID, bumping its reference count.
 
@@ -2708,11 +2717,18 @@ async def get_memory(
 
     # Filter within the same UPDATE that bumps reference metadata: a denied UUID
     # must not leak its existence or mutate its row before returning None.
+    visibility = None
+    if memory_type == "fact":
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+    visibility_filter = f" AND {visibility}" if visibility is not None else ""
     row = await pool.fetchrow(
         f"UPDATE {table} "
         f"SET reference_count = reference_count + 1, last_referenced_at = now() "
         f"WHERE id = $1 "
         f"  AND COALESCE(sensitivity, '{_DEFAULT_CATALOG_SENSITIVITY}') = ANY($2) "
+        f"{visibility_filter} "
         f"RETURNING *",
         memory_id,
         list(allowed_sensitivities),
@@ -2934,6 +2950,7 @@ async def _forget_plain(
     never leave the catalog serving a memory the canonical store has already
     retracted/forgotten.
     """
+    now = datetime.now(UTC)
     table = _memory_relation(memory_type, memory_schema)
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -2949,14 +2966,21 @@ async def _forget_plain(
                 )
             else:  # rule
                 result = await conn.execute(
-                    f"UPDATE {table} SET metadata = metadata || "
+                    f"UPDATE {table} SET forgotten_at = CASE "
+                    "WHEN (metadata->>'forgotten')::boolean IS TRUE THEN forgotten_at "
+                    "ELSE $2 END, metadata = metadata || "
                     "'{\"forgotten\": true}'::jsonb WHERE id = $1",
                     memory_id,
+                    now,
                 )
             found = result.endswith("1")
             if found and memory_type in ("fact", "rule"):
                 await _cascade_catalog_disownment(
-                    conn, _TYPE_TABLE[memory_type], [memory_id], source_schema=memory_schema
+                    conn,
+                    _TYPE_TABLE[memory_type],
+                    [memory_id],
+                    source_schema=memory_schema,
+                    invalid_at=now,
                 )
     return found
 
@@ -2983,6 +3007,7 @@ async def _forget_with_correction_provenance(
     if correction_reason is not None:
         provenance_patch["correction_reason"] = correction_reason
 
+    now = datetime.now(UTC)
     table = _memory_relation(memory_type, memory_schema)
     events_table = _qualified_memory_relation("memory_events", memory_schema)
     async with pool.acquire() as conn:
@@ -3008,10 +3033,13 @@ async def _forget_with_correction_provenance(
             else:  # rule
                 result = await conn.execute(
                     f"UPDATE {table} "
-                    "SET metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
+                    "SET forgotten_at = CASE "
+                    "WHEN (metadata->>'forgotten')::boolean IS TRUE THEN forgotten_at "
+                    "ELSE $3 END, metadata = COALESCE(metadata, '{}'::jsonb) || $2 "
                     "WHERE id = $1",
                     memory_id,
                     {"forgotten": True, **provenance_patch},
+                    now,
                 )
 
             found = result.endswith("1")
@@ -3041,7 +3069,11 @@ async def _forget_with_correction_provenance(
 
                 if memory_type in ("fact", "rule"):
                     await _cascade_catalog_disownment(
-                        conn, _TYPE_TABLE[memory_type], [memory_id], source_schema=memory_schema
+                        conn,
+                        _TYPE_TABLE[memory_type],
+                        [memory_id],
+                        source_schema=memory_schema,
+                        invalid_at=now,
                     )
 
     return found
@@ -3922,10 +3954,15 @@ async def run_decay_sweep(pool: Pool) -> dict:
                         metadata["archived_content"] = True
                         async with conn.transaction():
                             await conn.execute(
-                                "UPDATE facts SET validity = 'expired', metadata = $1 "
+                                "UPDATE facts SET validity = "
+                                "'expired', metadata = $1, dropped_at = "
+                                "CASE WHEN validity IN "
+                                "('superseded', 'expired') THEN dropped_at ELSE "
+                                "$3 END "
                                 "WHERE id = $2",
                                 metadata,
                                 fact["id"],
+                                now,
                             )
                             # Same transaction as the expiry write — a crash here
                             # must never leave the catalog serving an expired fact.
@@ -3944,10 +3981,15 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     try:
                         async with conn.transaction():
                             await conn.execute(
-                                "UPDATE facts SET validity = 'expired', metadata = $1 "
+                                "UPDATE facts SET validity = "
+                                "'expired', metadata = $1, dropped_at = "
+                                "CASE WHEN validity IN "
+                                "('superseded', 'expired') THEN dropped_at ELSE "
+                                "$3 END "
                                 "WHERE id = $2",
                                 metadata,
                                 fact["id"],
+                                now,
                             )
                             await _cascade_catalog_disownment(
                                 conn, "facts", [fact["id"]], invalid_at=now
@@ -4007,9 +4049,12 @@ async def run_decay_sweep(pool: Pool) -> dict:
                 try:
                     async with conn.transaction():
                         await conn.execute(
-                            "UPDATE rules SET metadata = $1 WHERE id = $2",
+                            "UPDATE rules SET forgotten_at = CASE "
+                            "WHEN (metadata->>'forgotten')::boolean IS TRUE THEN forgotten_at "
+                            "ELSE $3 END, metadata = $1 WHERE id = $2",
                             metadata,
                             rule["id"],
+                            now,
                         )
                         # Same transaction as the forgotten-flag write — see the
                         # matching fact-expiry cascade above.

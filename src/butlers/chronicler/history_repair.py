@@ -6,6 +6,7 @@ shared with migration030, source invalidation and the eventual publication fence
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ MAX_FACT_BASELINE_DAYS = 28
 MAX_RETENTION_CURSOR_DAYS = 7
 DEFAULT_RETENTION_CURSOR_TIMEOUT_MS = 5_000
 MAX_RETENTION_CURSOR_TIMEOUT_MS = DEFAULT_RETENTION_CURSOR_TIMEOUT_MS
+MAX_RETENTION_ADMISSION_TIMEOUT_MS = 5_000
 
 Connection = asyncpg.Connection | asyncpg.pool.PoolConnectionProxy
 
@@ -845,95 +847,165 @@ async def _scan_expired_retention(
     only enqueue numeric/date dispositions, so a timeout cannot leave an old
     fact or projection valid while the source remains pending.
     """
-    span = await conn.fetchrow(
-        """SELECT source_id, span_number, first_date, last_date, cursor_date,
-                  batch_days, timeout_count
-           FROM chronicler.daily_repair_retention_spans
-           ORDER BY updated_at, source_id, span_number
-           LIMIT 1 FOR UPDATE SKIP LOCKED"""
-    )
-    if span is None:
-        source = await conn.fetchrow(
-            """WITH control AS (
-                   SELECT timezone, closed_through
-                   FROM chronicler.daily_repair_control WHERE singleton
-               )
-               SELECT source.id,
-                      (source.start_at AT TIME ZONE control.timezone)::date AS raw_first,
-                      CASE WHEN source.end_at IS NULL THEN control.closed_through
-                           ELSE least(control.closed_through,
-                               ((source.end_at - interval '1 microsecond')
-                                   AT TIME ZONE control.timezone)::date) END AS raw_last,
-                      (effective.start_at AT TIME ZONE control.timezone)::date AS effective_first,
-                      CASE WHEN effective.end_at IS NULL THEN control.closed_through
-                           ELSE least(control.closed_through,
-                               ((effective.end_at - interval '1 microsecond')
-                                   AT TIME ZONE control.timezone)::date) END AS effective_last
-               FROM chronicler.episodes AS source
-               JOIN chronicler.v_episodes_corrected AS effective ON effective.id = source.id
-               CROSS JOIN control
-               WHERE source.retention_days IS NOT NULL
-                 AND source.start_at + make_interval(days => source.retention_days) < $1
-                 AND source.tombstone_at IS NULL
-                 AND source.privacy IS DISTINCT FROM 'restricted'
-                 AND effective.tombstone_at IS NULL
-                 AND effective.privacy IS DISTINCT FROM 'restricted'
-                 AND (source.start_at AT TIME ZONE control.timezone)::date
-                     <= control.closed_through
-                 AND NOT EXISTS (
-                     SELECT 1 FROM chronicler.daily_repair_source_redactions AS redaction
-                     WHERE redaction.source_id = source.id
-                 )
-               ORDER BY source.start_at, source.id
-               LIMIT 1 FOR UPDATE OF source SKIP LOCKED""",
-            as_of,
-        )
-        if source is not None:
-            source_id = source["id"]
-            ranges = sorted(
-                {
-                    (source["raw_first"], source["raw_last"]),
-                    (source["effective_first"], source["effective_last"]),
-                }
-            )
-            ranges = [
-                (first, last)
-                for first, last in ranges
-                if first is not None and last is not None and first <= last
-            ]
-            await conn.execute(
-                """INSERT INTO chronicler.daily_repair_source_redactions
-                   (source_id, reason_code) VALUES ($1, 'source_retention')
-                   ON CONFLICT (source_id) DO UPDATE SET reason_code = 'source_retention'""",
-                source_id,
-            )
-            for number, (first, last) in enumerate(ranges, start=1):
-                await conn.execute(
-                    """INSERT INTO chronicler.daily_repair_retention_spans
-                       (source_id, span_number, first_date, last_date, cursor_date, batch_days)
-                       VALUES ($1, $2, $3, $4, $3, $5)
-                       ON CONFLICT (source_id, span_number) DO NOTHING""",
-                    source_id,
-                    number,
-                    first,
-                    last,
-                    MAX_RETENTION_CURSOR_DAYS,
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + MAX_RETENTION_ADMISSION_TIMEOUT_MS / 1000
+    try:
+        async with asyncio.timeout_at(deadline):
+            async with conn.transaction():
+                initial_timeout = await conn.fetchrow(
+                    """SELECT current_setting('statement_timeout') AS previous_timeout,
+                              setting::bigint AS previous_timeout_ms
+                       FROM pg_catalog.pg_settings WHERE name='statement_timeout'""",
+                    timeout=MAX_RETENTION_ADMISSION_TIMEOUT_MS / 1000,
                 )
-            await conn.fetchval("SELECT chronicler.redact_retention_facts($1)", source_id)
-            await conn.execute(
-                """UPDATE chronicler.daily_repair_archive
-                   SET content = NULL, audit_hash = NULL, text_access = 'redacted'
-                   WHERE $1 = ANY(dependency_ids)""",
-                source_id,
-            )
-            span = await conn.fetchrow(
-                """SELECT source_id, span_number, first_date, last_date, cursor_date,
-                          batch_days, timeout_count
-                   FROM chronicler.daily_repair_retention_spans
-                   WHERE source_id = $1
-                   ORDER BY span_number LIMIT 1 FOR UPDATE""",
-                source_id,
-            )
+                if initial_timeout is None:
+                    raise RuntimeError("PostgreSQL statement_timeout setting is unavailable")
+                previous_timeout = str(initial_timeout["previous_timeout"])
+                previous_timeout_ms = int(initial_timeout["previous_timeout_ms"])
+
+                async def set_remaining_admission_timeout() -> float:
+                    remaining_ms = int((deadline - loop.time()) * 1000)
+                    if remaining_ms <= 0:
+                        raise TimeoutError
+                    effective_ms = (
+                        min(previous_timeout_ms, remaining_ms)
+                        if previous_timeout_ms > 0
+                        else remaining_ms
+                    )
+                    applied = await conn.fetchval(
+                        "SELECT set_config('statement_timeout', $1, TRUE)",
+                        f"{effective_ms}ms",
+                        timeout=effective_ms / 1000,
+                    )
+                    if applied is None:
+                        raise RuntimeError("PostgreSQL statement_timeout setting is unavailable")
+                    return effective_ms / 1000
+
+                query_timeout = await set_remaining_admission_timeout()
+                span = await conn.fetchrow(
+                    """SELECT source_id, span_number, first_date, last_date, cursor_date,
+                              batch_days, timeout_count
+                       FROM chronicler.daily_repair_retention_spans
+                       ORDER BY updated_at, source_id, span_number
+                       LIMIT 1 FOR UPDATE SKIP LOCKED""",
+                    timeout=query_timeout,
+                )
+                if span is None:
+                    query_timeout = await set_remaining_admission_timeout()
+                    source = await conn.fetchrow(
+                        """WITH control AS (
+                               SELECT timezone, closed_through
+                               FROM chronicler.daily_repair_control WHERE singleton
+                           )
+                           SELECT source.id,
+                                  (source.start_at AT TIME ZONE control.timezone)::date
+                                      AS raw_first,
+                                  CASE WHEN source.end_at IS NULL THEN control.closed_through
+                                       ELSE least(control.closed_through,
+                                           ((source.end_at - interval '1 microsecond')
+                                               AT TIME ZONE control.timezone)::date) END
+                                                   AS raw_last,
+                                  (effective.start_at AT TIME ZONE control.timezone)::date
+                                      AS effective_first,
+                                  CASE WHEN effective.end_at IS NULL THEN control.closed_through
+                                       ELSE least(control.closed_through,
+                                           ((effective.end_at - interval '1 microsecond')
+                                               AT TIME ZONE control.timezone)::date) END
+                                                   AS effective_last
+                           FROM chronicler.episodes AS source
+                           JOIN chronicler.v_episodes_corrected AS effective
+                               ON effective.id = source.id
+                           CROSS JOIN control
+                           WHERE source.retention_days IS NOT NULL
+                             AND source.start_at + make_interval(days => source.retention_days) < $1
+                             AND source.tombstone_at IS NULL
+                             AND source.privacy IS DISTINCT FROM 'restricted'
+                             AND effective.tombstone_at IS NULL
+                             AND effective.privacy IS DISTINCT FROM 'restricted'
+                             AND (source.start_at AT TIME ZONE control.timezone)::date
+                                 <= control.closed_through
+                             AND NOT EXISTS (
+                                 SELECT 1
+                                 FROM chronicler.daily_repair_source_redactions AS redaction
+                                 WHERE redaction.source_id = source.id
+                             )
+                           ORDER BY source.start_at, source.id
+                           LIMIT 1 FOR UPDATE OF source SKIP LOCKED""",
+                        as_of,
+                        timeout=query_timeout,
+                    )
+                    if source is not None:
+                        source_id = source["id"]
+                        ranges = sorted(
+                            {
+                                (source["raw_first"], source["raw_last"]),
+                                (source["effective_first"], source["effective_last"]),
+                            }
+                        )
+                        ranges = [
+                            (first, last)
+                            for first, last in ranges
+                            if first is not None and last is not None and first <= last
+                        ]
+                        query_timeout = await set_remaining_admission_timeout()
+                        await conn.execute(
+                            """INSERT INTO chronicler.daily_repair_source_redactions
+                               (source_id, reason_code) VALUES ($1, 'source_retention')
+                               ON CONFLICT (source_id)
+                               DO UPDATE SET reason_code = 'source_retention'""",
+                            source_id,
+                            timeout=query_timeout,
+                        )
+                        for number, (first, last) in enumerate(ranges, start=1):
+                            query_timeout = await set_remaining_admission_timeout()
+                            await conn.execute(
+                                """INSERT INTO chronicler.daily_repair_retention_spans
+                                   (source_id, span_number, first_date, last_date,
+                                    cursor_date, batch_days)
+                                   VALUES ($1, $2, $3, $4, $3, $5)
+                                   ON CONFLICT (source_id, span_number) DO NOTHING""",
+                                source_id,
+                                number,
+                                first,
+                                last,
+                                MAX_RETENTION_CURSOR_DAYS,
+                                timeout=query_timeout,
+                            )
+                        query_timeout = await set_remaining_admission_timeout()
+                        await conn.fetchval(
+                            "SELECT chronicler.redact_retention_facts($1)",
+                            source_id,
+                            timeout=query_timeout,
+                        )
+                        query_timeout = await set_remaining_admission_timeout()
+                        await conn.execute(
+                            """UPDATE chronicler.daily_repair_archive
+                               SET content = NULL, audit_hash = NULL, text_access = 'redacted'
+                               WHERE $1 = ANY(dependency_ids)""",
+                            source_id,
+                            timeout=query_timeout,
+                        )
+                        query_timeout = await set_remaining_admission_timeout()
+                        span = await conn.fetchrow(
+                            """SELECT source_id, span_number, first_date, last_date, cursor_date,
+                                      batch_days, timeout_count
+                               FROM chronicler.daily_repair_retention_spans
+                               WHERE source_id = $1
+                               ORDER BY span_number LIMIT 1 FOR UPDATE""",
+                            source_id,
+                            timeout=query_timeout,
+                        )
+
+                query_timeout = await set_remaining_admission_timeout()
+                await conn.execute(
+                    "SELECT set_config('statement_timeout', $1, TRUE)",
+                    previous_timeout,
+                    timeout=query_timeout,
+                )
+    except (TimeoutError, asyncpg.exceptions.QueryCanceledError):
+        # The nested transaction rolls back every admission write. Expiry-based
+        # read barriers remain authoritative until a later bounded retry commits.
+        return {"pending": True, "timeout": False, "blocked": False, "admission_timeout": True}
 
     if span is not None:
         source_id = span["source_id"]
@@ -1066,6 +1138,12 @@ async def run_rebuild(
                         conn, as_of=as_of, timezone=timezone
                     )
                     retention_scan_done = True
+                    if retention_result.get("admission_timeout"):
+                        return {
+                            "status": "pending_retention",
+                            "retention_admission_timeout": True,
+                            "days_processed": processed,
+                        }
                     if retention_result["timeout"]:
                         status = (
                             "blocked_retention"

@@ -247,7 +247,7 @@ source keys, lock order, policy snapshots and actual verification obligations.
 
 ### Steam status evidence
 
-`connectors.steam_status_history` (core_313) is append-only observed Steam
+`connectors.steam_status_history` (core_314) is append-only observed Steam
 status evidence for the Chronicler projection, unique on `(steam_id, observed_at)`.
 The connector records detected changes independently of ingest; Chronicler reads
 through its SELECT-only runtime role. The established `connector_writer` role

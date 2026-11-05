@@ -1824,7 +1824,7 @@ async def list_daily_rollup_flags_range(
 
 
 async def set_daily_rollup_day_narrative(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.Pool | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: Any,
     narrative: str,
@@ -1851,7 +1851,7 @@ async def set_daily_rollup_day_narrative(
 
 
 async def set_daily_rollup_flag_narrative(
-    conn: asyncpg.Connection | asyncpg.Pool,
+    conn: asyncpg.Connection | asyncpg.Pool | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: Any,
     flag_type: str,

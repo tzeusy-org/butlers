@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -62,6 +64,197 @@ def test_chronicler_030_refuses_missing_private_facts_before_schema_changes(post
             )
     finally:
         engine.dispose()
+
+    async def check_absent_catalog_is_best_effort() -> None:
+        from butlers.modules.memory.search import CatalogReadPolicy
+        from butlers.modules.memory.tools.context import _fetch_fleet_knowledge
+
+        pool = await asyncpg.create_pool(
+            url.replace("postgresql+psycopg2://", "postgresql://"),
+            server_settings={"search_path": "chronicler, public"},
+        )
+        try:
+            assert (
+                await pool.fetchval("SELECT pg_catalog.to_regclass('public.memory_catalog')")
+                is None
+            )
+            result = await _fetch_fleet_knowledge(
+                pool,
+                SimpleNamespace(embed=lambda _query: [0.0] * 384),
+                "prompt",
+                "general",
+                "shared",
+                CatalogReadPolicy("normal", ("normal",)),
+            )
+            assert result == []
+        finally:
+            await pool.close()
+
+    asyncio.run(check_absent_catalog_is_best_effort())
+
+
+def test_fleet_context_catalog_probe_preserves_guarded_errors_and_disappearance(
+    postgres_container, monkeypatch
+):
+    """Present catalogs are read, while guarded errors and post-probe disappearance fail closed."""
+    from urllib.parse import urlparse
+
+    from butlers.modules.memory.search import CatalogReadPolicy
+    from butlers.modules.memory.tools import context as context_impl
+    from butlers.modules.memory.tools.context import _fetch_fleet_knowledge
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    source_id = uuid4()
+    catalog_id = None
+    engine = create_engine(url)
+    admin_url = (
+        urlparse(postgres_container.get_connection_url())._replace(path=urlparse(url).path).geturl()
+    )
+    admin_engine = create_engine(admin_url)
+    try:
+        with engine.begin() as conn:
+            catalog_id = conn.execute(
+                text("""INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, source_butler, tenant_id,
+                     summary, search_vector, memory_type, title, sensitivity, embedding)
+                    VALUES ('foreign_memory', 'facts', :source_id, 'other', 'shared',
+                            'bounded native context probe',
+                            to_tsvector('english', 'bounded native context probe'),
+                            'fact', 'bounded native context probe', 'normal',
+                            (ARRAY[1::real, 0::real] || array_fill(0::real, ARRAY[382]))::vector(384))
+                    RETURNING id"""),
+                {"source_id": source_id},
+            ).scalar_one()
+            helper_owner = conn.execute(
+                text("""SELECT pg_catalog.pg_get_userbyid(proowner)
+                    FROM pg_catalog.pg_proc
+                    WHERE oid='public.chronicler_catalog_row_visible(uuid)'::pg_catalog.regprocedure""")
+            ).scalar_one()
+            assert helper_owner == "chronicler_memory_owner"
+            helper_acl_query = text("""SELECT
+                    pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
+                    COALESCE(pg_catalog.pg_get_userbyid(acl.grantee), 'PUBLIC') AS grantee,
+                    acl.privilege_type,
+                    acl.is_grantable
+                FROM pg_catalog.pg_proc AS procedure_row
+                CROSS JOIN LATERAL pg_catalog.aclexplode(
+                    COALESCE(
+                        procedure_row.proacl,
+                        pg_catalog.acldefault('f', procedure_row.proowner)
+                    )
+                ) AS acl
+                WHERE procedure_row.oid =
+                    'public.chronicler_catalog_row_visible(uuid)'::pg_catalog.regprocedure
+                ORDER BY 1, 2, 3, 4""")
+            original_helper_acl = tuple(tuple(row) for row in conn.execute(helper_acl_query).all())
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                server_settings={"search_path": "chronicler_mem, public"},
+                init=runtime_connection,
+            )
+            revoked = False
+            try:
+                policy = CatalogReadPolicy("normal", ("normal",))
+                engine = SimpleNamespace(embed=lambda _query: [1.0, *([0.0] * 383)])
+                healthy = await _fetch_fleet_knowledge(
+                    pool, engine, "bounded native context probe", "general", "shared", policy
+                )
+                assert any(row["id"] == catalog_id for row in healthy)
+
+                with admin_engine.begin() as admin:
+                    admin.exec_driver_sql('SET LOCAL ROLE "chronicler_memory_owner"')
+                    admin.exec_driver_sql(
+                        "REVOKE EXECUTE ON FUNCTION public.chronicler_catalog_row_visible(uuid) "
+                        "FROM butler_chronicler_rw"
+                    )
+                revoked = True
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await _fetch_fleet_knowledge(
+                        pool, engine, "bounded native context probe", "general", "shared", policy
+                    )
+                with admin_engine.begin() as admin:
+                    admin.exec_driver_sql('SET LOCAL ROLE "chronicler_memory_owner"')
+                    admin.exec_driver_sql(
+                        "GRANT EXECUTE ON FUNCTION public.chronicler_catalog_row_visible(uuid) "
+                        "TO butler_chronicler_rw"
+                    )
+                revoked = False
+
+                original_search = context_impl._search.search_catalog
+                guarded_search_started = False
+
+                async def _rename_between_probe_and_search(*args, **kwargs):
+                    nonlocal guarded_search_started
+                    guarded_search_started = True
+                    with admin_engine.begin() as admin:
+                        admin.exec_driver_sql(
+                            "ALTER TABLE public.memory_catalog "
+                            "RENAME TO memory_catalog_f2_disappeared"
+                        )
+                    try:
+                        assert (
+                            await pool.fetchval(
+                                "SELECT pg_catalog.to_regclass('public.memory_catalog')"
+                            )
+                            is None
+                        )
+                        return await original_search(*args, **kwargs)
+                    finally:
+                        with admin_engine.begin() as admin:
+                            admin.exec_driver_sql(
+                                "ALTER TABLE public.memory_catalog_f2_disappeared "
+                                "RENAME TO memory_catalog"
+                            )
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(
+                        context_impl._search, "search_catalog", _rename_between_probe_and_search
+                    )
+                    with pytest.raises(asyncpg.UndefinedTableError):
+                        await _fetch_fleet_knowledge(
+                            pool,
+                            engine,
+                            "bounded native context probe",
+                            "general",
+                            "shared",
+                            policy,
+                        )
+                assert guarded_search_started is True
+                restored = await _fetch_fleet_knowledge(
+                    pool, engine, "bounded native context probe", "general", "shared", policy
+                )
+                assert any(row["id"] == catalog_id for row in restored)
+            finally:
+                if revoked:
+                    with admin_engine.begin() as admin:
+                        admin.exec_driver_sql('SET LOCAL ROLE "chronicler_memory_owner"')
+                        admin.exec_driver_sql(
+                            "GRANT EXECUTE ON FUNCTION public.chronicler_catalog_row_visible(uuid) "
+                            "TO butler_chronicler_rw"
+                        )
+                await pool.close()
+
+        asyncio.run(scenario())
+        with engine.connect() as conn:
+            assert (
+                tuple(tuple(row) for row in conn.execute(helper_acl_query).all())
+                == original_helper_acl
+            )
+            assert conn.execute(
+                text(
+                    "SELECT pg_catalog.has_function_privilege('butler_chronicler_rw', "
+                    "'public.chronicler_catalog_row_visible(uuid)', 'EXECUTE')"
+                )
+            ).scalar_one()
+    finally:
+        engine.dispose()
+        admin_engine.dispose()
 
 
 @pytest.mark.parametrize(
@@ -787,6 +980,9 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                         ),
                     },
                 )
+            # Core 315 only permits the Chronicler runtime to mint exact private-fact
+            # projection identities. Seed these copies under the same role as production.
+            conn.execute(text("SET LOCAL ROLE butler_chronicler_rw"))
             for generated_fact_id in (fact_id, missing_fact_id):
                 conn.execute(
                     text("""INSERT INTO public.memory_catalog
@@ -816,6 +1012,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                     VALUES ('chronicler_mem', 'facts', :id, :subject, 'related_to', :object)"""),
                 {"id": unrelated_id, "subject": subject_id, "object": object_id},
             )
+            conn.execute(text("RESET ROLE"))
             conn.execute(
                 text("""INSERT INTO chronicler.daily_repair_archive
                     (local_date, generation, row_kind, row_key, audit_hash, content,
@@ -915,6 +1112,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                             confidence=0.9, invalid_at=NULL WHERE source_id=:id"""),
                         {"id": fact_id},
                     )
+                    conn.execute(text("SET LOCAL ROLE butler_chronicler_rw"))
                     conn.execute(
                         text("""INSERT INTO public.entity_graph_edges
                             (source_schema, source_table, source_id, subject_entity_id,
@@ -923,6 +1121,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                                     'related_to', :object)"""),
                         {"id": fact_id, "subject": subject_id, "object": object_id},
                     )
+                    conn.execute(text("RESET ROLE"))
                     conn.execute(
                         text("DELETE FROM chronicler_mem.facts WHERE id=:id"),
                         {"id": missing_fact_id},
@@ -936,6 +1135,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                               AND source_table='facts' AND source_id=:id"""),
                         {"id": missing_fact_id},
                     )
+                    conn.execute(text("SET LOCAL ROLE butler_chronicler_rw"))
                     conn.execute(
                         text("""INSERT INTO public.entity_graph_edges
                             (source_schema, source_table, source_id, subject_entity_id,
@@ -944,6 +1144,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                                     'related_to', :object)"""),
                         {"id": missing_fact_id, "subject": subject_id, "object": object_id},
                     )
+                    conn.execute(text("RESET ROLE"))
                     conn.execute(
                         text("""INSERT INTO chronicler.daily_repair_archive
                             (local_date, generation, row_kind, row_key, audit_hash, content,
@@ -1455,7 +1656,11 @@ def test_expired_source_retention_scan_redacts_and_rebuilds_without_default_ttl(
             server_settings={"search_path": "chronicler, public"},
             init=runtime_connection,
         )
+        observer = None
+        observer_objects = False
+        observer_names = None
         try:
+            original_timeout = await pool.fetchval("SELECT current_setting('statement_timeout')")
             await pool.execute(
                 """INSERT INTO source_adapter_state
                    (source_name, chronicler_compatibility)
@@ -1488,11 +1693,101 @@ def test_expired_source_retention_scan_redacts_and_rebuilds_without_default_ttl(
                 "SELECT EXISTS (SELECT 1 FROM daily_repair_source_redactions WHERE source_id=$1)",
                 episode_id,
             )
+            assert (
+                await pool.fetchval("SELECT current_setting('statement_timeout')")
+                == original_timeout
+            )
+
+            # Capture the server-side GUC at three distinct admission write seams.
+            # nextval/setval state survives transaction rollback, while the successful
+            # path below also proves each later statement receives a smaller budget.
+            observer = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
+            suffix = uuid4().hex[:12]
+            function_name = f"f2_budget_observer_{suffix}"
+            redaction_sequence = f"f2_budget_redaction_{suffix}"
+            span_sequence = f"f2_budget_span_{suffix}"
+            archive_sequence = f"f2_budget_archive_{suffix}"
+            redaction_trigger = f"f2_budget_redaction_{suffix}"
+            span_trigger = f"f2_budget_span_{suffix}"
+            archive_trigger = f"f2_budget_archive_{suffix}"
+            observer_names = (
+                function_name,
+                redaction_sequence,
+                span_sequence,
+                archive_sequence,
+                redaction_trigger,
+                span_trigger,
+                archive_trigger,
+            )
+            await observer.execute(
+                f"""CREATE SEQUENCE chronicler.{redaction_sequence};
+                    CREATE SEQUENCE chronicler.{span_sequence};
+                    CREATE SEQUENCE chronicler.{archive_sequence};
+                    GRANT SELECT, USAGE, UPDATE ON SEQUENCE
+                        chronicler.{redaction_sequence}, chronicler.{span_sequence},
+                        chronicler.{archive_sequence} TO butler_chronicler_rw;
+                    CREATE FUNCTION chronicler.{function_name}()
+                    RETURNS trigger LANGUAGE plpgsql AS $$
+                    DECLARE timeout_ms bigint;
+                    BEGIN
+                        IF TG_ARGV[2] = 'archive' THEN
+                            IF NOT (TG_ARGV[0]::uuid = ANY(NEW.dependency_ids)) THEN
+                                RETURN NEW;
+                            END IF;
+                        ELSIF NEW.source_id IS DISTINCT FROM TG_ARGV[0]::uuid THEN
+                            RETURN NEW;
+                        END IF;
+                        SELECT setting::bigint INTO timeout_ms
+                        FROM pg_catalog.pg_settings WHERE name='statement_timeout';
+                        PERFORM pg_catalog.setval(TG_ARGV[1]::regclass, timeout_ms, TRUE);
+                        PERFORM pg_catalog.pg_sleep(0.25);
+                        RETURN NEW;
+                    END $$;
+                    CREATE TRIGGER {redaction_trigger}
+                        BEFORE INSERT ON chronicler.daily_repair_source_redactions
+                        FOR EACH ROW EXECUTE FUNCTION chronicler.{function_name}(
+                            '{episode_id}', 'chronicler.{redaction_sequence}', 'source');
+                    CREATE TRIGGER {span_trigger}
+                        BEFORE INSERT ON chronicler.daily_repair_retention_spans
+                        FOR EACH ROW EXECUTE FUNCTION chronicler.{function_name}(
+                            '{episode_id}', 'chronicler.{span_sequence}', 'source');
+                    CREATE TRIGGER {archive_trigger}
+                        BEFORE UPDATE ON chronicler.daily_repair_archive
+                        FOR EACH ROW EXECUTE FUNCTION chronicler.{function_name}(
+                            '{episode_id}', 'chronicler.{archive_sequence}', 'archive');"""
+            )
+            observer_objects = True
+            await observer.execute(
+                """INSERT INTO chronicler.daily_repair_archive
+                    (local_date, generation, row_kind, row_key, audit_hash, content,
+                     dependency_ids, text_access)
+                    VALUES ($1, 1, 'test', $2, 'budget-hash',
+                            '{"title":"budget private copy"}'::jsonb,
+                            ARRAY[$3::uuid], 'audit_only')""",
+                day,
+                f"budget-{suffix}",
+                episode_id,
+            )
 
             # Start+the episode's declared retention_days has now passed. The
             # scanner's one invocation must tombstone, archive-redact and queue
             # historical numeric work without a guessed/global retention default.
             assert (await run_rebuild(pool, now=future))["status"] == "complete"
+            assert (
+                await pool.fetchval("SELECT current_setting('statement_timeout')")
+                == original_timeout
+            )
+            assert observer is not None and observer_names is not None
+            redaction_ms = await pool.fetchval(
+                f"SELECT last_value FROM chronicler.{redaction_sequence}"
+            )
+            span_ms = await pool.fetchval(f"SELECT last_value FROM chronicler.{span_sequence}")
+            archive_ms = await pool.fetchval(
+                f"SELECT last_value FROM chronicler.{archive_sequence}"
+            )
+            assert 0 < archive_ms < span_ms < redaction_ms <= 5_000
+            assert redaction_ms - span_ms >= 100
+            assert span_ms - archive_ms >= 100
             marker = await pool.fetchrow(
                 "SELECT reason_code FROM daily_repair_source_redactions WHERE source_id=$1",
                 episode_id,
@@ -1521,6 +1816,30 @@ def test_expired_source_retention_scan_redacts_and_rebuilds_without_default_ttl(
                 == generation
             )
         finally:
+            if observer is not None:
+                if observer_objects and observer_names is not None:
+                    (
+                        function_name,
+                        redaction_sequence,
+                        span_sequence,
+                        archive_sequence,
+                        redaction_trigger,
+                        span_trigger,
+                        archive_trigger,
+                    ) = observer_names
+                    await observer.execute(
+                        f"""DROP TRIGGER IF EXISTS {redaction_trigger}
+                                ON chronicler.daily_repair_source_redactions;
+                            DROP TRIGGER IF EXISTS {span_trigger}
+                                ON chronicler.daily_repair_retention_spans;
+                            DROP TRIGGER IF EXISTS {archive_trigger}
+                                ON chronicler.daily_repair_archive;
+                            DROP FUNCTION IF EXISTS chronicler.{function_name}();
+                            DROP SEQUENCE IF EXISTS chronicler.{redaction_sequence};
+                            DROP SEQUENCE IF EXISTS chronicler.{span_sequence};
+                            DROP SEQUENCE IF EXISTS chronicler.{archive_sequence};"""
+                    )
+                await observer.close()
             await pool.close()
 
     asyncio.run(scenario())
@@ -1598,6 +1917,7 @@ def test_retention_redacts_stale_projections_for_missing_canonical_redacted_id(
                 (missing_fact_id, "stale private summary", "stale private title"),
                 (unrelated_id, "unrelated survivor", "unrelated title"),
             ):
+                conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
                 conn.execute(
                     text("""INSERT INTO public.memory_catalog
                         (source_schema, source_table, source_id, summary, title, confidence)
@@ -1612,6 +1932,7 @@ def test_retention_redacts_stale_projections_for_missing_canonical_redacted_id(
                                 'related_to', :object_id)"""),
                     {"id": fact_id, "subject_id": subject_id, "object_id": object_id},
                 )
+                conn.exec_driver_sql("RESET ROLE")
 
         async def runtime_connection(conn):
             await register_jsonb_codec(conn)
@@ -1830,6 +2151,7 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                     ),
                 },
             )
+            conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
             conn.execute(
                 text("""INSERT INTO public.memory_catalog
                     (source_schema, source_table, source_id, summary, title, confidence)
@@ -1843,6 +2165,7 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                     VALUES ('chronicler_mem', 'facts', :id, :subject, 'related_to', :object)"""),
                 {"id": fact_id, "subject": subject_id, "object": object_id},
             )
+            conn.exec_driver_sql("RESET ROLE")
 
             for rollup_day, lane, seconds in (
                 (local_day, "play", 3600),
@@ -1863,6 +2186,35 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                             ARRAY[CAST(:episode AS uuid)], 'audit_only')"""),
                 {"day": local_day, "episode": episode_id},
             )
+            # The first scan admits the expired source and increments this day
+            # once while redacting its generated facts. The cursor enqueue then
+            # increments it once more. Cursor timeouts roll back that enqueue
+            # savepoint, so every retry reaches exactly this generation.
+            cursor_generation = conn.execute(
+                text(
+                    "SELECT dirty_generation FROM chronicler.daily_repair_days "
+                    "WHERE local_date=:day"
+                ),
+                {"day": local_day},
+            ).scalar_one()
+            cursor_timeout_generation = cursor_generation + 2
+            conn.exec_driver_sql("""
+                CREATE OR REPLACE FUNCTION chronicler.f2_cursor_timeout_delay()
+                RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.local_date = TG_ARGV[0]::date
+                       AND NEW.dirty_generation = TG_ARGV[1]::bigint THEN
+                        PERFORM pg_sleep(30.0);
+                    END IF;
+                    RETURN NEW;
+                END $$
+            """)
+            conn.exec_driver_sql(f"""
+                CREATE TRIGGER f2_cursor_timeout_delay
+                BEFORE INSERT OR UPDATE ON chronicler.daily_repair_days
+                FOR EACH ROW EXECUTE FUNCTION chronicler.f2_cursor_timeout_delay(
+                    '{local_day.isoformat()}', '{cursor_timeout_generation}')
+            """)
 
         async def runtime_connection(conn):
             await register_jsonb_codec(conn)
@@ -1871,19 +2223,68 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
         async def scenario():
             from butlers.chronicler.history_repair import run_rebuild
 
+            app_name = f"f1-retention-cursor-timeout-{uuid4().hex}"
             pool = await asyncpg.create_pool(
                 url.replace("postgresql+psycopg2://", "postgresql://"),
-                server_settings={"search_path": "chronicler, public", "statement_timeout": "2s"},
+                min_size=1,
+                max_size=1,
+                server_settings={
+                    "search_path": "chronicler, public",
+                    "statement_timeout": "2s",
+                    "application_name": app_name,
+                },
                 init=runtime_connection,
             )
+            observer = None
             try:
+                observer = await asyncpg.connect(
+                    url.replace("postgresql+psycopg2://", "postgresql://"),
+                    server_settings={"search_path": "chronicler, public"},
+                )
                 await pool.execute(
                     "UPDATE daily_repair_control SET replay_ack=replay_epoch WHERE singleton"
                 )
-                monkeypatch.setattr(history_repair, "MAX_RETENTION_CURSOR_TIMEOUT_MS", 1)
-                first = await run_rebuild(pool, now=future)
+                backend_pid = await pool.fetchval("SELECT pg_backend_pid()")
+
+                async def timed_cursor_attempt():
+                    task = asyncio.create_task(run_rebuild(pool, now=future))
+                    observed_query = None
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + 4.0
+                    while not task.done() and loop.time() < deadline:
+                        activity = await observer.fetchrow(
+                            """SELECT query FROM pg_catalog.pg_stat_activity
+                               WHERE pid=$1 AND application_name=$2 AND state='active'
+                                 AND wait_event='PgSleep'""",
+                            backend_pid,
+                            app_name,
+                        )
+                        if activity is not None:
+                            observed_query = activity["query"]
+                            if "enqueue_daily_repair" in observed_query:
+                                break
+                        await asyncio.sleep(0.01)
+                    if observed_query is None or "enqueue_daily_repair" not in observed_query:
+                        if not task.done():
+                            task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        pytest.fail(
+                            "expected cursor-stage PgSleep in enqueue_daily_repair; "
+                            f"observed top-level query was {observed_query!r}"
+                        )
+                    return await task, observed_query
+
+                monkeypatch.setattr(history_repair, "MAX_RETENTION_CURSOR_TIMEOUT_MS", 500)
+                first, first_query = await timed_cursor_attempt()
+                assert "enqueue_daily_repair" in first_query
+                assert first.get("retention_admission_timeout") is not True
                 assert first["status"] == "pending_retention"
                 assert first["retention_timeout"] is True
+                assert first["retention_timeout_count"] == 1
+                assert first["retention_batch_days"] == 3
                 assert await pool.fetchval(
                     "SELECT validity='retracted' AND content='[removed by source privacy correction]' "
                     "FROM chronicler_mem.facts WHERE id=$1",
@@ -1905,6 +2306,18 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                     0,
                 )
                 assert catalog["invalid_at"] is not None
+                for expected_count, expected_status in (
+                    (2, "pending_retention"),
+                    (3, "blocked_retention"),
+                ):
+                    repeated, repeated_query = await timed_cursor_attempt()
+                    assert "enqueue_daily_repair" in repeated_query
+                    assert repeated.get("retention_admission_timeout") is not True
+                    assert repeated["status"] == expected_status
+                    assert repeated["retention_timeout"] is True
+                    assert repeated["retention_timeout_count"] == expected_count
+                    assert repeated["retention_batch_days"] == 1
+                assert await pool.fetchval("SELECT current_setting('statement_timeout')") == "2s"
                 assert (
                     await pool.fetchval(
                         "SELECT count(*) FROM public.entity_graph_edges "
@@ -1969,13 +2382,14 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                 assert work_lane.seconds == 123
 
                 cursor = await pool.fetchrow(
-                    """SELECT first_date, cursor_date, timeout_count
+                    """SELECT first_date, cursor_date, timeout_count, batch_days
                        FROM chronicler.daily_repair_retention_spans
                        WHERE source_id=$1 ORDER BY span_number LIMIT 1""",
                     episode_id,
                 )
                 assert cursor["cursor_date"] == cursor["first_date"]
-                assert cursor["timeout_count"] >= 1
+                assert cursor["timeout_count"] == 3
+                assert cursor["batch_days"] == 1
                 with pytest.raises(RepairAdmissionError, match="retention repair is pending"):
                     await capture_fact_write_token(
                         pool,
@@ -1984,6 +2398,11 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                         baseline_lookback_days=28,
                     )
 
+                with engine.begin() as admin:
+                    admin.exec_driver_sql(
+                        "DROP TRIGGER f2_cursor_timeout_delay ON chronicler.daily_repair_days"
+                    )
+                    admin.exec_driver_sql("DROP FUNCTION chronicler.f2_cursor_timeout_delay()")
                 monkeypatch.setattr(
                     history_repair,
                     "MAX_RETENTION_CURSOR_TIMEOUT_MS",
@@ -2010,10 +2429,17 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
                         )
                 assert local_day not in pending_dates
             finally:
+                if observer is not None:
+                    await observer.close()
                 await pool.close()
 
         asyncio.run(scenario())
     finally:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "DROP TRIGGER IF EXISTS f2_cursor_timeout_delay ON chronicler.daily_repair_days"
+            )
+            conn.exec_driver_sql("DROP FUNCTION IF EXISTS chronicler.f2_cursor_timeout_delay()")
         engine.dispose()
 
 
@@ -3117,6 +3543,7 @@ def test_source_change_disposes_exact_D_through_D28_and_preserves_D29_survivors(
                         "metadata": json.dumps(metadata),
                     },
                 )
+                conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
                 conn.execute(
                     text("""INSERT INTO public.memory_catalog
                         (source_schema, source_table, source_id, summary, title, confidence)
@@ -3135,6 +3562,7 @@ def test_source_change_disposes_exact_D_through_D28_and_preserves_D29_survivors(
                         VALUES ('chronicler_mem', 'facts', :id, :subject, 'related_to', :object)"""),
                     {"id": fact_ids[name], "subject": subject_id, "object": object_id},
                 )
+                conn.exec_driver_sql("RESET ROLE")
             for local_day, key in ((day, "d"), (day28, "d28"), (day29, "d29")):
                 conn.execute(
                     text("""INSERT INTO chronicler.daily_repair_archive
@@ -3327,6 +3755,7 @@ def test_mandatory_projection_failure_rolls_back_source_and_fact_disposition(pos
                             CAST(:metadata AS jsonb))"""),
                 {"id": fact_id, "metadata": json.dumps(metadata)},
             )
+            conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
             conn.execute(
                 text("""INSERT INTO public.memory_catalog
                     (source_schema, source_table, source_id, summary, title, confidence)
@@ -3340,6 +3769,7 @@ def test_mandatory_projection_failure_rolls_back_source_and_fact_disposition(pos
                     VALUES ('chronicler_mem', 'facts', :id, :subject, 'related_to', :object)"""),
                 {"id": fact_id, "subject": subject_id, "object": object_id},
             )
+            conn.exec_driver_sql("RESET ROLE")
             conn.execute(
                 text("""INSERT INTO chronicler.daily_repair_archive
                     (local_date, generation, row_kind, row_key, audit_hash, content,
@@ -3514,3 +3944,2909 @@ def test_mandatory_projection_failure_rolls_back_source_and_fact_disposition(pos
                 conn.execute(text("DROP FUNCTION IF EXISTS public.f1_force_projection_failure()"))
     finally:
         engine.dispose()
+
+
+def test_retention_first_admission_has_total_deadline_and_read_barrier(postgres_container):
+    """Admission timeout rolls source cleanup back; expiry still holds readers closed."""
+    import time
+    from zoneinfo import ZoneInfo
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    now = datetime.now(UTC).replace(microsecond=0)
+    # Model an expired legacy source that predates migration 030's insert trigger.
+    start = (now - timedelta(days=75)).replace(hour=8, minute=0, second=0)
+    end = start + timedelta(days=35)
+    future = now + timedelta(days=2)
+    retention_days = 1
+    local_day = start.astimezone(ZoneInfo("Asia/Singapore")).date()
+    source_id, fact_id = uuid4(), uuid4()
+    subject_id, object_id = uuid4(), uuid4()
+    engine = create_engine(url)
+    catalog_id = edge_id = None
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""INSERT INTO chronicler.source_adapter_state
+                    (source_name, chronicler_compatibility)
+                    VALUES ('steam.play_history', 'supported') ON CONFLICT DO NOTHING""")
+            )
+            for entity_id, canonical_name in (
+                (subject_id, "admission-source-subject"),
+                (object_id, "admission-source-object"),
+            ):
+                conn.execute(
+                    text("""INSERT INTO public.entities
+                        (id, canonical_name, entity_type)
+                        VALUES (:id, :name, 'other')"""),
+                    {"id": entity_id, "name": canonical_name},
+                )
+            # Seed the legacy expired row without its normal AFTER trigger. The
+            # production retention scanner and all downstream reads still run normally.
+            conn.exec_driver_sql(
+                "ALTER TABLE chronicler.episodes DISABLE TRIGGER episodes_daily_repair"
+            )
+            try:
+                conn.execute(
+                    text("""INSERT INTO chronicler.episodes
+                        (id, source_name, source_ref, episode_type, start_at, end_at,
+                         layer, title, retention_days)
+                        VALUES (:id, 'steam.play_history', 'admission-deadline',
+                                'play_episode', :start_at, :end_at, 'evidence',
+                                'private source title', :retention_days)"""),
+                    {
+                        "id": source_id,
+                        "start_at": start,
+                        "end_at": end,
+                        "retention_days": retention_days,
+                    },
+                )
+            finally:
+                conn.exec_driver_sql(
+                    "ALTER TABLE chronicler.episodes ENABLE TRIGGER episodes_daily_repair"
+                )
+            conn.execute(
+                text("""INSERT INTO chronicler_mem.facts
+                    (id, subject, predicate, content, confidence, source_butler,
+                     content_authority, validity, tags, metadata)
+                    VALUES (:id, 'work lane', 'lane-skew', 'private insight', 0.9,
+                            'chronicler', 'system', 'active',
+                            '["chronicler-insight", "lane-skew", "work"]'::jsonb,
+                            CAST(:metadata AS jsonb))"""),
+                {
+                    "id": fact_id,
+                    "metadata": (
+                        '{"source":"chronicler","local_date":"'
+                        + local_day.isoformat()
+                        + '","lane":"work","direction":"down","seconds":1,'
+                        '"baseline_seconds":2,"delta_seconds":-1,"baseline_sample_days":14}'
+                    ),
+                },
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_rollups
+                    (local_date, lane, seconds, episode_count, timezone)
+                    VALUES (:day, 'play', 3600, 1, 'Asia/Singapore')"""),
+                {"day": local_day},
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_repair_archive
+                    (local_date, generation, row_kind, row_key, audit_hash, content,
+                     dependency_ids, text_access)
+                    VALUES (:day, 1, 'test', 'admission-deadline-copy', 'private-hash',
+                            CAST('{"title":"private source"}' AS jsonb),
+                            ARRAY[CAST(:source_id AS uuid)], 'audit_only')"""),
+                {"day": local_day, "source_id": source_id},
+            )
+            conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
+            catalog_id = conn.execute(
+                text("""INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, summary, title, confidence)
+                    VALUES ('chronicler_mem', 'facts', :id, 'private summary',
+                            'private title', 0.9) RETURNING id"""),
+                {"id": fact_id},
+            ).scalar_one()
+            edge_id = conn.execute(
+                text("""INSERT INTO public.entity_graph_edges
+                    (source_schema, source_table, source_id, subject_entity_id,
+                     predicate, object_entity_id)
+                    VALUES ('chronicler_mem', 'facts', :id, :subject,
+                            'related_to', :object) RETURNING id"""),
+                {"id": fact_id, "subject": subject_id, "object": object_id},
+            ).scalar_one()
+
+            conn.exec_driver_sql("RESET ROLE")
+            conn.exec_driver_sql("""
+                CREATE OR REPLACE FUNCTION chronicler.test_admission_delay()
+                RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    PERFORM pg_sleep(3.0);
+                    RETURN NEW;
+                END $$
+            """)
+            conn.exec_driver_sql("""
+                CREATE TRIGGER test_admission_delay_redaction
+                BEFORE INSERT ON chronicler.daily_repair_source_redactions
+                FOR EACH ROW EXECUTE FUNCTION chronicler.test_admission_delay()
+            """)
+            conn.exec_driver_sql("""
+                CREATE TRIGGER test_admission_delay_span
+                BEFORE INSERT ON chronicler.daily_repair_retention_spans
+                FOR EACH ROW EXECUTE FUNCTION chronicler.test_admission_delay()
+            """)
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            from butlers.chronicler.history_repair import (
+                RepairAdmissionError,
+                capture_fact_write_token,
+                pending_numeric_repair_dates,
+                run_rebuild,
+                try_shared_lock,
+            )
+
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                server_settings={"search_path": "chronicler, public", "statement_timeout": "0"},
+                init=runtime_connection,
+            )
+            try:
+                closed_through = future.astimezone(ZoneInfo("Asia/Singapore")).date() - timedelta(
+                    days=1
+                )
+                await pool.execute(
+                    "UPDATE daily_repair_control SET replay_ack=replay_epoch, closed_through=$1 "
+                    "WHERE singleton",
+                    closed_through,
+                )
+                await pool.execute(
+                    """UPDATE chronicler.daily_repair_days
+                       SET built_generation=dirty_generation, totals_pending=FALSE,
+                           outlier_pending=FALSE, facts_pending=FALSE
+                       WHERE local_date BETWEEN $1 AND $2""",
+                    local_day - timedelta(days=28),
+                    local_day,
+                )
+                eligible = await pool.fetchval(
+                    """WITH control AS (
+                           SELECT timezone, closed_through
+                           FROM chronicler.daily_repair_control WHERE singleton
+                       )
+                       SELECT EXISTS (
+                           SELECT 1
+                           FROM chronicler.episodes AS source
+                           JOIN chronicler.v_episodes_corrected AS effective
+                             ON effective.id = source.id
+                           CROSS JOIN control
+                           WHERE source.id = $1
+                             AND source.retention_days IS NOT NULL
+                             AND source.start_at + make_interval(days => source.retention_days) < $2
+                             AND source.start_at + make_interval(days => source.retention_days) < now()
+                             AND source.tombstone_at IS NULL
+                             AND source.privacy IS DISTINCT FROM 'restricted'
+                             AND effective.tombstone_at IS NULL
+                             AND effective.privacy IS DISTINCT FROM 'restricted'
+                             AND (source.start_at AT TIME ZONE control.timezone)::date
+                                 <= control.closed_through
+                             AND NOT EXISTS (
+                                 SELECT 1 FROM chronicler.daily_repair_source_redactions AS redaction
+                                 WHERE redaction.source_id = source.id
+                             )
+                       )""",
+                    source_id,
+                    future,
+                )
+                assert eligible is True, "fixture source must match production retention discovery"
+                started = time.monotonic()
+                first = await run_rebuild(pool, now=future)
+                elapsed = time.monotonic() - started
+                # Both individually sub-cap trigger statements must execute; their cumulative
+                # delay proves the admission deadline covers the whole transaction.
+                assert 5.0 <= elapsed < 7.0
+                assert first["status"] == "pending_retention"
+                assert first["retention_admission_timeout"] is True
+                assert await pool.fetchval("SELECT current_setting('statement_timeout')") == "0"
+
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_source_redactions "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_retention_spans "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_fact_dispositions "
+                    "WHERE fact_id=$1)",
+                    fact_id,
+                )
+                fact = await pool.fetchrow(
+                    "SELECT validity, content FROM chronicler_mem.facts WHERE id=$1", fact_id
+                )
+                assert (fact["validity"], fact["content"]) == ("active", "private insight")
+                catalog = await pool.fetchrow(
+                    "SELECT summary, title, confidence, invalid_at FROM public.memory_catalog "
+                    "WHERE id=$1",
+                    catalog_id,
+                )
+                assert (catalog["summary"], catalog["title"], catalog["confidence"]) == (
+                    "private summary",
+                    "private title",
+                    0.9,
+                )
+                assert catalog["invalid_at"] is None
+                assert await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM public.entity_graph_edges WHERE id=$1)", edge_id
+                )
+                archive = await pool.fetchrow(
+                    "SELECT content, audit_hash, text_access FROM chronicler.daily_repair_archive "
+                    "WHERE $1=ANY(dependency_ids)",
+                    source_id,
+                )
+                assert archive["content"] == {"title": "private source"}
+                assert archive["audit_hash"] == "private-hash"
+                assert archive["text_access"] == "audit_only"
+
+                # The source is expired even though the whole admission rolled back.
+                assert not await pool.fetchval(
+                    "SELECT public.chronicler_catalog_row_visible($1)", catalog_id
+                )
+                assert not await pool.fetchval(
+                    "SELECT public.chronicler_graph_row_visible($1)", edge_id
+                )
+                async with pool.acquire() as conn:
+                    async with conn.transaction():
+                        assert await try_shared_lock(conn)
+                        pending = await pending_numeric_repair_dates(
+                            conn, start_date=local_day, end_date=local_day + timedelta(days=100)
+                        )
+                assert local_day in pending
+                from butlers.roster_imports import roster_module
+                from butlers.testing.db_manager import db_manager
+
+                chronicler_api = roster_module("chronicler", "api/router")
+                database = db_manager({"chronicler": pool})
+                affected = await chronicler_api.get_rollups(
+                    rollup_date=local_day, start_date=None, end_date=None, db=database
+                )
+                assert affected.data.days[0].status == "pending_repair"
+                assert affected.data.days[0].lanes == []
+                with pytest.raises(RepairAdmissionError, match="retention repair is pending"):
+                    await capture_fact_write_token(
+                        pool,
+                        day_date=local_day,
+                        timezone="Asia/Singapore",
+                        baseline_lookback_days=28,
+                    )
+
+                # Remove only the injected delay and retry the same real source.
+                with engine.begin() as admin:
+                    admin.exec_driver_sql(
+                        "DROP TRIGGER test_admission_delay_redaction "
+                        "ON chronicler.daily_repair_source_redactions"
+                    )
+                    admin.exec_driver_sql(
+                        "DROP TRIGGER test_admission_delay_span "
+                        "ON chronicler.daily_repair_retention_spans"
+                    )
+                    admin.exec_driver_sql("DROP FUNCTION chronicler.test_admission_delay()")
+                retry = await run_rebuild(pool, now=future)
+                assert retry["status"] == "pending_retention"
+                assert await pool.fetchval(
+                    "SELECT reason_code='source_retention' FROM chronicler.daily_repair_source_redactions "
+                    "WHERE source_id=$1",
+                    source_id,
+                )
+                assert await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_retention_spans "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                redacted_fact = await pool.fetchrow(
+                    "SELECT validity, content FROM chronicler_mem.facts WHERE id=$1", fact_id
+                )
+                assert redacted_fact["validity"] == "retracted"
+                assert redacted_fact["content"] == "[removed by source privacy correction]"
+                redacted_catalog = await pool.fetchrow(
+                    "SELECT summary, title, confidence, invalid_at FROM public.memory_catalog "
+                    "WHERE id=$1",
+                    catalog_id,
+                )
+                assert (
+                    redacted_catalog["summary"],
+                    redacted_catalog["title"],
+                    redacted_catalog["confidence"],
+                ) == ("", None, 0)
+                assert redacted_catalog["invalid_at"] is not None
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM public.entity_graph_edges WHERE id=$1)", edge_id
+                )
+                redacted_archive = await pool.fetchrow(
+                    "SELECT content, audit_hash, text_access FROM chronicler.daily_repair_archive "
+                    "WHERE $1=ANY(dependency_ids)",
+                    source_id,
+                )
+                assert redacted_archive["content"] is None
+                assert redacted_archive["audit_hash"] is None
+                assert redacted_archive["text_access"] == "redacted"
+            finally:
+                await pool.close()
+
+        asyncio.run(scenario())
+    finally:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "DROP TRIGGER IF EXISTS test_admission_delay_redaction "
+                "ON chronicler.daily_repair_source_redactions"
+            )
+            conn.exec_driver_sql(
+                "DROP TRIGGER IF EXISTS test_admission_delay_span "
+                "ON chronicler.daily_repair_retention_spans"
+            )
+            conn.exec_driver_sql("DROP FUNCTION IF EXISTS chronicler.test_admission_delay()")
+        engine.dispose()
+
+
+def test_retention_first_admission_respects_stricter_existing_statement_timeout(
+    postgres_container,
+):
+    """A strict session GUC cancels admission without serving stale private copies."""
+    import time
+    from zoneinfo import ZoneInfo
+
+    from butlers.chronicler.history_repair import RepairAdmissionError, capture_fact_write_token
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    now = datetime.now(UTC).replace(microsecond=0)
+    start = (now - timedelta(days=10)).replace(hour=3, minute=0, second=0)
+    end = start + timedelta(hours=2)
+    future = now + timedelta(days=1)
+    local_day = start.astimezone(ZoneInfo("Asia/Singapore")).date()
+    source_id, fact_id = uuid4(), uuid4()
+    subject_id, object_id = uuid4(), uuid4()
+    engine = create_engine(url)
+    catalog_id = edge_id = None
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""INSERT INTO chronicler.source_adapter_state
+                    (source_name, chronicler_compatibility)
+                    VALUES ('steam.play_history', 'supported') ON CONFLICT DO NOTHING""")
+            )
+            for entity_id, name in (
+                (subject_id, "strict-admission-subject"),
+                (object_id, "strict-admission-object"),
+            ):
+                conn.execute(
+                    text("""INSERT INTO public.entities
+                        (id, canonical_name, entity_type)
+                        VALUES (:id, :name, 'other')"""),
+                    {"id": entity_id, "name": name},
+                )
+            # This is an old source row whose trigger predates admission. The real
+            # retention scanner and source correction triggers remain active.
+            conn.exec_driver_sql(
+                "ALTER TABLE chronicler.episodes DISABLE TRIGGER episodes_daily_repair"
+            )
+            try:
+                conn.execute(
+                    text("""INSERT INTO chronicler.episodes
+                        (id, source_name, source_ref, episode_type, start_at, end_at,
+                         layer, title, retention_days)
+                        VALUES (:id, 'steam.play_history', 'strict-admission-timeout',
+                                'play_episode', :start, :end, 'evidence',
+                                'private source title', 1)"""),
+                    {"id": source_id, "start": start, "end": end},
+                )
+            finally:
+                conn.exec_driver_sql(
+                    "ALTER TABLE chronicler.episodes ENABLE TRIGGER episodes_daily_repair"
+                )
+            conn.execute(
+                text("""INSERT INTO chronicler_mem.facts
+                    (id, subject, predicate, content, confidence, source_butler,
+                     content_authority, validity, tags, metadata)
+                    VALUES (:id, 'work lane', 'lane-skew', 'private insight', 0.9,
+                            'chronicler', 'system', 'active',
+                            '["chronicler-insight", "lane-skew", "work"]'::jsonb,
+                            CAST(:metadata AS jsonb))"""),
+                {
+                    "id": fact_id,
+                    "metadata": (
+                        '{"source":"chronicler","local_date":"'
+                        + local_day.isoformat()
+                        + '","lane":"work","direction":"down","seconds":1,'
+                        '"baseline_seconds":2,"delta_seconds":-1,"baseline_sample_days":14}'
+                    ),
+                },
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_rollups
+                    (local_date, lane, seconds, episode_count, timezone)
+                    VALUES (:day, 'play', 3600, 1, 'Asia/Singapore')"""),
+                {"day": local_day},
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_repair_archive
+                    (local_date, generation, row_kind, row_key, audit_hash, content,
+                     dependency_ids, text_access)
+                    VALUES (:day, 1, 'test', 'strict-admission-copy', 'private-hash',
+                            CAST('{"title":"private source"}' AS jsonb),
+                            ARRAY[CAST(:source_id AS uuid)], 'audit_only')"""),
+                {"day": local_day, "source_id": source_id},
+            )
+            conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
+            catalog_id = conn.execute(
+                text("""INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, summary, title, confidence)
+                    VALUES ('chronicler_mem', 'facts', :id, 'private summary',
+                            'private title', 0.9) RETURNING id"""),
+                {"id": fact_id},
+            ).scalar_one()
+            edge_id = conn.execute(
+                text("""INSERT INTO public.entity_graph_edges
+                    (source_schema, source_table, source_id, subject_entity_id,
+                     predicate, object_entity_id)
+                    VALUES ('chronicler_mem', 'facts', :id, :subject,
+                            'related_to', :object) RETURNING id"""),
+                {"id": fact_id, "subject": subject_id, "object": object_id},
+            ).scalar_one()
+            conn.exec_driver_sql("RESET ROLE")
+            conn.exec_driver_sql("""
+                CREATE OR REPLACE FUNCTION chronicler.f2_strict_admission_delay()
+                RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    PERFORM pg_sleep(3.0);
+                    RETURN NEW;
+                END $$
+            """)
+            conn.exec_driver_sql("""
+                CREATE TRIGGER f2_strict_admission_delay
+                BEFORE INSERT ON chronicler.daily_repair_source_redactions
+                FOR EACH ROW EXECUTE FUNCTION chronicler.f2_strict_admission_delay()
+            """)
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            from butlers.chronicler.history_repair import run_rebuild
+            from butlers.roster_imports import roster_module
+            from butlers.testing.db_manager import db_manager
+
+            app_name = f"f1-strict-admission-{uuid4().hex}"
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                min_size=1,
+                max_size=1,
+                server_settings={
+                    "search_path": "chronicler, public",
+                    "statement_timeout": "2s",
+                    "application_name": app_name,
+                },
+                init=runtime_connection,
+            )
+            observer = None
+            try:
+                observer = await asyncpg.connect(
+                    url.replace("postgresql+psycopg2://", "postgresql://"),
+                    server_settings={"search_path": "chronicler, public"},
+                )
+                await pool.execute(
+                    "UPDATE daily_repair_control SET replay_ack=replay_epoch WHERE singleton"
+                )
+                started = time.monotonic()
+                task = asyncio.create_task(run_rebuild(pool, now=future))
+                sleep_witness = False
+                poll_until = asyncio.get_running_loop().time() + 4.0
+                while not task.done() and asyncio.get_running_loop().time() < poll_until:
+                    sleep_witness = await observer.fetchval(
+                        """SELECT EXISTS (
+                               SELECT 1 FROM pg_catalog.pg_stat_activity
+                               WHERE application_name=$1 AND state='active'
+                                 AND wait_event='PgSleep'
+                           )""",
+                        app_name,
+                    )
+                    if sleep_witness:
+                        break
+                    await asyncio.sleep(0.05)
+                first = await task
+                elapsed = time.monotonic() - started
+                print(f"F1_STRICT_ADMISSION_ELAPSED_SECONDS={elapsed:.3f}")
+                assert sleep_witness is True, "the real first-admission delay trigger must execute"
+                assert first["status"] == "pending_retention"
+                assert first["retention_admission_timeout"] is True
+                assert elapsed < 5.0, "the stricter 2s GUC must win within the 5s total cap"
+                assert await pool.fetchval("SELECT current_setting('statement_timeout')") == "2s"
+                assert (
+                    await pool.fetchval(
+                        "SELECT setting::bigint FROM pg_catalog.pg_settings "
+                        "WHERE name='statement_timeout'"
+                    )
+                    == 2_000
+                )
+
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_source_redactions "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_retention_spans "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_fact_dispositions "
+                    "WHERE fact_id=$1)",
+                    fact_id,
+                )
+                source = await pool.fetchrow(
+                    "SELECT title, privacy, tombstone_at FROM chronicler.episodes WHERE id=$1",
+                    source_id,
+                )
+                assert (source["title"], source["privacy"], source["tombstone_at"]) == (
+                    "private source title",
+                    "normal",
+                    None,
+                )
+                fact = await pool.fetchrow(
+                    "SELECT validity, content FROM chronicler_mem.facts WHERE id=$1", fact_id
+                )
+                assert (fact["validity"], fact["content"]) == ("active", "private insight")
+                catalog = await pool.fetchrow(
+                    "SELECT summary, title, confidence, invalid_at "
+                    "FROM public.memory_catalog WHERE id=$1",
+                    catalog_id,
+                )
+                assert (catalog["summary"], catalog["title"], catalog["confidence"]) == (
+                    "private summary",
+                    "private title",
+                    0.9,
+                )
+                assert catalog["invalid_at"] is None
+                assert await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM public.entity_graph_edges WHERE id=$1)", edge_id
+                )
+                archive = await pool.fetchrow(
+                    "SELECT content, audit_hash, text_access "
+                    "FROM chronicler.daily_repair_archive WHERE $1=ANY(dependency_ids)",
+                    source_id,
+                )
+                assert archive["content"] == {"title": "private source"}
+                assert archive["audit_hash"] == "private-hash"
+                assert archive["text_access"] == "audit_only"
+
+                # Expiry remains an independent read barrier while admission rolls back.
+                assert not await pool.fetchval(
+                    "SELECT public.chronicler_catalog_row_visible($1)", catalog_id
+                )
+                assert not await pool.fetchval(
+                    "SELECT public.chronicler_graph_row_visible($1)", edge_id
+                )
+                chronicler_api = roster_module("chronicler", "api/router")
+                database = db_manager({"chronicler": pool})
+                affected = await chronicler_api.get_rollups(
+                    rollup_date=local_day, start_date=None, end_date=None, db=database
+                )
+                assert affected.data.days[0].status == "pending_repair"
+                assert affected.data.days[0].lanes == []
+                with pytest.raises(RepairAdmissionError, match="retention repair is pending"):
+                    await capture_fact_write_token(
+                        pool,
+                        day_date=local_day,
+                        timezone="Asia/Singapore",
+                        baseline_lookback_days=28,
+                    )
+
+                # Remove only the injected delay, then admit the same expired source
+                # under the original 2s session GUC.
+                with engine.begin() as admin:
+                    admin.exec_driver_sql(
+                        "DROP TRIGGER f2_strict_admission_delay "
+                        "ON chronicler.daily_repair_source_redactions"
+                    )
+                    admin.exec_driver_sql("DROP FUNCTION chronicler.f2_strict_admission_delay()")
+                retry = await run_rebuild(pool, now=future)
+                assert retry.get("retention_admission_timeout") is not True
+                assert retry.get("retention_timeout") is not True
+                assert await pool.fetchval(
+                    "SELECT reason_code='source_retention' "
+                    "FROM chronicler.daily_repair_source_redactions WHERE source_id=$1",
+                    source_id,
+                )
+                redacted_fact = await pool.fetchrow(
+                    "SELECT validity, content FROM chronicler_mem.facts WHERE id=$1", fact_id
+                )
+                assert (redacted_fact["validity"], redacted_fact["content"]) == (
+                    "retracted",
+                    "[removed by source privacy correction]",
+                )
+                redacted_catalog = await pool.fetchrow(
+                    "SELECT summary, title, confidence, invalid_at "
+                    "FROM public.memory_catalog WHERE id=$1",
+                    catalog_id,
+                )
+                assert (redacted_catalog["summary"], redacted_catalog["title"]) == ("", None)
+                assert (
+                    redacted_catalog["confidence"] == 0
+                    and redacted_catalog["invalid_at"] is not None
+                )
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM public.entity_graph_edges WHERE id=$1)", edge_id
+                )
+                redacted_archive = await pool.fetchrow(
+                    "SELECT content, audit_hash, text_access "
+                    "FROM chronicler.daily_repair_archive WHERE $1=ANY(dependency_ids)",
+                    source_id,
+                )
+                assert (
+                    redacted_archive["content"] is None and redacted_archive["audit_hash"] is None
+                )
+                assert redacted_archive["text_access"] == "redacted"
+                assert await pool.fetchval("SELECT current_setting('statement_timeout')") == "2s"
+            finally:
+                try:
+                    if observer is not None:
+                        await observer.close()
+                finally:
+                    await pool.close()
+
+        asyncio.run(scenario())
+    finally:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "DROP TRIGGER IF EXISTS f2_strict_admission_delay "
+                "ON chronicler.daily_repair_source_redactions"
+            )
+            conn.exec_driver_sql("DROP FUNCTION IF EXISTS chronicler.f2_strict_admission_delay()")
+        engine.dispose()
+
+
+def test_retention_first_admission_external_cancellation_rolls_back_prior_writes(
+    postgres_container,
+):
+    """Cancellation during post-update trigger work rolls admission writes back."""
+    import time
+    from zoneinfo import ZoneInfo
+
+    from butlers.chronicler.history_repair import RepairAdmissionError, capture_fact_write_token
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    now = datetime.now(UTC).replace(microsecond=0)
+    start = (now - timedelta(days=10)).replace(hour=3, minute=0, second=0)
+    end = start + timedelta(hours=2)
+    future = now + timedelta(days=1)
+    local_day = start.astimezone(ZoneInfo("Asia/Singapore")).date()
+    source_id = uuid4()
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""INSERT INTO chronicler.source_adapter_state
+                    (source_name, chronicler_compatibility)
+                    VALUES ('steam.play_history', 'supported') ON CONFLICT DO NOTHING""")
+            )
+            # Model a legacy expired row that predates the normal enqueue trigger.
+            conn.exec_driver_sql(
+                "ALTER TABLE chronicler.episodes DISABLE TRIGGER episodes_daily_repair"
+            )
+            try:
+                conn.execute(
+                    text("""INSERT INTO chronicler.episodes
+                        (id, source_name, source_ref, episode_type, start_at, end_at,
+                         layer, title, retention_days)
+                        VALUES (:id, 'steam.play_history', 'external-admission-cancel',
+                                'play_episode', :start, :end, 'evidence',
+                                'private source title', 1)"""),
+                    {"id": source_id, "start": start, "end": end},
+                )
+            finally:
+                conn.exec_driver_sql(
+                    "ALTER TABLE chronicler.episodes ENABLE TRIGGER episodes_daily_repair"
+                )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_repair_archive
+                    (local_date, generation, row_kind, row_key, audit_hash, content,
+                     dependency_ids, text_access)
+                    VALUES (:day, 1, 'test', 'external-cancel-copy', 'private-hash',
+                            CAST('{"title":"private source"}' AS jsonb),
+                            ARRAY[CAST(:source_id AS uuid)], 'audit_only')"""),
+                {"day": local_day, "source_id": source_id},
+            )
+            conn.exec_driver_sql("""
+                CREATE OR REPLACE FUNCTION chronicler.f2_external_admission_delay()
+                RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.text_access = 'redacted'
+                       AND TG_ARGV[0]::uuid = ANY(NEW.dependency_ids) THEN
+                        PERFORM pg_sleep(30.0);
+                    END IF;
+                    RETURN NEW;
+                END $$
+            """)
+            conn.exec_driver_sql(f"""
+                CREATE TRIGGER f2_external_admission_delay
+                AFTER UPDATE ON chronicler.daily_repair_archive
+                FOR EACH ROW EXECUTE FUNCTION chronicler.f2_external_admission_delay('{source_id}')
+            """)
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            from butlers.chronicler.history_repair import run_rebuild
+
+            app_name = f"f1-external-admission-cancel-{uuid4().hex}"
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                min_size=1,
+                max_size=1,
+                server_settings={
+                    "search_path": "chronicler, public",
+                    "statement_timeout": "0",
+                    "application_name": app_name,
+                },
+                init=runtime_connection,
+            )
+            observer = None
+            task = None
+            try:
+                observer = await asyncpg.connect(
+                    url.replace("postgresql+psycopg2://", "postgresql://"),
+                    server_settings={"search_path": "chronicler, public"},
+                )
+                await pool.execute(
+                    "UPDATE daily_repair_control SET replay_ack=replay_epoch WHERE singleton"
+                )
+                started = time.monotonic()
+                task = asyncio.create_task(run_rebuild(pool, now=future))
+                sleep_witness = False
+                poll_until = asyncio.get_running_loop().time() + 4.0
+                while (
+                    not sleep_witness
+                    and not task.done()
+                    and asyncio.get_running_loop().time() < poll_until
+                ):
+                    sleep_witness = await observer.fetchval(
+                        """SELECT EXISTS (
+                               SELECT 1 FROM pg_catalog.pg_stat_activity
+                               WHERE application_name=$1 AND state='active'
+                                 AND wait_event='PgSleep'
+                                 AND query LIKE '%UPDATE chronicler.daily_repair_archive%'
+                           )""",
+                        app_name,
+                    )
+                    if not sleep_witness:
+                        await asyncio.sleep(0.05)
+                if not sleep_witness:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    pytest.fail("the post-update archive trigger was not observed in PgSleep")
+
+                assert task.cancel() is True
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                elapsed = time.monotonic() - started
+                print(f"F1_EXTERNAL_ADMISSION_CANCEL_ELAPSED_SECONDS={elapsed:.3f}")
+                assert elapsed < 5.0, (
+                    "external cancellation must settle inside the admission budget"
+                )
+
+                # The source-redaction row, retention cursor span, and archive UPDATE
+                # happened before the delayed AFTER trigger, but cancellation rolls them back.
+                assert await pool.fetchval("SELECT 1") == 1
+                assert await pool.fetchval("SELECT current_setting('statement_timeout')") == "0"
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_source_redactions "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                assert not await pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_retention_spans "
+                    "WHERE source_id=$1)",
+                    source_id,
+                )
+                source = await pool.fetchrow(
+                    "SELECT title, privacy, tombstone_at FROM chronicler.episodes WHERE id=$1",
+                    source_id,
+                )
+                assert (source["title"], source["privacy"], source["tombstone_at"]) == (
+                    "private source title",
+                    "normal",
+                    None,
+                )
+                archive = await pool.fetchrow(
+                    "SELECT content, audit_hash, text_access "
+                    "FROM chronicler.daily_repair_archive WHERE $1=ANY(dependency_ids)",
+                    source_id,
+                )
+                assert archive["content"] == {"title": "private source"}
+                assert archive["audit_hash"] == "private-hash"
+                assert archive["text_access"] == "audit_only"
+                with pytest.raises(RepairAdmissionError, match="retention repair is pending"):
+                    await capture_fact_write_token(
+                        pool,
+                        day_date=local_day,
+                        timezone="Asia/Singapore",
+                        baseline_lookback_days=28,
+                    )
+
+                with engine.begin() as admin:
+                    admin.exec_driver_sql(
+                        "DROP TRIGGER f2_external_admission_delay "
+                        "ON chronicler.daily_repair_archive"
+                    )
+                    admin.exec_driver_sql("DROP FUNCTION chronicler.f2_external_admission_delay()")
+                retry = await run_rebuild(pool, now=future)
+                assert retry.get("retention_admission_timeout") is not True
+                assert retry.get("retention_timeout") is not True
+                assert await pool.fetchval(
+                    "SELECT reason_code='source_retention' "
+                    "FROM chronicler.daily_repair_source_redactions WHERE source_id=$1",
+                    source_id,
+                )
+                redacted_archive = await pool.fetchrow(
+                    "SELECT content, audit_hash, text_access "
+                    "FROM chronicler.daily_repair_archive WHERE $1=ANY(dependency_ids)",
+                    source_id,
+                )
+                assert redacted_archive["content"] is None
+                assert redacted_archive["audit_hash"] is None
+                assert redacted_archive["text_access"] == "redacted"
+                assert await pool.fetchval("SELECT current_setting('statement_timeout')") == "0"
+            finally:
+                try:
+                    if task is not None and not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                finally:
+                    try:
+                        if observer is not None:
+                            await observer.close()
+                    finally:
+                        await pool.close()
+
+        asyncio.run(scenario())
+    finally:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "DROP TRIGGER IF EXISTS f2_external_admission_delay "
+                "ON chronicler.daily_repair_archive"
+            )
+            conn.exec_driver_sql("DROP FUNCTION IF EXISTS chronicler.f2_external_admission_delay()")
+        engine.dispose()
+
+
+def test_chronicler_local_fact_visibility_without_030_preserves_safe_rows(postgres_container):
+    """Before 030, hide generated system rows without affecting owner or ordinary facts."""
+    from butlers.core.chronicler_visibility import local_fact_visibility_condition
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_029")
+    engine = create_engine(url)
+    generated_id, owner_id, ordinary_id = uuid4(), uuid4(), uuid4()
+    try:
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT to_regclass('chronicler_mem.facts_readable') IS NULL")
+            ).scalar_one()
+            for fact_id, predicate, authority, content in (
+                (generated_id, "lane-skew", "system", "pending generated"),
+                (owner_id, "lane-skew", "owner", "owner correction"),
+                (ordinary_id, "weekly-note", "system", "ordinary note"),
+            ):
+                conn.execute(
+                    text("""INSERT INTO chronicler_mem.facts
+                        (id, subject, predicate, content, source_butler, content_authority,
+                         validity, tags, metadata)
+                        VALUES (:id, :subject, :predicate, :content, 'chronicler',
+                                :authority, 'active', '[]'::jsonb, '{}'::jsonb)"""),
+                    {
+                        "id": fact_id,
+                        "subject": f"subject-{fact_id}",
+                        "predicate": predicate,
+                        "content": content,
+                        "authority": authority,
+                    },
+                )
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                server_settings={"search_path": "chronicler_mem, public"},
+                init=runtime_connection,
+            )
+            try:
+                visibility = await local_fact_visibility_condition(
+                    pool, memory_schema="chronicler_mem", alias="facts"
+                )
+                assert visibility is not None
+                rows = await pool.fetch(
+                    f"""SELECT facts.id, facts.predicate, facts.content_authority
+                        FROM chronicler_mem.facts AS facts
+                        WHERE {visibility}"""
+                )
+                assert {row["id"] for row in rows} == {owner_id, ordinary_id}
+                assert all(row["id"] != generated_id for row in rows)
+            finally:
+                await pool.close()
+
+        asyncio.run(scenario())
+    finally:
+        engine.dispose()
+
+
+def test_chronicler_local_reader_keeps_current_generated_fact_and_hides_invalid_rows(
+    postgres_container,
+):
+    """Keep finalized generated facts and hide pending or disposed rows."""
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    engine = create_engine(url)
+    projection_ids = {"catalog": {}, "graph": {}}
+    boundary_id, later_id = uuid4(), uuid4()
+    generated_id, pending_id, disposed_id, owner_id, ordinary_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    try:
+        with engine.begin() as conn:
+            closed_through = conn.execute(
+                text("SELECT closed_through FROM chronicler.daily_repair_control WHERE singleton")
+            ).scalar_one()
+            changed_day = closed_through - timedelta(days=29)
+            kept_day = changed_day - timedelta(days=1)
+            conn.execute(
+                text("""UPDATE chronicler.daily_repair_control
+                    SET replay_ack=replay_epoch, blocked_reason=NULL, timezone='UTC'
+                    WHERE singleton""")
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_repair_days
+                    (local_date, timezone, dirty_generation, built_generation,
+                     totals_pending, outlier_pending, facts_pending)
+                    VALUES (:day, 'UTC', 1, 1, FALSE, FALSE, FALSE)"""),
+                {"day": kept_day},
+            )
+            conn.execute(
+                text("""SELECT chronicler.enqueue_daily_repair(
+                    :start_at, :start_at + interval '1 second', TRUE,
+                    ARRAY[CAST(:dependency AS uuid)])"""),
+                {
+                    "start_at": datetime.combine(changed_day, datetime.min.time(), tzinfo=UTC),
+                    "dependency": uuid4(),
+                },
+            )
+            assert (
+                conn.execute(
+                    text("""SELECT count(*) FROM chronicler.daily_repair_days
+                    WHERE local_date BETWEEN :day AND :day + 28 AND facts_pending"""),
+                    {"day": changed_day},
+                ).scalar_one()
+                == 29
+            )
+            for fact_id, predicate, authority, subject, tags, metadata in (
+                (
+                    generated_id,
+                    "lane-skew",
+                    "system",
+                    "work lane",
+                    '["chronicler-insight", "lane-skew", "work"]',
+                    {
+                        "source": "chronicler",
+                        "local_date": kept_day.isoformat(),
+                        "lane": "work",
+                        "direction": "down",
+                        "seconds": 3600,
+                    },
+                ),
+                (
+                    pending_id,
+                    "lane-skew",
+                    "system",
+                    "home lane",
+                    '["chronicler-insight", "lane-skew", "home"]',
+                    {
+                        "source": "chronicler",
+                        "local_date": changed_day.isoformat(),
+                        "lane": "home",
+                        "direction": "down",
+                        "seconds": 3600,
+                    },
+                ),
+                (
+                    boundary_id,
+                    "lane-skew",
+                    "system",
+                    "rest lane",
+                    '["chronicler-insight", "lane-skew", "rest"]',
+                    {
+                        "source": "chronicler",
+                        "local_date": (changed_day + timedelta(days=28)).isoformat(),
+                        "lane": "rest",
+                        "direction": "down",
+                        "seconds": 3600,
+                    },
+                ),
+                (
+                    later_id,
+                    "lane-skew",
+                    "system",
+                    "play lane",
+                    '["chronicler-insight", "lane-skew", "play"]',
+                    {
+                        "source": "chronicler",
+                        "local_date": (changed_day + timedelta(days=29)).isoformat(),
+                        "lane": "play",
+                        "direction": "down",
+                        "seconds": 3600,
+                    },
+                ),
+                (
+                    disposed_id,
+                    "lane-skew",
+                    "system",
+                    "read lane",
+                    '["chronicler-insight", "lane-skew", "read"]',
+                    {
+                        "source": "chronicler",
+                        "local_date": kept_day.isoformat(),
+                        "lane": "read",
+                        "direction": "down",
+                        "seconds": 3600,
+                    },
+                ),
+                (
+                    owner_id,
+                    "lane-skew",
+                    "owner",
+                    "owner lane",
+                    '["chronicler-insight", "lane-skew", "work"]',
+                    {
+                        "source": "chronicler",
+                        "local_date": kept_day.isoformat(),
+                        "lane": "work",
+                        "direction": "down",
+                        "seconds": 3600,
+                    },
+                ),
+                (
+                    ordinary_id,
+                    "weekly-note",
+                    "system",
+                    "ordinary note",
+                    "[]",
+                    {},
+                ),
+            ):
+                conn.execute(
+                    text("""INSERT INTO chronicler_mem.facts
+                        (id, subject, predicate, content, source_butler, content_authority,
+                         validity, tags, metadata)
+                        VALUES (:id, :subject, :predicate, 'local visibility control',
+                                'chronicler', :authority, 'active', CAST(:tags AS jsonb),
+                                CAST(:metadata AS jsonb))"""),
+                    {
+                        "id": fact_id,
+                        "subject": subject,
+                        "predicate": predicate,
+                        "authority": authority,
+                        "tags": tags,
+                        "metadata": json.dumps(metadata),
+                    },
+                )
+            # Shared readers must use the same target-day queue orientation.
+            subject_id, object_id = uuid4(), uuid4()
+            for entity_id in (subject_id, object_id):
+                conn.execute(
+                    text(
+                        "INSERT INTO public.entities (id, canonical_name, entity_type) "
+                        "VALUES (:id, CAST(:id AS text), 'other')"
+                    ),
+                    {"id": entity_id},
+                )
+            conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
+            for fact_id in (
+                generated_id,
+                pending_id,
+                boundary_id,
+                later_id,
+                disposed_id,
+                owner_id,
+                ordinary_id,
+            ):
+                projection_ids["catalog"][fact_id] = conn.execute(
+                    text("""INSERT INTO public.memory_catalog
+                        (source_schema, source_table, source_id, source_butler, tenant_id,
+                         summary, search_vector, memory_type, title, sensitivity)
+                        VALUES ('chronicler_mem', 'facts', :id, 'chronicler', 'shared',
+                                'visibility boundary', to_tsvector('english', 'boundary'),
+                                'fact', 'boundary', 'normal') RETURNING id"""),
+                    {"id": fact_id},
+                ).scalar_one()
+                projection_ids["graph"][fact_id] = conn.execute(
+                    text("""INSERT INTO public.entity_graph_edges
+                        (source_schema, source_table, source_id, subject_entity_id,
+                         predicate, object_entity_id)
+                        VALUES ('chronicler_mem', 'facts', :id, :subject,
+                                'related_to', :object) RETURNING id"""),
+                    {"id": fact_id, "subject": subject_id, "object": object_id},
+                ).scalar_one()
+            conn.exec_driver_sql("RESET ROLE")
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_repair_fact_dispositions
+                    (local_date, generation, row_key, fact_id, disposition, reason_code,
+                     dependency_ids, redacted)
+                    VALUES (:day, 1, :row_key, :fact_id, 'disposed', 'source_changed',
+                            '{}'::uuid[], FALSE)"""),
+                {"day": kept_day, "row_key": str(disposed_id), "fact_id": disposed_id},
+            )
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                init=runtime_connection,
+            )
+            try:
+                rows = await pool.fetch(
+                    "SELECT id FROM chronicler_mem.facts_readable "
+                    "WHERE id = ANY($1::uuid[]) ORDER BY id",
+                    [generated_id, pending_id, disposed_id, owner_id, ordinary_id],
+                )
+                assert generated_id in {row["id"] for row in rows}, (
+                    "earlier generated fact stays visible"
+                )
+                assert {row["id"] for row in rows} == {generated_id, owner_id, ordinary_id}
+                boundary_rows = await pool.fetch(
+                    "SELECT id FROM chronicler_mem.facts_readable WHERE id=ANY($1::uuid[])",
+                    [
+                        generated_id,
+                        pending_id,
+                        boundary_id,
+                        later_id,
+                        disposed_id,
+                        owner_id,
+                        ordinary_id,
+                    ],
+                )
+                assert {row["id"] for row in boundary_rows} == {
+                    generated_id,
+                    later_id,
+                    owner_id,
+                    ordinary_id,
+                }
+                for kind, function in (
+                    ("catalog", "public.chronicler_catalog_row_visible"),
+                    ("graph", "public.chronicler_graph_row_visible"),
+                ):
+                    visible = {
+                        fact_id
+                        for fact_id, row_id in projection_ids[kind].items()
+                        if await pool.fetchval(f"SELECT {function}($1)", row_id)
+                    }
+                    assert generated_id in visible, f"{kind}: earlier generated fact stays visible"
+                    assert visible == {generated_id, later_id, owner_id, ordinary_id}
+                await pool.execute("UPDATE chronicler.daily_repair_days SET facts_pending=FALSE")
+                restored = await pool.fetch(
+                    "SELECT id FROM chronicler_mem.facts_readable WHERE id=ANY($1::uuid[])",
+                    [generated_id, pending_id, disposed_id, owner_id, ordinary_id],
+                )
+                assert {row["id"] for row in restored} == {
+                    generated_id,
+                    pending_id,
+                    owner_id,
+                    ordinary_id,
+                }
+                for kind, function in (
+                    ("catalog", "public.chronicler_catalog_row_visible"),
+                    ("graph", "public.chronicler_graph_row_visible"),
+                ):
+                    assert await pool.fetchval(
+                        f"SELECT {function}($1)", projection_ids[kind][pending_id]
+                    )
+                    assert await pool.fetchval(
+                        f"SELECT {function}($1)", projection_ids[kind][boundary_id]
+                    )
+                    assert await pool.fetchval(
+                        f"SELECT {function}($1)", projection_ids[kind][later_id]
+                    )
+            finally:
+                await pool.close()
+
+        asyncio.run(scenario())
+    finally:
+        engine.dispose()
+
+
+def test_chronicler_readers_withhold_pending_fact_before_search_limit_and_graph_walk(
+    postgres_container, monkeypatch
+):
+    """Pending generated rows stay hidden while owner, ordinary, and foreign rows survive."""
+    from urllib.parse import urlparse
+
+    from fastapi import HTTPException
+
+    from butlers.api.routers import data_ops
+    from butlers.api.routers import entities as entity_api
+    from butlers.api.routers import memory as memory_api
+    from butlers.core import entity_graph_edges
+    from butlers.core.entity_graph_edges import (
+        coverage_for_entities,
+        dossier_for_entity,
+        find_entity_graph_path,
+        walk_entity_graph,
+    )
+    from butlers.modules.memory import catalog_measurement, knowledge_gaps
+    from butlers.modules.memory import search as memory_search_impl
+    from butlers.modules.memory import tools as memory_tools_impl
+    from butlers.modules.memory.search import CatalogReadPolicy, search_catalog
+    from butlers.modules.memory.tools import context as memory_context_impl
+    from butlers.modules.memory.tools import entities as memory_entities_impl
+    from butlers.modules.memory.tools import management as memory_management_impl
+    from butlers.modules.memory.tools.context import memory_context
+    from butlers.modules.memory.tools.entities import entity_neighbors, entity_resolve
+    from butlers.modules.memory.tools.management import memory_stats
+    from butlers.modules.memory.tools.preferences import get_preferences
+    from butlers.modules.memory.tools.reading import (
+        memory_get,
+        memory_recall,
+    )
+    from butlers.modules.memory.tools.reading import (
+        memory_search as memory_search_tool,
+    )
+    from butlers.testing.db_manager import db_manager
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    engine = create_engine(url)
+    admin_url = (
+        urlparse(postgres_container.get_connection_url())._replace(path=urlparse(url).path).geturl()
+    )
+    admin_engine = create_engine(admin_url)
+    day = None
+    generated_id, owner_id, ordinary_id = uuid4(), uuid4(), uuid4()
+    preference_id = uuid4()
+    preference_owner_id = None
+    start_id, stale_neighbor, owner_neighbor, ordinary_neighbor, foreign_neighbor = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    catalog_ids = {}
+    graph_ids = {}
+    try:
+        with engine.begin() as conn:
+            day = conn.execute(
+                text("SELECT closed_through FROM chronicler.daily_repair_control WHERE singleton")
+            ).scalar_one()
+            conn.execute(
+                text("""UPDATE chronicler.daily_repair_control
+                    SET replay_ack=replay_epoch, blocked_reason=NULL, timezone='Asia/Singapore'
+                    WHERE singleton""")
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler.daily_repair_days
+                    (local_date, timezone, dirty_generation, built_generation,
+                     totals_pending, outlier_pending, facts_pending)
+                    VALUES (:day, 'Asia/Singapore', 1, 1, FALSE, FALSE, TRUE)
+                    ON CONFLICT (local_date) DO UPDATE SET facts_pending=TRUE"""),
+                {"day": day},
+            )
+            for entity_id, name in (
+                (start_id, "reader-source"),
+                (stale_neighbor, "reader-stale-target"),
+                (owner_neighbor, "reader-owner-target"),
+                (ordinary_neighbor, "reader-ordinary-target"),
+                (foreign_neighbor, "reader-foreign-target"),
+            ):
+                conn.execute(
+                    text("""INSERT INTO public.entities (id, canonical_name, entity_type)
+                        VALUES (:id, :name, 'other')"""),
+                    {"id": entity_id, "name": name},
+                )
+            preference_owner = conn.execute(
+                text("SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1")
+            ).scalar_one_or_none()
+            if preference_owner is None:
+                preference_owner_id = uuid4()
+                conn.execute(
+                    text("""INSERT INTO public.entities
+                        (id, canonical_name, entity_type, roles)
+                        VALUES (:id, :name, 'person', ARRAY['owner']::text[])"""),
+                    {
+                        "id": preference_owner_id,
+                        "name": f"reader-owner-{preference_owner_id}",
+                    },
+                )
+            else:
+                preference_owner_id = preference_owner
+            conn.execute(
+                text("""INSERT INTO chronicler_mem.facts
+                    (id, subject, predicate, content, source_butler, content_authority,
+                     validity, tags, metadata)
+                    VALUES (:id, 'work lane', 'lane-skew',
+                            'pending generated cobalt lighthouse cobalt lighthouse cobalt lighthouse',
+                            'chronicler', 'system', 'active',
+                            '["chronicler-insight", "lane-skew", "work"]'::jsonb,
+                            CAST(:metadata AS jsonb))"""),
+                {
+                    "id": generated_id,
+                    "metadata": (
+                        '{"source":"chronicler","local_date":"'
+                        + day.isoformat()
+                        + '","lane":"work","direction":"down","seconds":1}'
+                    ),
+                },
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler_mem.facts
+                    (id, subject, predicate, content, source_butler, content_authority,
+                     validity, tags, metadata)
+                    VALUES (:id, 'owner lane', 'lane-skew', 'owner cobalt lighthouse',
+                            'chronicler', 'owner', 'active',
+                            '["chronicler-insight", "lane-skew", "work"]'::jsonb,
+                            CAST(:metadata AS jsonb))"""),
+                {
+                    "id": owner_id,
+                    "metadata": (
+                        '{"source":"chronicler","local_date":"'
+                        + day.isoformat()
+                        + '","lane":"work","direction":"down","seconds":1}'
+                    ),
+                },
+            )
+            conn.execute(
+                text("""INSERT INTO chronicler_mem.facts
+                    (id, subject, predicate, content, source_butler, content_authority,
+                     validity, tags, metadata)
+                    VALUES (:id, 'ordinary note', 'weekly-note', 'ordinary cobalt lighthouse',
+                            'chronicler', 'system', 'active', '[]'::jsonb, '{}'::jsonb)"""),
+                {"id": ordinary_id},
+            )
+            # The migration fixture leaves search_vector nullable; production fact writers
+            # populate it. Seed the test rows so actual full-text readers have real candidates.
+            for fact_id in (generated_id, owner_id, ordinary_id):
+                conn.execute(
+                    text("""UPDATE chronicler_mem.facts
+                        SET search_vector=to_tsvector('english', content),
+                            last_confirmed_at=now()
+                        WHERE id=:id"""),
+                    {"id": fact_id},
+                )
+            # Knowledge-gap capture asks whether an active fact already answers this pair.
+            # Give the pending generated fact a real entity so that this exact query seam can
+            # prove the hidden row does not turn a question into an answered gap.
+            conn.execute(
+                text("UPDATE chronicler_mem.facts SET entity_id=:entity WHERE id=:id"),
+                {"entity": start_id, "id": generated_id},
+            )
+            # Make the pending row the first canonical result if a reader applies LIMIT
+            # before its source-visibility predicate.
+            conn.execute(
+                text(
+                    "UPDATE chronicler_mem.facts SET created_at=now()+interval '1 day' WHERE id=:id"
+                ),
+                {"id": generated_id},
+            )
+            conn.exec_driver_sql("SET LOCAL ROLE butler_chronicler_rw")
+            for fact_id, schema, summary in (
+                (
+                    generated_id,
+                    "chronicler_mem",
+                    "cobalt lighthouse cobalt lighthouse cobalt lighthouse cobalt lighthouse",
+                ),
+                (owner_id, "chronicler_mem", "cobalt lighthouse owner"),
+                (ordinary_id, "chronicler_mem", "cobalt lighthouse ordinary"),
+                (generated_id, "foreign_memory", "cobalt lighthouse foreign same uuid"),
+            ):
+                row_id = conn.execute(
+                    text("""INSERT INTO public.memory_catalog
+                        (source_schema, source_table, source_id, source_butler, tenant_id,
+                         summary, search_vector, memory_type, title, sensitivity)
+                        VALUES (:schema, 'facts', :source_id, 'chronicler', 'shared',
+                                :summary, to_tsvector('english', :summary), 'fact',
+                                :summary, 'normal') RETURNING id"""),
+                    {"schema": schema, "source_id": fact_id, "summary": summary},
+                ).scalar_one()
+                catalog_ids[(schema, fact_id)] = row_id
+            for fact_id, schema, neighbor_id in (
+                (generated_id, "chronicler_mem", stale_neighbor),
+                (owner_id, "chronicler_mem", owner_neighbor),
+                (ordinary_id, "chronicler_mem", ordinary_neighbor),
+                (generated_id, "foreign_memory", foreign_neighbor),
+            ):
+                edge_id = conn.execute(
+                    text("""INSERT INTO public.entity_graph_edges
+                        (source_schema, source_table, source_id, subject_entity_id,
+                         predicate, object_entity_id)
+                        VALUES (:schema, 'facts', :source_id, :subject,
+                                'related_to', :object) RETURNING id"""),
+                    {
+                        "schema": schema,
+                        "source_id": fact_id,
+                        "subject": start_id,
+                        "object": neighbor_id,
+                    },
+                ).scalar_one()
+                graph_ids[neighbor_id] = edge_id
+
+            cost_catalog_ids = (
+                conn.execute(
+                    text("""
+                    INSERT INTO public.memory_catalog
+                        (source_schema, source_table, source_id, source_butler, tenant_id,
+                         summary, search_vector, memory_type, title, sensitivity)
+                    SELECT 'unrelated_cost_probe', 'facts', gen_random_uuid(),
+                           'unrelated_cost_probe', 'shared',
+                           'unrelated bounded visibility sample',
+                           to_tsvector('english', 'unrelated bounded visibility sample'),
+                           'fact', 'unrelated bounded visibility sample', 'normal'
+                    FROM generate_series(1, 512)
+                    RETURNING id
+                """)
+                )
+                .scalars()
+                .all()
+            )
+            assert len(cost_catalog_ids) == 512
+            for fact_id, first, second in (
+                (generated_id, 1.0, 0.0),
+                (owner_id, 0.0, 1.0),
+                (ordinary_id, 0.0, 1.0),
+            ):
+                conn.execute(
+                    text("""UPDATE public.memory_catalog
+                        SET embedding = (
+                            ARRAY[CAST(:first AS real), CAST(:second AS real)]
+                            || array_fill(0::real, ARRAY[382])
+                        )::vector(384)
+                        WHERE source_schema='chronicler_mem'
+                          AND source_table='facts' AND source_id=:fact_id"""),
+                    {"first": first, "second": second, "fact_id": fact_id},
+                )
+
+        async def runtime_connection(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        async def scenario():
+            pool = await asyncpg.create_pool(
+                url.replace("postgresql+psycopg2://", "postgresql://"),
+                server_settings={"search_path": "chronicler_mem, public"},
+                init=runtime_connection,
+            )
+            try:
+                top_raw = await pool.fetchrow(
+                    """SELECT source_schema, source_id
+                       FROM public.memory_catalog
+                       WHERE tenant_id='shared' AND invalid_at IS NULL
+                         AND search_vector @@ plainto_tsquery('english', $1)
+                       ORDER BY ts_rank(search_vector, plainto_tsquery('english', $1)) DESC
+                       LIMIT 1""",
+                    "cobalt lighthouse",
+                )
+                assert (top_raw["source_schema"], top_raw["source_id"]) == (
+                    "chronicler_mem",
+                    generated_id,
+                )
+                hits = await search_catalog(
+                    pool,
+                    "cobalt lighthouse",
+                    None,
+                    tenant_id="shared",
+                    memory_type="fact",
+                    limit=1,
+                    mode="keyword",
+                    read_policy=CatalogReadPolicy("normal", ("normal",)),
+                )
+                assert len(hits) == 1
+                assert (hits[0]["source_schema"], hits[0]["source_id"]) != (
+                    "chronicler_mem",
+                    generated_id,
+                )
+                # The same UUID under a foreign stored source tuple is not classified as
+                # Chronicler and remains an eligible public pointer.
+                assert await pool.fetchval(
+                    "SELECT public.chronicler_catalog_row_visible($1)",
+                    catalog_ids[("foreign_memory", generated_id)],
+                )
+
+                async def _omit_local_visibility(*_args, **_kwargs):
+                    return None
+
+                # The knowledge-gap answer probe uses the same configured-schema
+                # classification as fact readers. Show that the pending row is a real answer
+                # without that predicate, then keep it from prematurely closing a gap.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        knowledge_gaps, "local_fact_visibility_condition", _omit_local_visibility
+                    )
+                    raw_gap_answer = await knowledge_gaps._existing_answer(
+                        pool, "chronicler_mem", start_id, "lane-skew"
+                    )
+                assert raw_gap_answer is not None
+                assert raw_gap_answer["ref"] == f"fact:{generated_id}"
+                assert (
+                    await knowledge_gaps._existing_answer(
+                        pool, "chronicler_mem", start_id, "lane-skew"
+                    )
+                    is None
+                )
+
+                # The MCP management summary must count visible local facts, not a pending
+                # generated candidate. Its bypass companion confirms the raw count differs.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_management_impl,
+                        "local_fact_visibility_condition",
+                        _omit_local_visibility,
+                    )
+                    raw_management_stats = await memory_stats(pool, memory_schema="chronicler_mem")
+                assert raw_management_stats["facts"]["active"] == 3
+                visible_management_stats = await memory_stats(pool, memory_schema="chronicler_mem")
+                assert visible_management_stats["facts"]["active"] == 2
+
+                walked = await walk_entity_graph(pool, entity_id=start_id, max_hops=1)
+                walked_ids = {row["entity_id"] for row in walked}
+                assert stale_neighbor not in walked_ids
+                assert {owner_neighbor, ordinary_neighbor, foreign_neighbor} <= walked_ids
+                coverage = await coverage_for_entities(pool, [start_id])
+                assert coverage[start_id] == (3, 0)
+                dossier = await dossier_for_entity(pool, start_id)
+                assert sum(dossier.live_by_source.values()) == 3
+                assert {receipt.counterpart_entity_id for receipt in dossier.receipts} == {
+                    owner_neighbor,
+                    ordinary_neighbor,
+                    foreign_neighbor,
+                }
+                # Path discovery and its final edge re-fetch apply the same row-ID predicate.
+                # Neutralizing only that predicate demonstrates the fixture contains a real
+                # stale path; the restored production query must withhold it and retain a live one.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        entity_graph_edges, "graph_projection_visible", lambda _alias: "TRUE"
+                    )
+                    unfiltered_path = await find_entity_graph_path(
+                        pool,
+                        from_entity_id=start_id,
+                        to_entity_id=stale_neighbor,
+                        max_hops=1,
+                    )
+                assert unfiltered_path is not None
+                assert [row["id"] for row in unfiltered_path] == [graph_ids[stale_neighbor]]
+                assert (
+                    await find_entity_graph_path(
+                        pool,
+                        from_entity_id=start_id,
+                        to_entity_id=stale_neighbor,
+                        max_hops=1,
+                    )
+                    is None
+                )
+                owner_path = await find_entity_graph_path(
+                    pool,
+                    from_entity_id=start_id,
+                    to_entity_id=owner_neighbor,
+                    max_hops=1,
+                )
+                assert owner_path is not None
+                assert [row["id"] for row in owner_path] == [graph_ids[owner_neighbor]]
+
+                database = db_manager(
+                    {"chronicler": pool},
+                    schemas={"chronicler": "chronicler"},
+                    memory_schemas={"chronicler": "chronicler_mem"},
+                    modules={"chronicler": ["memory"]},
+                )
+
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_api, "local_fact_visibility_condition", _omit_local_visibility
+                    )
+                    raw_api_stats = await memory_api.get_memory_stats(db=database)
+                    raw_butler_stats = await memory_api.get_butler_memory_stats(
+                        name="chronicler", db=database
+                    )
+                assert raw_api_stats.data.total_facts == 3
+                assert raw_api_stats.data.active_facts == 3
+                assert raw_butler_stats.data.total_facts == 3
+                visible_api_stats = await memory_api.get_memory_stats(db=database)
+                visible_butler_stats = await memory_api.get_butler_memory_stats(
+                    name="chronicler", db=database
+                )
+                assert visible_api_stats.data.total_facts == 2
+                assert visible_api_stats.data.active_facts == 2
+                assert visible_butler_stats.data.total_facts == 2
+
+                # Exercise the catalog HTTP route with its real catalog SQL and a held policy
+                # value; the embedding engine and switchboard context are the external edges.
+                catalog_database = db_manager({"switchboard": pool})
+                catalog_api_engine = SimpleNamespace(embed=lambda _query: [1.0, *([0.0] * 383)])
+
+                catalog_read_policy = CatalogReadPolicy("normal", ("normal",))
+
+                async def _held_catalog_policy(_pool):
+                    return catalog_read_policy
+
+                with monkeypatch.context() as catalog_route:
+                    catalog_route.setattr(
+                        memory_search_impl, "load_catalog_read_policy", _held_catalog_policy
+                    )
+                    catalog_route.setattr(
+                        memory_tools_impl,
+                        "get_embedding_engine",
+                        lambda *_args, **_kwargs: catalog_api_engine,
+                    )
+                    with monkeypatch.context() as bypass:
+                        bypass.setattr(
+                            memory_search_impl,
+                            "catalog_projection_visible",
+                            lambda _alias: "TRUE",
+                        )
+                        raw_catalog_api = await memory_api.search_memory_catalog(
+                            query="cobalt lighthouse",
+                            memory_type="fact",
+                            limit=1,
+                            mode="semantic",
+                            db=catalog_database,
+                        )
+                    assert len(raw_catalog_api.data) == 1
+                    assert raw_catalog_api.data[0].source_schema == "chronicler_mem"
+                    assert raw_catalog_api.data[0].source_id == str(generated_id)
+                    visible_catalog_api = await memory_api.search_memory_catalog(
+                        query="cobalt lighthouse",
+                        memory_type="fact",
+                        limit=1,
+                        mode="semantic",
+                        db=catalog_database,
+                    )
+                assert len(visible_catalog_api.data) == 1
+                assert visible_catalog_api.data[0].source_id in {
+                    str(owner_id),
+                    str(ordinary_id),
+                }
+
+                # Revoke the exact grants as their recorded owners in this disposable
+                # database. Then run both real guarded SQL paths as the runtime role and
+                # restore the original ACLs in a finally block.
+                from butlers.core_tools._memory_access import _query_drops_7d
+
+                def _set_local_role(conn, role_name: str) -> None:
+                    quoted = '"' + role_name.replace('"', '""') + '"'
+                    conn.exec_driver_sql(f"SET LOCAL ROLE {quoted}")
+
+                with admin_engine.connect() as admin_conn:
+                    view_owner = admin_conn.execute(
+                        text(
+                            "SELECT pg_catalog.pg_get_userbyid(relowner) "
+                            "FROM pg_catalog.pg_class "
+                            "WHERE oid='chronicler_mem.facts_readable'::pg_catalog.regclass"
+                        )
+                    ).scalar_one()
+                    helper_owner = admin_conn.execute(
+                        text(
+                            "SELECT pg_catalog.pg_get_userbyid(proowner) "
+                            "FROM pg_catalog.pg_proc "
+                            "WHERE oid='public.chronicler_catalog_row_visible(uuid)'::pg_catalog.regprocedure"
+                        )
+                    ).scalar_one()
+                    original_view_acl = admin_conn.execute(
+                        text(
+                            "SELECT ARRAY(SELECT ROW(grantor,grantee,privilege_type,is_grantable)::text FROM pg_catalog.aclexplode(relacl) ORDER BY 1) FROM pg_catalog.pg_class "
+                            "WHERE oid='chronicler_mem.facts_readable'::pg_catalog.regclass"
+                        )
+                    ).scalar_one()
+                    original_catalog_helper_acl = admin_conn.execute(
+                        text(
+                            "SELECT ARRAY(SELECT ROW(grantor,grantee,privilege_type,is_grantable)::text FROM pg_catalog.aclexplode(proacl) ORDER BY 1) FROM pg_catalog.pg_proc "
+                            "WHERE oid='public.chronicler_catalog_row_visible(uuid)'::pg_catalog.regprocedure"
+                        )
+                    ).scalar_one()
+
+                with admin_engine.connect() as admin_conn:
+                    assert admin_conn.execute(
+                        text(
+                            "SELECT pg_catalog.has_table_privilege("
+                            "'butler_chronicler_rw', "
+                            "'chronicler_mem.facts_readable', 'SELECT')"
+                        )
+                    ).scalar_one()
+                    assert admin_conn.execute(
+                        text(
+                            "SELECT pg_catalog.has_function_privilege("
+                            "'butler_chronicler_rw', "
+                            "'public.chronicler_catalog_row_visible(uuid)', 'EXECUTE')"
+                        )
+                    ).scalar_one()
+
+                with admin_engine.begin() as admin_conn:
+                    _set_local_role(admin_conn, view_owner)
+                    admin_conn.exec_driver_sql(
+                        "REVOKE SELECT ON chronicler_mem.facts_readable FROM butler_chronicler_rw"
+                    )
+                    admin_conn.exec_driver_sql("RESET ROLE")
+                    _set_local_role(admin_conn, helper_owner)
+                    admin_conn.exec_driver_sql(
+                        "REVOKE EXECUTE ON FUNCTION "
+                        "public.chronicler_catalog_row_visible(uuid) "
+                        "FROM butler_chronicler_rw"
+                    )
+
+                try:
+                    with admin_engine.connect() as admin_conn:
+                        assert not admin_conn.execute(
+                            text(
+                                "SELECT pg_catalog.has_table_privilege("
+                                "'butler_chronicler_rw', "
+                                "'chronicler_mem.facts_readable', 'SELECT')"
+                            )
+                        ).scalar_one()
+                        assert not admin_conn.execute(
+                            text(
+                                "SELECT pg_catalog.has_function_privilege("
+                                "'butler_chronicler_rw', "
+                                "'public.chronicler_catalog_row_visible(uuid)', 'EXECUTE')"
+                            )
+                        ).scalar_one()
+
+                    async with pool.acquire() as guarded_connection:
+                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                            await _query_drops_7d(
+                                guarded_connection,
+                                memory_schema="chronicler_mem",
+                            )
+                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                            await memory_context_impl._fetch_fleet_knowledge(
+                                guarded_connection,
+                                catalog_api_engine,
+                                "cobalt lighthouse",
+                                "chronicler",
+                                "shared",
+                                catalog_read_policy,
+                            )
+                finally:
+                    with admin_engine.begin() as admin_conn:
+                        _set_local_role(admin_conn, view_owner)
+                        admin_conn.exec_driver_sql(
+                            "GRANT SELECT ON chronicler_mem.facts_readable TO butler_chronicler_rw"
+                        )
+                        admin_conn.exec_driver_sql("RESET ROLE")
+                        _set_local_role(admin_conn, helper_owner)
+                        admin_conn.exec_driver_sql(
+                            "GRANT EXECUTE ON FUNCTION "
+                            "public.chronicler_catalog_row_visible(uuid) "
+                            "TO butler_chronicler_rw"
+                        )
+
+                with admin_engine.connect() as admin_conn:
+                    assert (
+                        admin_conn.execute(
+                            text(
+                                "SELECT ARRAY(SELECT ROW(grantor,grantee,privilege_type,is_grantable)::text FROM pg_catalog.aclexplode(relacl) ORDER BY 1) FROM pg_catalog.pg_class "
+                                "WHERE oid='chronicler_mem.facts_readable'::pg_catalog.regclass"
+                            )
+                        ).scalar_one()
+                        == original_view_acl
+                    )
+                    assert (
+                        admin_conn.execute(
+                            text(
+                                "SELECT ARRAY(SELECT ROW(grantor,grantee,privilege_type,is_grantable)::text FROM pg_catalog.aclexplode(proacl) ORDER BY 1) FROM pg_catalog.pg_proc "
+                                "WHERE oid='public.chronicler_catalog_row_visible(uuid)'::pg_catalog.regprocedure"
+                            )
+                        ).scalar_one()
+                        == original_catalog_helper_acl
+                    )
+                    assert admin_conn.execute(
+                        text(
+                            "SELECT pg_catalog.has_table_privilege("
+                            "'butler_chronicler_rw', "
+                            "'chronicler_mem.facts_readable', 'SELECT')"
+                        )
+                    ).scalar_one()
+                    assert admin_conn.execute(
+                        text(
+                            "SELECT pg_catalog.has_function_privilege("
+                            "'butler_chronicler_rw', "
+                            "'public.chronicler_catalog_row_visible(uuid)', 'EXECUTE')"
+                        )
+                    ).scalar_one()
+
+                # The public entity dossier API uses the same guarded graph read as the
+                # underlying dossier helper. Its bypass companion proves a pending edge is
+                # present; the restored route retains the owner, ordinary and foreign edges.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        entity_graph_edges,
+                        "graph_projection_visible",
+                        lambda _alias: "TRUE",
+                    )
+                    raw_entity_dossier = await entity_api.get_entity_dossier(
+                        entity_id=start_id, limit=10, db=catalog_database
+                    )
+                assert raw_entity_dossier.data.relationships_known == 4
+                assert raw_entity_dossier.data.relationships_withheld == 0
+                assert {
+                    receipt.counterpart_entity_id
+                    for source in raw_entity_dossier.data.sources
+                    for receipt in source.receipts
+                } == {
+                    str(stale_neighbor),
+                    str(owner_neighbor),
+                    str(ordinary_neighbor),
+                    str(foreign_neighbor),
+                }
+                visible_entity_dossier = await entity_api.get_entity_dossier(
+                    entity_id=start_id, limit=10, db=catalog_database
+                )
+                assert visible_entity_dossier.data.relationships_known == 3
+                assert visible_entity_dossier.data.relationships_withheld == 0
+                assert {
+                    receipt.counterpart_entity_id
+                    for source in visible_entity_dossier.data.sources
+                    for receipt in source.receipts
+                } == {
+                    str(owner_neighbor),
+                    str(ordinary_neighbor),
+                    str(foreign_neighbor),
+                }
+
+                async def _omit_local_visibility(*_args, **_kwargs):
+                    return None
+
+                # These actual API entrypoints must filter before per-source LIMIT and total
+                # count. The bypass control confirms the pending fact would otherwise lead.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_api, "local_fact_visibility_condition", _omit_local_visibility
+                    )
+                    raw_page = await memory_api.list_facts(
+                        q=None,
+                        scope=None,
+                        validity=None,
+                        permanence=None,
+                        subject=None,
+                        source_episode_id=None,
+                        importance_min=None,
+                        held=None,
+                        offset=0,
+                        limit=1,
+                        db=database,
+                    )
+                    assert raw_page.meta.total == 3
+                    assert str(raw_page.data[0].id) == str(generated_id)
+                    raw_activity = await memory_api.list_activity(limit=1, db=database)
+                    assert raw_activity.data[0].type == "fact"
+                    assert raw_activity.data[0].id == str(generated_id)
+                    raw_inspect = await memory_api.inspect_memory(
+                        q="cobalt lighthouse", kind="fact", offset=0, limit=1, db=database
+                    )
+                    assert raw_inspect.meta.total == 3
+                    assert str(raw_inspect.data[0].id) == str(generated_id)
+
+                visible_page = await memory_api.list_facts(
+                    q=None,
+                    scope=None,
+                    validity=None,
+                    permanence=None,
+                    subject=None,
+                    source_episode_id=None,
+                    importance_min=None,
+                    held=None,
+                    offset=0,
+                    limit=1,
+                    db=database,
+                )
+                assert visible_page.meta.total == 2
+                assert all(str(row.id) != str(generated_id) for row in visible_page.data)
+                visible_activity = await memory_api.list_activity(limit=1, db=database)
+                assert len(visible_activity.data) == 1
+                assert visible_activity.data[0].type == "fact"
+                assert visible_activity.data[0].id in {str(owner_id), str(ordinary_id)}
+                visible_inspect = await memory_api.inspect_memory(
+                    q="cobalt lighthouse", kind="fact", offset=0, limit=1, db=database
+                )
+                assert visible_inspect.meta.total == 2
+                assert all(str(row.id) != str(generated_id) for row in visible_inspect.data)
+
+                with pytest.raises(HTTPException) as missing:
+                    await memory_api.get_fact(str(generated_id), db=database)
+                assert missing.value.status_code == 404
+                assert (await memory_api.get_fact(str(owner_id), db=database)).data.id == str(
+                    owner_id
+                )
+                assert (await memory_api.get_fact(str(ordinary_id), db=database)).data.id == str(
+                    ordinary_id
+                )
+
+                # The direct memory_get path uses the configured private pool and preserves the
+                # same hidden-generated / visible-owner-and-ordinary distinction.
+                read_policy = CatalogReadPolicy("normal", ("normal",))
+                assert (
+                    await memory_get(
+                        pool,
+                        "fact",
+                        str(generated_id),
+                        read_policy=read_policy,
+                        memory_schema="chronicler_mem",
+                    )
+                    is None
+                )
+                assert await memory_get(
+                    pool,
+                    "fact",
+                    str(owner_id),
+                    read_policy=read_policy,
+                    memory_schema="chronicler_mem",
+                )
+                assert await memory_get(
+                    pool,
+                    "fact",
+                    str(ordinary_id),
+                    read_policy=read_policy,
+                    memory_schema="chronicler_mem",
+                )
+
+                # Exercise the actual local search and recall implementations against the
+                # configured private schema. The bypass makes the generated match visible; the
+                # restored calls must omit it while retaining ordinary facts.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_search_impl,
+                        "local_fact_visibility_condition",
+                        _omit_local_visibility,
+                    )
+                    raw_search = await memory_search_tool(
+                        pool,
+                        None,
+                        "cobalt lighthouse",
+                        types=["fact"],
+                        mode="keyword",
+                        limit=1,
+                        read_policy=read_policy,
+                        memory_schema="chronicler_mem",
+                    )
+                    assert str(raw_search[0]["id"]) == str(generated_id)
+                    raw_recall = await memory_recall(
+                        pool,
+                        SimpleNamespace(embed=lambda _topic: [0.0] * 384),
+                        "cobalt lighthouse",
+                        limit=10,
+                        read_policy=read_policy,
+                        memory_schema="chronicler_mem",
+                    )
+                    assert any(str(row["id"]) == str(generated_id) for row in raw_recall)
+
+                visible_search = await memory_search_tool(
+                    pool,
+                    None,
+                    "cobalt lighthouse",
+                    types=["fact"],
+                    mode="keyword",
+                    limit=1,
+                    read_policy=read_policy,
+                    memory_schema="chronicler_mem",
+                )
+                assert len(visible_search) == 1
+                assert str(visible_search[0]["id"]) in {str(owner_id), str(ordinary_id)}
+                visible_recall = await memory_recall(
+                    pool,
+                    SimpleNamespace(embed=lambda _topic: [0.0] * 384),
+                    "cobalt lighthouse",
+                    limit=10,
+                    read_policy=read_policy,
+                    memory_schema="chronicler_mem",
+                )
+                assert visible_recall
+                assert all(str(row["id"]) != str(generated_id) for row in visible_recall)
+                assert {str(row["id"]) for row in visible_recall} & {
+                    str(owner_id),
+                    str(ordinary_id),
+                }
+
+                # Brokered catalog fetch must stop at the actual public-pointer boundary for a
+                # hidden row, while an owner pointer still reaches the external route boundary.
+                from butlers.config import ButlerType
+                from butlers.core_tools import _memory_catalog as catalog_tools
+                from butlers.core_tools._base import ToolContext
+                from butlers.core_tools._memory_catalog import register_memory_catalog_tools
+                from butlers.modules.memory import search as memory_search
+
+                async def _load_read_policy(_pool):
+                    return read_policy
+
+                routed: list[dict[str, object]] = []
+
+                async def _dispatch(*_args, **kwargs):
+                    routed.append(kwargs)
+                    return {"id": str(owner_id), "content": "owner fact"}, None, False
+
+                monkeypatch.setattr(memory_search, "load_catalog_read_policy", _load_read_policy)
+                monkeypatch.setattr(catalog_tools, "dispatch_via_switchboard_route", _dispatch)
+                registered: dict = {}
+
+                def _core_tool(_group: str):
+                    def decorate(function):
+                        registered[function.__name__] = function
+                        return function
+
+                    return decorate
+
+                register_memory_catalog_tools(
+                    ToolContext(
+                        daemon=SimpleNamespace(switchboard_client=object()),
+                        pool=pool,
+                        spawner=None,
+                        butler_name="concierge",
+                        butler_type=ButlerType.BUTLER,
+                        is_switchboard=False,
+                        is_messenger=False,
+                        route_metrics=None,
+                    ),
+                    SimpleNamespace(),
+                    _core_tool,
+                )
+                catalog_fetch = registered["memory_catalog_fetch"]
+                hidden_fetch = await catalog_fetch(
+                    source_schema="chronicler_mem",
+                    source_table="facts",
+                    source_id=str(generated_id),
+                )
+                assert hidden_fetch == {"status": "not_found"}
+                assert routed == []
+                owner_fetch = await catalog_fetch(
+                    source_schema="chronicler_mem",
+                    source_table="facts",
+                    source_id=str(owner_id),
+                )
+                assert owner_fetch["status"] == "ok"
+                assert len(routed) == 1
+
+                # Actual configured local readers must apply the same source disposition
+                # before ranking or graph expansion, while preserving ordinary/owner rows.
+                with engine.begin() as conn:
+                    for fact_id, neighbor_id in (
+                        (generated_id, stale_neighbor),
+                        (owner_id, owner_neighbor),
+                        (ordinary_id, ordinary_neighbor),
+                    ):
+                        conn.execute(
+                            text("""
+                                UPDATE chronicler_mem.facts
+                                SET entity_id=:entity_id, object_entity_id=:neighbor_id
+                                WHERE id=:fact_id
+                            """),
+                            {
+                                "fact_id": fact_id,
+                                "entity_id": start_id,
+                                "neighbor_id": neighbor_id,
+                            },
+                        )
+
+                resolved = await entity_resolve(
+                    pool, name="reader-source", memory_schema="chronicler_mem"
+                )
+                assert len(resolved) == 1
+                assert resolved[0]["fact_count"] == 2
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_entities_impl,
+                        "local_fact_visibility_condition",
+                        _omit_local_visibility,
+                    )
+                    raw_resolved = await entity_resolve(
+                        pool, name="reader-source", memory_schema="chronicler_mem"
+                    )
+                    raw_neighbors = await entity_neighbors(
+                        pool,
+                        str(start_id),
+                        max_depth=1,
+                        direction="outgoing",
+                        memory_schema="chronicler_mem",
+                    )
+                assert raw_resolved[0]["fact_count"] == 3
+                assert str(stale_neighbor) in {row["entity"]["id"] for row in raw_neighbors}
+
+                visible_neighbors = await entity_neighbors(
+                    pool,
+                    str(start_id),
+                    max_depth=1,
+                    direction="outgoing",
+                    memory_schema="chronicler_mem",
+                )
+                visible_neighbor_ids = {row["entity"]["id"] for row in visible_neighbors}
+                assert str(stale_neighbor) not in visible_neighbor_ids
+                assert {str(owner_neighbor), str(ordinary_neighbor)} <= visible_neighbor_ids
+
+                # Entity listing and detail are separate API fan-outs over the same local
+                # canonical facts. Verify both their counts and their bounded fact page.
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_api, "local_fact_visibility_condition", _omit_local_visibility
+                    )
+                    raw_entity_list = await memory_api.list_entities(
+                        q="reader-source",
+                        entity_type=None,
+                        unidentified=None,
+                        archived=False,
+                        offset=0,
+                        limit=50,
+                        db=database,
+                    )
+                    raw_entity_detail = await memory_api.get_entity(
+                        str(start_id), facts_offset=0, facts_limit=20, db=database
+                    )
+                assert raw_entity_list.meta.total == 1
+                assert raw_entity_list.data[0].fact_count == 3
+                assert raw_entity_detail.data.fact_count == 3
+                assert raw_entity_detail.data.recent_facts_total == 3
+                assert str(generated_id) in {
+                    str(row.id) for row in raw_entity_detail.data.recent_facts
+                }
+
+                visible_entity_list = await memory_api.list_entities(
+                    q="reader-source",
+                    entity_type=None,
+                    unidentified=None,
+                    archived=False,
+                    offset=0,
+                    limit=50,
+                    db=database,
+                )
+                visible_entity_detail = await memory_api.get_entity(
+                    str(start_id), facts_offset=0, facts_limit=20, db=database
+                )
+                assert visible_entity_list.meta.total == 1
+                assert visible_entity_list.data[0].fact_count == 2
+                assert visible_entity_detail.data.fact_count == 2
+                assert visible_entity_detail.data.recent_facts_total == 2
+                visible_fact_ids = {str(row.id) for row in visible_entity_detail.data.recent_facts}
+                assert str(generated_id) not in visible_fact_ids
+                assert {str(owner_id), str(ordinary_id)} <= visible_fact_ids
+
+                # Memory-context assembly uses both profile and recall readers. The bypass
+                # demonstrates the generated row is a real candidate before the fixed filter.
+                context_engine = SimpleNamespace(embed=lambda _topic: [0.0] * 384)
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        memory_context_impl,
+                        "local_fact_visibility_condition",
+                        _omit_local_visibility,
+                    )
+                    bypass.setattr(
+                        memory_search_impl,
+                        "local_fact_visibility_condition",
+                        _omit_local_visibility,
+                    )
+                    raw_context = await memory_context(
+                        pool,
+                        context_engine,
+                        "cobalt lighthouse",
+                        "chronicler",
+                        catalog_read_policy=read_policy,
+                        request_context={"tenant_id": "shared"},
+                        memory_schema="chronicler_mem",
+                    )
+                assert "pending generated cobalt lighthouse" in raw_context
+                visible_context = await memory_context(
+                    pool,
+                    context_engine,
+                    "cobalt lighthouse",
+                    "chronicler",
+                    catalog_read_policy=read_policy,
+                    request_context={"tenant_id": "shared"},
+                    memory_schema="chronicler_mem",
+                )
+                assert "pending generated cobalt lighthouse" not in visible_context
+                assert "owner cobalt lighthouse" in visible_context
+                assert "ordinary cobalt lighthouse" in visible_context
+
+                # Aggregate lifecycle counts must match visible rows, not raw public pointers.
+                raw_fact_total = await pool.fetchval(
+                    "SELECT count(*) FROM public.memory_catalog WHERE memory_type='fact'"
+                )
+                visible_fact_total = await pool.fetchval(
+                    """SELECT count(*) FROM public.memory_catalog AS memory_catalog
+                       WHERE memory_catalog.memory_type='fact'
+                         AND public.chronicler_catalog_row_visible(memory_catalog.id)"""
+                )
+                maintenance = await catalog_measurement.collect_catalog_maintenance_observability(
+                    pool
+                )
+                fact_lifecycle = next(
+                    row for row in maintenance.lifecycle_counts if row["memory_type"] == "fact"
+                )
+                assert raw_fact_total == 516
+                assert visible_fact_total == raw_fact_total - 1
+                assert fact_lifecycle["active_count"] == visible_fact_total
+
+                # The dedicated IVFFlat report uses the same fixed row-ID visibility predicate
+                # for its candidate count and for approximate/exact result scopes.
+                measurement_request = catalog_measurement.CatalogMeasurementRequest(
+                    tenant_id="shared",
+                    memory_type="fact",
+                    allowed_sensitivities=("normal",),
+                    limit=1,
+                    query_vectors=((0.0,) * catalog_measurement.CATALOG_EMBEDDING_DIMENSIONS,),
+                    exact_candidate_cap=1_000,
+                )
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        catalog_measurement,
+                        "catalog_projection_visible",
+                        lambda _alias: "TRUE",
+                    )
+                    raw_measurement = await catalog_measurement.measure_catalog_ivfflat(
+                        pool, measurement_request
+                    )
+                assert raw_measurement.observations[0].filtered_candidate_count == 516
+                visible_measurement = await catalog_measurement.measure_catalog_ivfflat(
+                    pool, measurement_request
+                )
+                assert visible_measurement.observations[0].filtered_candidate_count == 515
+
+                # A missing exact canonical grant must fail closed for Chronicler pointers,
+                # while unrelated rows remain readable and bounded without private lookups.
+                import re
+                import time
+
+                visibility_columns = (
+                    "id",
+                    "source_butler",
+                    "predicate",
+                    "content_authority",
+                    "validity",
+                    "invalid_at",
+                    "subject",
+                    "tags",
+                    "metadata",
+                )
+                column_list = ", ".join(visibility_columns)
+                column_filter = ", ".join(f"'{column}'" for column in visibility_columns)
+                with engine.begin() as conn:
+                    acl_before = conn.execute(
+                        text(f"""
+                            SELECT attname, COALESCE(attacl::text, '<null>')
+                            FROM pg_catalog.pg_attribute
+                            WHERE attrelid='chronicler_mem.facts'::regclass
+                              AND attnum > 0 AND attname IN ({column_filter})
+                            ORDER BY attnum
+                        """)
+                    ).all()
+                    assert len(acl_before) == len(visibility_columns)
+                    had_exact_select = conn.execute(
+                        text(f"""
+                            SELECT bool_and(pg_catalog.has_column_privilege(
+                                'chronicler_memory_owner', 'chronicler_mem.facts',
+                                attname, 'SELECT'))
+                            FROM pg_catalog.pg_attribute
+                            WHERE attrelid='chronicler_mem.facts'::regclass
+                              AND attnum > 0 AND attname IN ({column_filter})
+                        """)
+                    ).scalar_one()
+                    assert had_exact_select is True
+                    conn.exec_driver_sql(
+                        "REVOKE SELECT ("
+                        + column_list
+                        + ") ON TABLE chronicler_mem.facts FROM chronicler_memory_owner"
+                    )
+                    no_exact_select = conn.execute(
+                        text(f"""
+                            SELECT bool_and(NOT pg_catalog.has_column_privilege(
+                                'chronicler_memory_owner', 'chronicler_mem.facts',
+                                attname, 'SELECT'))
+                            FROM pg_catalog.pg_attribute
+                            WHERE attrelid='chronicler_mem.facts'::regclass
+                              AND attnum > 0 AND attname IN ({column_filter})
+                        """)
+                    ).scalar_one()
+                    assert no_exact_select is True
+                acl_revoked = True
+                try:
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        await pool.fetchval(
+                            "SELECT public.chronicler_catalog_row_visible($1)",
+                            catalog_ids[("chronicler_mem", generated_id)],
+                        )
+
+                    unrelated_sql = """
+                        SELECT count(*)
+                        FROM public.memory_catalog AS memory_catalog
+                        WHERE memory_catalog.source_schema='unrelated_cost_probe'
+                          AND memory_catalog.source_table='facts'
+                          AND memory_catalog.tenant_id='shared'
+                          AND memory_catalog.id = ANY($1::uuid[])
+                          AND public.chronicler_catalog_row_visible(memory_catalog.id)
+                    """
+                    started = time.perf_counter()
+                    plan_rows = await pool.fetch(
+                        "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + unrelated_sql,
+                        cost_catalog_ids,
+                        timeout=5.0,
+                    )
+                    elapsed_ms = (time.perf_counter() - started) * 1000
+                    plan_text = "\n".join(row["QUERY PLAN"] for row in plan_rows)
+                    execution = re.search(r"Execution Time:\s*([0-9.]+)\s*ms", plan_text)
+                    assert execution is not None
+                    assert float(execution.group(1)) < 5_000
+                    assert elapsed_ms < 5_000
+                    assert await pool.fetchval(unrelated_sql, cost_catalog_ids, timeout=5.0) == 512
+                    print(
+                        "F2 unrelated catalog visibility cost: "
+                        f"rows=512 plan_ms={float(execution.group(1)):.3f} "
+                        f"client_ms={elapsed_ms:.3f}"
+                    )
+                finally:
+                    if acl_revoked:
+                        with engine.begin() as conn:
+                            conn.exec_driver_sql(
+                                "GRANT SELECT ("
+                                + column_list
+                                + ") ON TABLE chronicler_mem.facts TO chronicler_memory_owner"
+                            )
+                            acl_after = conn.execute(
+                                text(f"""
+                                    SELECT attname, COALESCE(attacl::text, '<null>')
+                                    FROM pg_catalog.pg_attribute
+                                    WHERE attrelid='chronicler_mem.facts'::regclass
+                                      AND attnum > 0 AND attname IN ({column_filter})
+                                    ORDER BY attnum
+                                """)
+                            ).all()
+                            assert acl_after == acl_before
+
+                assert await pool.fetchval(
+                    "SELECT public.chronicler_catalog_row_visible($1)",
+                    catalog_ids[("chronicler_mem", owner_id)],
+                )
+                assert await pool.fetchval(
+                    "SELECT public.chronicler_catalog_row_visible($1)",
+                    catalog_ids[("chronicler_mem", ordinary_id)],
+                )
+
+                # Preferences are an ordinary-fact local reader; retain a real owner preference
+                # while the same source still contains the pending generated candidate.
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""INSERT INTO chronicler_mem.facts
+                            (id, subject, predicate, content, source_butler,
+                             content_authority, validity, entity_id, scope, metadata)
+                            VALUES (:id, 'owner', 'preferences:travel_flight_seat', 'window',
+                                    'chronicler', 'owner', 'active', :entity, 'travel', '{}'::jsonb)"""),
+                        {"id": preference_id, "entity": preference_owner_id},
+                    )
+                preferences = await get_preferences(pool, memory_schema="chronicler_mem")
+                assert [(item["predicate"], item["value"]) for item in preferences] == [
+                    ("preferences:travel_flight_seat", "window")
+                ]
+
+                # The data export is a real canonical facts reader too. Pending generated
+                # facts must not reappear in its NDJSON member while ordinary facts survive.
+                import io
+                import json
+                import zipfile
+
+                async def _omit_export_visibility(*_args, **_kwargs):
+                    return None
+
+                with monkeypatch.context() as bypass:
+                    bypass.setattr(
+                        data_ops,
+                        "local_fact_visibility_condition",
+                        _omit_export_visibility,
+                        raising=False,
+                    )
+                    raw_export = await data_ops._build_export_zip(pool, "memory", database)
+                with zipfile.ZipFile(io.BytesIO(raw_export)) as archive:
+                    raw_export_facts = [
+                        json.loads(line)
+                        for line in archive.read("chronicler_memory_facts.ndjson")
+                        .decode()
+                        .splitlines()
+                    ]
+                raw_export_ids = {str(row["id"]) for row in raw_export_facts}
+                assert str(generated_id) in raw_export_ids
+
+                export_bytes = await data_ops._build_export_zip(pool, "memory", database)
+                with zipfile.ZipFile(io.BytesIO(export_bytes)) as archive:
+                    exported_facts = [
+                        json.loads(line)
+                        for line in archive.read("chronicler_memory_facts.ndjson")
+                        .decode()
+                        .splitlines()
+                    ]
+                exported_ids = {str(row["id"]) for row in exported_facts}
+                assert {str(owner_id), str(ordinary_id)} <= exported_ids
+                assert str(generated_id) not in exported_ids
+            finally:
+                await pool.close()
+
+        asyncio.run(scenario())
+    finally:
+        admin_engine.dispose()
+        engine.dispose()
+
+
+def test_drop_transition_count_uses_actual_schema_runtime_role_and_inclusive_window(
+    postgres_container,
+):
+    """Dedicated nullable times are queried on actual migrated tables, not mocked SQL."""
+    from butlers.core_tools._memory_access import _query_drops_7d
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            columns = conn.execute(
+                text("""SELECT table_name, column_name, is_nullable, column_default, data_type
+                    FROM information_schema.columns
+                    WHERE table_schema='chronicler_mem'
+                    AND (table_name,column_name) IN
+                        (('facts','dropped_at'),('rules','forgotten_at'))
+                    ORDER BY table_name""")
+            ).all()
+            assert columns == [
+                ("facts", "dropped_at", "YES", None, "timestamp with time zone"),
+                ("rules", "forgotten_at", "YES", None, "timestamp with time zone"),
+            ]
+
+        async def scenario():
+            conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
+            try:
+                await register_jsonb_codec(conn)
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL search_path TO chronicler_mem, public")
+                    as_of = await conn.fetchval("SELECT now()")
+                    cutoff = as_of - timedelta(days=7)
+                    for validity, when in [
+                        ("superseded", cutoff),
+                        ("expired", as_of),
+                        ("expired", cutoff - timedelta(microseconds=1)),
+                        ("expired", as_of + timedelta(microseconds=1)),
+                        ("superseded", None),
+                        ("active", as_of),
+                        ("retracted", as_of),
+                    ]:
+                        await conn.execute(
+                            "INSERT INTO facts(subject,predicate,content,validity,dropped_at) "
+                            "VALUES('native count','ordinary_test','synthetic',$1,$2)",
+                            validity,
+                            when,
+                        )
+                    for when in [
+                        cutoff,
+                        as_of,
+                        None,
+                        cutoff - timedelta(microseconds=1),
+                        as_of + timedelta(microseconds=1),
+                    ]:
+                        await conn.execute(
+                            "INSERT INTO episodes(butler,content,expires_at) "
+                            "VALUES('chronicler','synthetic',$1)",
+                            when,
+                        )
+                    for forgotten, when in [
+                        (True, cutoff),
+                        (True, as_of),
+                        (True, None),
+                        (True, cutoff - timedelta(microseconds=1)),
+                        (True, as_of + timedelta(microseconds=1)),
+                        (False, as_of),
+                    ]:
+                        await conn.execute(
+                            "INSERT INTO rules(content,metadata,forgotten_at) "
+                            "VALUES('synthetic',$1::jsonb,$2)",
+                            {"forgotten": forgotten},
+                            when,
+                        )
+                    await conn.execute("SET LOCAL ROLE butler_chronicler_rw")
+                    assert await conn.fetchval("SELECT current_user") == "butler_chronicler_rw"
+                    assert await _query_drops_7d(conn, memory_schema="chronicler_mem") == 6
+                    # Legacy terminal NULL remains NULL and stays outside the integer count.
+                    assert (
+                        await conn.fetchval(
+                            "SELECT count(*) FROM facts WHERE validity='superseded' "
+                            "AND dropped_at IS NULL"
+                        )
+                        == 1
+                    )
+            finally:
+                await conn.close()
+
+        asyncio.run(scenario())
+    finally:
+        engine.dispose()
+
+
+def test_rule_transition_writers_preserve_initial_duplicate_concurrent_and_rollback_times(
+    postgres_container,
+):
+    """Real storage operations preserve OLD persisted state, including legacy NULL."""
+    from butlers.modules.memory import storage
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    engine = create_engine(url)
+
+    class Embedding:
+        model_name = "native-transition-control"
+
+        def embed(self, _text):
+            return [0.0] * 384
+
+    async def scenario():
+        async def runtime(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        pool = await asyncpg.create_pool(
+            url.replace("postgresql+psycopg2://", "postgresql://"),
+            server_settings={"search_path": "chronicler_mem, public"},
+            init=runtime,
+            min_size=2,
+            max_size=2,
+        )
+        try:
+            initial = await storage.store_rule(
+                pool,
+                "initial forgotten",
+                Embedding(),
+                metadata={"forgotten": True},
+                content_authority="system",
+            )
+            normal = await storage.store_rule(
+                pool,
+                "normal",
+                Embedding(),
+                content_authority="system",
+            )
+            initial_row = await pool.fetchrow(
+                "SELECT created_at,forgotten_at FROM rules WHERE id=$1",
+                initial,
+            )
+            assert initial_row["forgotten_at"] == initial_row["created_at"]
+            assert await pool.fetchval("SELECT forgotten_at FROM rules WHERE id=$1", normal) is None
+            results = await asyncio.gather(
+                storage._forget_plain(pool, "rule", normal, memory_schema="chronicler_mem"),
+                storage._forget_plain(pool, "rule", normal, memory_schema="chronicler_mem"),
+            )
+            assert results == [True, True]
+            first = await pool.fetchval("SELECT forgotten_at FROM rules WHERE id=$1", normal)
+            assert first is not None
+            assert await storage._forget_with_correction_provenance(
+                pool,
+                "rule",
+                normal,
+                correction_id="native-duplicate",
+                correction_reason=None,
+                memory_schema="chronicler_mem",
+            )
+            assert (
+                await pool.fetchval("SELECT forgotten_at FROM rules WHERE id=$1", normal) == first
+            )
+            legacy = await pool.fetchval(
+                "INSERT INTO rules(content,metadata) VALUES('legacy','{\"forgotten\":true}') "
+                "RETURNING id"
+            )
+            assert await storage._forget_plain(
+                pool,
+                "rule",
+                legacy,
+                memory_schema="chronicler_mem",
+            )
+            assert await storage._forget_with_correction_provenance(
+                pool,
+                "rule",
+                legacy,
+                correction_id="native-legacy",
+                correction_reason=None,
+                memory_schema="chronicler_mem",
+            )
+            assert await pool.fetchval("SELECT forgotten_at FROM rules WHERE id=$1", legacy) is None
+            rollback = await pool.fetchval(
+                "INSERT INTO rules(content) VALUES('rollback') RETURNING id"
+            )
+            with engine.begin() as conn:
+                conn.exec_driver_sql("""CREATE FUNCTION chronicler_mem.reject_transition_audit()
+                    RETURNS trigger LANGUAGE plpgsql AS $$BEGIN
+                    RAISE EXCEPTION 'positioned transition audit refusal'; END$$""")
+                conn.exec_driver_sql("""CREATE TRIGGER reject_transition_audit BEFORE INSERT
+                    ON chronicler_mem.memory_events FOR EACH ROW
+                    EXECUTE FUNCTION chronicler_mem.reject_transition_audit()""")
+            try:
+                with pytest.raises(asyncpg.RaiseError, match="positioned transition audit refusal"):
+                    await storage._forget_with_correction_provenance(
+                        pool,
+                        "rule",
+                        rollback,
+                        correction_id="native-rollback",
+                        correction_reason=None,
+                        memory_schema="chronicler_mem",
+                    )
+                row = await pool.fetchrow(
+                    "SELECT metadata,forgotten_at FROM rules WHERE id=$1", rollback
+                )
+                assert row["forgotten_at"] is None
+                assert row["metadata"].get("forgotten") is not True
+            finally:
+                with engine.begin() as conn:
+                    conn.exec_driver_sql(
+                        "DROP TRIGGER reject_transition_audit ON chronicler_mem.memory_events"
+                    )
+                    conn.exec_driver_sql("DROP FUNCTION chronicler_mem.reject_transition_audit()")
+        finally:
+            await pool.close()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        engine.dispose()
+
+
+def test_drop_timestamp_migration_preserves_legacy_null_and_roundtrips(postgres_container):
+    """An actual mem017→018 upgrade adds no inferred terminal history."""
+    url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory", "chronicler"],
+        schemas={"core": "chronicler_mem", "memory": "chronicler_mem", "chronicler": "chronicler"},
+        revisions={"memory": "mem_017", "chronicler": "chronicler_029"},
+    )
+    engine = create_engine(url)
+    config = _build_alembic_config(url, chains=["memory"], target_schema="chronicler_mem")
+    try:
+        with engine.begin() as conn:
+            fact_id = conn.execute(
+                text("""INSERT INTO chronicler_mem.facts
+                (subject,predicate,content,validity,invalid_at)
+                VALUES('legacy','ordinary_test','synthetic','superseded','2000-01-01Z')
+                RETURNING id""")
+            ).scalar_one()
+            rule_id = conn.execute(
+                text("""INSERT INTO chronicler_mem.rules(content,metadata)
+                VALUES('legacy',jsonb_build_object('forgotten',true)) RETURNING id""")
+            ).scalar_one()
+        for _ in range(2):
+            command.upgrade(config, "memory@mem_018")
+            with engine.connect() as conn:
+                assert (
+                    conn.execute(
+                        text("SELECT dropped_at FROM chronicler_mem.facts WHERE id=:id"),
+                        {"id": fact_id},
+                    ).scalar_one()
+                    is None
+                )
+                assert (
+                    conn.execute(
+                        text("SELECT forgotten_at FROM chronicler_mem.rules WHERE id=:id"),
+                        {"id": rule_id},
+                    ).scalar_one()
+                    is None
+                )
+                assert conn.execute(
+                    text("SELECT invalid_at FROM chronicler_mem.facts WHERE id=:id"),
+                    {"id": fact_id},
+                ).scalar_one() == datetime(2000, 1, 1, tzinfo=UTC)
+            command.downgrade(config, "mem_017")
+        command.upgrade(config, "memory@mem_018")
+    finally:
+        engine.dispose()
+
+
+def test_counted_fact_writers_and_decay_stamp_actual_transition_rows(
+    postgres_container, monkeypatch
+):
+    """Exercise real writer SQL on canonical tables; embedding is the only provider seam."""
+    from uuid import UUID
+
+    from butlers.entity_fact_repoint import repoint_facts_on_conn
+    from butlers.modules.memory import storage
+    from butlers.tools.finance.alerts import alert_configure
+    from butlers.tools.relationship import facts as quick_facts
+    from butlers.tools.relationship import gifts, loans
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+
+    class Embedding:
+        model_name = "native-writer-transition"
+
+        def embed(self, _text):
+            return [0.1] * 384
+
+    monkeypatch.setattr(gifts, "_get_embedding_engine", lambda: Embedding())
+    monkeypatch.setattr(loans, "_get_embedding_engine", lambda: Embedding())
+
+    async def scenario():
+        async def runtime(conn):
+            await register_jsonb_codec(conn)
+            await conn.execute("SET ROLE butler_chronicler_rw")
+
+        pool = await asyncpg.create_pool(
+            url.replace("postgresql+psycopg2://", "postgresql://"),
+            server_settings={"search_path": "chronicler_mem, public"},
+            init=runtime,
+            min_size=1,
+            max_size=3,
+        )
+        try:
+            entity, other = uuid4(), uuid4()
+            for key in (entity, other):
+                await pool.execute(
+                    "INSERT INTO public.entities(id,canonical_name,entity_type) VALUES($1,$2,'person')",
+                    key,
+                    f"synthetic transition {key}",
+                )
+            await pool.execute("""INSERT INTO predicate_registry(name,is_edge,inverse_of)
+                VALUES('native_parent',true,'native_child'),('native_child',true,'native_parent')""")
+            legacy_fact = await pool.fetchval(
+                "INSERT INTO facts(subject,predicate,content,entity_id,object_entity_id,validity) "
+                "VALUES('native source','native_parent','legacy',$1,$2,'superseded') RETURNING id",
+                entity,
+                other,
+            )
+            first = await storage.store_fact(
+                pool,
+                "native source",
+                "native_parent",
+                "old value",
+                Embedding(),
+                entity_id=entity,
+                object_entity_id=other,
+                content_authority="system",
+            )
+            old_inverse = await pool.fetchval(
+                "SELECT id FROM facts WHERE entity_id=$1 AND predicate='native_child' "
+                "AND validity='active'",
+                other,
+            )
+            await storage.store_fact(
+                pool,
+                "native source",
+                "native_parent",
+                "new value",
+                Embedding(),
+                entity_id=entity,
+                object_entity_id=other,
+                content_authority="system",
+            )
+            for key in (first["id"], old_inverse):
+                row = await pool.fetchrow(
+                    "SELECT validity,dropped_at,invalid_at FROM facts WHERE id=$1", key
+                )
+                assert row["validity"] == "superseded"
+                assert row["dropped_at"] is not None
+                assert row["dropped_at"] == row["invalid_at"]
+            assert (
+                await pool.fetchval(
+                    "SELECT dropped_at FROM facts WHERE id=$1",
+                    legacy_fact,
+                )
+                is None
+            )
+            alert = await alert_configure(pool, "large_transaction", threshold=10)
+            await alert_configure(pool, "large_transaction", threshold=20)
+            assert await pool.fetchval(
+                "SELECT dropped_at IS NOT NULL FROM facts WHERE id=$1", UUID(alert["fact_id"])
+            )
+            quick = await quick_facts._fact_set_spo(pool, entity, "native_color", "old")
+            await quick_facts._fact_set_spo(pool, entity, "native_color", "new")
+            assert await pool.fetchval(
+                "SELECT dropped_at IS NOT NULL FROM facts WHERE id=$1", quick["id"]
+            )
+            for kind, module in [("loan", loans), ("gift", gifts)]:
+                key = await pool.fetchval(
+                    "INSERT INTO facts(subject,predicate,content,scope,entity_id,valid_at,metadata) "
+                    "VALUES($1,$2,'synthetic','relationship',$3,now(),$4) RETURNING id",
+                    f"entity:{entity}:{kind}:native",
+                    kind,
+                    entity,
+                    {"status": "idea"} if kind == "gift" else {"settled": False},
+                )
+                if kind == "gift":
+                    await module.gift_update_status(pool, key, "purchased")
+                else:
+                    await module.loan_settle(pool, key)
+                row = await pool.fetchrow(
+                    "SELECT dropped_at,invalid_at FROM facts WHERE id=$1", key
+                )
+                assert row["dropped_at"] is not None
+                assert row["dropped_at"] == row["invalid_at"]
+            # All four confidence conflict branches of the actual repoint primitive.
+            for edge in (False, True):
+                for source_wins in (False, True):
+                    src, dst, anchor = uuid4(), uuid4(), uuid4()
+                    for key in (src, dst, anchor):
+                        await pool.execute(
+                            "INSERT INTO public.entities(id,canonical_name,entity_type) VALUES($1,$2,'person')",
+                            key,
+                            f"synthetic repoint {key}",
+                        )
+                    keys = []
+                    for index, key in enumerate((src, dst)):
+                        keys.append(
+                            await pool.fetchval(
+                                "INSERT INTO facts(subject,predicate,content,entity_id,object_entity_id,confidence) "
+                                "VALUES($1,$2,'synthetic',$3,$4,$5) RETURNING id",
+                                f"repoint:{key}",
+                                f"native_repoint_{src}",
+                                anchor if edge else key,
+                                key if edge else None,
+                                (0.9 if source_wins else 0.1) if index == 0 else 0.5,
+                            )
+                        )
+                    async with pool.acquire() as conn:
+                        async with conn.transaction():
+                            stats = await repoint_facts_on_conn(conn, src, dst)
+                    assert stats["edge_facts_superseded" if edge else "facts_superseded"] == 1
+                    loser = keys[1] if source_wins else keys[0]
+                    assert await pool.fetchval(
+                        "SELECT dropped_at IS NOT NULL FROM facts WHERE id=$1", loser
+                    )
+            expired_fact = await pool.fetchval("""INSERT INTO facts
+                (subject,predicate,content,confidence,decay_rate,created_at,retention_class)
+                VALUES('decay','native_decay','synthetic',0.001,1,now()-interval '10 days','native_test')
+                RETURNING id""")
+            archive_class = await pool.fetchval(
+                "SELECT retention_class FROM memory_policies WHERE archive_before_delete AND min_retrieval_confidence > 0 LIMIT 1"
+            )
+            assert archive_class is not None
+            archived_fact = await pool.fetchval(
+                """INSERT INTO facts
+                (subject,predicate,content,confidence,decay_rate,created_at,retention_class)
+                VALUES('archive decay','native_archive_decay','synthetic',0.001,1,
+                       now()-interval '10 days',$1) RETURNING id""",
+                archive_class,
+            )
+            expired_rule = await pool.fetchval("""INSERT INTO rules
+                (content,confidence,decay_rate,created_at,retention_class)
+                VALUES('synthetic',0.001,1,now()-interval '10 days','native_test') RETURNING id""")
+            stats = await storage.run_decay_sweep(pool)
+            assert stats["facts_expired"] >= 1
+            assert stats["rules_expired"] >= 1
+            fact_time = await pool.fetchval(
+                "SELECT dropped_at FROM facts WHERE id=$1", expired_fact
+            )
+            rule_time = await pool.fetchval(
+                "SELECT forgotten_at FROM rules WHERE id=$1", expired_rule
+            )
+            assert fact_time is not None and fact_time == rule_time
+            assert (
+                await pool.fetchval("SELECT dropped_at FROM facts WHERE id=$1", archived_fact)
+                == fact_time
+            )
+            await storage.run_decay_sweep(pool)
+            assert (
+                await pool.fetchval("SELECT dropped_at FROM facts WHERE id=$1", expired_fact)
+                == fact_time
+            )
+            assert (
+                await pool.fetchval("SELECT forgotten_at FROM rules WHERE id=$1", expired_rule)
+                == rule_time
+            )
+        finally:
+            await pool.close()
+
+    asyncio.run(scenario())

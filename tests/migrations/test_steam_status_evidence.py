@@ -30,7 +30,7 @@ pytestmark = pytest.mark.integration
 def test_status_history_idempotency_acl_and_bootstrap_replay(postgres_container):
     name = migration_db_name()
     url = create_migrated_test_db(
-        postgres_container, name, chains=["core"], revisions={"core": "core_313"}
+        postgres_container, name, chains=["core"], revisions={"core": "core_314"}
     )
     control = migration_bootstrap_db_url(postgres_container, name)
     engine = create_engine(url)
@@ -73,7 +73,7 @@ def test_status_history_idempotency_acl_and_bootstrap_replay(postgres_container)
                 conn.execute(text("SELECT count(*) FROM connectors.steam_status_history")).scalar()
                 == 1
             )
-        command.upgrade(config, "core@core_313")
+        command.upgrade(config, "core@core_314")
         probe()
     finally:
         engine.dispose()

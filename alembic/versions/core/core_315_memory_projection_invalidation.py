@@ -1,7 +1,7 @@
 """Atomically invalidate exact memory projections with caller authority.
 
-Revision ID: core_314
-Revises: core_313
+Revision ID: core_315
+Revises: core_314
 
 The shared function and narrow additive grants survive downgrade: another
 schema or an older compatible runtime can still use this database-global
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_314"
-down_revision = "core_313"
+revision = "core_315"
+down_revision = "core_314"
 branch_labels = None
 depends_on = None
 

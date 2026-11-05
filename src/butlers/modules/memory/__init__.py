@@ -436,6 +436,7 @@ class MemoryModule(Module):
                 # deterministic output is unaffected unless requested.
                 include_fleet_knowledge=True,
                 catalog_read_policy=catalog_read_policy,
+                memory_schema=module._config.memory_schema,
             )
             if isinstance(result, str) and result.strip():
                 return result
@@ -511,6 +512,7 @@ class MemoryModule(Module):
                 enable_shared_catalog=enable_shared_catalog,
                 source_schema=module._config.catalog_source_schema or None,
                 retry_failed=module._allows_failed_consolidation_retry(),
+                memory_schema=module._config.memory_schema,
             )
 
         if self._session_runtime_owner is not None and self._session_runtime is not None:
@@ -1246,6 +1248,7 @@ class MemoryModule(Module):
                 min_confidence=min_confidence,
                 filters=filters,
                 read_policy=read_policy,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("core")
@@ -1287,6 +1290,7 @@ class MemoryModule(Module):
                 filters=filters,
                 request_context=request_context,
                 read_policy=read_policy,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("core")
@@ -1301,6 +1305,7 @@ class MemoryModule(Module):
                 memory_type,
                 memory_id,
                 read_policy=read_policy,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Feedback tools ---
@@ -1422,6 +1427,7 @@ class MemoryModule(Module):
             return await _management.memory_stats(
                 module._get_pool(),
                 scope=scope,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Predicate registry tool ---
@@ -1566,6 +1572,7 @@ class MemoryModule(Module):
                 include_fleet_knowledge=include_fleet_knowledge,
                 catalog_read_policy=catalog_read_policy,
                 request_context=request_context,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Entity tools ---
@@ -1699,6 +1706,7 @@ class MemoryModule(Module):
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=effective_catalog_source_schema,
                 retry_failed=module._allows_failed_consolidation_retry(),
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("admin")
@@ -1761,6 +1769,7 @@ class MemoryModule(Module):
                 max_depth=max_depth,
                 predicate_filter=predicate_filter,
                 direction=direction,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("entity")
@@ -1802,6 +1811,7 @@ class MemoryModule(Module):
                 entity_type=entity_type,
                 context_hints=context_hints,
                 enable_fuzzy=enable_fuzzy,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("entity")
@@ -2025,6 +2035,7 @@ class MemoryModule(Module):
                 module._get_pool(),
                 scope=scope,
                 predicate_pattern=predicate_pattern,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Re-embedding migration tool ---

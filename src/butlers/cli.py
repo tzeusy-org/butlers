@@ -9,6 +9,7 @@ import signal
 import socket
 import sys
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -696,7 +697,7 @@ def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
     asyncio.run(_provision_databases(configs))
 
 
-def _migration_db_url(params: dict[str, object], *, db_name: str, schema: str | None) -> str:
+def _migration_db_url(params: Mapping[str, object], *, db_name: str, schema: str | None) -> str:
     """Build the schema-scoped SQLAlchemy URL used by migration commands."""
     from urllib.parse import quote, quote_plus
 
