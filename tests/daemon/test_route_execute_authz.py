@@ -317,7 +317,7 @@ _APPROVALS_MESSENGER_TOML = "[modules.telegram]\n\n[modules.email]\n\n[modules.a
 
 
 @pytest.fixture(scope="module")
-async def approvals_messenger(postgres_container, tmp_path_factory):
+async def _approvals_messenger_boot(postgres_container, tmp_path_factory):
     """One fresh Messenger for this module's approvals tests, with real ``pending_actions``.
 
     Approvals startup registers the production recipient guards, park and replay
@@ -325,7 +325,10 @@ async def approvals_messenger(postgres_container, tmp_path_factory):
     executor. The three park/approve/replay tests share this one boot to bound the
     integration-lane cost: each reads back only the actions it created
     (``_ActionLog``), and patches only through its own ``monkeypatch``.
+
+    Yields the boot and the approvals runtime its startup registered for the pool.
     """
+    import butlers.core.approvals_hooks as hooks
     from butlers.testing.daemon import DaemonBooter
 
     patcher = pytest.MonkeyPatch()
@@ -344,12 +347,30 @@ async def approvals_messenger(postgres_container, tmp_path_factory):
         )
         statuses = {name: status.status for name, status in booted.daemon._module_statuses.items()}
         assert statuses == dict.fromkeys(("telegram", "email", "approvals"), "active")
-        yield booted
+        pool = booted.daemon.db.pool
+        registration = hooks._approval_hooks_by_pool.get(id(pool))
+        assert registration is not None and registration[0] is pool
+        yield booted, registration
     finally:
         try:
             await booter.close()
         finally:
             patcher.undo()
+
+
+@pytest.fixture
+def approvals_messenger(_approvals_messenger_boot, monkeypatch):
+    """The shared approvals Messenger, with its boot-time approvals runtime in place.
+
+    The root ``_restore_approval_hook_runtimes`` fixture clears pool-scoped runtimes
+    around every test, which drops the one this module-scoped boot registered.
+    Re-install exactly that production registration for the test; teardown clears it.
+    """
+    import butlers.core.approvals_hooks as hooks
+
+    booted, registration = _approvals_messenger_boot
+    monkeypatch.setitem(hooks._approval_hooks_by_pool, id(registration[0]), registration)
+    return booted
 
 
 class _ActionLog:
