@@ -59,6 +59,12 @@ async def approvals_pool(db):
     await pool.execute(
         "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
     )
+    # core_160 seeds 23:00-08:00 Asia/Singapore quiet hours; a prompt parked in
+    # that window opens as ``quiet_hours``, not unfenced. Pin delivery-always.
+    await pool.execute(
+        "UPDATE public.approvals_policy "
+        "SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"
+    )
     return pool
 
 
