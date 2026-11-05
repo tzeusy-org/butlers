@@ -184,7 +184,7 @@ Connector authentication uses bearer tokens issued by the Switchboard. Token sco
 ## Available Connectors
 
 Static discovery and buffered-preview fallback labels derive from the frozen data
-in `src/butlers/connectors/catalog.py`. `GET /api/ingestion/connectors/available`
+in `src/butlers/connector_catalog.py`. `GET /api/ingestion/connectors/available`
 returns exactly `connector_type`, `channel`, `provider` and `display_name` for each
 framework-deployable connector, independently of registered instances. Its
 channel/provider fields use the connector's canonical emitted identity, including
