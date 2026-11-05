@@ -1,7 +1,4 @@
 {
-  "roster/relationship/tests/test_entity_facts_repoint_on_merge.py": [
-    "_make_pool"
-  ],
   "tests/api/test_fleet_events_bridge.py": [
     "_FakeConnection"
   ],
@@ -19,8 +16,5 @@
   ],
   "tests/core/test_fleet_events.py": [
     "_FakeConnection"
-  ],
-  "tests/integration/test_migrated_core_postgres_pool.py": [
-    "_FakePool"
   ]
 }
