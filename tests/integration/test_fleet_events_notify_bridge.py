@@ -61,6 +61,7 @@ def shared_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["chronicler"],
+        schemas={"chronicler": "chronicler"},
         revisions={"chronicler": "chronicler_029"},
     )
     prepare_chronicler_current_head_sync(url)
@@ -346,7 +347,7 @@ async def test_calendar_and_chronicler_child_processes_reach_websocket(
             inspection_connection = await asyncpg.connect(shared_db_url)
             try:
                 durable_rows = await inspection_connection.fetchval(
-                    "SELECT count(*) FROM point_events WHERE source_ref = $1",
+                    "SELECT count(*) FROM chronicler.point_events WHERE source_ref = $1",
                     f"fleet-event-transport-proof:{chronicler_process_id}",
                 )
             finally:

@@ -25,7 +25,7 @@ async def prepare_chronicler_private_memory(db_url: str) -> None:
 async def prepare_chronicler_current_head(db_url: str, *, domain_schema: str | None = None) -> None:
     """Prepare private core+memory, then advance the already-pinned domain chain."""
     await prepare_chronicler_private_memory(db_url)
-    await run_migrations(db_url, chain="chronicler", schema=domain_schema)
+    await run_migrations(db_url, chain="chronicler", schema=domain_schema or "chronicler")
 
 
 def prepare_chronicler_private_core_sync(db_url: str) -> None:
@@ -54,15 +54,19 @@ async def open_prepared_chronicler_pool(
     The requested existing chains are first cloned with Chronicler pinned at 029;
     then private core+memory are installed before that same domain chain reaches head.
     """
+    # 030's protected functions and canonical domain relations are fixed to
+    # chronicler. Clone 029 there too; a public-domain fixture is not equivalent.
+    resolved_schemas = dict(schemas or {})
+    resolved_domain = resolved_schemas.setdefault("chronicler", domain_schema or "chronicler")
     db_url = await asyncio.to_thread(
         fresh_db,
         *chains,
-        schemas=schemas,
+        schemas=resolved_schemas,
         revisions={"chronicler": "chronicler_029"},
     )
     await asyncio.to_thread(
         prepare_chronicler_current_head_sync,
         db_url,
-        domain_schema=domain_schema,
+        domain_schema=resolved_domain,
     )
-    return await db.open(db_url, schema=pool_schema, **pool_kwargs)
+    return await db.open(db_url, schema=pool_schema or resolved_domain, **pool_kwargs)

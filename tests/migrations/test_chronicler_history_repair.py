@@ -928,9 +928,14 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
     postgres_container,
 ):
     """Privacy cleanup is synchronous, projection-wide, and idempotent by owned inventory."""
+    from zoneinfo import ZoneInfo
+
     url = _migrated_chronicler_db(postgres_container, "chronicler_030")
     engine = create_engine(url)
-    day = (datetime.now(UTC) - timedelta(days=10)).date()
+    now = datetime(2026, 7, 15, 12, tzinfo=UTC)
+    # The entire D..D28 generated-fact horizon must be closed at fixed now,
+    # even when enqueue admission advances its local cutoff to database now().
+    day = (now - timedelta(days=29)).date()
     at = datetime.combine(day, datetime.min.time(), UTC) + timedelta(hours=12)
     episode_id = uuid4()
     fact_id = uuid4()
@@ -940,6 +945,14 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
     object_id = uuid4()
     try:
         with engine.begin() as conn:
+            # Pin migration-initialized repair admission to the same instant as
+            # the explicit rebuild driver before source triggers enqueue dates.
+            conn.execute(
+                text(
+                    "UPDATE chronicler.daily_repair_control SET closed_through=:day WHERE singleton"
+                ),
+                {"day": now.astimezone(ZoneInfo("Asia/Singapore")).date() - timedelta(days=1)},
+            )
             conn.execute(
                 text("""INSERT INTO chronicler.source_adapter_state
                     (source_name, chronicler_compatibility)
@@ -1248,7 +1261,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
                 )
                 from butlers.chronicler.history_repair import run_rebuild
 
-                result = await run_rebuild(pool, now=datetime.now(UTC))
+                result = await run_rebuild(pool, now=now)
                 assert result["status"] == "complete"
                 repaired = await pool.fetchrow(
                     "SELECT facts_pending FROM daily_repair_days WHERE local_date=$1", day

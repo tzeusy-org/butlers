@@ -51,14 +51,19 @@ def places_url(fresh_db) -> str:
     schemas real migrations create, plus Chronicler's explicitly prepared private memory."""
     from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 
-    url = fresh_db("core", "chronicler", revisions={"chronicler": "chronicler_029"})
+    url = fresh_db(
+        "core",
+        "chronicler",
+        schemas={"chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
+    )
     prepare_chronicler_current_head_sync(url)
     return url
 
 
 @pytest.fixture
 async def places_pool(db, places_url: str):
-    p = await db.open(places_url, max_size=5)
+    p = await db.open(places_url, schema="chronicler", max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await seed_source_registry(p, sources=INITIAL_SOURCES)

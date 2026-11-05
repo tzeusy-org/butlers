@@ -42,14 +42,19 @@ _ENDPOINT = "owntracks:alice"
 def ssid_url(fresh_db) -> str:
     from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 
-    url = fresh_db("core", "chronicler", revisions={"chronicler": "chronicler_029"})
+    url = fresh_db(
+        "core",
+        "chronicler",
+        schemas={"chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
+    )
     prepare_chronicler_current_head_sync(url)
     return url
 
 
 @pytest.fixture
 async def ssid_pool(db, ssid_url: str):
-    p = await db.open(ssid_url, max_size=5)
+    p = await db.open(ssid_url, schema="chronicler", max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await p.execute("DELETE FROM state WHERE key = $1", SSID_PLACE_STATE_KEY)

@@ -2376,7 +2376,7 @@ SCHEMA TravellerModel 58947c2c0fa3
 SCHEMA TrendAnomaly 5f72f266b799
 SCHEMA TrendBucket 7f41a5896158
 SCHEMA TrendLaneDay 81fe3a7df3a0
-SCHEMA TrendLaneSeries 533f55163e1d
+SCHEMA TrendLaneSeries d25e2208a805
 SCHEMA TrendResponse e935a5fac3eb
 SCHEMA TrendsResponse 8812eb184c03
 SCHEMA TriggerRequest dfa589770c42
