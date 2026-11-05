@@ -5,28 +5,13 @@ import uuid
 import pytest
 
 from butlers.core.sessions import session_complete, session_create
-
-
-class _FakePool:
-    def __init__(self) -> None:
-        self.fetchval_calls: list[tuple[str, tuple[object, ...]]] = []
-        self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
-
-    async def fetchval(self, query: str, *args: object) -> object:
-        self.fetchval_calls.append((query, args))
-        return uuid.uuid4()
-
-    async def fetchrow(self, query: str, *args: object) -> dict[str, object]:
-        self.fetchrow_calls.append((query, args))
-        return {"id": args[0] if args else uuid.uuid4(), "model": None}
-
-    async def execute(self, query: str, *args: object) -> str:
-        return "INSERT 0 0"
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import row
 
 
 @pytest.mark.asyncio
 async def test_session_create_strips_untranslatable_prompt_chars() -> None:
-    pool = _FakePool()
+    pool = fake_pool(fetchval=uuid.uuid4(), execute="SELECT 1")
 
     await session_create(
         pool,
@@ -35,15 +20,14 @@ async def test_session_create_strips_untranslatable_prompt_chars() -> None:
         request_id=str(uuid.uuid4()),
     )
 
-    assert pool.fetchval_calls
-    _query, args = pool.fetchval_calls[0]
+    _query, *args = pool.fetchval.await_args.args
     assert args[0] == "helloworld"
 
 
 @pytest.mark.asyncio
 async def test_session_complete_sanitizes_jsonb_and_text_payloads() -> None:
-    pool = _FakePool()
     session_id = uuid.uuid4()
+    pool = fake_pool(fetchrow=row(id=session_id, model=None), execute="INSERT 0 1")
 
     await session_complete(
         pool,
@@ -61,8 +45,7 @@ async def test_session_complete_sanitizes_jsonb_and_text_payloads() -> None:
         cost={"raw": "cost\x00\ud83d"},
     )
 
-    assert pool.fetchrow_calls
-    _query, args = pool.fetchrow_calls[0]
+    _query, *args = pool.fetchrow.await_args.args
     assert args[1] == "done"
     # tool_calls and cost are passed as Python objects (asyncpg JSONB codec handles encoding)
     assert args[2] == [
