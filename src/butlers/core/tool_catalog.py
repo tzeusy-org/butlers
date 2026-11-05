@@ -29,6 +29,7 @@ AUTHORIZATION_FIELDS = (
     "idempotency",
     "owner_authority",
     "recipient_params",
+    "alias_free_params",
 )
 
 
@@ -109,6 +110,10 @@ class ToolMetadata(Protocol):
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    # The resource_params whose identifiers are alias-free: the handler names a
+    # resource only by that identifier (strict UUID), with no "primary"/"me"
+    # shortcut or name/email alternative. Only these can narrow an owner term.
+    alias_free_params: tuple[str, ...] | None = ()
 
 
 def _owner_only_tool(name: str) -> bool:
@@ -175,6 +180,10 @@ class ToolPresentation:
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    # The resource_params whose identifiers are alias-free: the handler names a
+    # resource only by that identifier (strict UUID), with no "primary"/"me"
+    # shortcut or name/email alternative. Only these can narrow an owner term.
+    alias_free_params: tuple[str, ...] | None = ()
 
     def __post_init__(self) -> None:
         _validate_posture(self.load_posture)
@@ -248,6 +257,10 @@ class ToolDescriptor:
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    # The resource_params whose identifiers are alias-free: the handler names a
+    # resource only by that identifier (strict UUID), with no "primary"/"me"
+    # shortcut or name/email alternative. Only these can narrow an owner term.
+    alias_free_params: tuple[str, ...] | None = ()
 
     def __post_init__(self) -> None:
         _validate_posture(self.load_posture)
@@ -429,6 +442,14 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
             or len(value) != len(set(value))
         ):
             problems.append(name)
+    alias_free = descriptor.alias_free_params
+    if (
+        not isinstance(alias_free, tuple)
+        or not isinstance(resource_params, tuple)
+        or any(not isinstance(arg, str) or arg not in resource_params for arg in alias_free)
+        or len(alias_free) != len(set(alias_free))
+    ):
+        problems.append("alias_free_params")
     recipients = descriptor.recipient_params
     if not isinstance(recipients, RecipientParameters):
         problems.append("recipient_params")
@@ -561,11 +582,20 @@ async def build_tool_catalog(
                     field_name: (
                         _freeze(getattr(declared, field_name, None))
                         if field_name
-                        in {"approval_policy", "resource_params", "selection_bound", "safety_args"}
+                        in {
+                            "approval_policy",
+                            "resource_params",
+                            "selection_bound",
+                            "safety_args",
+                        }
                         else getattr(declared, field_name, None)
                     )
                     for field_name in AUTHORIZATION_FIELDS
+                    if field_name != "alias_free_params"
                 },
+                # Undeclared means no identifier is alias-free: nothing can
+                # narrow an owner term on this tool.
+                alias_free_params=tuple(getattr(declared, "alias_free_params", None) or ()),
                 read_stores=tuple(getattr(declared, "read_stores", ())),
                 write_stores=tuple(getattr(declared, "write_stores", ())),
                 unknown_output_source=getattr(declared, "unknown_output_source", True),

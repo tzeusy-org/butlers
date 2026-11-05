@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 from butlers.core.goal_admission import decode_grants, digest, encode_grants
 from butlers.core.goal_labels import EXPOSURE_CAUSES, Label
 from butlers.core.goal_ledger import GoalLedger
+from butlers.core.owner_policy import PolicyHold, PolicyUnavailable, hold_for, read_policy
 
 from .contracts import (
     BrokerRefused,
@@ -212,16 +213,75 @@ class BrokerLedger:
         capability: str,
         reason: Reason,
         effect_id: UUID | None = None,
+        hold: PolicyHold | None = None,
     ) -> None:
-        """One content-blind D7 refusal record, lineage only when authenticated."""
-        await self.connection.execute(
+        """One content-blind D7 refusal record, lineage only when authenticated.
+
+        An owner-law refusal also records its holding terms (sw_059), linked
+        to the refusal record, in the same transaction.
+        """
+        recorded = capability if _CATALOG_IDENTITY.fullmatch(capability) else UNPUBLISHED_CAPABILITY
+        refusal_id = await self.connection.fetchval(
             "INSERT INTO switchboard.broker_refusals "
-            "(goal_id, invocation_id, capability, reason, effect_id) VALUES ($1, $2, $3, $4, $5)",
+            "(goal_id, invocation_id, capability, reason, effect_id) VALUES ($1, $2, $3, $4, $5) "
+            "RETURNING id",
             principal.goal_id if principal else None,
             principal.invocation_id if principal else None,
-            capability if _CATALOG_IDENTITY.fullmatch(capability) else UNPUBLISHED_CAPABILITY,
+            recorded,
             reason.value,
             effect_id,
+        )
+        if hold is not None and principal is not None and recorded != UNPUBLISHED_CAPABILITY:
+            await self.record_hold(
+                principal, recorded, "refused", hold, effect_id=effect_id, refusal_id=refusal_id
+            )
+
+    # -- owner law (sw_059; S1, REQ-capability-authorization-020) ----------------
+
+    async def owner_law(self, capability: Capability, args: dict[str, Any]) -> PolicyHold | None:
+        """The owner's active terms on this call, read under this transaction.
+
+        The generation row is held ``FOR SHARE`` until the call commits, so a
+        concurrent owner change lands before this call or after its effect
+        fence, never between. Unreadable policy refuses (fail closed).
+        """
+        try:
+            policy = await read_policy(self.connection)
+        except PolicyUnavailable:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+        return hold_for(
+            policy,
+            capability.identity,
+            capability.domain,
+            capability.effect_class,
+            args,
+            capability.alias_free_params,
+        )
+
+    async def record_hold(
+        self,
+        principal: Principal,
+        capability: str,
+        disposition: str,
+        hold: PolicyHold,
+        *,
+        effect_id: UUID | None = None,
+        refusal_id: UUID | None = None,
+    ) -> None:
+        await self.connection.execute(
+            "INSERT INTO switchboard.owner_policy_holds (id, goal_id, invocation_id, capability, "
+            "disposition, term, effect_id, refusal_id, generation, terms) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)",
+            uuid4(),
+            principal.goal_id,
+            principal.invocation_id,
+            capability,
+            disposition,
+            hold.constraint,
+            effect_id,
+            refusal_id,
+            hold.generation,
+            hold.refs,
         )
 
     # -- per-call transaction ---------------------------------------------------
