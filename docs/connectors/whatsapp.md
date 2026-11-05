@@ -34,6 +34,31 @@ session, ownership is explicit:
   exactly as the dashboard's pair/status endpoints do. The module never spawns its own
   bridge, so flipping `send_enabled` to `true` cannot authenticate a second client.
 
+The module, dashboard API and connector reach that socket through
+`butlers.whatsapp_bridge_client.BridgeClient`. Each request owns its HTTP client;
+the SSE stream owns one until it closes. The transport never starts a bridge or
+retries a write. The dashboard retains its existing single `/pair/start` retry.
+Caller timeouts remain explicit: module calls have none, API calls use 5 seconds,
+and manager status/disconnect calls retain their outer 10/5-second deadlines.
+
+Backfill uses one HTTP/1.1 request with an absolute 10-second deadline including
+connection, write and ACK validation. It requires status 200 and the existing
+`whatsapp.backfill.v1` accepted ACK with matching window and nonnegative integer
+`replay_event_count` (not a boolean). Raw status, headers, HTTP framing and body
+are limited to 4096 bytes before parsing; byte 4097 refuses the ACK. This is a
+stream-read limit, not a measurement of total socket-buffer memory. A complete
+framed response can finish without EOF; incomplete/unframed responses still need
+completion within the deadline. Bytes co-read after a completed message count
+conservatively; the client closes instead of draining arbitrary later bytes.
+Compressed responses are refused before decoding.
+
+SSE headers have a 30-second aggregate deadline. Each complete LF/CRLF line has
+90 seconds; partial network chunks cannot reset that deadline. The old effective
+64 KiB line limit and final partial-line-at-EOF handling are retained. This
+slightly tightens the old per-header-line 30-second waits. Every owned response,
+client and stream closes on refusal, cancellation, EOF or explicit early close.
+No proxy environment or TCP fallback can change the selected Unix socket.
+
 For this to work, every container that talks to the bridge (`connector-whatsapp-user`,
 `butlers-up`, `dashboard-api`) mounts the shared `wa_bridge_socket` volume and points
 `WHATSAPP_BRIDGE_SOCKET` at `/tmp/wa-bridge/bridge.sock`. If a send tool reports the bridge

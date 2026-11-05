@@ -510,18 +510,9 @@ async def test_backfill_start_log_is_endpoint_blind(
         ),
         cursor_pool=MagicMock(),
     )
-    reader = MagicMock()
-    writer = MagicMock(
-        write=MagicMock(),
-        drain=AsyncMock(),
-        close=MagicMock(),
-        wait_closed=AsyncMock(),
-    )
-
     with (
-        patch("asyncio.open_unix_connection", new=AsyncMock(return_value=(reader, writer))),
         patch(
-            "butlers.connectors.whatsapp_user_client._read_backfill_acknowledgement",
+            "butlers.connectors.whatsapp_user_client.BridgeClient.request_backfill",
             new=AsyncMock(return_value=7),
         ),
         caplog.at_level(logging.INFO),
@@ -555,7 +546,10 @@ async def test_backfill_failure_log_uses_failure_class_only(
     )
 
     with (
-        patch("asyncio.open_unix_connection", new=AsyncMock(side_effect=RuntimeError(sentinel))),
+        patch(
+            "butlers.connectors.whatsapp_user_client.BridgeClient.request_backfill",
+            new=AsyncMock(side_effect=RuntimeError(sentinel)),
+        ),
         caplog.at_level(logging.WARNING),
     ):
         await connector._request_backfill()

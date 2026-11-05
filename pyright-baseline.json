@@ -1197,8 +1197,6 @@
     "[\"src/butlers/connectors/telegram_user_client.py\", \"reportOptionalMemberAccess\", \"f7c145e64ba238171d845a2f826a0efcaa7e7482f97b2d17d223c4c21bc0fde5\"]": 1,
     "[\"src/butlers/connectors/whatsapp_user_client.py\", \"reportArgumentType\", \"8196d7ba8436091f325fe7c672a9249db1358b0db2c20801f23cbec8ca29b01a\"]": 1,
     "[\"src/butlers/connectors/whatsapp_user_client.py\", \"reportArgumentType\", \"8c160f902b76761c66f9ac6bb800ce59c63cde8c111437a43c6330511161530a\"]": 1,
-    "[\"src/butlers/connectors/whatsapp_user_client.py\", \"reportAttributeAccessIssue\", \"f8268e64c7057cfe4dc007f0e4437c167701fbad0f62ab2bed8c9d3526c721b5\"]": 1,
-    "[\"src/butlers/connectors/whatsapp_user_client.py\", \"reportGeneralTypeIssues\", \"d11ef841bd6fda773d790f2a9aff7540e2ee718c29618c7d22ef2b6b0c51d941\"]": 1,
     "[\"src/butlers/control.py\", \"reportArgumentType\", \"8c5019cd4ea93cecc1d1f158de3d074d584186d04add74ddfefcda2da53bf66b\"]": 1,
     "[\"src/butlers/core/approval_callbacks.py\", \"reportAttributeAccessIssue\", \"b794e438fe1e0166960943411f2b3af11ff73dd5a65c5f9632e5caef57bc67d9\"]": 1,
     "[\"src/butlers/core/approval_delivery_authority.py\", \"reportArgumentType\", \"2f0e813db3fc1572ab0cf7e5c47874ec90a6f46c2cd3ac1bd51be9491a96f3a5\"]": 1,

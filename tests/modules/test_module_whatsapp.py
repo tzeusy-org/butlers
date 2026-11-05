@@ -30,6 +30,7 @@ from butlers.modules.whatsapp import (
     WhatsAppModule,
 )
 from butlers.testing.mcp import registered_tools
+from butlers.whatsapp_bridge_client import BridgeClient
 
 pytestmark = pytest.mark.unit
 
@@ -174,6 +175,16 @@ class TestSendDisabled:
         assert "send_enabled" in _SEND_DISABLED_ERROR or "disabled" in _SEND_DISABLED_ERROR.lower()
 
 
+def _patch_bridge_requests(monkeypatch, get, post=None):
+    async def request(client, method, path, body=None, **kwargs):
+        if method == "GET":
+            return await get(client.socket_path, path)
+        assert post is not None
+        return await post(client.socket_path, path, body)
+
+    monkeypatch.setattr(BridgeClient, "request_json", request)
+
+
 class TestBridgeOwnership:
     """bu-0c69e: the module is a client of the connector-owned bridge, never an owner."""
 
@@ -206,8 +217,7 @@ class TestBridgeOwnership:
             post_calls.append((sock, path, body))
             return {"ok": True}
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
-        monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
 
         module = WhatsAppModule()
         mcp = FastMCP("providers8-whatsapp-tools")
@@ -238,8 +248,7 @@ class TestBridgeOwnership:
             post_calls.append((sock, path, body))
             return {"message_id": "wamid.1"}
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
-        monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
 
         module = WhatsAppModule()
         mcp = FastMCP("providers8-whatsapp-tools")
@@ -282,8 +291,7 @@ class TestBridgeOwnership:
             posted.append(body)
             return {}
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
-        monkeypatch.setattr(bridge_manager, "_http_post_unix_with_body", _fake_post)
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
 
         module = WhatsAppModule()
         mcp = FastMCP("providers8-whatsapp-tools")
@@ -305,7 +313,7 @@ class TestBridgeOwnership:
         async def _fake_get(sock: str, path: str) -> dict:
             raise ConnectionError("socket missing")
 
-        monkeypatch.setattr(bridge_manager, "_http_get_unix", _fake_get)
+        _patch_bridge_requests(monkeypatch, _fake_get)
 
         module = WhatsAppModule()
         mcp = FastMCP("providers8-whatsapp-tools")
