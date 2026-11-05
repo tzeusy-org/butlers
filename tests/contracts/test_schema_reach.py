@@ -495,6 +495,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:switchboard.{table}>",
     ): "dynamic-local: owning migration's loop over its fixed labelled ledger table tuple (bu-dhloi1.6); not a foreign-schema exception",
     (
+        "roster/switchboard/migrations/059_owner_policy.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed owner-policy table tuple (bu-dhloi1.10); not a foreign-schema exception",
+    (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
@@ -826,6 +830,25 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
             "(sw_058); qualified SQL allocated to core/source_containment.py (bu-4c7nvp.1.2)"
         )
         for relation in ("admission_decisions", "goals", "source_containments")
+    },
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.owner_policy_holds",
+    ): (
+        "sanctioned:RFC-0038: S1 owner-law hold receipts in the Switchboard-owned ledger "
+        "(sw_059); qualified SQL allocated to capability_broker/ledger.py (bu-dhloi1.10)"
+    ),
+    **{
+        ("src/butlers/core/owner_policy.py", f"switchboard.{table}"): (
+            "sanctioned:RFC-0038: S1 owner tighten-only policy in the Switchboard-owned "
+            "ledger (sw_059); qualified SQL allocated to core/owner_policy.py (bu-dhloi1.10)"
+        )
+        for table in (
+            "owner_policy_holds",
+            "owner_policy_receipts",
+            "owner_policy_state",
+            "owner_policy_terms",
+        )
     },
     (
         "src/butlers/core/ingestion_events.py",

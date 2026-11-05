@@ -14,9 +14,12 @@ import shutil
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import asyncpg
+import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -27,6 +30,7 @@ from butlers.capability_broker.service import Broker
 from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_admission import Grant, digest, encode_grants
 from butlers.core.goal_labels import CATEGORIES
+from butlers.core.owner_policy import OwnerPolicyWriter
 from butlers.core.tool_catalog import RecipientParameters
 from tests.capability_broker.helpers import BROKER_DOMAIN, capability, notify
 from tests.switchboard.goal_ledger_fixtures import codec, reset_ledger
@@ -40,7 +44,13 @@ pytestmark = [
 
 DOMAIN = BROKER_DOMAIN
 OWNER = uuid4()
-SEARCH = capability("search", "read", DOMAIN, resource_params=("account",))
+SEARCH = capability(
+    "search",
+    "read",
+    DOMAIN,
+    resource_params=("account",),
+    alias_free_params=frozenset({"account"}),
+)
 UNTRUSTED = capability("read_mail", "read", DOMAIN, output_trust="untrusted")
 SEND = capability(
     "send",
@@ -675,7 +685,8 @@ async def test_every_refused_call_writes_a_durable_lineage_record(broker_db_url)
             (
                 "DELETE FROM switchboard.broker_refusals",
                 "UPDATE switchboard.broker_refusals SET reason = 'policy_refused'",
-                "TRUNCATE switchboard.broker_refusals",
+                # CASCADE: sw_059's owner-policy holds reference refusal records.
+                "TRUNCATE switchboard.broker_refusals CASCADE",
             ),
         ):
             try:
@@ -934,3 +945,262 @@ async def test_categories_survive_park_approval_and_an_owner_edit(broker_db_url)
         assert set(executed["label_sens"]) >= {"health"}
         assert set(executed["label_data"]) >= set(original["label_data"])
         assert (await _label(w, lead))["label_sens"] == ["health"]
+
+
+# --- Owner law (REQ-capability-authorization-020, bu-dhloi1.10) -------------------------
+
+
+async def _law(w, selector_kind, selector, constraint, **kwargs):
+    async with w.owner.acquire() as connection:
+        receipt = await OwnerPolicyWriter(connection).create(
+            uuid4(), selector_kind, selector, constraint, **kwargs
+        )
+    return receipt["term_id"]
+
+
+async def _holds(w, goal):
+    return await w.owner.fetch(
+        "SELECT * FROM switchboard.owner_policy_holds WHERE goal_id = $1 ORDER BY created_at", goal
+    )
+
+
+@pytest.mark.parametrize(
+    ("selector_kind", "selector"),
+    [("capability", SEND.identity), ("region", DOMAIN), ("effect_class", "communicate")],
+)
+async def test_owner_never_refuses_an_otherwise_dispatched_call(
+    broker_db_url, selector_kind, selector
+):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEND), _grant(SEARCH))
+        _, token = await w.invocation(goal, _grant(SEND), _grant(SEARCH))
+        term = await _law(w, selector_kind, selector, "never")
+        refused = await _refused(w.broker.call(goal, token, SEND.identity, TO_OWNER))
+        assert refused.reason is Reason.POLICY and w.forwarder.calls == []
+        assert await w.owner.fetchval("SELECT count(*) FROM switchboard.effects") == 0
+        [hold] = await _holds(w, goal)
+        refusal = await w.owner.fetchrow(
+            "SELECT * FROM switchboard.broker_refusals WHERE id = $1", hold["refusal_id"]
+        )
+        assert (hold["disposition"], hold["capability"]) == ("refused", SEND.identity)
+        assert refusal["reason"] == "policy_refused"
+        assert [t["id"] for t in hold["terms"]] == [str(term)]
+        # Outside the selector the law is silent (region selects every messenger tool).
+        if selector_kind != "region":
+            assert (await w.broker.call(goal, token, SEARCH.identity, {})).status == "returned"
+
+
+async def test_owner_always_ask_parks_the_exact_call_despite_a_standing_rule(broker_db_url):
+    async with world(broker_db_url) as w:
+        args = {"entity_id": str(uuid4()), "message": "Running late", "channel": "telegram"}
+        await w.domain.execute(
+            "INSERT INTO approval_rules (id, tool_name, arg_constraints, description) "
+            "VALUES ($1, 'notify', $2::jsonb, 'owner rule')",
+            uuid4(),
+            {"entity_id": {"type": "exact", "value": args["entity_id"]}},
+        )
+        goal = await w.goal(_grant(NOTIFY))
+        _, token = await w.invocation(goal, _grant(NOTIFY))
+        term = await _law(w, "capability", NOTIFY.identity, "always_ask")
+        result = await w.broker.call(goal, token, NOTIFY.identity, args)
+        assert result.status == "parked" and w.forwarder.calls == []
+        action = await w.action(result.effect_id)
+        assert action["tool_args"] == args and action["approval_rule_id"] is None
+        [hold] = await _holds(w, goal)
+        assert (hold["disposition"], hold["effect_id"]) == ("parked", result.effect_id)
+        assert [t["term"] for t in hold["terms"]] == ["always_ask"]
+        assert hold["terms"][0]["id"] == str(term)
+        # The approved park runs the exact stored call: the law grants nothing more.
+        done = await w.broker.execute_approved(goal, result.effect_id, result.approval_ref, args)
+        assert done.status == "committed" and w.forwarder.calls[-1][1] == args
+
+
+async def test_owner_law_never_grants_or_reads_past_its_own_term(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEARCH))
+        _, token = await w.invocation(goal, _grant(SEARCH))
+        await _law(w, "capability", SEND.identity, "always_ask")
+        ungranted = await _refused(w.broker.call(goal, token, SEND.identity, TO_OWNER))
+        assert ungranted.reason is Reason.CAPABILITY  # always_ask is not a grant
+        await _law(w, "capability", SEARCH.identity, "always_ask")
+        read = await _refused(w.broker.call(goal, token, SEARCH.identity, {}))
+        # A read cannot park yet: it fails closed with its own reason.
+        assert read.reason is Reason.ASK_ON_READ
+        [hold] = await _holds(w, goal)
+        assert (hold["disposition"], hold["term"]) == ("refused", "always_ask")
+        reason = await w.owner.fetchval(
+            "SELECT reason FROM switchboard.broker_refusals WHERE id = $1", hold["refusal_id"]
+        )
+        assert reason == "owner_policy_ask_on_read"
+        assert w.forwarder.calls == []
+
+
+async def test_owner_law_narrows_by_resource_and_lapses_at_expiry(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEARCH))
+        _, token = await w.invocation(goal, _grant(SEARCH))
+        await _law(
+            w,
+            "capability",
+            SEARCH.identity,
+            "never",
+            resources={"account": ["a1"]},
+            resource_params=SEARCH.resource_params,
+            alias_free_params=SEARCH.alias_free_params,
+        )
+        await _law(
+            w, "effect_class", "read", "never", expires_at=datetime.now(UTC) - timedelta(seconds=1)
+        )
+        held = await _refused(w.broker.call(goal, token, SEARCH.identity, {"account": "a1"}))
+        assert held.reason is Reason.POLICY
+        # Another spelling of the denied resource is still held (review r4480092262).
+        respelled = await _refused(w.broker.call(goal, token, SEARCH.identity, {"account": " A1 "}))
+        assert respelled.reason is Reason.POLICY
+        assert (await w.broker.call(goal, token, SEARCH.identity, {"account": "a2"})).value
+        # The catalog stops marking account alias-free: the narrowing can no
+        # longer be trusted, so the term holds every call (review r4480176241).
+        aliasable = replace(SEARCH, alias_free_params=frozenset())
+        w.broker.catalog = StaticCatalog(
+            Catalog(
+                "catalog-v1",
+                tuple(aliasable if c is SEARCH else c for c in CATALOG.capabilities),
+            )
+        )
+        flipped = await _refused(w.broker.call(goal, token, SEARCH.identity, {"account": "a2"}))
+        assert flipped.reason is Reason.POLICY
+
+
+async def test_every_holding_term_is_named_never_first(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(NOTIFY))
+        _, token = await w.invocation(goal, _grant(NOTIFY))
+        ask = await _law(w, "region", DOMAIN, "always_ask")
+        never = await _law(w, "effect_class", "communicate", "never")
+        args = {"entity_id": str(uuid4()), "message": "x", "channel": "telegram"}
+        refused = await _refused(w.broker.call(goal, token, NOTIFY.identity, args))
+        assert refused.reason is Reason.POLICY
+        assert refused.hold.receipt()["constraint"] == "never"
+        [hold] = await _holds(w, goal)
+        assert [(t["id"], t["term"]) for t in hold["terms"]] == [
+            (str(never), "never"),
+            (str(ask), "always_ask"),
+        ]
+        assert hold["generation"] == refused.hold.generation
+
+
+async def test_missing_owner_policy_state_refuses_unavailable(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEARCH))
+        _, token = await w.invocation(goal, _grant(SEARCH))
+        generation = await w.owner.fetchval("SELECT generation FROM switchboard.owner_policy_state")
+        await w.owner.execute(
+            "ALTER TABLE switchboard.owner_policy_state DISABLE TRIGGER owner_policy_durable"
+        )
+        try:
+            await w.owner.execute("DELETE FROM switchboard.owner_policy_state")
+            refused = await _refused(w.broker.call(goal, token, SEARCH.identity, {}))
+            assert refused.reason is Reason.UNAVAILABLE and w.forwarder.calls == []
+        finally:
+            await w.owner.execute(
+                "INSERT INTO switchboard.owner_policy_state (id, generation) VALUES (1, $1) "
+                "ON CONFLICT DO NOTHING",
+                generation,
+            )
+            await w.owner.execute(
+                "ALTER TABLE switchboard.owner_policy_state ENABLE TRIGGER owner_policy_durable"
+            )
+
+
+async def test_a_tighten_mid_invocation_applies_before_the_next_effect(broker_db_url):
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEND))
+        _, token = await w.invocation(goal, _grant(SEND))
+        term = await _law(w, "capability", SEND.identity, "always_ask")
+        first = await w.broker.call(goal, token, SEND.identity, TO_OWNER)
+        assert first.status == "parked"
+        async with w.owner.acquire() as connection:
+            await OwnerPolicyWriter(connection).tighten(
+                uuid4(), term, 1, constraint="never", expires_at=None
+            )
+        second = {**TO_OWNER, "text": "again"}
+        assert (await _refused(w.broker.call(goal, token, SEND.identity, second))).reason is (
+            Reason.POLICY
+        )
+        # The earlier park now refuses at execution; its approval is kept.
+        refused = await _refused(
+            w.broker.execute_approved(goal, first.effect_id, first.approval_ref, TO_OWNER)
+        )
+        assert refused.reason is Reason.POLICY and w.forwarder.calls == []
+        assert (await w.effect(first.effect_id))["status"] == "approved"
+        holds = await _holds(w, goal)
+        assert [(h["disposition"], h["effect_id"]) for h in holds] == [
+            ("parked", first.effect_id),
+            ("refused", None),
+            ("refused", first.effect_id),
+        ]
+        assert [h["terms"][0]["version"] for h in holds] == [1, 2, 2]
+
+
+async def test_the_owner_read_and_the_broker_receipts_serialize_identically(broker_db_url):
+    """AC3: refusal, effect (= pending action) and owner endpoint show one receipt."""
+    async with world(broker_db_url) as w:
+        goal = await w.goal(_grant(SEND))
+        _, token = await w.invocation(goal, _grant(SEND))
+        ask = await _law(w, "capability", SEND.identity, "always_ask")
+        parked = await w.broker.call(goal, token, SEND.identity, TO_OWNER)
+        await _law(w, "region", DOMAIN, "never")
+        refused = await _refused(
+            w.broker.call(goal, token, SEND.identity, {**TO_OWNER, "text": "again"})
+        )
+        executed = await _refused(
+            w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, TO_OWNER)
+        )
+        assert refused.hold.receipt() == executed.hold.receipt()
+        assert len(refused.hold.receipt()["terms"]) == 2  # several constraints at once
+        app = _owner_app(w.owner)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            by_goal = await client.get("/api/owner-policy/holds", params={"goal_id": str(goal)})
+            by_effect = await client.get(
+                "/api/owner-policy/holds", params={"effect_id": str(parked.effect_id)}
+            )
+        [park, call, execution] = by_goal.json()["data"]
+        assert by_effect.json()["data"] == [park, execution]
+        assert call["receipt"] == refused.hold.receipt()
+        assert execution["receipt"] == executed.hold.receipt()
+        assert park["receipt"]["constraint"] == "always_ask"
+        assert [t["id"] for t in park["receipt"]["terms"]] == [str(ask)]
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            by_refusal = await client.get(
+                "/api/owner-policy/holds", params={"refusal_id": call["refusal_id"]}
+            )
+        assert by_refusal.json()["data"] == [call]
+
+
+def _owner_app(pool):
+    """The owner-policy routes on the ledger's owner connection, as a dashboard session."""
+    from fastapi import FastAPI
+
+    from butlers.api.db import DatabaseManager
+    from butlers.api.deps import get_db
+    from butlers.api.routers.owner_policy import router
+    from butlers.core.dashboard_stepup import verified_dashboard_session
+
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def owner_session(request, call_next):
+        token = verified_dashboard_session.set("session-digest")
+        try:
+            return await call_next(request)
+        finally:
+            verified_dashboard_session.reset(token)
+
+    app.include_router(router)
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+    app.dependency_overrides[get_db] = lambda: db
+    return app

@@ -23,6 +23,7 @@ from butlers.core.capability_json import (
 )
 from butlers.core.goal_admission import Grant
 from butlers.core.goal_labels import Label, output_label
+from butlers.core.owner_policy import PolicyHold
 
 from .actuation import rfc0028_actuation_risk
 from .assertions import LIFETIME_SECONDS, AssertionSigner
@@ -40,7 +41,7 @@ from .contracts import (
 )
 from .domains import DomainReceipt, Domains, ParkReceipt
 from .ledger import UNPUBLISHED_CAPABILITY, BrokerLedger
-from .policy import decide, listable
+from .policy import PER_EVENT, decide, listable
 from .recipients import classify_recipients
 from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
@@ -221,7 +222,9 @@ class Broker:
         try:
             async with self._transaction() as ledger:
                 recorded = await self._catalog_identity(ledger, name)
-                await ledger.record_refusal(principal, recorded, refusal.reason, refusal.effect_id)
+                await ledger.record_refusal(
+                    principal, recorded, refusal.reason, refusal.effect_id, refusal.hold
+                )
         except BrokerRefused:
             logger.warning("broker refusal record unavailable reason=%s", refusal.reason.value)
 
@@ -259,12 +262,30 @@ class Broker:
         decision = decide(principal, capability, grant, recipient, risk)
         if decision.disposition is Disposition.REFUSE:
             raise self._refused(principal, name, Reason.POLICY)
+        # Owner law (S1 order: after catalog/grant and exposure). It only
+        # narrows: never refuses, always_ask parks the exact otherwise
+        # permitted effect for per-event approval. A read has no effect to
+        # park yet, so an always_ask term refuses it with its own reason.
+        hold = await ledger.owner_law(capability, args)
+        if hold is not None:
+            if hold.constraint == "never":
+                raise self._refused(principal, name, Reason.POLICY, hold)
+            if capability.effect_class == "read":
+                raise self._refused(principal, name, Reason.ASK_ON_READ, hold)
+            decision = PER_EVENT
         if decision.disposition is Disposition.PARK and not capability.approvals_enabled:
-            raise self._refused(principal, name, Reason.UNAVAILABLE)
-        return await ledger.reserve(principal, capability, decision, args_digest, recipient)
+            raise self._refused(principal, name, Reason.UNAVAILABLE, hold)
+        reserved = await ledger.reserve(principal, capability, decision, args_digest, recipient)
+        if hold is not None and isinstance(reserved, Reservation):
+            await ledger.record_hold(
+                principal, capability.identity, "parked", hold, effect_id=reserved.effect_id
+            )
+        return reserved
 
     @staticmethod
-    def _refused(principal: Principal, name: str, reason: Reason) -> BrokerRefused:
+    def _refused(
+        principal: Principal, name: str, reason: Reason, hold: PolicyHold | None = None
+    ) -> BrokerRefused:
         # Content-blind audit line: identities and the closed reason only.
         logger.info(
             "broker refused call goal=%s invocation=%s capability=%s reason=%s",
@@ -273,7 +294,7 @@ class Broker:
             name,
             reason.value,
         )
-        return BrokerRefused(reason)
+        return BrokerRefused(reason, hold=hold)
 
     def _assertion(self, reservation: Reservation, approval_ref: str | None) -> str:
         principal, capability = reservation.principal, reservation.capability
@@ -580,16 +601,38 @@ class Broker:
             if effect is not None:
                 await self._live_domains.cancel(effect.split("__", 1)[0], goal_id, [approval_ref])
             raise refused
-        async with self._transaction() as ledger:
-            catalog = await self._live_catalog.load(ledger.connection)
-            reserved = await ledger.begin_approved(
-                goal_id,
-                effect_id,
-                approval_ref,
-                digest,
-                catalog.get(effect) if effect else None,
-                catalog.digest,
-            )
+        held: tuple[Reservation, PolicyHold] | None = None
+        try:
+            async with self._transaction() as ledger:
+                catalog = await self._live_catalog.load(ledger.connection)
+                reserved = await ledger.begin_approved(
+                    goal_id,
+                    effect_id,
+                    approval_ref,
+                    digest,
+                    catalog.get(effect) if effect else None,
+                    catalog.digest,
+                )
+                if isinstance(reserved, Reservation):
+                    # A never term committed after the park holds the effect
+                    # at this fence; the owner's approval already answers
+                    # always_ask. The dispatch transition rolls back.
+                    hold = await ledger.owner_law(reserved.capability, args)
+                    if hold is not None and hold.constraint == "never":
+                        held = (reserved, hold)
+                        raise BrokerRefused(Reason.POLICY, effect_id=effect_id, hold=hold)
+        except BrokerRefused:
+            if held is None:
+                raise
+            async with self._transaction() as ledger:
+                await ledger.record_hold(
+                    held[0].principal,
+                    held[0].capability.identity,
+                    "refused",
+                    held[1],
+                    effect_id=effect_id,
+                )
+            raise
         if isinstance(reserved, BrokerRefused):
             # The goal ended: the effect is cancelled here, so cancel its approval too.
             if effect is not None:

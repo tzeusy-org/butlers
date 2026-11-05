@@ -32,6 +32,10 @@ class _Connection:
             raise OSError("ledger down")
         self.statements.append((sql, args))
 
+    async def fetchval(self, sql, *args):  # INSERT ... RETURNING id
+        await self.execute(sql, *args)
+        return uuid4()
+
 
 class _Pool:
     def __init__(self, connection):
