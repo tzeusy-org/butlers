@@ -30,6 +30,7 @@ from butlers.api.deps import (
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
 from butlers.core.audit_transaction import audit_transaction
+from butlers.core.goal_lineage import taint_insert
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
@@ -4095,8 +4096,9 @@ async def patch_entity_dunbar_tier(
                 entity_id_str,
             )
             if body.tier is not None:
+                taint = taint_insert(4)  # empty: a dashboard write is never exposed
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO facts (
                         subject,
                         predicate,
@@ -4104,15 +4106,16 @@ async def patch_entity_dunbar_tier(
                         scope,
                         entity_id,
                         validity,
-                        permanence
+                        permanence{taint.columns}
                     ) VALUES (
                         $1, 'dunbar_tier_override', $2, 'relationship',
-                        $3::uuid, 'active', 'permanent'
+                        $3::uuid, 'active', 'permanent'{taint.placeholders}
                     )
                     """,
                     f"entity:{entity_id_str}",
                     str(body.tier),
                     entity_id_str,
+                    *taint.values,
                 )
 
     if body.tier is None:

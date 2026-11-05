@@ -60,7 +60,10 @@ from butlers.core.spawner import SESSION_CANCELLED_ERROR, Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
-from butlers.identity import resolve_owner_channel_via_definer
+from butlers.identity import (
+    ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES,
+    resolve_owner_channel_via_definer,
+)
 from butlers.routing_guidance import build_attachments_block
 from butlers.telegram_api import TelegramPartialDeliveryError
 from butlers.tools.switchboard.contracts import (
@@ -363,13 +366,6 @@ class _RoutedDeliveryCommand:
     tool_name: str
     tool_args: dict[str, Any]
     execute: Callable[[], Awaitable[Any]]
-
-
-ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
-    "email": "email",
-    "telegram": "telegram",
-    "whatsapp": "whatsapp_jid",
-}
 
 
 def _telegram_files_command(

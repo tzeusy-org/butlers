@@ -1,0 +1,183 @@
+"""Value types at the broker's trusted boundaries (RFC 0038 D4, D7, D11).
+
+Nothing here is a request model. A model reaches the broker only with a bearer
+token, a tool name and raw arguments; principal, capability metadata, recipient
+classification and approval authority all come from the ledger, the published
+catalog and the owning domain.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import re
+import secrets
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, Literal
+from uuid import UUID
+
+from butlers.core.goal_admission import Grant
+from butlers.core.tool_catalog import RecipientParameters, declared_approval_mode
+
+Origin = Literal["owner", "obligation", "third_party", "staffer"]
+EffectClass = Literal["read", "record", "communicate", "transact", "actuate", "administer"]
+Recipient = Literal["none", "owner", "non_owner"]
+ActuationRisk = Literal["safe", "consequential", "protected", "unknown"]
+
+
+class Reason(StrEnum):
+    """Closed, content-blind refusal reasons returned to the session."""
+
+    AUTHENTICATION = "authentication_refused"
+    GOAL = "goal_not_running"
+    EPOCH = "lead_epoch_revoked"
+    CAPABILITY = "capability_not_granted"
+    CATALOG = "catalog_changed"
+    RESOURCE = "resource_outside_grant"
+    POLICY = "policy_refused"
+    BUDGET = "budget_exhausted"
+    DUPLICATE = "effect_already_recorded"
+    UNAVAILABLE = "broker_unavailable"
+
+
+class BrokerRefused(RuntimeError):
+    """A refusal; never carries a token, arguments or a downstream error."""
+
+    def __init__(self, reason: Reason, *, effect_id: UUID | None = None):
+        super().__init__(reason.value)
+        self.reason = reason
+        self.effect_id = effect_id
+
+
+_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def token_hash(token: str) -> str:
+    """SHA-256 of exactly 256 decoded bits; any other spelling is refused."""
+    if type(token) is not str or not _TOKEN.fullmatch(token):
+        raise BrokerRefused(Reason.AUTHENTICATION)
+    raw = base64.urlsafe_b64decode(token + "=")
+    if base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != token:
+        raise BrokerRefused(Reason.AUTHENTICATION)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def mint_token() -> tuple[str, str]:
+    """Return (plaintext, hash). Only the hash is ever persisted."""
+    token = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    return token, token_hash(token)
+
+
+@dataclass(frozen=True, slots=True)
+class Principal:
+    """The authenticated invocation, read from the ledger under the goal lock."""
+
+    goal_id: UUID
+    invocation_id: UUID
+    depth: Literal[0, 1]
+    origin: Origin
+    exposed: bool
+    catalog_digest: str
+    grants: tuple[Grant, ...]
+
+    def grant_for(self, capability: str) -> Grant | None:
+        return next((g for g in self.grants if g.capability == capability), None)
+
+
+@dataclass(frozen=True, slots=True)
+class Capability:
+    """The broker's projection of one published, grantable D4 descriptor."""
+
+    domain: str
+    name: str
+    effect_class: EffectClass
+    output_trust: Literal["trusted", "untrusted", "stamped"]
+    recipient_params: RecipientParameters
+    resource_params: tuple[str, ...] = ()
+    selection_bound: frozenset[str] = frozenset()
+    safety_args: tuple[str, ...] = ()
+    owner_authority: bool = False
+    always_per_event: bool = False
+    # The owning butler runs an enabled approvals module, so it can park.
+    approvals_enabled: bool = False
+    # ...and has an approvals gate configured for this tool (approval policy).
+    approval_gate: bool = False
+    idempotency: Literal["none", "key_required"] = "none"
+    description: str = ""
+    input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"}, repr=False)
+
+    @property
+    def identity(self) -> str:
+        """Namespaced ``<domain>__<tool>``: the grant key and the MCP tool name."""
+        return f"{self.domain}__{self.name}"
+
+    @classmethod
+    def from_descriptor(cls, domain: str, descriptor: Any, input_schema: dict) -> Capability:
+        policy = descriptor.approval_policy or {}
+        return cls(
+            domain=domain,
+            name=descriptor.canonical_name,
+            effect_class=descriptor.effect_class,
+            output_trust=descriptor.output_trust,
+            recipient_params=descriptor.recipient_params,
+            resource_params=tuple(descriptor.resource_params or ()),
+            selection_bound=frozenset(
+                name for name, bound in (descriptor.selection_bound or {}).items() if bound
+            ),
+            safety_args=tuple(descriptor.safety_args or ()),
+            owner_authority=bool(descriptor.owner_authority),
+            always_per_event=declared_approval_mode(policy) == "always_per_event",
+            approvals_enabled=policy.get("enabled") is True,
+            approval_gate=policy.get("enabled") is True and policy.get("configured_gate") is True,
+            idempotency=descriptor.idempotency,
+            description=descriptor.description,
+            input_schema=input_schema,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Catalog:
+    """Current published capabilities and the fleet digest they came from."""
+
+    digest: str
+    capabilities: tuple[Capability, ...]
+
+    def get(self, identity: str) -> Capability | None:
+        return next((c for c in self.capabilities if c.identity == identity), None)
+
+
+class Disposition(StrEnum):
+    DISPATCH = "dispatch"
+    PARK = "park"
+    REFUSE = "refuse"
+
+
+@dataclass(frozen=True, slots=True)
+class Decision:
+    disposition: Disposition
+    # Whether the owning approvals module may match a standing rule at park
+    # time. False for park-only grants, always_per_event tools and exposed
+    # calls the exposure limits exclude; never authority to skip a park.
+    allow_standing_rule: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Reservation:
+    """A call that passed the per-call transaction and committed its effect row."""
+
+    principal: Principal
+    capability: Capability
+    decision: Decision
+    call_id: UUID
+    effect_id: UUID | None
+    args_digest: str
+    recipient: Recipient = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class BrokerResult:
+    status: Literal["returned", "parked", "committed", "failed", "unknown", "refused"]
+    effect_id: UUID | None = None
+    approval_ref: str | None = None
+    value: object = field(default=None, repr=False)

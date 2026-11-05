@@ -2016,6 +2016,103 @@ async def test_deny_audits_action(app):
     assert deny_audits[0]["result"] == "success"
 
 
+def _goal_effect_app(app, row):
+    """One approvals pool holding ``row``; nothing else must be reached."""
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=row)
+    mock_conn.execute = AsyncMock(side_effect=AssertionError("no write for a goal effect"))
+    mock_conn.transaction = MagicMock(return_value=_NullTxCtx(mock_conn))
+    mock_conn.fetchval = AsyncMock(return_value=True)
+
+    class _Acquire:
+        async def __aenter__(self):
+            return mock_conn
+
+        async def __aexit__(self, *a):
+            pass
+
+    mock_pool = AsyncMock()
+    mock_pool.acquire = MagicMock(return_value=_Acquire())
+    mock_pool.fetchrow = AsyncMock(return_value=row)
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["general"]
+    mock_db.pool = MagicMock(return_value=mock_pool)
+    mock_mcp = MagicMock(spec=MCPClientManager)
+    mock_mcp.butler_names = []
+    mock_mcp.get_client = AsyncMock(side_effect=AssertionError("no dispatch for a goal effect"))
+    app.dependency_overrides[get_db] = lambda: mock_db
+    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+
+
+@pytest.mark.parametrize("path", ["/api/approvals/{id}/retry", "/api/approvals/actions/{id}/retry"])
+async def test_legacy_dispatch_routes_refuse_goal_effects(app, path):
+    """bu-m1u7zy.6: a goal-parked effect runs only through the capability broker."""
+    row = _make_pending_row(status="approved")
+    row["goal_id"] = uuid4()
+    _goal_effect_app(app, row)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(path.format(id=row["id"]))
+
+    assert resp.status_code == 409, resp.text
+    assert "goal_effect_requires_broker" in resp.text
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/approvals/{id}/approve", "/api/approvals/actions/{id}/approve"]
+)
+async def test_owner_decides_a_goal_effect_but_the_dashboard_never_dispatches_it(app, path):
+    """bu-m1u7zy.6: the owner's approval is recorded; the broker runs the effect."""
+    import butlers.api.routers.audit as audit_router
+
+    row = _make_pending_row(status="pending")
+    row["goal_id"] = uuid4()
+    row["tool_name"] = "email_send_message"
+    row["tool_args"] = {"to": "user@example.com", "subject": "Hello", "body": "Welcome"}
+    _goal_effect_app(app, row)
+    approved = {
+        **row,
+        "id": str(row["id"]),
+        "status": "approved",
+        "requested_at": _NOW.isoformat(),
+        "butler": "general",
+        "execution_code": "goal_effect_requires_broker",
+    }
+    body = {
+        "displayed_call": {
+            "tool_name": row["tool_name"],
+            "args_digest": args_digest(row["tool_args"]),
+        }
+    }
+
+    async def append(*_args, **_kwargs):
+        return 1
+
+    with (
+        patch.object(audit_router, "append", append),
+        patch(
+            "butlers.modules.approvals.operations.approve_action",
+            AsyncMock(return_value=approved),
+        ) as decide,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(path.format(id=row["id"]), json=body)
+            edited = await client.post(
+                f"/api/approvals/{row['id']}/approve",
+                json={**body, "edits": {"subject": "changed"}},
+            )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["status"] == "approved"
+    assert resp.json()["data"]["dispatched"] is False
+    assert decide.await_count == 1  # The edit was refused before any decision.
+    assert edited.status_code == 409 and "goal_effect_requires_broker" in edited.text
+
+
 async def test_decision_dossier_returned_on_actions_list(app):
     """GET /api/approvals/actions includes the typed RFC 0021 dossier."""
     row = _make_pending_row()
@@ -3485,3 +3582,47 @@ async def test_reply_template_drafts_are_owner_session_only_and_never_active(app
             json={"tool_name": "telegram_send_message", "tool_args": {"chat_id": "1"}},
         )
         assert forged.status_code == 404
+
+
+async def test_list_actions_filters_by_goal_and_returns_its_lineage(app):
+    """bu-m1u7zy.12: the dashboard can list one goal's approvals with their lineage."""
+    goal_id, invocation_id = uuid4(), uuid4()
+    row = _make_action(tool_name="email_send_message")
+    row.update(
+        goal_id=goal_id,
+        goal_invocation_id=invocation_id,
+        goal_depth=1,
+        goal_exposed=True,
+        goal_origin="owner",
+    )
+    app, conn = _app_with_mock_db(app, fetch_rows=[row], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions", params={"goal_id": str(goal_id)})
+        bad = await client.get("/api/approvals/actions", params={"goal_id": "not-a-goal"})
+    assert resp.status_code == 200, resp.text
+    [item] = resp.json()["data"]
+    assert item["goal"] == {
+        "goal_id": str(goal_id),
+        "invocation_id": str(invocation_id),
+        "depth": 1,
+        "exposed": True,
+        "origin": "owner",
+    }
+    [(count_sql, *count_args)] = [
+        call.args for call in conn.fetchval.await_args_list if "COUNT(*)" in call.args[0]
+    ]
+    list_sql, *list_args = conn.fetch.await_args.args
+    for sql, args in ((count_sql, count_args), (list_sql, list_args)):
+        assert "goal_id = $1" in sql and args == [goal_id]
+    assert bad.status_code == 422
+
+
+async def test_list_actions_without_goal_lineage_has_no_goal_block(app):
+    app, _ = _app_with_mock_db(app, fetch_rows=[_make_action()], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions")
+    assert resp.json()["data"][0]["goal"] is None

@@ -22,6 +22,7 @@ from typing import Any
 import asyncpg
 
 from butlers.core.expected_signals import ExpectedSignalState
+from butlers.core.goal_lineage import taint_insert
 
 logger = logging.getLogger(__name__)
 
@@ -882,8 +883,9 @@ async def dunbar_tier_set(
                 }
 
             # Store new override fact
+            taint = taint_insert(4)
             await conn.execute(
-                """
+                f"""
                 INSERT INTO facts (
                     subject,
                     predicate,
@@ -891,15 +893,16 @@ async def dunbar_tier_set(
                     scope,
                     entity_id,
                     validity,
-                    permanence
+                    permanence{taint.columns}
                 ) VALUES (
                     $1, 'dunbar_tier_override', $2, 'relationship',
-                    $3::uuid, 'active', 'permanent'
+                    $3::uuid, 'active', 'permanent'{taint.placeholders}
                 )
                 """,
                 f"contact:{contact_id}",
                 str(tier),
                 entity_id_str,
+                *taint.values,
             )
 
     return {

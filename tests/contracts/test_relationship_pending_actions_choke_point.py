@@ -27,10 +27,13 @@ pytestmark = pytest.mark.contract
 
 # park.py contains the one shared pending INSERT used by ordinary and prepared
 # transactional admission. gate.py contains only owner/rule auto-approved
-# INSERTs; its PENDING branch calls park_pending_action.
+# INSERTs; its PENDING branch calls park_pending_action. goal_park.py likewise
+# INSERTs only the standing-rule auto-approved goal effect (RFC 0038 D13); its
+# PENDING branch calls park_pending_action.
 _ALLOWED_DIRECT_INSERT_FILES: frozenset[str] = frozenset(
     {
         "src/butlers/modules/approvals/gate.py",
+        "src/butlers/modules/approvals/goal_park.py",
         "src/butlers/modules/approvals/park.py",
     }
 )
@@ -206,6 +209,8 @@ _PENDING_ACTION_STATUS_WRITERS: dict[tuple[str, str], int] = {
     ("src/butlers/modules/approvals/executor.py", "execute_approved_action"): 1,
     ("src/butlers/modules/approvals/operations.py", "mark_executed"): 1,
     ("src/butlers/modules/approvals/operations.py", "abandon_approved_action"): 1,
+    ("src/butlers/modules/approvals/goal_park.py", "_abandon_unexecuted"): 1,
+    ("src/butlers/modules/approvals/goal_park.py", "record_goal_outcome"): 1,
 }
 
 
