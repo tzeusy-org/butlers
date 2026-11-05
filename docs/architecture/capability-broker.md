@@ -123,7 +123,9 @@ the effect and its pending action instead.
 
 After Stop commits, `Broker.cancel_parked` cancels every effect that has not
 reached a domain, and ends exactly those effects' domain actions: pending ones
-become `cancelled` (an `action_cancelled` event, owner prompts fenced) and
+become `cancelled` (an `action_cancelled` event; owner prompts are fenced
+with the `action_cancelled` delivery reason, admitted by `approvals_022`, so
+`action_rejected` still means only an owner rejection) and
 approved, never-executed ones become `abandoned`. An action whose effect was
 dispatched or settled is never touched (D14).
 

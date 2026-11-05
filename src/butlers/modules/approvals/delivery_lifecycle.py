@@ -32,6 +32,7 @@ DeliveryTerminalReason = Literal[
     "action_rejected",
     "action_expired",
     "action_abandoned",
+    "action_cancelled",
 ]
 
 _EVENT_FOR_STATUS = {
@@ -40,14 +41,13 @@ _EVENT_FOR_STATUS = {
     ActionStatus.EXPIRED: ApprovalEventType.ACTION_EXPIRED,
     ActionStatus.CANCELLED: ApprovalEventType.ACTION_CANCELLED,
 }
-# A goal Stop withdraws the owner's prompt exactly as a rejection does, so the
-# delivery fence reuses that stored reason code; the action's own event is
-# ``action_cancelled``.
+# A goal Stop withdraws the owner's prompt with its own reason code
+# (approvals_022), so ``action_rejected`` keeps meaning an owner rejection.
 _REASON_FOR_STATUS: dict[ActionStatus, DeliveryTerminalReason] = {
     ActionStatus.APPROVED: "action_approved",
     ActionStatus.REJECTED: "action_rejected",
     ActionStatus.EXPIRED: "action_expired",
-    ActionStatus.CANCELLED: "action_rejected",
+    ActionStatus.CANCELLED: "action_cancelled",
 }
 _PRESTART_STATES = ("ready", "claimed", "retry_wait")
 
