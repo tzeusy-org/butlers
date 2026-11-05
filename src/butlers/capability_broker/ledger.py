@@ -257,23 +257,9 @@ class BrokerLedger:
         Budget exhaustion is *returned*, not raised, so the caller commits the
         goal's ``budget_exhausted`` transition before refusing.
         """
-        budget = await self.connection.fetchrow(
-            "SELECT max_calls, used_calls, reserved_calls, deadline > clock_timestamp() AS live "
-            "FROM switchboard.budgets WHERE goal_id = $1 FOR UPDATE",
-            principal.goal_id,
-        )
-        if budget is None:
-            raise BrokerRefused(Reason.UNAVAILABLE)
-        if (
-            not budget["live"]
-            or budget["used_calls"] + budget["reserved_calls"] >= budget["max_calls"]
-        ):
-            await self.connection.execute(
-                "UPDATE switchboard.goals SET status = 'budget_exhausted', updated_at = now() "
-                "WHERE id = $1 AND status = 'running'",
-                principal.goal_id,
-            )
-            return BrokerRefused(Reason.BUDGET)
+        exhausted = await self._budget_exhausted(principal.goal_id)
+        if exhausted is not None:
+            return exhausted
         effect_id = None
         if capability.effect_class != "read":
             previous = await self.connection.fetchval(
@@ -301,14 +287,44 @@ class BrokerLedger:
                 args_digest,
                 status,
             )
-        await self.connection.execute(
-            "UPDATE switchboard.budgets SET used_calls = used_calls + 1, updated_at = now() "
-            "WHERE goal_id = $1",
-            principal.goal_id,
-        )
+        await self._charge(principal.goal_id)
         return Reservation(
             principal, capability, decision, uuid4(), effect_id, args_digest, recipient
         )
+
+    async def _budget_exhausted(self, goal_id: UUID) -> BrokerRefused | None:
+        budget = await self.connection.fetchrow(
+            "SELECT max_calls, used_calls, reserved_calls, deadline > clock_timestamp() AS live "
+            "FROM switchboard.budgets WHERE goal_id = $1 FOR UPDATE",
+            goal_id,
+        )
+        if budget is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        if (
+            not budget["live"]
+            or budget["used_calls"] + budget["reserved_calls"] >= budget["max_calls"]
+        ):
+            await self.connection.execute(
+                "UPDATE switchboard.goals SET status = 'budget_exhausted', updated_at = now() "
+                "WHERE id = $1 AND status = 'running'",
+                goal_id,
+            )
+            return BrokerRefused(Reason.BUDGET)
+        return None
+
+    async def _charge(self, goal_id: UUID) -> None:
+        await self.connection.execute(
+            "UPDATE switchboard.budgets SET used_calls = used_calls + 1, updated_at = now() "
+            "WHERE goal_id = $1",
+            goal_id,
+        )
+
+    async def charge_call(self, goal_id: UUID) -> BrokerRefused | None:
+        """A goal tool call (D8) draws one call from the D10 budget, like any call."""
+        exhausted = await self._budget_exhausted(goal_id)
+        if exhausted is None:
+            await self._charge(goal_id)
+        return exhausted
 
     # -- settlement -------------------------------------------------------------
 

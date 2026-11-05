@@ -9,6 +9,9 @@ from butlers.core.goal_admission import Grant
 from butlers.core.goal_labels import admission_label
 from butlers.core.tool_catalog import OwnerNotifyBranch, RecipientParameters
 
+#: The owning domain schema the migrated broker database (conftest) carries.
+BROKER_DOMAIN = "messenger"
+
 NOTIFY_RECIPIENTS = RecipientParameters(
     argument_names=("recipient", "entity_id", "request_context"),
     undeterminable=True,
