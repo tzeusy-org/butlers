@@ -802,7 +802,7 @@ async def wait_for_semantic_readiness(config: DeployConfig, pool: asyncpg.Pool) 
 
 async def _make_pool() -> asyncpg.Pool:
     params = db_params_from_env()
-    database = os.environ.get("POSTGRES_DB", "butlers")
+    database = os.environ.get("POSTGRES_DB_MUTANT", "butlers")
     return await asyncpg.create_pool(database=database, min_size=1, max_size=2, **params)
 
 

@@ -913,7 +913,7 @@ async def _repoint_entity_facts(
             ef["predicate"],
             ef["object"],
         )
-        if conflict is not None and ef["conf"] <= conflict["conf"]:
+        if conflict is not None and ef["conf"] >= conflict["conf"]:
             # Target wins: supersede the source row.
             await conn.execute(
                 "UPDATE relationship.entity_facts "
@@ -940,7 +940,7 @@ async def _repoint_entity_facts(
     tgt_obj_str = str(target_entity_id)
     obj_ef_rows = await conn.fetch(
         "SELECT id, subject, predicate, conf FROM relationship.entity_facts "
-        "WHERE object = $1 AND object_kind = 'entity' AND validity = 'active'",
+        "WHERE object = $1 AND validity = 'active'",
         src_obj_str,
     )
     for obj_ef in obj_ef_rows:
