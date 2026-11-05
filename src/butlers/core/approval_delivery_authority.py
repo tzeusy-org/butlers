@@ -13,14 +13,16 @@ import hashlib
 import hmac
 import inspect
 import json
+import logging
 import os
 import secrets
 import socket
 import struct
+import tempfile
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,7 @@ _SWITCHBOARD_AUDIENCE = "switchboard:approval-recovery"
 _MESSENGER_AUDIENCE = "messenger:approval-recovery"
 _REFUSAL = "Approval recovery authority rejected."
 _CALL_TIMEOUT_SECONDS = 10.0
+logger = logging.getLogger(__name__)
 
 
 def guard_registered_approval_tool(
@@ -467,7 +470,7 @@ async def approval_companion_mcp(registered: FastMCP, tool_name: str) -> FastMCP
 
 
 class ApprovalAuthorityTopology:
-    """Opt-in trusted-host composition; never called by normal daemon startup.
+    """Opt-in trusted-host composition for registered cohosted daemons.
 
     Sources keep their admission objects and owning pools. Switchboard receives
     only protected verifier clients, Messenger only its authenticated ingress.
@@ -581,3 +584,156 @@ class ApprovalAuthorityTopology:
 
     async def __aexit__(self, *_args: object) -> None:
         await self.close()
+
+
+@asynccontextmanager
+async def approval_delivery_composition(
+    daemons: Sequence[Any],
+) -> AsyncIterator[ApprovalAuthorityTopology | None]:
+    """Own enabled recovery runtimes only for a trusted, same-PID daemon host.
+
+    Called after tool registration by ``cli._start_all``. A disabled source
+    creates no authority, listener, directory or worker. Standalone/split hosts
+    cannot substitute TCP for missing peers. Rollout changes require a host
+    restart; module re-enables can reuse an already installed runtime.
+    """
+    from butlers.core.approval_callbacks import APPROVAL_CALLBACK_SECRET_KEY
+    from butlers.core.approval_delivery_worker import (
+        start_approval_delivery_worker,
+        stop_approval_delivery_worker,
+    )
+    from butlers.core.mcp_urls import resolve_cross_container_mcp_url, runtime_mcp_url
+    from butlers.identity import resolve_owner_channel_via_definer
+
+    enabled = []
+    for daemon in daemons:
+        state = getattr(daemon, "_module_runtime_states", {}).get("approvals")
+        if state is None or state.health != "active" or state.enabled is not True:
+            continue
+        module = next((item for item in daemon._modules if item.name == "approvals"), None)
+        if module is None:
+            continue
+        try:
+            if await module.approval_delivery_worker_enabled() is not True:
+                continue
+            schema = daemon.config.db_schema or daemon.config.name
+            if (
+                schema != daemon.config.name
+                or daemon._credential_store is None
+                or daemon._approval_delivery_runtime is not None
+                or not isinstance(daemon.mcp, FastMCP)
+            ):
+                raise RecoveryAuthorityError(_REFUSAL)
+            enabled.append((daemon, module))
+        except Exception as exc:
+            logger.warning(
+                "approval recovery source unavailable (source=%s, reason=%s)",
+                daemon.config.name,
+                type(exc).__name__,
+            )
+
+    if not enabled:
+        yield None
+        return
+
+    peers = {daemon.config.name: daemon for daemon in daemons}
+    switchboard, messenger = peers.get("switchboard"), peers.get("messenger")
+    switchboard_state = (
+        switchboard._module_runtime_states.get("switchboard") if switchboard is not None else None
+    )
+    if (
+        switchboard is None
+        or messenger is None
+        or switchboard_state is None
+        or switchboard_state.health != "active"
+        or switchboard_state.enabled is not True
+        or not isinstance(switchboard.mcp, FastMCP)
+        or not isinstance(messenger.mcp, FastMCP)
+        or len(peers) != len(daemons)
+    ):
+        logger.warning("approval recovery requires registered cohosted Switchboard and Messenger")
+        yield None
+        return
+
+    stack = AsyncExitStack()
+    runtimes: list[tuple[Any, ApprovalRecoveryRuntime]] = []
+
+    async def close() -> None:
+        try:
+            # Settle every worker before retiring any source proof or listener,
+            # even if a previously failed worker raises while being joined.
+            results = await asyncio.gather(
+                *(stop_approval_delivery_worker(daemon) for daemon, _ in runtimes),
+                return_exceptions=True,
+            )
+            if any(isinstance(result, BaseException) for result in results):
+                logger.warning("approval recovery worker stopped with a failure")
+        finally:
+            for daemon, runtime in runtimes:
+                if daemon._approval_delivery_runtime is runtime:
+                    daemon._approval_delivery_runtime = None
+            await stack.aclose()
+
+    try:
+        sources = {}
+        for daemon, module in enabled:
+            repository, _renderer = module.approval_delivery_worker_components()
+            sources[daemon.config.name] = SourceApprovalAdmission(
+                repository, owning_schema=daemon.config.name
+            )
+        switchboard_module = next(
+            item for item in switchboard._modules if item.name == "switchboard"
+        )
+        folder = stack.enter_context(
+            tempfile.TemporaryDirectory(prefix=".butlers-approval-", dir=Path.home())
+        )
+        topology = await stack.enter_async_context(
+            ApprovalAuthorityTopology(
+                sources=sources,
+                switchboard_registered=switchboard.mcp,
+                switchboard_module=switchboard_module,
+                messenger_registered=messenger.mcp,
+                messenger_registry_url=resolve_cross_container_mcp_url(
+                    runtime_mcp_url(messenger.config.port)
+                ),
+                socket_directory=Path(folder),
+            )
+        )
+        for daemon, _module in enabled:
+
+            async def resolve_owner(source=daemon) -> str | None:
+                candidate = await source._resolve_default_notify_recipient(
+                    channel="telegram", intent="send", recipient=None
+                )
+                if candidate is None:
+                    return None
+                owner = await resolve_owner_channel_via_definer(
+                    source.db.pool, "telegram", candidate
+                )
+                return candidate if owner is not None else None
+
+            async def resolve_secret(source=daemon) -> str | None:
+                return await source._credential_store.resolve(
+                    APPROVAL_CALLBACK_SECRET_KEY, env_fallback=False
+                )
+
+            runtime = topology.runtime(
+                daemon.config.name,
+                resolve_owner_recipient=resolve_owner,
+                resolve_callback_secret=resolve_secret,
+            )
+            runtimes.append((daemon, runtime))
+            daemon._approval_delivery_runtime = runtime
+            await start_approval_delivery_worker(daemon)
+    except BaseException as exc:
+        await close()
+        if not isinstance(exc, Exception):
+            raise
+        logger.warning("approval recovery composition unavailable (%s)", type(exc).__name__)
+        yield None
+        return
+
+    try:
+        yield topology
+    finally:
+        await close()

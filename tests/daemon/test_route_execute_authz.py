@@ -11,20 +11,21 @@ Verifies that:
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 import sys
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from butlers.daemon import ButlerDaemon
 from butlers.modules.telegram import TelegramProviderResponseError
-from butlers.testing.daemon import write_butler_config
+from butlers.testing.daemon import FakeRuntime, write_butler_config
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
@@ -108,7 +109,6 @@ async def test_registered_approval_self_link_resolves_or_delivers_inert(
     monkeypatch.setenv("DASHBOARD_URL", origin)
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
-        _patch_infra(),
     )
     telegram = next(module for module in daemon._modules if module.name == "telegram")
     monkeypatch.setattr(
@@ -297,13 +297,11 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
     from butlers.core.tool_call_capture import get_current_runtime_session_id
     from butlers.modules.approvals.module import ApprovalsModule
 
-    patches = _patch_infra()
+    store = _EnvelopeApprovalStore()
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-        patches,
+        store,
     )
-    store = _EnvelopeApprovalStore()
-    daemon.db.pool = store
     modules = {module.name: module for module in daemon._modules}
     send = AsyncMock(return_value={"ok": True, "result": {"message_id": 991}, "message_id": "991"})
     if channel == "telegram":
@@ -418,13 +416,11 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
     from butlers.core.delivery_rendering import inert_delivery_content
     from butlers.modules.approvals.module import ApprovalsModule
 
-    patches = _patch_infra()
+    store = _EnvelopeApprovalStore()
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-        patches,
+        store,
     )
-    store = _EnvelopeApprovalStore()
-    daemon.db.pool = store
     telegram = next(module for module in daemon._modules if module.name == "telegram")
     ref = "s3://butlers/health/statement.pdf"
     blobs = {ref: b"%PDF reviewed statement"}
@@ -555,7 +551,6 @@ async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_
 
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
-        _patch_infra(),
     )
     approval = ApprovalsModule()
     await approval.on_startup({}, daemon.db.pool)
@@ -645,7 +640,6 @@ async def test_registered_recovery_enforces_inert_provider_contract(
     monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-        _patch_infra(),
     )
     modules = {module.name: module for module in daemon._modules}
     whatsapp = WhatsAppModule()
@@ -831,138 +825,38 @@ def _make_butler_toml(
     return tmp_path
 
 
-def _patch_infra():
-    mock_pool = AsyncMock()
-    mock_pool.fetchval.return_value = None
-
-    async def fetchrow(query, *args):
-        if "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow.side_effect = fetchrow
-    mock_connection = AsyncMock()
-    # The runtime row agrees with Git: no conditional update or audit append.
-    # Runtime-config still enters its unconditional audit_transaction scope.
-    mock_connection.fetchrow.return_value = None
-
-    transaction_depth = 0
-    mock_connection.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        try:
-            yield
-        finally:
-            transaction_depth -= 1
-
-    mock_connection.transaction = MagicMock(side_effect=transaction)
-
-    @asynccontextmanager
-    async def acquire():
-        yield mock_connection
-
-    mock_pool.acquire = MagicMock(side_effect=acquire)
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
+def _db_free_pool() -> AsyncMock:
+    """A DB-free pool for host cases whose subject is delivery, not SQL."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = None
+    pool.fetchrow.return_value = None
+    return pool
 
 
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
+async def _start_daemon_with_route_execute(butler_dir: Path, pool: Any = None):
+    """The butler's real route.execute after its own module phases, on a DB-free host.
 
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
+    The subject is messenger delivery through route.execute, not the boot: the
+    first case of that concern boots for real (``_shared_messenger``). The host
+    registers the core tools with the daemon's own code; module selection, config,
+    startup and module-tool phases then run unpatched in startup's order. No
+    provider connects and nothing is patched (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
 
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
+    pool = _db_free_pool() if pool is None else pool
+    host = await host_tools(butler_dir, pool=pool)
+    daemon = host.daemon
+    daemon.spawner = MagicMock(drain=AsyncMock())
+    state = lifecycle.StartupState(pool=pool)
+    for phase in (
+        lifecycle._startup_modules,
+        lifecycle._startup_module_config,
+        lifecycle._startup_module_startup,
+        lifecycle._startup_module_tools,
     ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
+        await phase(daemon, state)
+    return daemon, await host.tool("route.execute")
 
 
 def _route_request_context(
@@ -1530,23 +1424,189 @@ class TestRouteExecuteAuthz:
 # ---------------------------------------------------------------------------
 
 
+class _AcceptedRouteProbe:
+    """Retain this route's task; report closed state before daemon teardown."""
+
+    def __init__(self, custom, monkeypatch):
+        self.custom = custom
+        self.runtime = custom.runtime
+        self.tasks = {}
+        self.trigger_state = "not_entered"
+        create = asyncio.create_task
+        trigger = custom.daemon.spawner.trigger
+
+        def capture(coro, *args, **kwargs):
+            task = create(coro, *args, **kwargs)
+            name = kwargs.get("name", "")
+            if isinstance(name, str) and name.startswith("route-inbox-"):
+                try:
+                    key = uuid.UUID(name.removeprefix("route-inbox-"))
+                except ValueError:
+                    pass
+                else:
+                    self.tasks[key] = task
+            return task
+
+        async def observed_trigger(*args, **kwargs):
+            self.trigger_state = "entered"
+            try:
+                result = await trigger(*args, **kwargs)
+            except asyncio.CancelledError:
+                self.trigger_state = "cancelled"
+                raise
+            except Exception:
+                self.trigger_state = "raised"
+                raise
+            self.trigger_state = "successful" if result.success else "refused"
+            return result
+
+        monkeypatch.setattr(asyncio, "create_task", capture)
+        monkeypatch.setattr(custom.daemon.spawner, "trigger", observed_trigger)
+
+    async def snapshot(self, accepted):
+        key = uuid.UUID(accepted["inbox_id"])
+        task = self.tasks.get(key)
+        locations = []
+        current = task.get_coro() if task is not None else None
+        for _ in range(16):
+            frame = getattr(current, "cr_frame", None) or getattr(current, "gi_frame", None)
+            if frame is not None:
+                locations.append(
+                    {
+                        "file": Path(frame.f_code.co_filename).name,
+                        "function": frame.f_code.co_name,
+                        "line": frame.f_lineno,
+                    }
+                )
+            current = getattr(current, "cr_await", None) or getattr(current, "gi_yieldfrom", None)
+            if current is None:
+                break
+        state = {
+            "await_locations": locations,
+            "task": "missing"
+            if task is None
+            else ("cancelled" if task.cancelled() else "terminal" if task.done() else "live"),
+            "trigger": self.trigger_state,
+            "same_fake": self.custom.runtime is self.runtime,
+            "fake_invocations": len(self.runtime.invocations),
+            "adapter_pool_count": len(self.custom.daemon.spawner._adapter_pool),
+            "adapter_pool_same_fake": bool(self.custom.daemon.spawner._adapter_pool)
+            and all(
+                adapter is self.runtime
+                for adapter in self.custom.daemon.spawner._adapter_pool.values()
+            ),
+            "task_exception": bool(
+                task is not None
+                and task.done()
+                and not task.cancelled()
+                and task.exception() is not None
+            ),
+            "inbox": "unavailable",
+        }
+        # The readiness criterion remains the original ten-second wait. This
+        # separate bounded read describes its failure; it never retries dispatch.
+        try:
+            async with asyncio.timeout(2):
+                row = await self.custom.daemon.db.pool.fetchrow(
+                    "SELECT r.lifecycle_state, r.session_id IS NOT NULL AS session_bound, "
+                    "r.processing_claim_id IS NOT NULL AS claim_present, "
+                    "s.completed_at IS NOT NULL AS session_completed, "
+                    "s.success IS TRUE AS session_success, s.error IS NOT NULL AS session_error "
+                    "FROM route_inbox r LEFT JOIN sessions s ON s.id=r.session_id WHERE r.id=$1",
+                    key,
+                )
+            if row:
+                state["inbox"] = {
+                    "lifecycle_state": row["lifecycle_state"]
+                    if row["lifecycle_state"] in {"accepted", "processing", "processed", "errored"}
+                    else "unknown",
+                    **{
+                        key: row[key] is True
+                        for key in (
+                            "session_bound",
+                            "claim_present",
+                            "session_completed",
+                            "session_success",
+                            "session_error",
+                        )
+                    },
+                }
+        except Exception:
+            pass
+        return state
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["successful", "refused", "raised", "live", "wrong_fake"])
+async def test_accepted_route_probe_distinguishes_positioned_states(monkeypatch, mode):
+    """These classify software controls; they do not explain a hosted failure."""
+    runtime = FakeRuntime()
+    selected = FakeRuntime() if mode == "wrong_fake" else runtime
+    release = asyncio.Event()
+
+    async def trigger():
+        if mode == "live":
+            await release.wait()
+        if mode == "raised":
+            raise RuntimeError("synthetic positioned failure")
+        if mode in {"successful", "wrong_fake"}:
+            await selected.invoke("synthetic", "", {}, {})
+        return SimpleNamespace(success=mode != "refused")
+
+    pool = SimpleNamespace(fetchrow=AsyncMock(return_value=None))
+    spawner = SimpleNamespace(trigger=trigger, _adapter_pool={"synthetic": selected})
+    custom = SimpleNamespace(
+        runtime=runtime, daemon=SimpleNamespace(spawner=spawner, db=SimpleNamespace(pool=pool))
+    )
+    probe = _AcceptedRouteProbe(custom, monkeypatch)
+    key = uuid.uuid4()
+    task = asyncio.create_task(spawner.trigger(), name=f"route-inbox-{key}")
+    try:
+        if mode == "live":
+            await asyncio.sleep(0)
+        else:
+            await asyncio.gather(task, return_exceptions=True)
+        state = await probe.snapshot({"inbox_id": str(key)})
+        assert state["task"] == ("live" if mode == "live" else "terminal")
+        assert state["trigger"] == {"live": "entered", "wrong_fake": "successful"}.get(mode, mode)
+        assert state["task_exception"] is (mode == "raised")
+        assert state["adapter_pool_same_fake"] is (mode != "wrong_fake")
+        assert state["same_fake"] is True
+        assert state["fake_invocations"] == (1 if mode == "successful" else 0)
+        # Mismatched inbox identity must not borrow a terminal task's authority.
+        assert (await probe.snapshot({"inbox_id": str(uuid.uuid4())}))["task"] == "missing"
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert task.done()
+
+
 class TestRouteExecuteCustomTrustedCallers:
     """Verify custom trusted_route_callers from butler.toml is respected."""
 
     @_booted
-    async def test_custom_trusted_callers(self, booted_daemon, tmp_path: Path) -> None:
+    async def test_custom_trusted_callers(self, booted_daemon, tmp_path: Path, monkeypatch) -> None:
         """Custom list caller allowed; switchboard rejected when not in list; empty list rejects all."""
         # Custom caller in list → accepted, and its session runs
         custom = await _boot_butler(
             booted_daemon, tmp_path / "c1", trusted_route_callers=["switchboard", "heartbeat"]
         )
-        result = await _mcp_route(custom)(
-            schema_version="route.v1",
-            request_context=_route_request_context(source_endpoint_identity="heartbeat"),
-            input={"prompt": "Tick check."},
-        )
-        assert result["status"] == "accepted"
-        await custom.runtime.wait_for_invocations(1)
+        with monkeypatch.context() as observed:
+            probe = _AcceptedRouteProbe(custom, observed)
+            result = await _mcp_route(custom)(
+                schema_version="route.v1",
+                request_context=_route_request_context(source_endpoint_identity="heartbeat"),
+                input={"prompt": "Tick check."},
+            )
+            assert result["status"] == "accepted"
+            try:
+                await custom.runtime.wait_for_invocations(1)
+            except TimeoutError as exc:
+                raise AssertionError(
+                    "accepted_route_wait="
+                    + json.dumps(await probe.snapshot(result), sort_keys=True)
+                ) from exc
 
         # Switchboard excluded from custom list → rejected
         internal = await _boot_butler(
@@ -1574,6 +1634,66 @@ class TestRouteExecuteCustomTrustedCallers:
             assert await _inbox_count(rejecting) == 0
         # One fake runtime serves every boot in a test: only the accepted route ran.
         assert len(custom.runtime.invocations) == 1
+
+
+@pytest.mark.parametrize("mode", ["refused", "live"])
+@_booted
+async def test_accepted_route_probe_positions_real_route_stage(
+    booted_daemon, tmp_path, monkeypatch, mode
+):
+    """Validate stage measurement on real routes, not a hosted-cause claim."""
+    from butlers.core.spawner import SpawnerResult
+
+    custom = await _boot_butler(
+        booted_daemon, tmp_path / "positioned", trusted_route_callers=["heartbeat"]
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_trigger = custom.daemon.spawner.trigger
+
+    async def positioned(*args, **kwargs):
+        entered.set()
+        if mode == "refused":
+            return SpawnerResult(success=False, error="synthetic positioned refusal")
+        await release.wait()
+        return await real_trigger(*args, **kwargs)
+
+    with monkeypatch.context() as observed:
+        observed.setattr(custom.daemon.spawner, "trigger", positioned)
+        probe = _AcceptedRouteProbe(custom, observed)
+        accepted = await _mcp_route(custom)(
+            schema_version="route.v1",
+            request_context=_route_request_context(source_endpoint_identity="heartbeat"),
+            input={"prompt": "Synthetic stage control."},
+        )
+        assert accepted["status"] == "accepted"
+        task = probe.tasks[uuid.UUID(accepted["inbox_id"])]
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=10)
+            if mode == "refused":
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+            state = await probe.snapshot(accepted)
+            assert state["same_fake"] is True
+            assert state["fake_invocations"] == 0
+            assert state["task"] == ("terminal" if mode == "refused" else "live")
+            assert state["trigger"] == ("refused" if mode == "refused" else "entered")
+            assert state["inbox"]["lifecycle_state"] == (
+                "errored" if mode == "refused" else "processing"
+            )
+            assert state["inbox"]["session_bound"] is False
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        if mode == "live":
+            await custom.runtime.wait_for_invocations(1)
+            restored = await probe.snapshot(accepted)
+            assert restored["task"] == "terminal"
+            assert restored["trigger"] == "successful"
+            assert restored["inbox"]["lifecycle_state"] == "processed"
+            assert restored["inbox"]["session_bound"] is True
+            assert restored["inbox"]["session_success"] is True
+            assert restored["fake_invocations"] == 1
+        assert task.done()
 
 
 # ---------------------------------------------------------------------------

@@ -47,13 +47,16 @@ _ACTIVE_MODEL_SETTINGS_DELTA = (
 #:   live there, and the hourly sweep reaches the plane by calling
 #:   ``run_verify_all_models`` rather than by holding a client of its own;
 #: * the test fixture builder, which is importable but never imported by a
-#:   production path --- proven separately below.
+#:   production path --- proven separately below;
+#: * domain assertion verification (bu-pkuny2), which borrows only the
+#:   non-secret verifier-keyring codec for its own keyring --- also proven below.
 _PERMITTED_IMPORTERS = {
     Path("src/butlers/core/runtime_probe_control"),
     Path("src/butlers/daemon.py"),
     Path("src/butlers/api/routers/secrets_v2.py"),
     Path("src/butlers/api/routers/model_settings.py"),
     Path("src/butlers/testing/runtime_probe_control.py"),
+    Path("src/butlers/capability_broker/verification.py"),
 }
 
 
@@ -144,6 +147,21 @@ def test_the_secrets_api_only_borrows_the_reserved_name() -> None:
     assert control_imports == {
         f"{_PACKAGE}.keys",
         f"{_PACKAGE}.keys.RESERVED_SIGNING_KEY_SECRET_NAME",
+    }
+
+
+def test_assertion_verification_only_borrows_the_verifier_keyring_codec() -> None:
+    """bu-pkuny2 parses its own non-secret keyring; it never reaches a signer or client."""
+    from butlers.capability_broker import verification
+
+    imported = _imported_modules(Path(verification.__file__).read_text())
+    control_imports = {name for name in imported if name.startswith(_PACKAGE)}
+
+    assert control_imports == {
+        f"{_PACKAGE}.keys",
+        f"{_PACKAGE}.keys.RuntimeProbeControlKeyError",
+        f"{_PACKAGE}.keys.VerifierKeyring",
+        f"{_PACKAGE}.keys.load_verifier_keyring",
     }
 
 

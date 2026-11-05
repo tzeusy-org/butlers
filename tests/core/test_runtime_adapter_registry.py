@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.runtime_probe_control import coordinator
 from butlers.core.runtimes.registry import (
     AdapterRegistry,

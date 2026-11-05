@@ -249,6 +249,11 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 
 ## Implementation Notes
 
+- WhatsApp socket HTTP is implemented once in `butlers.whatsapp_bridge_client`;
+  the manager remains the connector-owned subprocess supervisor. Module and API
+  callers never acquire bridge ownership. ACK raw-byte limits apply before HTTP
+  parsing; SSE deadlines cover complete lines, not individual network chunks.
+
 - WhatsApp `pair_required` is a waiting state, not a failure. `BridgeSubprocessManager`
   (`src/butlers/connectors/bridge_manager.py`) treats it as startup-ready unconditionally, and
   `WhatsAppUserClientConnector._sse_event_loop` checks `is_awaiting_pairing` before its generic
@@ -283,7 +288,7 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row
   per checkpoint). Since sw_031 the role is persisted in `operational_role` (`runtime_instance`,
   `checkpoint`, `unknown`) with `parent_endpoint_identity`; the vocabulary is
-  `butlers.connectors.registry_roles`. Only `runtime_instance` rows carry liveness authority;
+  `butlers.core.connector_registry_roles`. Only `runtime_instance` rows carry liveness authority;
   heartbeat promotion is one-way; `save_cursor` stamps `checkpoint` on INSERT only, never in its
   `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
   `unclassified`, and make every new writer declare a role and every new consumer filter by it.

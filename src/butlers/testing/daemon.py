@@ -169,17 +169,20 @@ def write_butler_config(
     schema: str = "general",
     description: str = "booted_daemon test butler",
     extra_toml: str = "",
+    port: int = 0,
 ) -> Path:
     """Write ``root/name/butler.toml`` for a one-db butler the kit can boot.
 
     *schema* must have a runtime role (``butler_<schema>_rw``); for
     ``registered=True`` boots, *name* must equal it. *extra_toml* is appended as is,
-    for example ``[modules.x]`` or ``[butler.security]`` sections.
+    for example ``[modules.x]`` or ``[butler.security]`` sections. *port* is the
+    roster port; the kit always serves on a free one, but a Switchboard validates the
+    roster's ports on startup, so it needs a real one.
     """
     config_dir = root / name
     config_dir.mkdir(parents=True)
     (config_dir / "butler.toml").write_text(
-        f'[butler]\nname = "{name}"\nport = 0\ndescription = "{description}"\n\n'
+        f'[butler]\nname = "{name}"\nport = {port}\ndescription = "{description}"\n\n'
         f'[butler.db]\nname = "butlers"\nschema = "{schema}"\n\n{extra_toml}'
     )
     return config_dir
@@ -356,6 +359,7 @@ class DaemonBooter:
         self._monkeypatch = monkeypatch
         self._tmp_root = tmp_root
         self._booted: list[BootedDaemon] = []
+        self._clones: list[str] = []
         self.runtime = FakeRuntime()
         self._production_adapters = {
             name: get_adapter(name) for name in list_registered_runtime_types()
@@ -374,6 +378,7 @@ class DaemonBooter:
         registry: Any = None,
         registered: bool = False,
         credentials: dict[str, str] | None = None,
+        chain_schemas: dict[str, str] | None = None,
     ) -> BootedDaemon:
         """Start the butler in *config_dir* on a fresh clone of *chains* (default ``core``).
 
@@ -385,6 +390,10 @@ class DaemonBooter:
         *credentials* are stored in the butler's secret store before start, where
         module credential checks read them (they never fall back to the environment).
         Pass synthetic values only.
+
+        *chain_schemas* migrates other butlers' chains into their own schemas, for
+        cross-butler reads: ``{"relationship": "relationship"}`` gives the clone
+        ``relationship.entity_facts`` under production grants.
         """
         from butlers.config import load_config
         from butlers.daemon import ButlerDaemon
@@ -402,6 +411,7 @@ class DaemonBooter:
         schemas = dict.fromkeys(chains, schema)
         if registered:
             schemas["switchboard"] = "switchboard"
+        schemas.update(chain_schemas or {})
         # A clean context: an earlier boot left its butler context on this task, and a
         # worker thread inheriting it would route the template build's migration logs
         # into that daemon's DB log handler, on the wrong loop (bu-rvgzmf.12).
@@ -410,6 +420,7 @@ class DaemonBooter:
             None, contextvars.Context().run, build
         )
         db_name = urlparse(url).path.lstrip("/")
+        self._clones.append(db_name)
         if registered:
             await self._seed_roster_row(url, config_dir)
         if credentials:
@@ -486,10 +497,16 @@ class DaemonBooter:
             await pool.close()
 
     async def close(self) -> None:
-        """Shut down every daemon still running, newest first, and restore the adapter."""
+        """Shut down every daemon still running, newest first, drop their clones, and
+        restore the adapter."""
+        from butlers.testing.migration import drop_test_db
+
         try:
             for booted in reversed(self._booted):
                 await booted.shutdown()
+            clones, self._clones = self._clones, []
+            for name in clones:
+                await asyncio.to_thread(drop_test_db, self._container, name)
         finally:
             for name, adapter in self._production_adapters.items():
                 register_adapter(name, adapter)
@@ -511,11 +528,12 @@ class SharedDaemons:
       ``supports_resume`` off. Logs and spans are per-test already (``caplog``, the
       test's own exporter).
     - After each test, :meth:`verify` compares durable daemon state with what the
-      test was handed: row counts in ``route_inbox`` and ``sessions``, and the
-      loaded config. Any change fails the test with
-      :class:`SharedDaemonMutated` and retires that boot, so the next test gets a
-      fresh one. A test that routes, triggers a session, scripts the runtime or
-      changes config therefore belongs on ``booted_daemon``.
+      test was handed: row counts in ``route_inbox``, ``sessions``,
+      ``public.attention_ledger`` and ``scheduled_tasks``, and the loaded config.
+      Any change fails the test with :class:`SharedDaemonMutated` and retires that
+      boot, so the next test gets a fresh one. A test that routes, triggers a
+      session, delivers a notification, schedules a task or changes config
+      therefore belongs on ``booted_daemon``.
 
     Patch with ``monkeypatch`` only; it is undone before the next test.
     """
@@ -534,6 +552,7 @@ class SharedDaemons:
         extra_toml: str = "",
         registered: bool = False,
         credentials: dict[str, str] | None = None,
+        chain_schemas: dict[str, str] | None = None,
     ) -> BootedDaemon:
         schema = schema or name
         key = (
@@ -543,6 +562,7 @@ class SharedDaemons:
             extra_toml,
             registered,
             tuple(sorted((credentials or {}).items())),
+            tuple(sorted((chain_schemas or {}).items())),
         )
         booted = self._boots.get(key)
         if booted is None:
@@ -553,7 +573,11 @@ class SharedDaemons:
                 extra_toml=extra_toml,
             )
             booted = await self._booter.boot(
-                config_dir, *chains, registered=registered, credentials=credentials
+                config_dir,
+                *chains,
+                registered=registered,
+                credentials=credentials,
+                chain_schemas=chain_schemas,
             )
             self._boots[key] = booted
         _reset_runtime(booted.runtime)
@@ -589,12 +613,14 @@ def _reset_runtime(runtime: FakeRuntime) -> None:
 
 async def _fingerprint(booted: BootedDaemon) -> tuple[Any, ...]:
     pool = booted.daemon.db.pool
-    inbox = await pool.fetchval("SELECT count(*) FROM route_inbox")
-    sessions = await pool.fetchval("SELECT count(*) FROM sessions")
-    return (
-        (("route_inbox", inbox), ("sessions", sessions)),
-        ("config", repr(booted.daemon.config)),
+    # Literal queries: dynamic relation names are banned in src (test_schema_reach).
+    counts = (
+        ("route_inbox", await pool.fetchval("SELECT count(*) FROM route_inbox")),
+        ("sessions", await pool.fetchval("SELECT count(*) FROM sessions")),
+        ("attention_ledger", await pool.fetchval("SELECT count(*) FROM public.attention_ledger")),
+        ("scheduled_tasks", await pool.fetchval("SELECT count(*) FROM scheduled_tasks")),
     )
+    return (counts, ("config", repr(booted.daemon.config)))
 
 
 def _describe_change(before: tuple[Any, ...], after: tuple[Any, ...]) -> str:

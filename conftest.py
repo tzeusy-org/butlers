@@ -668,7 +668,11 @@ def postgres_container() -> Iterator[PostgresContainer]:
     # Equivalent to ``with container`` (stop also runs after a failed start),
     # except that the volume decision is explicit rather than always-delete.
     try:
-        yield container.start()
+        started = container.start()
+        from butlers.testing.storage import observe
+
+        with observe(started):
+            yield started
     finally:
         container.stop(delete_volume=_delete_session_data_volume(os.environ))
 
@@ -717,7 +721,12 @@ def provisioned_postgres_pool(
             min_pool_size=min_pool_size,
             max_pool_size=max_pool_size,
         )
+        from butlers.testing.storage import database_event
+
+        database_event("intent", postgres_container, db.db_name, "F")
         await db.provision()
+        database_event("created", postgres_container, db.db_name, "F")
+        database_event("ready", postgres_container, db.db_name, "F")
         pool_kwargs = {
             "host": db.host,
             "port": db.port,
@@ -838,6 +847,23 @@ async def booted_daemon(
         yield booter.boot
     finally:
         await booter.close()
+
+
+@pytest.fixture
+async def tool_host(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory: a butler's core tools on a fresh clone, with no daemon lifecycle.
+
+    ``host = await tool_host(config_dir)`` registers the tools and connects the
+    butler's pool; ``await host.call("remind", ...)`` runs a handler in process. Use it
+    when the subject is a tool's SQL, not the boot. See ``butlers.testing.tool_host``.
+    """
+    from butlers.testing.tool_host import ToolHosts
+
+    hosts = ToolHosts(postgres_container)
+    try:
+        yield hosts
+    finally:
+        await hosts.close()
 
 
 @pytest.fixture(scope="module")

@@ -19,9 +19,11 @@ Moved verbatim from `AGENTS.md` (API and security contracts).
 - A dashboard disconnect watcher inside nested `BaseHTTPMiddleware` needs AnyIO cancellation: a
   one-shot `Task.cancel()` then awaiting the watcher can deadlock response delivery.
   `IngestionReadBudgetRoute` uses a watcher-owned `CancelScope`.
-- OAuth token refresh exists more than once per provider under look-alike names (Spotify has both
-  `SpotifyClient._refresh_access_token` and `SpotifyConnector._refresh_access_token`). Before
-  closing a token fix, grep the tree for every `expires_in` / `access_token` extraction site.
+- Spotify connector and module tools share `butlers.spotify_client.SpotifyClient`.
+  Keep token-response validation and secured owner-row persistence in that client;
+  connector lifecycle classification and metrics adapt typed, allowlisted failures.
+  A resource 401 after refresh is degraded, rather than proof of token revocation.
+
 - A 200 from a token endpoint is not a validated payload: `int(data.get("expires_in", 3600))`
   accepts strings, bools, floats and negatives. Validate before assigning, as
   `spotify_credentials.parse_spotify_token_response` does.

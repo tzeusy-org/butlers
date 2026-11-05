@@ -35,21 +35,21 @@ one observable.
 | RFC 0039 | What it decides | Specified in |
 |---|---|---|
 | D1 | Standalone server; package layering and import direction | `public-mcp-surface` REQ-001 |
-| D2 | One publication; replica-identity filters, so a restriction arrives as a DELETE; no JSONB published; source-owned materializations (Chronicler, entity flags, finance overlays, health values) | `public-mcp-projection` REQ-001, -002, -005, -006, -007, -013 |
-| D3 | Projection placement (OD10): a second database on `postgres-<env>`, isolated by ordered `pg_hba` reject lines and grants (roles, not the shared `10.42.0.0/24` range, separate the pods); same-instance subscription with a pre-created slot, created by the owner step (OD14); shared fate with the primary, including the shared, 90 % full disk | `public-mcp-projection` REQ-003, -008, -011, -015; `public-mcp-authorization` REQ-008 |
-| D4 | One manifest; generated DDL; reconcile (publication and replicated digest) split from the owner step (slot, subscription, purge, applied digest); five drift checks; narrowing purges; v1 exposure defaults with domains per table | `public-mcp-projection` REQ-001 to -004, -012, -015 |
+| D2 | One publication; replica-identity filters, so a restriction arrives as a DELETE; no JSONB published; source-owned materializations (Chronicler, with `sensitive` episodes published and overrides that can only narrow unless the owner submits them; entity flags; finance overlays; health values; the finance and health JSON fields of OD17, accepted by OD19; and the graph `publish_key` and per-source withheld counts, so edges carry the facts' own predicate allowlists) | `public-mcp-projection` REQ-001, -002, -005, -006, -007, -013 |
+| D3 | Projection placement (OD10): a second database on `postgres-<env>`, isolated by ordered `pg_hba` reject lines and grants (roles, not the shared `10.42.0.0/24` range, separate the pods); same-instance subscription with a pre-created slot, created by the owner step (OD14), which every dev deploy runs after its migrations (OD20); shared fate with the primary, including the shared, 90 % full disk | `public-mcp-projection` REQ-003, -008, -011, -015; `public-mcp-authorization` REQ-008 |
+| D4 | One manifest; generated DDL; reconcile (publication and replicated digest) split from the owner step (slot, subscription, purge, applied digest); five drift checks, with a two-tier column denylist (credential tier everywhere, breadth tier outside finance and health, OD17); narrowing purges; v1 exposure defaults with domains per table, finance and health at full breadth (OD17), facts about other people published up to the contact, identity and credential line (OD21) | `public-mcp-projection` REQ-001 to -004, -012, -015 |
 | D5 | One server for every domain; domains attach to data; static `tools/list`; no tiers or unlock | `public-mcp-authorization` REQ-009 |
 | D6 | Hop bearer, digest-only, constant-time | `public-mcp-authorization` REQ-001 |
 | D7 | Assertion format, verification order, keyring, replay set, single replica | `public-mcp-authorization` REQ-002 to -007 |
 | D8 | Namespace `butlers-public-<env>`, default-deny; one allow to the `postgres-<env>` instance pods, widening nothing else; live policy check; the precondition in `butlers-<env>` | `public-mcp-authorization` REQ-008; `public-mcp-projection` REQ-014; `deployment-hardening` REQ-013 |
 | D9 | Roles on both databases; one Butlers-managed REPLICATION role, primary-read-all and with no credential (local peer login only, OD14); the subscription owner, kept as created (OD15); `mcp_surface` schema; slot safety | `public-mcp-projection` REQ-009, -010, -011; `database-security` REQ-016 |
-| D10 | The 17-tool contract and the ChatGPT compatibility shapes | `public-mcp-surface` REQ-002 to -010, -012 |
+| D10 | The 19-tool contract, including the finance and health records tools (OD17, accepted by OD19), and the ChatGPT compatibility shapes | `public-mcp-surface` REQ-002 to -010, -012, -014 |
 | D11 | Lexical search in v1 | `public-mcp-surface` REQ-003, -006 |
 | D12 | Reads never write | `public-mcp-surface` REQ-011 |
 | D13 | `propose_fact` pipeline and states | `public-mcp-proposals` (all); `module-approvals` REQ-010; `dashboard-approvals` REQ-904; `relationship-facts` REQ-011 |
 | D14 | Structural no-LLM guarantees | `public-mcp-surface` REQ-001 |
-| D15 | DLP, canaries, audit, budgets | `public-mcp-authorization` REQ-010 to -013 |
-| D16 | Kill-switch layers, leak runbook, and alerting as Prometheus rules collapsed into two flags that Uptime Kuma polls (OD11), including the owner-step pending warning and the 24-hour narrowing critical | `public-mcp-authorization` REQ-009, -014; `public-mcp-proposals` REQ-007; `dashboard-settings-console` REQ-001 and MODIFIED Settings Console Page (REQ-002) |
+| D15 | DLP (credential rules everywhere; identifier and personal-contact rules outside finance and health, OD17), canaries, audit, budgets; the OD17 threat-model assumption | `public-mcp-authorization` REQ-010 to -013 |
+| D16 | Kill-switch layers, leak runbook, and alerting as Prometheus rules collapsed into two flags that Uptime Kuma polls (OD11), including the owner-step pending warning and the 24-hour narrowing critical, which on dev signals that the automatic owner step is failing (OD20) | `public-mcp-authorization` REQ-009, -014; `public-mcp-proposals` REQ-007; `dashboard-settings-console` REQ-001 and MODIFIED Settings Console Page (REQ-002) |
 | D17 | Freshness thresholds, the fail-closed applied-digest check, error codes (including `projection_apply_pending`) and precedence, failure table | `public-mcp-surface` REQ-005, -013; `public-mcp-projection` REQ-010, -015 |
 
 The RFC 0038 amendment (D5, D6, D7 and D13, amended in place) is not specified
@@ -60,7 +60,7 @@ Coordinated outside this change.
 
 These choices were needed to write observable requirements. RFC 0039 does not
 make them, or leaves them to "the spec". Each is conservative and reversible,
-and the conformance review checks them against OD1 to OD15.
+and the conformance review checks them against OD1 to OD21.
 
 ### S1. Entity flags become published columns on `public.entities`
 
@@ -71,14 +71,23 @@ unidentified-sender marker `unidentified` (`src/butlers/identity.py:459`). An
 unidentified sender's entity is named `Unknown (<channel> <value>)`, which
 embeds the raw email address or phone number (`src/butlers/identity.py:1067-1071`).
 `metadata` is never published (D4), and PG17 does not publish generated columns
-(D2 rule 6). A core migration therefore adds three plain columns,
-`merged_into UUID NULL`, `deleted BOOLEAN NOT NULL` and
-`unidentified BOOLEAN NOT NULL`, and a `BEFORE INSERT OR UPDATE` trigger keeps
-them equal to the JSONB keys. A contract test proves parity. Existing readers
-keep reading the JSONB keys; moving them is out of scope. The manifest
-publishes `merged_into` and filters entities on `deleted = false AND
-unidentified = false`, with both flags in the replica identity, so deleting an
-entity or creating an unknown sender never publishes it. `entity_lookup`
+(D2 rule 6). [Observed] The dashboard promote route clears `unidentified`
+without renaming the entity (`src/butlers/api/routers/memory.py:2792-2799`),
+so `unidentified` alone does not keep the placeholder name out; the sender's
+channel and value stay in `metadata` as `source_channel` and `source_value`
+(`src/butlers/identity.py:1208-1210`). A core migration therefore adds four
+plain columns, `merged_into UUID NULL`, `deleted BOOLEAN NOT NULL`,
+`unidentified BOOLEAN NOT NULL` and `placeholder_name BOOLEAN NOT NULL`, and a
+`BEFORE INSERT OR UPDATE` trigger keeps them equal to the JSONB keys, with
+`placeholder_name` true while `canonical_name` still equals the
+`Unknown (<source_channel> <source_value>)` form. A contract test proves
+parity. Existing readers keep reading the JSONB keys; moving them is out of
+scope. The manifest publishes `merged_into` and filters entities on `deleted
+= false AND unidentified = false AND placeholder_name = false`, with the three
+flags in the replica identity and in the column list (D2 rule 2; no view
+returns them), so deleting an entity, creating an unknown sender or promoting
+one without renaming it never publishes it. A Telegram chat id in such a name
+matches no DLP rule, so the flag, not response-time DLP, is the control. `entity_lookup`
 resolves a merged entity to its survivor, and the importer treats a merged or
 deleted subject or object as `invalid`.
 
@@ -153,38 +162,72 @@ tools read is the JSONB key. `finance.transactions` has no account label, only
 memory facts in the `health` schema whose values are `metadata` keys, next to
 free-text `notes` (`roster/health/tools/measurements.py:133-135`,
 `medications.py:96-108`, `conditions.py:88-92`). Column lists cannot select a
-JSONB key, and `metadata` is denylisted (D4 check 3).
+JSONB key, and a JSONB column is refused by type in every domain (D4 check 3).
 
 Two designs were weighed:
 
 - *(a) Trigger-synced plain columns on the source table*, as S1 does for
   entities. Chosen for finance: a `BEFORE INSERT OR UPDATE` trigger keeps
   `display_merchant` and `display_category` equal to the overlay expressions.
-  `finance.accounts` is published as `id, institution, type` only, and the
-  `mcp_read` view derives `account_label` from them.
+  Since OD17, `finance.accounts` is published in full (`name` and
+  `last_four` included), and the `mcp_read` view still derives
+  `account_label` from institution and type.
 - *(b) Source-owned public tables*, as Chronicler does. Chosen for health,
   because the source is the shared memory `facts` table, where adding
   domain-specific columns would diverge from the memory module's schema. An
   `AFTER INSERT OR UPDATE OR DELETE` trigger on `health.facts` maintains
   `health.measurements_public`, `health.medications_public` and
-  `health.conditions_public`, copying only allowlisted keys and never `notes`.
+  `health.conditions_public`, which since OD17 carry `notes` and cover active
+  facts of every sensitivity.
 
-Both use database triggers rather than writer code, so every write path is
-covered without a sweep. The graph withheld-count table
-(`public.entity_graph_withheld_counts`) follows pattern (b) for the same
-reason: non-normal live edges carry their payload, so they cannot be
-published even as stubs. **Upkeep**: one trigger function per source (four in
-total with S1), each with a parity test that fails in the PR of any migration
-that renames a key it reads. This is upkeep beyond the single manifest (OD1).
-The owner accepted it (OD13), with the parity tests and the CI drift checks as
-its mitigation.
+OD17 shares everything finance and health hold, and much of it lives in
+JSONB: the finance fact layer keeps amounts, merchants, account names and
+`last_four` in `metadata` (`roster/finance/tools/facts.py:19-20,256-266,533-535`),
+and health facts keep their values there. A JSONB column still cannot be
+published (column lists cannot narrow it, and condition 1 needs every
+published path checked for credentials), so pattern (b) is generalized: one
+generic trigger function, attached to every published finance and health
+table with a JSONB column, keeps `finance.json_fields_public` and
+`health.json_fields_public` equal to every scalar leaf, one row per dotted
+path, and skips any path with a segment on the credential tier of the
+denylist, after splitting each key on separators and camelCase boundaries.
+`row_id` is the text of the source table's declared single-column key. `raw_data` on `finance.transactions` has no writer today
+[Observed: no reference outside `roster/finance/migrations/006`], so it adds
+nothing yet.
 
-The same analysis put two more sources out of v1 rather than adding
-materializations: interactions, which now live as `relationship` memory facts
-(the `relationship.interactions` table was dropped, `roster/relationship/migrations/010`),
-and memory facts of the `relationship` schema in general, which hold contact
-details and email-derived summaries. `entity_profile` therefore offers no
-interaction section in v1.
+All of these use database triggers rather than writer code, so every write
+path is covered without a sweep. The graph follows patterns (a) and (b) for
+the same reason (RFC 0039 D2). [Observed] `public.entity_graph_edges.predicate`
+is nullable because withheld stubs carry none
+(`alembic/versions/core/core_215_entity_graph_edges.py:146,173-181`), so it
+cannot sit in a replica-identity index, and a `sensitivity = 'normal'`
+filter alone publishes edges of facts the fact filters exclude. Pattern (a)
+adds `publish_key` (`<source_schema>.<source_table>:<predicate>` on a live
+edge, `''` on a stub), which the generator filters with the union of the
+edge-producing fact entries' predicate allowlists; pattern (b) keeps
+`public.entity_graph_withheld_counts` per source, published only for those
+same sources, so finance and health stubs are never counted as withheld
+while `health_records` and `finance_records` serve the facts. **Upkeep**: one
+trigger function per source (five trigger sources in total with S1, the
+graph and the JSON-field function), each with a parity test that fails in the PR of any
+migration that renames a key it reads. This is upkeep beyond the single
+manifest (OD1). The owner accepted it for the first four (OD13) and for the
+JSON-field function (OD19), with the parity tests and the CI drift checks as
+its mitigation; the graph `publish_key` extends the graph source's existing
+trigger pair and parity test.
+
+Outside finance and health, the first draft also put interactions and every
+`relationship`-schema memory fact out of v1, because they hold contact
+details and email-derived summaries. OD21 lifts that: those facts are about
+people other than the owner, and the line is now predicate kind and
+credentials (RFC 0039 D4). The `relationship` memory schema publishes under a
+literal predicate allowlist with no contact- or identity-kind predicate, so
+interactions reach `entity_profile` as facts, and the personal-contact DLP
+rules redact email addresses and phone numbers in their text. They match no
+street address, so an address written into such text is published; the
+predicate allowlist is the only control there (RFC 0039 D15 residual risk).
+In finance and health the OD21 line is not applied, because OD17 shares
+everything those domains hold; the owner chose that carve-out (OD22).
 
 ### S8. The owner step's shape and the fail-closed bound
 
@@ -208,7 +251,10 @@ observable, each conservative and reversible:
   precedence, because the owner step refuses to run before reconcile.
 - **24 hours to critical, for narrowing only.** The surface already refuses,
   so the remaining exposure is excluded rows still in `butlers_public`. A
-  widening left pending costs only availability and stays a warning.
+  widening left pending costs only availability and stays a warning. On dev
+  every deploy runs the step, whatever the release returned (OD20, S9), so a
+  pending state that outlives the deploy means the automatic step failed and
+  printed its marker, and the critical is its backstop.
 
 The publisher's schema `USAGE` and table `SELECT` sync lives in
 `scripts/init-db.sql` (RFC 0039 D9) and is repeated by the owner step, so
@@ -222,13 +268,62 @@ migration user can write that digest, in the same transaction as the
 publication change. A forged or early digest therefore cannot let the step
 record a manifest the publication does not yet match.
 
+### S9. The dev deploy's owner step
+
+OD20 fixes that `make deploy-dev` runs the owner step after the migrations
+and that no manual step remains on dev. Five details make that observable,
+each conservative and reversible:
+
+- **A separate script after the release, whatever it returned.** [Observed]
+  `deploy-%` depends on `bootstrap-%`, which runs `init-db.sql` before
+  `helm upgrade`, and `record-deploy.sh` returns after the `dashboard-api`
+  rollout, whose `migrations` initContainer runs reconcile, and after the
+  `butlers-up` and `butlers-control` rollouts and the readiness wait, any of
+  which can fail after reconcile has run (`deploy/helm/butlers/makefile:33-40`,
+  `scripts/k8s/record-deploy.sh:47-74`). The step is therefore a second
+  recipe command, `scripts/k8s/public-mcp-owner-step.sh <env> <tag>`, that
+  runs whatever `record-deploy.sh` returned; the recipe exits with the first
+  non-zero status. The file's guard refuses when the migrations did not
+  reconcile this manifest, which is fail-closed. Gating the step on the
+  release's exit would leave a narrowed publication unpurged after a
+  readiness failure, with no marker. Putting it in `bootstrap-dev` would run
+  it before reconcile, where its guard stops.
+- **Generated in the deployed tag's pod, captured first.** The script picks a
+  running `dashboard-api` pod whose image tag equals `<tag>` (and fails if
+  none does), detects the command from the pod's command listing in a
+  separate call, runs `butlers public-mcp owner-sql` there, and captures the
+  whole output before piping it to the superuser `psql` in the CNPG primary,
+  as `bootstrap-db.sh` captures `init-db.sql`. A rollback tag or a dirty
+  local checkout can never produce a file for a different manifest, and a
+  generator that dies midway feeds psql nothing. Trusting the pod is a
+  residual risk (RFC 0039 D9).
+- **Every stop is an error.** The file never uses `\q`; each guard stop
+  raises an error, so psql exits non-zero.
+- **Fail loud, never roll back.** A failure exits non-zero with a fixed
+  marker; the release, its deployments row and the publication stand. The
+  server is fail-closed (`projection_apply_pending`) when a manifest change
+  or a rebuild is pending; with an unchanged manifest and no rebuild the
+  applied projection keeps serving and only the marker reports the failure.
+  An image without the command, and any environment other than `dev`, print
+  a notice and exit 0.
+- **The public chart follows, and an off switch holds a teardown.** After a
+  successful step the recipe upgrades `deploy/helm/butlers-public-mcp` at the
+  same tag, so the public pod's shipped manifest converges in the same
+  deploy. A committed `PUBLIC_MCP_OWNER_STEP_dev := off` in the makefile makes
+  the script exit 0 at once and the recipe skip the public chart, so a dev
+  teardown is not recreated by the next deploy.
+
 ## Risks / Trade-offs
 
 - **Labels written by LLMs.** Sensitivity labels come from LLM writers
   ([Observed] `store_fact` defaults to `normal`). So the manifest exposes memory
-  facts only through literal per-schema predicate allowlists and literal column
-  lists, drops the `relationship` memory schema, and the DLP scan is
-  load-bearing, not cosmetic. Canaries detect a manifest mistake in CI and in
+  facts only through literal per-schema predicate allowlists with no contact-
+  or identity-kind predicate (OD21) and literal column lists, graph edges take
+  the same allowlists (RFC 0039 D2), and the DLP scan is load-bearing, not
+  cosmetic. A label can only narrow, never widen: a `pii` memory fact or edge
+  is withheld, and a Chronicler override from the LLM-callable correction tool
+  can only raise an episode's privacy; only an override the owner submits on
+  the dashboard can lower it. Canaries detect a manifest mistake in CI and in
   production.
 - **Steered clients.** A client model can be steered by content it reads
   (prompt injection) into reading any enabled domain under the owner's valid
@@ -252,7 +347,8 @@ record a manifest the publication does not yet match.
   digest, so its custody is recorded. The owner declined a `pg_hba` reject
   line and accepted the risk (OD16).
 - **Owner step pending.** Each manifest change and each slot invalidation
-  needs a manual superuser step. Until it runs after a manifest change the
+  needs a superuser step. On dev every deploy runs it after the migrations
+  (OD20); elsewhere it is manual. Until it runs after a manifest change the
   server refuses with `projection_apply_pending`, the warning flag is down,
   and a narrowing left pending for 24 hours turns critical; after an
   invalidation it refuses with `projection_stale`. A server shipping the
@@ -306,22 +402,28 @@ record a manifest the publication does not yet match.
    contract test.
 2. **P1.** Source migrations: replica-identity indexes, Chronicler `*_public`
    tables, the `public.entities` flag columns with their trigger, the finance
-   display columns and the health public tables with their triggers,
+   display columns, the health public tables and the finance and health JSON
+   fields with their triggers,
    `public.entity_graph_withheld_counts`, the `mcp_surface` schema and
    `relationship.external_fact_proposals`. Then the init-db REPLICATION
    exception and publisher grants, the reconcile step in the migration Job,
    and `butlers public-mcp owner-sql`. The CNPG owner acts (the
    `butlers_public` database, the managed roles, the ordered `pg_hba` lines
    and the publisher's peer mapping) are done on dev by homelab PR
-   Tzeusy/homelab#40. The owner reruns `init-db.sql`, then runs the owner
-   step, which pre-creates the slot and creates the subscription. Gate: the
-   initial sync matches the manifest and the canaries are absent.
+   Tzeusy/homelab#40. On dev, `make deploy-dev` reruns `init-db.sql` before
+   the release and runs the owner step after its migrations (OD20); the step
+   pre-creates the slot and creates the subscription. Gate: the initial sync
+   matches the manifest and the canaries are absent.
 3. **P2.** The dark server and chart, smoke-tested from a test pod in `mcp` with a
    test keyring.
 4. **P3.** Owner acts on the gateway, then the first real calls, which are
    audited.
-5. **P4 and P5.** Finance and health enabled on deploy (OD3); then the inbox,
-   importer, typed card and apply.
+5. **P4 and P5.** Finance and health enabled on deploy (OD3) at full breadth
+   (OD17); then the inbox, importer, typed card and apply.
+
+Every phase targets `dev` only. Prod rollout is deferred for the foreseeable
+future (OD18); the plan stays written for `<env>`, so it would apply to prod
+unchanged if a new owner decision lifts the deferral.
 
 Every source migration is additive. The replica-identity change swaps the
 identity index and does not touch row data.
@@ -339,7 +441,10 @@ identity index and does not touch row data.
   homelab owner act that reverses owner act 2: remove the `butlers_public`
   database, the managed roles and the `pg_hba` lines from the CNPG values,
   since a `psql` drop of CNPG-managed objects could be reconciled back.
-  Primary data is unaffected.
+  Primary data is unaffected. On dev, first set `PUBLIC_MCP_OWNER_STEP_dev :=
+  off` in `deploy/helm/butlers/makefile` (S9), or the next `make deploy-dev`
+  recreates the slot, the subscription and the public chart; reconcile still
+  recreates the publication, which is inert without a slot or subscription.
 - **Schema:** the additive columns and tables can stay, inert. Reverting
   replica identity to the primary key is a plain `ALTER TABLE`.
 - **Facts already applied** from proposals stay. They are owner-approved,
@@ -351,13 +456,22 @@ identity index and does not touch row data.
 These are carried from RFC 0039. None of them blocks a v1-mandatory requirement
 as written.
 
-1. Finance and health breadth: REQ-012 fixes the conservative v1 default.
-   Widening it is a manifest edit and a spec amendment.
-2. Prod rollout. v1 targets dev only; prod waits for a separate owner act.
-3. The knowledge predicate allowlists are written from the predicate registry
+1. The knowledge predicate allowlists are written from the predicate registry
    at implementation time (task 1.4); the owner may widen them.
+Closed by the owner on 2026-11-05: OD21's contact and identity line does not
+apply in finance and health (OD22, RFC 0039 open question 6), so clinicians'
+phone numbers and Health calendar attendee and organizer emails are published;
+`public-mcp-projection` REQ-012 states the carve-out.
 
-Closed by the owner on 2026-11-04: projection placement (OD10, a second
+Closed by the owner on 2026-11-04: finance and health breadth (OD17,
+everything except credentials; `public-mcp-projection` REQ-012 and -013,
+`public-mcp-surface` REQ-009, -010 and -014, `public-mcp-authorization`
+REQ-010), the OD17 records tools and JSON-field materialization (OD19,
+accepted), the dev owner step (OD20, automatic in `make deploy-dev`;
+`public-mcp-projection` REQ-003), facts about other people (OD21, published
+up to the contact, identity and credential line; `public-mcp-projection`
+REQ-012), prod rollout (OD18, deferred for the foreseeable future; dev is the
+only target), projection placement (OD10, a second
 database; `public-mcp-projection` REQ-008 states the `pg_hba` isolation
 unconditionally), the alert path (OD11, Uptime Kuma polling two Prometheus
 flags; `public-mcp-authorization` REQ-014, proven by forcing each flag to 0 in

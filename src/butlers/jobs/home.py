@@ -68,11 +68,6 @@ from typing import Any, TypedDict
 
 import asyncpg
 
-from butlers.connectors.home_assistant_statistics import (
-    HAStatisticsClient,
-    HAStatisticsError,
-    parse_statistics_change_series,
-)
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
@@ -85,6 +80,11 @@ from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import (
     resolve_owner_entity_info,
     resolve_owner_telegram_recipient,
+)
+from butlers.home_assistant_client import (
+    HAStatisticsClient,
+    HAStatisticsError,
+    parse_statistics_change_series,
 )
 from butlers.modules.memory.storage import store_fact
 

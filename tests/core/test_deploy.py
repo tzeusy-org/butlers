@@ -1029,6 +1029,43 @@ def test_key_absent_control_workload_and_session_network_contract():
         ]
         return subprocess.run(command, capture_output=True, text=True)
 
+    # Selected dev and the unchanged production default cohost all daemons.
+    # An explicit true render below remains the protected split-stage control.
+    for environment in ("dev", "prod"):
+        cohost = render(environment)
+        assert cohost.returncode == 0, cohost.stderr
+        cohost_docs = {
+            (doc["kind"], doc["metadata"]["name"]): doc
+            for doc in yaml.safe_load_all(cohost.stdout)
+            if doc
+        }
+        assert not any(name.startswith("butlers-control") for _, name in cohost_docs)
+        combined = cohost_docs[("Deployment", "butlers-up")]
+        assert combined["spec"]["replicas"] == 1
+        assert combined["spec"]["strategy"]["type"] == "Recreate"
+        container = combined["spec"]["template"]["spec"]["containers"][0]
+        assert "--exclude" not in " ".join(container["command"])
+        env = {item["name"]: item.get("value") for item in container["env"]}
+        assert env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
+        assert "SWITCHBOARD_MCP_URL" not in env
+        assert env["BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"] == "1"
+        assert env["BUTLERS_FLEET_CONDITION_HANDOFF"] == "1"
+        assert {port["containerPort"] for port in container["ports"]} == {41100}
+        for probe in ("readinessProbe", "startupProbe", "livenessProbe"):
+            assert container[probe]["httpGet"] == {"path": "/health", "port": "daemon"}
+        assert 41100 in {
+            port["port"] for port in cohost_docs[("Service", "butlers-up")]["spec"]["ports"]
+        }
+        api = cohost_docs[("Deployment", "dashboard-api")]["spec"]["template"]["spec"]
+        api_env = {item["name"]: item.get("value") for item in api["containers"][0]["env"]}
+        assert api_env["SWITCHBOARD_MCP_URL"] == "http://butlers-up:41100/sse"
+        assert not any(
+            port["port"] == 41199
+            for (kind, _name), doc in cohost_docs.items()
+            if kind == "Service"
+            for port in doc["spec"]["ports"]
+        )
+
     result = render("dev", "--set", "butlersControl.enabled=true")
     assert result.returncode == 0, result.stderr
     docs = {
@@ -1088,11 +1125,14 @@ def test_key_absent_control_workload_and_session_network_contract():
         for peer in session_rule["from"]
     )
     assert all(set(peer) == {"podSelector"} for peer in session_rule["from"])
-    assert render("dev", "--set", "butlersUp.maxGlobalSessions=6").returncode != 0
-    assert render("dev", "--set", "butlersUp.maxGlobalSessions=1").returncode != 0
+    split = ("--set", "butlersControl.enabled=true")
+    assert render("dev", *split, "--set", "butlersUp.maxGlobalSessions=6").returncode != 0
+    assert render("dev", *split, "--set", "butlersUp.maxGlobalSessions=1").returncode != 0
     for invalid in ("0", "-1", "4.5", "invalid"):
-        assert render("dev", "--set", f"butlersUp.maxGlobalSessions={invalid}").returncode != 0
-    prod = render("prod", "--set", "butlersControl.enabled=false")
+        assert (
+            render("dev", *split, "--set", f"butlersUp.maxGlobalSessions={invalid}").returncode != 0
+        )
+    prod = render("prod")
     assert prod.returncode == 0, prod.stderr
     prod_docs = [doc for doc in yaml.safe_load_all(prod.stdout) if doc]
     assert not any(doc["metadata"]["name"] == "butlers-control" for doc in prod_docs)

@@ -85,6 +85,7 @@ class MockDB:
             if kwargs.get("execution_result") is not None
             else None,
             "approval_rule_id": kwargs.get("approval_rule_id"),
+            "goal_id": kwargs.get("goal_id"),
         }
         self.pending_actions[action_id] = row
         return action_id
@@ -790,6 +791,52 @@ class TestDispatchApprovedActionById:
         await module.on_startup(config=None, db=mock_db)
         result = await module._dispatch_approved_action_by_id(action_id)
         assert "error" in result
+
+
+class TestGoalLineageFence:
+    """A goal-parked effect runs only through the capability broker (bu-m1u7zy.6)."""
+
+    @staticmethod
+    async def _never(tool_name, tool_args):  # pragma: no cover - must not run
+        raise AssertionError("the legacy executor must not run a goal effect")
+
+    async def test_approve_records_the_owner_decision_but_never_executes(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_tool_executor(self._never)
+        action_id = mock_db._insert_action(status="pending", goal_id=uuid.uuid4())
+
+        result = await module._approve_action(str(action_id), actor=human_actor)
+
+        assert result["execution_code"] == "goal_effect_requires_broker"
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
+
+    async def test_dispatch_by_id_refuses_a_goal_action(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_tool_executor(self._never)
+        action_id = mock_db._insert_action(status="approved", goal_id=uuid.uuid4())
+
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["error_code"] == "goal_effect_requires_broker"
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
+    async def test_executor_refuses_a_goal_action(self, mock_db: MockDB):
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        action_id = mock_db._insert_action(status="approved", goal_id=uuid.uuid4())
+
+        async def never(**kwargs):  # pragma: no cover - must not run
+            raise AssertionError("the legacy executor must not run a goal effect")
+
+        result = await execute_approved_action(mock_db, action_id, "test_tool", {}, tool_fn=never)
+
+        assert (result.success, result.code) == (False, "goal_effect_requires_broker")
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
 
 
 # ---------------------------------------------------------------------------

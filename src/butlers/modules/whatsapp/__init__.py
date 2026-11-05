@@ -26,8 +26,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from butlers.connectors.bridge_manager import DEFAULT_SHARED_BRIDGE_SOCKET
 from butlers.modules.base import Module
+from butlers.whatsapp_bridge_client import DEFAULT_SHARED_BRIDGE_SOCKET, BridgeClient
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +198,9 @@ class WhatsAppModule(Module):
         BridgeSubprocessManager, so liveness is read from the connector's bridge
         over the shared socket rather than from a locally-owned process.
         """
-        from butlers.connectors.bridge_manager import _http_get_unix  # noqa: PLC0415
 
         try:
-            status = await _http_get_unix(self._config.bridge_socket, "/status")
+            status = await BridgeClient(self._config.bridge_socket).request_json("GET", "/status")
         except Exception:
             return (
                 f"WhatsApp bridge is not reachable at {self._config.bridge_socket}. "
@@ -226,11 +225,11 @@ class WhatsAppModule(Module):
         if error is not None:
             return {"error": error}
 
-        from butlers.connectors.bridge_manager import _http_post_unix_with_body  # noqa: PLC0415
-
         payload = {"recipient": recipient, "text": text}
         try:
-            result = await _http_post_unix_with_body(self._config.bridge_socket, "/send", payload)
+            result = await BridgeClient(self._config.bridge_socket).request_json(
+                "POST", "/send", payload
+            )
         except Exception as exc:
             logger.error("WhatsApp send failed: %s", type(exc).__name__)
             return {"error": "WhatsApp send failed — check bridge health and configuration"}
@@ -242,11 +241,11 @@ class WhatsAppModule(Module):
         if error is not None:
             return {"error": error}
 
-        from butlers.connectors.bridge_manager import _http_post_unix_with_body  # noqa: PLC0415
-
         payload = {"recipient": chat_jid, "text": text, "reply_to": message_id}
         try:
-            result = await _http_post_unix_with_body(self._config.bridge_socket, "/send", payload)
+            result = await BridgeClient(self._config.bridge_socket).request_json(
+                "POST", "/send", payload
+            )
         except Exception as exc:
             logger.error("WhatsApp reply failed: %s", type(exc).__name__)
             return {"error": "WhatsApp reply failed — check bridge health and configuration"}

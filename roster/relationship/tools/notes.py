@@ -53,7 +53,14 @@ def _fact_to_note(row: dict[str, Any], contact_id: uuid.UUID) -> dict[str, Any]:
         "content": note_text,
         "emotion": meta.get("emotion"),
         "created_at": row.get("created_at"),
+        # RFC 0038 D6: the exposed goal lineage that wrote this note, if any.
+        "taint_goal_id": _str_or_none(row.get("taint_goal_id")),
+        "taint_invocation_id": _str_or_none(row.get("taint_invocation_id")),
     }
+
+
+def _str_or_none(value: Any) -> str | None:
+    return str(value) if value is not None else None
 
 
 async def note_create(
@@ -211,7 +218,7 @@ async def note_list(
     """
     rows = await pool.fetch(
         """
-        SELECT id, content, created_at, metadata
+        SELECT id, content, created_at, metadata, taint_goal_id, taint_invocation_id
         FROM facts
         WHERE subject = ANY($1::text[])
           AND predicate = 'contact_note'

@@ -441,7 +441,7 @@ async def _persist_registry(
             -- one place a registry row becomes a runtime instance; a row
             -- created earlier by a checkpoint or settings write is
             -- promoted here on the process's first check-in
-            -- (butlers.connectors.registry_roles).
+            -- (butlers.core.connector_registry_roles).
             operational_role = 'runtime_instance'
         """,
         connector_type,

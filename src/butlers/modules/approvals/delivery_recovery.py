@@ -189,6 +189,7 @@ class ApprovalDeliveryRepository:
                             AND pa.expires_at <= clock_timestamp() THEN 'action_expired'
                        WHEN pa.status IN ('approved', 'executed') THEN 'action_approved'
                        WHEN pa.status = 'rejected' THEN 'action_rejected'
+                       WHEN pa.status = 'cancelled' THEN 'action_cancelled'
                        WHEN pa.status = 'expired' THEN 'action_expired'
                        ELSE 'action_abandoned'
                    END,

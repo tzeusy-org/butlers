@@ -3,8 +3,9 @@
 This document describes the dormant approval-only transport implementing RFC
 0023. The required behavior remains in the
 [delivery-intent recovery capability](../../openspec/specs/approval-delivery-intent-recovery/spec.md).
-Creating this transport does not enable admission, attach a daemon runtime, or
-start a worker. The rollout remains disabled by default.
+Constructing the transport does not enable admission. The trusted cohosted
+launcher installs runtimes and workers only for active sources whose
+server-held worker flag is enabled. Rollout remains disabled by default.
 
 ## Applicability and trust boundary
 
@@ -83,8 +84,37 @@ rejected recovery does not enter those wrappers. Tool group exclusions remain
 unchanged. The companion copies this guarded registered tool, not an unwrapped
 business handler. `runtime(source, ...)`
 returns a dormant `ApprovalRecoveryRuntime` with the protected dispatch; it
-does not attach it to a daemon. Normal daemon startup does not construct this
-topology. Operational activation and its canary remain separate rollout gates.
+does not attach it to a daemon itself. After all successful daemon registrations,
+`cli._start_all` enters `approval_delivery_composition`. It discovers active,
+enabled Approvals modules and reads each schema's server-held worker flag.
+Disabled, missing or invalid flags create no admission objects, socket directory,
+listeners, runtimes or workers. Enabled sources require both registered
+Switchboard and Messenger in the same host; missing peers or tool registrations
+fail closed without a TCP fallback. A source whose configured schema differs
+from its butler name is unsupported and remains unavailable.
+
+The composition uses each source module's own repository and binds the expected
+Messenger registry target from the registered daemon port and the existing
+server-side cross-container URL mapping. The kernel-admitted companion still
+uses the registered Messenger object; the URL equality check grants no TCP
+authority. The source's existing default owner-recipient lookup supplies a
+candidate, which must independently resolve through `resolve_owner_channel_via_definer`
+on its owning pool before rendering. Messenger verifies the owner again. Callback
+secrets resolve through the source's credential store with environment fallback
+disabled; neither resolver value is logged or put in topology configuration.
+
+The host starts each eligible worker only after these bindings exist. On normal
+shutdown, startup failure or cancellation it stops all attached workers before
+retiring source admissions and listeners, then shuts down daemon modules/pools.
+Partial composition failure follows the same cleanup and leaves delivery
+unavailable; failed daemon startup is also torn down before retry or cancellation.
+Fresh startup has new source epochs, including when registered objects are reused.
+Worker-flag changes require a host restart to install an absent topology; module
+re-enables can reuse an already installed runtime. Single-daemon `butlers run`
+and split-process control/domain hosts do not install recovery authority.
+Operational activation, any exclusive temporary dev cohosting cutover and its
+canary remain separate rollout gates. This installation neither changes flags
+nor backfills or replays historical actions.
 
 Approval companions use stateless JSON request/reply responses, with no SSE
 stream or dependency on process-global SSE drain state. Each client call has

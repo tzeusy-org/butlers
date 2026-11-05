@@ -144,6 +144,17 @@ global host-policy reduction. `HOST_POLICY_LIMIT` remains zero.
 registration can commit an epoch. It writes a chain-to-schema mapping; no behaviour branches on
 the butler name. It is neither a host-policy candidate nor a conversion.
 
+`bu-ys9hdx.12` adds four canonical authority sites in
+`approval_delivery_composition`: the registered Switchboard and Messenger peer
+lookups, the Switchboard module-state lookup, and its registered module selection.
+They bind the accepted same-PID approval source/verifier/routing/provider chain;
+missing peers remain unavailable. They add one direct/recursive comparison and
+three supplementary lookups, bringing the current inventory to 78 direct sites
+in 35 files, 87 recursive sites and 40 supplementary sites (127 total). All four
+are `CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE`; the nine unresolved candidates
+and zero evidenced independent host-policy sites remain unchanged. This does not
+make these identities configurable or establish runtime authority by static scan.
+
 ## Enforcement and static limits
 
 Run `make check-host-policy-selectors` or `python3 scripts/check_host_policy_selectors.py`.

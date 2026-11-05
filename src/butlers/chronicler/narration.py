@@ -70,7 +70,7 @@ from butlers.chronicler.storage import (
     set_daily_rollup_day_narrative,
     set_daily_rollup_flag_narrative,
 )
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import get_current_codex_auth_authority
 

@@ -33,6 +33,7 @@ SAFE_REASON_CODES: frozenset[str] = frozenset(
         "action_rejected",
         "action_expired",
         "action_abandoned",
+        "action_cancelled",
         "defer_rescheduled",
         "cohort_empty",
     }
