@@ -20,6 +20,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -29,12 +30,15 @@ import pytest
 
 from butlers.core.backup_facts_snapshot import build_snapshot_value
 from butlers.core.qa.sources.infra_state import (
+    _CONNECTOR_VIEW,
     _DEADMAN_UNCONFIGURED_FINGERPRINT,
+    _RECEIVER_VIEW,
     SOURCE_NAME,
     InfraStateSource,
 )
 from butlers.core.qa.sources.protocol import DiscoverySource
-from butlers.testing.records import Record
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -66,53 +70,38 @@ def _snapshot(backup_dir: str = "", *, age: timedelta = timedelta(0)) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class _FakePool:
-    """Fake asyncpg pool: dispatches .fetch()/.fetchrow() by view/table name."""
+def _infra_pool(
+    *,
+    connector_rows: list[Record] | None = None,
+    liveness_rows: list[Record] | None = None,
+    deadman_ts: datetime | None = None,
+    health_check_error: Exception | None = None,
+    backup_snapshot: object = _UNSET,
+) -> FakePool:
+    """Pool answering one pre-handoff discover() tick in call order.
 
-    def __init__(
-        self,
-        *,
-        connector_rows: list | None = None,
-        heartbeat_rows: list | None = None,
-        receiver_rows: list | None = None,
-        deadman_ts: datetime | None = None,
-        health_check_error: Exception | None = None,
-        backup_snapshot: object = _UNSET,
-    ) -> None:
-        # Default: a fresh snapshot of a deployment without backups.
-        self._backup_snapshot = _snapshot() if backup_snapshot is _UNSET else backup_snapshot
-        self._connector_rows = connector_rows or []
-        self._heartbeat_rows = heartbeat_rows or []
-        self._receiver_rows = receiver_rows or []
-        self._deadman_ts = deadman_ts
-        self._health_check_error = health_check_error
-        self.executed: list[str] = []
+    ``execute`` is the health check. ``fetch`` reads the connector view, then
+    one liveness view: the legacy heartbeat view, or the receiver view under
+    BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER. ``fetchval`` reads the backup-facts
+    snapshot (default: fresh, backups unconfigured) and ``fetchrow`` the last
+    deadman success.
+    """
+    snapshot = _snapshot() if backup_snapshot is _UNSET else backup_snapshot
+    return fake_pool(
+        execute=AsyncMock(side_effect=health_check_error) if health_check_error else None,
+        fetch=AsyncMock(side_effect=[connector_rows or [], liveness_rows or []]),
+        fetchval=None if snapshot is None else json.dumps(snapshot),
+        fetchrow=None if deadman_ts is None else row(ts=deadman_ts),
+    )
 
-    async def execute(self, sql: str, *args):
-        self.executed.append(sql)
-        if self._health_check_error is not None:
-            raise self._health_check_error
-        return None
 
-    async def fetch(self, sql: str, *args):
-        if "v_qa_connector_state" in sql:
-            return self._connector_rows
-        if "v_qa_butler_heartbeat" in sql:
-            return self._heartbeat_rows
-        if "v_qa_butler_receiver_state" in sql:
-            return self._receiver_rows
-        raise AssertionError(f"Unexpected fetch: {sql}")
-
-    async def fetchval(self, sql: str, *args):
-        if "public.state" in sql:
-            snap = self._backup_snapshot
-            return None if snap is None else json.dumps(snap)
-        raise AssertionError(f"Unexpected fetchval: {sql}")
-
-    async def fetchrow(self, sql: str, *args):
-        if "audit_log" in sql:
-            return {"ts": self._deadman_ts} if self._deadman_ts is not None else None
-        raise AssertionError(f"Unexpected fetchrow: {sql}")
+@pytest.fixture(autouse=True)
+def _ledger_writes() -> Iterator[AsyncMock]:
+    """The condition-ledger write, tested on its own; tests that inspect it patch it."""
+    with patch(
+        "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
+    ) as reconcile:
+        yield reconcile
 
 
 def _connector_row(
@@ -187,7 +176,7 @@ async def test_protocol_and_health_check(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
-    source = InfraStateSource(pool=_FakePool())
+    source = InfraStateSource(pool=_infra_pool())
     assert isinstance(source, DiscoverySource)
     assert source.name == "infra_state"
     assert inspect.iscoroutinefunction(source.discover)
@@ -200,7 +189,7 @@ async def test_health_check_failure_propagates(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
-    pool = _FakePool(health_check_error=asyncpg.PostgresError("permission denied"))
+    pool = _infra_pool(health_check_error=asyncpg.PostgresError("permission denied"))
     with pytest.raises(asyncpg.PostgresError):
         await InfraStateSource(pool=pool).discover(lookback_minutes=15)
 
@@ -220,7 +209,7 @@ async def test_offline_connector_trips_a_finding(monkeypatch):
         state="error",
         last_heartbeat_at=datetime.now(UTC) - timedelta(minutes=20),
     )
-    findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(connector_rows=[row])).discover(
         lookback_minutes=15
     )
     assert len(findings) == 1
@@ -236,7 +225,7 @@ async def test_online_connector_yields_nothing(monkeypatch):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
     row = _connector_row(last_heartbeat_at=datetime.now(UTC) - timedelta(minutes=1))
-    findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(connector_rows=[row])).discover(
         lookback_minutes=15
     )
     assert findings == []
@@ -250,7 +239,7 @@ async def test_paused_connector_never_flagged_even_if_stale(monkeypatch):
         state="paused",
         last_heartbeat_at=datetime.now(UTC) - timedelta(days=10),
     )
-    findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(connector_rows=[row])).discover(
         lookback_minutes=15
     )
     assert findings == []
@@ -264,7 +253,7 @@ async def test_freshly_registered_never_heartbeated_connector_is_graced(monkeypa
         last_heartbeat_at=None,
         first_seen_at=datetime.now(UTC) - timedelta(minutes=2),
     )
-    findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(connector_rows=[row])).discover(
         lookback_minutes=15
     )
     assert findings == []
@@ -278,7 +267,7 @@ async def test_never_heartbeated_connector_past_grace_trips_a_finding(monkeypatc
         last_heartbeat_at=None,
         first_seen_at=datetime.now(UTC) - timedelta(hours=1),
     )
-    findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(connector_rows=[row])).discover(
         lookback_minutes=15
     )
     assert len(findings) == 1
@@ -294,14 +283,16 @@ async def test_receiver_health_ignores_expired_legacy_heartbeat(monkeypatch):
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    pool = _FakePool(
-        heartbeat_rows=[_heartbeat_row(last_seen_at=datetime.now(UTC) - timedelta(hours=2))],
-        receiver_rows=[
+    pool = _infra_pool(
+        liveness_rows=[
             _receiver_row(healthy_observed_at=datetime.now(UTC) - timedelta(seconds=10))
         ],
     )
 
     assert await InfraStateSource(pool=pool).discover(lookback_minutes=15) == []
+    # Liveness came from the receiver view; the legacy heartbeat view was never read.
+    read_relations = [call.args[0] for call in pool.fetch.await_args_list]
+    assert read_relations == [f"SELECT * FROM {_CONNECTOR_VIEW}", f"SELECT * FROM {_RECEIVER_VIEW}"]
 
 
 @pytest.mark.parametrize(
@@ -324,7 +315,7 @@ async def test_receiver_failed_or_stale_observation_trips_finding(
         healthy_observed_at=datetime.now(UTC) - timedelta(seconds=healthy_age_seconds),
     )
 
-    findings = await InfraStateSource(pool=_FakePool(receiver_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
 
@@ -349,7 +340,7 @@ async def test_receiver_never_seen_grace_does_not_hide_a_failed_first_probe(
         registered_at=datetime.now(UTC) - timedelta(minutes=1),
     )
 
-    findings = await InfraStateSource(pool=_FakePool(receiver_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
 
@@ -365,7 +356,7 @@ async def test_stale_butler_heartbeat_trips_a_finding(monkeypatch):
         last_seen_at=datetime.now(UTC) - timedelta(minutes=20),
         liveness_ttl_seconds=300,  # 5 minutes
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert len(findings) == 1
@@ -383,7 +374,7 @@ async def test_butler_within_ttl_yields_nothing(monkeypatch):
         last_seen_at=datetime.now(UTC) - timedelta(seconds=30),
         liveness_ttl_seconds=300,
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert findings == []
@@ -398,7 +389,7 @@ async def test_future_heartbeat_within_tolerance_yields_nothing(monkeypatch):
         last_seen_at=datetime.now(UTC) + timedelta(minutes=1),
         liveness_ttl_seconds=300,
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert findings == []
@@ -416,7 +407,7 @@ async def test_future_heartbeat_beyond_tolerance_trips_a_finding(monkeypatch):
         last_seen_at=datetime.now(UTC) + timedelta(minutes=10),
         liveness_ttl_seconds=300,
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert len(findings) == 1
@@ -433,7 +424,7 @@ async def test_quarantined_butler_always_trips_regardless_of_ttl(monkeypatch):
         liveness_ttl_seconds=300,
         quarantined_at=datetime.now(UTC) - timedelta(minutes=5),
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert len(findings) == 1
@@ -448,7 +439,7 @@ async def test_freshly_registered_butler_never_seen_is_graced(monkeypatch):
         last_seen_at=None,
         registered_at=datetime.now(UTC) - timedelta(minutes=1),
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert findings == []
@@ -462,7 +453,7 @@ async def test_never_seen_butler_past_grace_trips_a_finding(monkeypatch):
         last_seen_at=None,
         registered_at=datetime.now(UTC) - timedelta(hours=1),
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[row])).discover(
         lookback_minutes=15
     )
     assert len(findings) == 1
@@ -526,7 +517,7 @@ async def test_registry_and_infra_state_agree_on_staleness(
         registered_at=_PARITY_REGISTERED_AT,
         liveness_ttl_seconds=liveness_ttl_seconds,
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[heartbeat_row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[heartbeat_row])).discover(
         lookback_minutes=15
     )
     infra_stale = any(f.exception_type == "ButlerHeartbeatStale" for f in findings)
@@ -562,7 +553,7 @@ async def test_registry_and_infra_state_agree_quarantine_always_stale(monkeypatc
         liveness_ttl_seconds=300,
         quarantined_at=quarantined_at,
     )
-    findings = await InfraStateSource(pool=_FakePool(heartbeat_rows=[heartbeat_row])).discover(
+    findings = await InfraStateSource(pool=_infra_pool(liveness_rows=[heartbeat_row])).discover(
         lookback_minutes=15
     )
     assert any(f.exception_type == "ButlerHeartbeatStale" for f in findings)
@@ -576,7 +567,7 @@ async def test_registry_and_infra_state_agree_quarantine_always_stale(monkeypatc
 async def test_backup_unconfigured_is_a_legitimate_absence_not_a_finding(monkeypatch):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
-    findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+    findings = await InfraStateSource(pool=_infra_pool()).discover(lookback_minutes=15)
     assert findings == []
 
 
@@ -603,7 +594,7 @@ async def test_unseen_backup_facts_trip_a_finding_not_a_silent_skip(monkeypatch,
     """bu-deqpzd: the patrol cannot see the dumps; not seeing the facts is a finding."""
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
-    pool = _FakePool(backup_snapshot=snapshot)
+    pool = _infra_pool(backup_snapshot=snapshot)
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert [f.exception_type for f in findings] == ["BackupFactsUnavailable"]
     assert f"is {state}" in findings[0].event_summary
@@ -611,7 +602,7 @@ async def test_unseen_backup_facts_trip_a_finding_not_a_silent_skip(monkeypatch,
 
 async def test_backup_dir_configured_but_missing_trips_unreachable(monkeypatch, tmp_path):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path / "does-not-exist")))
+    pool = _infra_pool(backup_snapshot=_snapshot(str(tmp_path / "does-not-exist")))
 
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
@@ -620,7 +611,7 @@ async def test_backup_dir_configured_but_missing_trips_unreachable(monkeypatch, 
 
 async def test_backup_dir_reachable_but_empty_trips_stale(monkeypatch, tmp_path):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
-    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    pool = _infra_pool(backup_snapshot=_snapshot(str(tmp_path)))
 
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
@@ -641,7 +632,7 @@ async def test_fresh_backup_yields_nothing(monkeypatch, tmp_path):
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
     _fresh_dump(tmp_path)
 
-    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    pool = _infra_pool(backup_snapshot=_snapshot(str(tmp_path)))
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert findings == []
 
@@ -661,7 +652,7 @@ async def test_fresh_backup_with_a_failed_run_trips_a_finding(monkeypatch, tmp_p
         encoding="utf-8",
     )
 
-    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    pool = _infra_pool(backup_snapshot=_snapshot(str(tmp_path)))
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].exception_type == "BackupRunFailed"
@@ -677,7 +668,7 @@ async def test_successful_run_receipt_yields_nothing(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    pool = _infra_pool(backup_snapshot=_snapshot(str(tmp_path)))
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert findings == []
 
@@ -692,7 +683,7 @@ async def test_stale_backup_trips_a_finding(monkeypatch, tmp_path):
     stale_ts = time.time() - timedelta(hours=48).total_seconds()
     os.utime(dump, (stale_ts, stale_ts))
 
-    pool = _FakePool(backup_snapshot=_snapshot(str(tmp_path)))
+    pool = _infra_pool(backup_snapshot=_snapshot(str(tmp_path)))
     findings = await InfraStateSource(pool=pool).discover(lookback_minutes=15)
     assert len(findings) == 1
     assert findings[0].exception_type == "BackupStale"
@@ -707,7 +698,7 @@ async def test_deadman_recent_success_yields_nothing(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")
 
-    pool = _FakePool(deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
+    pool = _infra_pool(deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
     findings = await InfraStateSource(pool=pool, deadman_ping_interval_s=600).discover(
         lookback_minutes=15
     )
@@ -718,7 +709,7 @@ async def test_deadman_stale_success_trips_a_finding(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")
 
-    pool = _FakePool(deadman_ts=datetime.now(UTC) - timedelta(hours=2))
+    pool = _infra_pool(deadman_ts=datetime.now(UTC) - timedelta(hours=2))
     findings = await InfraStateSource(pool=pool, deadman_ping_interval_s=600).discover(
         lookback_minutes=15
     )
@@ -730,7 +721,7 @@ async def test_deadman_never_succeeded_trips_a_finding(monkeypatch):
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")
 
-    pool = _FakePool(deadman_ts=None)
+    pool = _infra_pool(deadman_ts=None)
     findings = await InfraStateSource(pool=pool, deadman_ping_interval_s=600).discover(
         lookback_minutes=15
     )
@@ -752,10 +743,10 @@ async def test_connector_offline_fingerprint_stable_across_ticks(monkeypatch):
     row1 = _connector_row(last_heartbeat_at=heartbeat)
     row2 = _connector_row(last_heartbeat_at=heartbeat)
 
-    findings1 = await InfraStateSource(pool=_FakePool(connector_rows=[row1])).discover(
+    findings1 = await InfraStateSource(pool=_infra_pool(connector_rows=[row1])).discover(
         lookback_minutes=15
     )
-    findings2 = await InfraStateSource(pool=_FakePool(connector_rows=[row2])).discover(
+    findings2 = await InfraStateSource(pool=_infra_pool(connector_rows=[row2])).discover(
         lookback_minutes=15
     )
     assert findings1[0].fingerprint == findings2[0].fingerprint
@@ -775,7 +766,7 @@ async def test_reconcile_snapshot_called_with_matching_observations(monkeypatch)
         state="error",
         last_heartbeat_at=datetime.now(UTC) - timedelta(minutes=20),
     )
-    pool = _FakePool(connector_rows=[row], deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
+    pool = _infra_pool(connector_rows=[row], deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
 
     with patch(
         "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
@@ -799,7 +790,7 @@ async def test_reconcile_includes_deadman_unconfigured_observation_without_a_fin
     with patch(
         "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
     ) as mock_reconcile:
-        findings = await InfraStateSource(pool=_FakePool()).discover(lookback_minutes=15)
+        findings = await InfraStateSource(pool=_infra_pool()).discover(lookback_minutes=15)
 
     assert findings == []  # AC4: never a QA finding / never LLM execution
     observations = mock_reconcile.call_args.kwargs["observations"]
@@ -810,7 +801,7 @@ async def test_reconcile_omits_deadman_unconfigured_observation_when_configured(
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.setenv("EXTERNAL_DEADMAN_URL", "https://example.com/ping/abc")
 
-    pool = _FakePool(deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
+    pool = _infra_pool(deadman_ts=datetime.now(UTC) - timedelta(minutes=1))
     with patch(
         "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
     ) as mock_reconcile:
@@ -820,13 +811,11 @@ async def test_reconcile_omits_deadman_unconfigured_observation_when_configured(
     assert _DEADMAN_UNCONFIGURED_FINGERPRINT not in {o.fingerprint for o in observations}
 
 
-async def test_reconciliation_failure_never_breaks_findings_return(monkeypatch, caplog):
-    """A degraded/unreachable ledger must never take down the primary findings contract.
-
-    ``_FakePool`` has no ``.acquire()`` (it is not a real asyncpg.Pool), so
-    ``reconcile_snapshot`` raises internally here -- exercising the same
-    "reconciliation write failed" path a real transient DB error would hit.
-    """
+async def test_reconciliation_failure_never_breaks_findings_return(
+    monkeypatch, caplog, _ledger_writes
+):
+    """A degraded/unreachable ledger must never take down the primary findings contract."""
+    _ledger_writes.side_effect = RuntimeError("ledger unreachable")
     monkeypatch.delenv("BUTLERS_BACKUP_DIR", raising=False)
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
 
@@ -835,7 +824,7 @@ async def test_reconciliation_failure_never_breaks_findings_return(monkeypatch, 
         last_heartbeat_at=datetime.now(UTC) - timedelta(minutes=20),
     )
     with caplog.at_level("ERROR"):
-        findings = await InfraStateSource(pool=_FakePool(connector_rows=[row])).discover(
+        findings = await InfraStateSource(pool=_infra_pool(connector_rows=[row])).discover(
             lookback_minutes=15
         )
 
@@ -855,7 +844,7 @@ async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch, h
     monkeypatch.delenv("EXTERNAL_DEADMAN_URL", raising=False)
     monkeypatch.setenv("BUTLERS_FLEET_CONDITION_HANDOFF", handoff)
 
-    pool = _FakePool(health_check_error=asyncpg.PostgresError("permission denied"))
+    pool = _infra_pool(health_check_error=asyncpg.PostgresError("permission denied"))
     with (
         patch(
             "butlers.core.qa.sources.infra_state.reconcile_snapshot", new_callable=AsyncMock
@@ -865,6 +854,6 @@ async def test_health_check_failure_skips_reconciliation_entirely(monkeypatch, h
         await InfraStateSource(pool=pool).discover(lookback_minutes=15)
 
     mock_reconcile.assert_not_awaited()
-    [health_check] = pool.executed
+    health_check = pool.execute.await_args.args[0]
     assert ("public.infra_conditions" in health_check) is (handoff == "1")
     assert ("v_qa_butler" in health_check) is (handoff == "0")
