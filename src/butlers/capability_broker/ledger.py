@@ -319,14 +319,21 @@ class BrokerLedger:
         *,
         receipt_ref: str | None = None,
         output: Label | None = None,
+        writers: tuple[tuple[Any, Any], ...] = (),
     ) -> None:
         """Record a domain receipt (D11) and join the label its output carries (D6, S1).
 
-        The join commits with the receipt, before the result can reach the
-        model; sw_057 raises the goal's reporting union as well.
+        A stamped read's tainted records name their writer invocation
+        (``taint_goal_id``, ``taint_invocation_id``); each writer's persisted
+        label is joined with ``output``. The join commits with the receipt,
+        before the result can reach the model; sw_057 raises the goal's
+        reporting union as well.
         """
         principal = reservation.principal
         await self._lock_goal(principal.goal_id)
+        if output is not None:
+            for pointer in writers:
+                output = output.join(await self.writer_label(pointer))
         if output is not None and not await self._join(
             principal.goal_id, principal.invocation_id, output, "read"
         ):
@@ -344,6 +351,27 @@ class BrokerLedger:
         )
         if row is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
+
+    async def writer_label(self, pointer: Any) -> Label:
+        """The persisted label of a stored record's writer invocation (D6, S1).
+
+        Resolved through the record's ``(taint_goal_id, taint_invocation_id)``
+        pointer. A missing, malformed, dangling or unreadable pointer is the
+        unknown label (``{world}``, all six categories): it never reads clean.
+        """
+        try:
+            goal_id, invocation_id = pointer
+            if not isinstance(goal_id, UUID) or not isinstance(invocation_id, UUID):
+                return Label.unknown()
+            row = await self.connection.fetchrow(
+                "SELECT label_version, label_instr, label_data, label_sens "
+                "FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+                goal_id,
+                invocation_id,
+            )
+            return Label.unknown() if row is None else Label.from_row(*row.values())
+        except (TypeError, ValueError):
+            return Label.unknown()
 
     async def mark_parked(self, reservation: Reservation, approval_ref: str) -> bool:
         """requested -> parked. False when a Stop cancelled it while in flight."""

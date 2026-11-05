@@ -125,11 +125,15 @@ def legacy_label(exposed: bool) -> Label:
 def output_label(trust: str, stamped_owner_untainted: bool | None, categories) -> Label:
     """The label a read's output joins into its invocation (D6, S1).
 
-    Trusted output and owner-untainted stamped output are owner data; anything
-    else, including an unknown trust or a missing stamp, is world.
+    Trusted output and stamped output with the store's complete owner-untainted
+    account are owner data (a stamped read then also joins each listed writer's
+    label). Untrusted output is world. Stamped output without the account, or
+    an unknown trust, is the unknown label: ``{world}`` and all six categories.
     """
-    owner = trust == "trusted" or (trust == "stamped" and stamped_owner_untainted is True)
-    provenance = frozenset({"owner" if owner else "world"})
+    unaccounted = trust == "stamped" and stamped_owner_untainted is not True
+    if unaccounted or trust not in ("trusted", "untrusted", "stamped"):
+        return Label.unknown()
+    provenance = frozenset({"world" if trust == "untrusted" else "owner"})
     return Label(provenance, provenance, frozenset(categories))
 
 

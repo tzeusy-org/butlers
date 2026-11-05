@@ -26,6 +26,7 @@ from butlers.capability_broker.domains import ApprovalsParking, DomainReceipt
 from butlers.capability_broker.service import Broker
 from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_admission import Grant, digest, encode_grants
+from butlers.core.goal_labels import CATEGORIES
 from butlers.core.tool_catalog import RecipientParameters
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.capability_broker.helpers import capability, notify
@@ -843,7 +844,7 @@ async def test_a_stamped_read_exposes_its_reader_unless_owner_untainted(broker_d
             ["health"],
         )
         tainted, tainted_token = await w.invocation(goal, _grant(RECALL), depth=1, parent=clean)
-        w.forwarder.receipt = DomainReceipt("committed", "r", {})  # no stamp evidence
+        w.forwarder.receipt = DomainReceipt("committed", "r", {})  # no stamp account
         await w.broker.call(goal, tainted_token, RECALL.identity, {})
         row = await _label(w, tainted)
         assert (row["exposed"], row["exposure_cause"], row["label_data"]) == (
@@ -851,7 +852,49 @@ async def test_a_stamped_read_exposes_its_reader_unless_owner_untainted(broker_d
             "read",
             ["owner", "world"],
         )
+        assert set(row["label_sens"]) == CATEGORIES  # unknown sensitivity is all six
         assert (await _label(w, clean))["exposed"] is False
+
+
+async def test_a_tainted_stored_record_joins_its_writer_invocations_label(broker_db_url):
+    async with world(broker_db_url) as w:
+        # The record's writer: an earlier goal's invocation that read mail.
+        writer_goal = await w.goal(_grant(UNTRUSTED))
+        writer, _ = await w.invocation(writer_goal, _grant(UNTRUSTED))
+        await w.owner.execute(
+            "UPDATE switchboard.invocations SET label_data = "
+            "switchboard.goal_label_union(label_data, ARRAY['external:mail-7']), "
+            "label_sens = switchboard.goal_label_union(label_sens, ARRAY['finance']), "
+            "exposure_cause = 'read' WHERE id = $1",
+            writer,
+        )
+        goal = await w.goal(_grant(RECALL))
+        reader, token = await w.invocation(goal, _grant(RECALL))
+        w.forwarder.receipt = DomainReceipt(
+            "committed",
+            "r",
+            {},
+            stamped_owner_untainted=True,
+            stamped_writers=((writer_goal, writer),),
+        )
+        await w.broker.call(goal, token, RECALL.identity, {})
+        row = await _label(w, reader)
+        assert (row["exposed"], row["exposure_cause"]) == (True, "read")
+        assert row["label_data"] == ["external:mail-7", "owner"]  # precise, not {world}
+        assert row["label_sens"] == ["finance", "health"]  # writer's plus the capability's
+
+        # A dangling pointer fails closed to the unknown label.
+        dangling, dangling_token = await w.invocation(goal, _grant(RECALL), depth=1, parent=reader)
+        w.forwarder.receipt = DomainReceipt(
+            "committed",
+            "r",
+            {},
+            stamped_owner_untainted=True,
+            stamped_writers=((writer_goal, uuid4()),),
+        )
+        await w.broker.call(goal, dangling_token, RECALL.identity, {})
+        row = await _label(w, dangling)
+        assert "world" in row["label_data"] and set(row["label_sens"]) == CATEGORIES
 
 
 async def test_a_replacement_lead_inherits_its_predecessor_and_parks(broker_db_url):

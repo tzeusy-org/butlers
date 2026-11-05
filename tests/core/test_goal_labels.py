@@ -107,20 +107,21 @@ def test_legacy_rows_keep_their_boolean_and_assume_every_category():
 
 
 @pytest.mark.parametrize(
-    ("trust", "untainted", "exposes"),
+    ("trust", "untainted", "exposes", "sens"),
     [
-        ("trusted", None, False),
-        ("untrusted", None, True),
-        ("stamped", True, False),
-        ("stamped", False, True),
-        ("stamped", None, True),  # a missing stamp is not owner authority
+        ("trusted", None, False, {"health"}),
+        ("untrusted", None, True, {"health"}),
+        ("stamped", True, False, {"health"}),
+        # Without the store's stamp account it is unknown: world, all six.
+        ("stamped", False, True, CATEGORIES),
+        ("stamped", None, True, CATEGORIES),
     ],
 )
-def test_a_read_output_label_follows_trust_and_stamp(trust, untainted, exposes):
+def test_a_read_output_label_follows_trust_and_stamp(trust, untainted, exposes, sens):
     label = output_label(trust, untainted, frozenset({"health"}))
     assert label.exposed is exposes
-    assert label.sens == {"health"}
+    assert label.sens == sens
 
 
-def test_an_unknown_output_trust_is_world():
-    assert output_label("mystery", None, frozenset()).data == {"world"}
+def test_an_unknown_output_trust_is_the_unknown_label():
+    assert output_label("mystery", None, frozenset()) == Label.unknown()

@@ -70,15 +70,22 @@ Every producer, deferred path and reader of a label:
 | --- | --- | --- |
 | Admission | admitted label from `admitted_exposed` (unknown or owner), joined with a causing effect's label | sw_057 `goal_label_goal`; `goal_admission.effect_exposed` |
 | Invocation start | admitted label; a child joins its caller; a replacement lead joins every earlier lead and recorded effect (`child` / `recovery`) | sw_057 `goal_label_invocation` |
-| Broker read | committed output joins `{owner}` (trusted) or `{world}` (untrusted; stamped without the domain's untainted evidence, which `HttpForwarder` never claims) plus the capability's categories (`read`) | `BrokerLedger.settle` |
+| Broker read | committed output joins `{owner}` (trusted) or `{world}` (untrusted) plus the capability's categories; stamped output, see D6 stores (`read`) | `BrokerLedger.settle` |
 | Child result | the lead joins its child's label (`child`) | `Broker.read_child_result` |
 | Joined reply | inbox row = owner ∪ answered effect's label ∪ unknown for outside content; the reader joins it on consumption (`inbox`) | sw_057 `goal_label_inbox`; `GoalLedger.deliver`; `Broker.consume_inbox` |
 | Effect | snapshots its requesting label at insert; immutable | sw_057 `goal_label_effect` |
 | Park, approval, edit, retry | the approved call runs under the requesting invocation's current label, which must cover the effect's snapshot; an edited effect row snapshots that label | `BrokerLedger.begin_approved` |
 | Receipt / unknown / not_received | no output join unless committed; the effect label never changes | `Broker._forward` |
 | Goal union | every invocation and inbox label joins it; reporting only | sw_057 `goal_invocation_exposure` |
-| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label; reading one back through the broker is a stamped read, so it joins `{world}` and the capability's categories | `goal_lineage`, D6 table below |
+| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no complete stamp account from the store, joins `{world}` and all six | `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
 | Reply evidence | a reply to a prompt of an exposed goal is outside content (goal union; conservative) | `accepted_source.py` `_reply` |
+
+Stored labels resolve through the writer pointer (lead decision on
+bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
+Unstamped legacy records keep their content-authority behaviour (original
+authority preserved, or unknown). No domain reports its stamp account over the
+wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
+until one does.
 
 Categories come from the descriptor's D4 `output_sensitivity`: `ordinary` output
 carries none and anything else all six (`contracts.declared_categories`). A

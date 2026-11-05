@@ -349,7 +349,10 @@ class Broker:
             if status == "committed"
             else None
         )
-        await self._settle(reserved, status, receipt_ref=receipt.receipt_ref, output=output)
+        writers = receipt.stamped_writers if capability.output_trust == "stamped" else ()
+        await self._settle(
+            reserved, status, receipt_ref=receipt.receipt_ref, output=output, writers=writers
+        )
         if approval_ref is not None:
             await self._write_back(reserved, approval_ref, status, receipt.receipt_ref)
         if status != "committed":
