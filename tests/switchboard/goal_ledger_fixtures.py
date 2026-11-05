@@ -60,10 +60,29 @@ async def pools(url):
             yield owner, runtime
 
 
+async def reset_ledger(owner):
+    """Empty the goal ledger between tests.
+
+    sw_056's trigger refuses TRUNCATE on ``broker_refusals``, which TRUNCATE ...
+    CASCADE reaches through its goal foreign key. This test-only reset, run as
+    the owner, lifts that trigger for its own transaction alone.
+    """
+    async with owner.acquire() as connection, connection.transaction():
+        await connection.execute(
+            "ALTER TABLE switchboard.broker_refusals DISABLE TRIGGER immutable_broker_refusal"
+        )
+        await connection.execute(
+            "TRUNCATE " + ",".join("switchboard." + t for t in TABLES) + " CASCADE"
+        )
+        await connection.execute(
+            "ALTER TABLE switchboard.broker_refusals ENABLE TRIGGER immutable_broker_refusal"
+        )
+
+
 @pytest.fixture
 async def ledger(ledger_url):
     async with pools(ledger_url) as (owner, runtime):
-        await owner.execute("TRUNCATE " + ",".join("switchboard." + t for t in TABLES) + " CASCADE")
+        await reset_ledger(owner)
         await configure(owner, limits())
         yield owner, runtime
 

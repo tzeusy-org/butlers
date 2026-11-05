@@ -16,6 +16,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.chat_stream_events import publish_chat_stream_event
+from butlers.core.goal_lineage import taint_insert
 
 
 def _generate_uuid7() -> UUID:
@@ -62,14 +63,16 @@ async def message_create(
     now = datetime.now(UTC)
     if page_context is not None and captured_at is None:
         captured_at = now
+    taint = taint_insert(19)
     await pool.execute(
-        """
+        f"""
         INSERT INTO public.dashboard_messages
             (id, conversation_id, role, content, created_at,
              session_id, model_name, input_tokens, output_tokens,
              duration_ms, tool_calls, error, request_id, sources, citations,
-             routed_butler, page_context, captured_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+             routed_butler, page_context, captured_at{taint.columns})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                $18{taint.placeholders})
         """,
         msg_id,
         conversation_id,
@@ -89,6 +92,7 @@ async def message_create(
         routed_butler,
         page_context,
         captured_at,
+        *taint.values,
     )
 
     return {

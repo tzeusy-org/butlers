@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from butlers.testing.fake_pool import fake_pool
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -147,18 +149,16 @@ class TestTriggerSourcesDashboard:
         for expected in ("tick", "external", "trigger", "route", "healing"):
             assert expected in TRIGGER_SOURCES, f"'{expected}' unexpectedly removed"
 
-        class _FakePool:
-            async def fetchval(self, sql: str, *args: Any) -> uuid.UUID:
-                return uuid.uuid4()
-
-        pool = _FakePool()
+        session_id = uuid.uuid4()
+        pool = fake_pool(fetchval=session_id, execute="SELECT 1")
         result = await session_create(
             pool,
             prompt="Dashboard-triggered session",
             trigger_source="dashboard",
             request_id=str(uuid.uuid4()),
         )
-        assert isinstance(result, uuid.UUID)
+        assert result == session_id
+        assert pool.fetchval.await_args.args[2] == "dashboard"
 
         with pytest.raises(ValueError, match="Invalid trigger_source"):
             await session_create(

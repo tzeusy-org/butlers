@@ -151,6 +151,26 @@ class ApprovalAction(BaseModel):
         ),
     )
     delivery: ApprovalDeliveryTruth | None = None
+    goal: ApprovalGoalLineage | None = Field(
+        default=None,
+        description=(
+            "RFC 0038 goal lineage of a broker-parked effect; null for an action "
+            "no goal parked (including pre-cutover 'legacy' rows)."
+        ),
+    )
+
+
+class ApprovalGoalLineage(BaseModel):
+    """The goal, invocation, depth, exposure and origin that parked an action."""
+
+    goal_id: str
+    invocation_id: str
+    depth: int
+    exposed: bool
+    origin: Literal["owner", "obligation", "third_party", "staffer"]
+
+
+ApprovalAction.model_rebuild()
 
 
 class ApprovalDetail(BaseModel):

@@ -3583,6 +3583,7 @@ function approvalActionSearchParams(params?: ApprovalActionParams): URLSearchPar
   if (params?.tool_name) qs.set("tool_name", params.tool_name);
   if (params?.status) qs.set("status", params.status);
   if (params?.butler) qs.set("butler", params.butler);
+  if (params?.goal_id) qs.set("goal_id", params.goal_id);
   if (params?.offset != null) qs.set("offset", params.offset.toString());
   if (params?.limit != null) qs.set("limit", params.limit.toString());
   return qs;

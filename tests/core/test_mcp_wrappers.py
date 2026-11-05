@@ -1,13 +1,35 @@
-"""Tests for MCP wrapper tool-call capture metadata."""
+"""Tests for the MCP wrapper chain: tool-call capture and assertion verification.
+
+Assertion verification (bu-pkuny2) is exercised over MCP streamable HTTP against
+a domain FastMCP whose tools register through ``_SpanWrappingMCP``, so each
+refusal is shown before argument coercion, the wrapper and the handler.
+"""
 
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
+import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
+from butlers.capability_broker.assertions import ASSERTION_HEADER, AssertionSigner
+from butlers.capability_broker.verification import (
+    AssertionVerificationMiddleware,
+    DomainVerificationSwitch,
+    DomainVerifier,
+    attach_domain_verification,
+)
+from butlers.core import goal_lineage
+from butlers.core.capability_json import arguments_digest
+from butlers.core.runtime_probe_control.keys import VerifierKey, VerifierKeyring
 from butlers.core.tool_call_capture import (
     reset_current_runtime_trigger_source,
     set_current_runtime_trigger_source,
@@ -261,3 +283,224 @@ async def test_consolidation_session_suppresses_every_tool(proxy_cls) -> None:
     assert called == ["memory_recall"]
     outcomes = [c.kwargs["outcome"] for c in capture.call_args_list]
     assert outcomes == ["suppressed", "suppressed", "success"]
+
+
+# ---------------------------------------------------------------------------
+# Broker assertion verification runs first in the wrapper chain (bu-pkuny2)
+# ---------------------------------------------------------------------------
+
+_NOW = 1_800_000_000
+_ACCEPT = "application/json, text/event-stream"
+
+
+class _Clock:
+    def __init__(self, now: int = _NOW) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return float(self.now)
+
+
+def _keyring(signer: AssertionSigner) -> VerifierKeyring:
+    public = signer.ed25519.public_key().public_bytes_raw()
+    return VerifierKeyring(VerifierKey(signer.kid, public, datetime(2026, 1, 1, tzinfo=UTC)))
+
+
+@pytest.fixture(autouse=True)
+def _reset_enforcement():
+    yield
+    goal_lineage.set_enforcement(False)
+
+
+def _payload(args: dict[str, Any], **overrides: Any) -> dict[str, Any]:
+    payload = {
+        "aud": "relationship",
+        "goal_id": str(uuid4()),
+        "invocation_id": str(uuid4()),
+        "depth": 0,
+        "origin": "owner",
+        "exposed": False,
+        "capability": "relationship_note",
+        "args_digest": arguments_digest(args),
+        "call_id": str(uuid4()),
+        "effect_id": None,
+        "approval_ref": None,
+        "exp": _NOW + 60,
+    }
+    payload.update(overrides)
+    return payload
+
+
+class _Domain:
+    def __init__(self, client: httpx.AsyncClient, seen: list, signer: AssertionSigner):
+        self.client, self.seen, self.signer = client, seen, signer
+
+    async def call(self, args: dict[str, Any], assertions: list[str] | None, name=None):
+        headers = [("accept", _ACCEPT)] + [(ASSERTION_HEADER, a) for a in assertions or []]
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name or "relationship_note", "arguments": args},
+        }
+        response = await self.client.post("/", headers=headers, json=body)
+        return response.json()["result"]
+
+
+@asynccontextmanager
+async def _domain(*, verify: bool = True, keyed: bool = True, clock=None, started_at=None):
+    signer = AssertionSigner("broker-1", Ed25519PrivateKey.generate())
+    server = FastMCP("relationship")
+    proxy = _SpanWrappingMCP(server, "relationship", module_name="relationship")
+    seen: list[Any] = []
+
+    @proxy.tool()
+    async def relationship_note(count: int, text: str) -> dict[str, Any]:
+        seen.append(goal_lineage.current_lineage())
+        return {"ok": True, "count": count}
+
+    if verify:
+        verifier = DomainVerifier(
+            "relationship",
+            _keyring(signer) if keyed else None,
+            clock=clock or _Clock(),
+            started_at=_NOW - 30 if started_at is None else started_at,
+        )
+        server.middleware.insert(0, AssertionVerificationMiddleware(verifier))
+        goal_lineage.set_enforcement(True)
+    app = server.http_app(path="/", stateless_http=True, json_response=True)
+    transport = httpx.ASGITransport(app=app)
+    with patch("butlers.mcp_wrappers.capture_tool_call"):
+        async with (
+            app.lifespan(app),
+            httpx.AsyncClient(transport=transport, base_url="http://d") as client,
+        ):
+            yield _Domain(client, seen, signer)
+
+
+_ARGS = {"count": 1, "text": "hello"}
+
+
+def _refused(result: dict[str, Any]) -> bool:
+    return result.get("isError") is True and "assertion_refused" in str(result["content"])
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        (
+            "forged signature",
+            lambda d, p: AssertionSigner("broker-1", Ed25519PrivateKey.generate()).sign(p),
+        ),
+        ("unknown kid", lambda d, p: AssertionSigner("other", d.signer.ed25519).sign(p)),
+        ("wrong aud", lambda d, p: d.signer.sign({**p, "aud": "general"})),
+        ("expired", lambda d, p: d.signer.sign({**p, "exp": _NOW})),
+        ("capability mismatch", lambda d, p: d.signer.sign({**p, "capability": "other_tool"})),
+        ("digest mismatch", lambda d, p: d.signer.sign({**p, "args_digest": "0" * 64})),
+    ],
+)
+async def test_invalid_assertion_is_refused_before_the_handler(label, mutate):
+    async with _domain() as domain:
+        result = await domain.call(_ARGS, [mutate(domain, _payload(_ARGS))])
+        assert _refused(result), label
+        assert domain.seen == []
+
+
+async def test_coercion_cannot_launder_a_digest_mismatch():
+    """The digest binds the raw wire arguments, not what coercion makes of them."""
+    async with _domain() as domain:
+        assertion = domain.signer.sign(_payload(_ARGS))
+        result = await domain.call({"count": "1", "text": "hello"}, [assertion])
+        assert _refused(result)
+        assert domain.seen == []
+
+
+async def test_replayed_call_id_is_refused():
+    async with _domain() as domain:
+        assertion = domain.signer.sign(_payload(_ARGS))
+        first = await domain.call(_ARGS, [assertion])
+        assert first["structuredContent"] == {"ok": True, "count": 1}
+        assert _refused(await domain.call(_ARGS, [assertion]))
+        assert len(domain.seen) == 1
+
+
+async def test_missing_or_duplicated_assertion_header_is_refused():
+    async with _domain() as domain:
+        assertion = domain.signer.sign(_payload(_ARGS))
+        assert _refused(await domain.call(_ARGS, None))
+        assert _refused(await domain.call(_ARGS, [assertion, assertion]))
+        assert domain.seen == []
+
+
+async def test_valid_assertion_runs_the_handler_with_its_lineage():
+    async with _domain() as domain:
+        payload = _payload(_ARGS, exposed=True, origin="third_party")
+        result = await domain.call(_ARGS, [domain.signer.sign(payload)])
+        assert result["structuredContent"] == {"ok": True, "count": 1}
+        (lineage,) = domain.seen
+        assert str(lineage.goal_id) == payload["goal_id"]
+        assert str(lineage.invocation_id) == payload["invocation_id"]
+        assert lineage.exposed is True and lineage.origin == "third_party"
+        assert goal_lineage.current_lineage() is None  # Bound for that call only.
+
+
+async def test_keyless_domain_refuses_every_call():
+    async with _domain(keyed=False) as domain:
+        assert _refused(await domain.call(_ARGS, [domain.signer.sign(_payload(_ARGS))]))
+        assert domain.seen == []
+
+
+async def test_assertion_issued_before_the_process_started_is_refused():
+    """Replay protection across a restart: the restarted domain has no seen set."""
+    clock = _Clock()
+    async with _domain(clock=clock, started_at=_NOW) as domain:
+        before_start = domain.signer.sign(_payload(_ARGS, exp=_NOW + 59))
+        assert _refused(await domain.call(_ARGS, [before_start]))
+        at_start = domain.signer.sign(_payload(_ARGS, exp=_NOW + 60))
+        assert (await domain.call(_ARGS, [at_start]))["structuredContent"]["ok"] is True
+        assert len(domain.seen) == 1
+
+
+async def test_wrapper_refuses_a_handler_call_that_skipped_verification():
+    """Enforced, the wrapper's first step refuses any call with no lineage for its tool."""
+    seen = []
+    proxy = _SpanWrappingMCP(FastMCP("relationship"), "relationship", module_name="m")
+
+    @proxy.tool()
+    async def relationship_note(count: int) -> dict[str, Any]:
+        seen.append(count)
+        return {"ok": True}
+
+    with patch("butlers.mcp_wrappers.capture_tool_call"):
+        goal_lineage.set_enforcement(True)
+        tool = await proxy._mcp.get_tool("relationship_note")
+        # Raised, so MCP reports an error result rather than a committed-looking payload.
+        with pytest.raises(ToolError, match='"reason": "authentication"'):
+            await tool.fn(count=1)
+        other = goal_lineage.VerifiedLineage.from_payload(
+            _payload({"count": 1}, capability="other_tool")
+        )
+        with goal_lineage.lineage_scope(other), pytest.raises(ToolError, match="refused"):
+            await tool.fn(count=1)
+        assert seen == []
+
+
+async def test_switch_off_keeps_todays_behavior(tmp_path):
+    async with _domain(verify=False) as domain:
+        result = await domain.call(_ARGS, ["not-an-assertion"])
+        assert result["structuredContent"] == {"ok": True, "count": 1}
+        assert domain.seen == [None]
+    server = FastMCP("relationship")
+    before = list(server.middleware)
+    assert DomainVerificationSwitch().enabled is False
+    off = attach_domain_verification(server, DomainVerificationSwitch(), audience="relationship")
+    assert off is None and server.middleware == before
+    assert not goal_lineage.enforcement_enabled()
+    keyless = attach_domain_verification(
+        server,
+        DomainVerificationSwitch(enabled=True),
+        audience="relationship",
+        keyring_path=tmp_path / "absent",
+    )
+    assert keyless is not None and goal_lineage.enforcement_enabled()
+    assert isinstance(server.middleware[0], AssertionVerificationMiddleware)

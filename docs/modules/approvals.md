@@ -134,10 +134,32 @@ permanently (owner decision bu-bup68v); other tools are refused as unsupported.
 Valid status transitions:
 
 ```
-pending -> approved | rejected | expired
+pending -> approved | rejected | expired | cancelled
 approved -> executed | abandoned
-rejected, expired, executed, abandoned -> (terminal)
+rejected, expired, executed, abandoned, cancelled -> (terminal)
 ```
+
+`cancelled` applies only to actions with RFC 0038 goal lineage: when a goal is
+stopped, `goal_park.cancel_goal_effects` takes exactly the actions whose broker
+effects were cancelled (never one already dispatched) and cancels the pending ones through
+`transition_pending_action` (an `action_cancelled` event; owner prompts are
+fenced with the `action_rejected` delivery reason code) and abandons its
+approved, never-executed actions (`action_abandoned`). The dashboard's decided-history
+filter includes it. Goal lineage (`goal_id`, `goal_invocation_id`,
+`goal_depth`, `goal_exposed`, `goal_origin`, migration `approvals_020`) is set
+only by the capability broker's park path
+([Capability Broker](../architecture/capability-broker.md)); `goal_origin` is
+separate from the producer `origin`, and `legacy` is reserved for actions
+created before the cutover. Approving an action whose lineage is exposed never
+counts toward standing-rule promotion.
+
+The owner decides a goal action on the usual surfaces (dashboard approve, the
+module `approve_action` tool, `operations.approve_action`): the decision is
+recorded and the result carries `execution_code: goal_effect_requires_broker`,
+but nothing runs it there; the capability broker reads the decision and runs
+the effect. An edit to a goal action's arguments is refused with that code.
+Every legacy run path (the shared executor, dispatch-by-id, both retry routes)
+refuses a goal action with the same typed code.
 
 All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
 
