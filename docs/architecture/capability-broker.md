@@ -153,8 +153,23 @@ replaces the spawner-derived context:
   store: memory episodes, facts and rules (`mem_017`; contact notes and
   decision memory are facts), relationship entity facts (`rel_039`), captures,
   conversation history (`public.dashboard_messages`) and insight candidates
-  (`core_313`). Goal outcomes have no store yet. Memory reads return the
-  columns with the row;
+  (`core_313`). Goal outcomes have no store yet. The shared `public` writers
+  name the taint columns only for an exposed write, so an unexposed insert is
+  the pre-switch statement (pinned-revision and stand-in schemas predate
+  `core_313`). Read-back, per store:
+
+  | D6 store | Columns from | Read back by |
+  | --- | --- | --- |
+  | memory episodes, facts, rules | `mem_017` | memory search and recall (`SELECT *`) |
+  | contact notes (memory facts, `contact_note`) | `mem_017` | `relationship.notes.note_list` |
+  | decision memory (memory facts) | `mem_017` | memory search and recall |
+  | relationship entity facts | `rel_039` | `relationship_lookup` identity facts |
+  | narrative facts (memory facts) | `mem_017` | `relationship_lookup` narrative facts |
+  | captures | `core_313` | `CaptureService` rows (`SELECT *` / `RETURNING *`) |
+  | conversation history | `core_313` | not yet: dashboard projections name their columns |
+  | insight candidates | `core_313` | not yet: broker and dashboard reads name their columns |
+
+  ;
 - `public.domain_events` rows record the producing call's `goal_id`,
   `goal_invocation_id`, `goal_effect_id` and `goal_exposed` (`core_313`), read
   back by `get_event` and `list_events`;
