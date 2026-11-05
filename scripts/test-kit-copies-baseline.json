@@ -1,7 +1,4 @@
 {
-  "roster/relationship/tests/test_entity_facts_repoint_on_merge.py": [
-    "_make_pool"
-  ],
   "roster/switchboard/tests/test_ingest_ingestion_events.py": [
     "_FakeConn",
     "_FakePool"
@@ -78,9 +75,6 @@
   ],
   "tests/dashboard/test_briefing_attention_contract.py": [
     "_make_pool"
-  ],
-  "tests/integration/test_migrated_core_postgres_pool.py": [
-    "_FakePool"
   ],
   "tests/jobs/test_calendar_overlay.py": [
     "_FakePool"
