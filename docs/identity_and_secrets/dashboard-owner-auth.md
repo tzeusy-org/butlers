@@ -69,14 +69,36 @@ the adopted separate-device custody remains an owner operational obligation.
 This source interface does not enroll a device, provision credentials, deploy
 or expose an instance, or activate future goal-runtime consumers.
 
-Future Vouch, Contain and mode-loosening owners can reuse the neutral
-`DashboardStepUpProof` projection, the restricted service's binding ceremony,
-and the real synthetic `authority`/`signed_binding_proof` fixtures in
-`tests/integration/test_dashboard_stepup.py`. Their own source must derive its
-exact binding and enlist consumption in its owning transaction. The currently
-closed SQL consumer catalog admits only the four approvals kinds above;
-fixture reuse does not register another consumer, grant permission, or replace
-those owners' contract, migration, race and rollback proofs.
+The closed SQL consumer catalog admits six kinds: the four approvals kinds
+above, `contain` and `policy_loosen` (bu-dhloi1.29). Each derives its exact
+binding in its own source and enlists consumption in its owning transaction
+through `butlers.core.dashboard_stepup.consume_stepup`:
+
+- `contain` (`core.source_containment.contain_binding`) binds the partition
+  digest and its current containment state; its retained result is the
+  containment id. It has no dashboard route yet and stays dark.
+- `policy_loosen` (`core.owner_policy.loosen_binding`) binds the owner action,
+  term, expected version, resulting constraint and expiry, the term row as it is
+  now and the policy generation. Its target is the resulting
+  `term_id:version:term:expiry_us` state, which sw_060's term trigger requires a
+  step-up consumed in the same transaction to match. The browser requests
+  `/api/owner-policy/step-up/options` (`{"required": false}` for a change that
+  does not loosen), finishes as above, and sends the nonce with
+  `/api/owner-policy/terms/{id}/loosen`.
+
+Future Vouch and mode-loosening owners can reuse the neutral
+`DashboardStepUpProof`/`StepUpBinding` projection, the restricted service's
+binding ceremony, and the real synthetic `authority`/`signed_binding_proof`
+fixtures in `tests/integration/test_dashboard_stepup.py`. Fixture reuse does
+not register another consumer, grant permission, or replace those owners'
+contract, migration, race and rollback proofs: a new kind is a privileged
+bootstrap change to `scripts/init-db.sql`.
+
+Re-running `scripts/init-db.sql` as the privileged bootstrap upgrades an
+existing installation in place (`dashboard_stepup.upgrade_interface()`): it
+replaces the kind CHECK and the two consumer routines, keeps every binding and
+receipt row, then re-asserts ownership, provenance and grants. Ordinary
+migrations never change the catalog.
 
 ## How trust is established
 

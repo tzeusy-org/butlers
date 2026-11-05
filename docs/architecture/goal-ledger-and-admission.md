@@ -102,10 +102,11 @@ admission `source_partition`. It runs only under a verified dashboard step-up
 (bu-dhloi1.5) bound to kind `contain`, the partition digest and the current
 containment state, consumed atomically with the `sw_058`
 `switchboard.source_containments` insert. Without an admitted consumption it
-writes nothing and returns the open-dashboard handoff. The installed step-up
-interface admits only the rule kinds today, so every Contain returns the
-handoff until its trusted installer gains `contain` (bu-dhloi1.29, the
-activation path).
+writes nothing and returns the open-dashboard handoff. The trusted step-up
+interface admits `contain` (bu-dhloi1.29); `contain_binding` derives the exact
+binding the owner confirms, and a real step-up is spent once with the insert
+(`tests/integration/test_owner_stepup_consumers.py`). No route constructs a
+caller yet, so Contain stays dark.
 
 A containment is permanent evidence: it records the goals already descended
 from the partition (admitted or joined from it, then goals caused by those,
@@ -182,8 +183,9 @@ and inbox row carries a version 1 label (`label_instr`, `label_data`,
   refuses while any goal exists.
 
 `sw_059` (bu-dhloi1.10, REQ-capability-authorization-020) adds the owner's
-tighten-only law (`never` / `always_ask` terms) under the same non-FORCE RLS
-model. The runtime may only read the terms and the generation and append
+law (`never` / `always_ask` terms) under the same non-FORCE RLS model; `sw_060`
+(bu-dhloi1.29) admits a loosening only under a `policy_loosen` dashboard
+step-up consumed in the same transaction. The runtime may only read the terms and the generation and append
 holds. Owner changes run on the trusted owner connection from the dashboard,
 behind its verified session. The broker reads the generation `FOR SHARE`
 inside the goal-locked call transaction. See
