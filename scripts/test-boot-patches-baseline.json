@@ -1,16 +1,4 @@
 {
-  "tests/core/test_core_scheduler.py": 13,
-  "tests/daemon/test_butler_migrations.py": 13,
-  "tests/daemon/test_daemon.py": 25,
-  "tests/daemon/test_daemon_spans.py": 12,
-  "tests/daemon/test_graceful_shutdown.py": 13,
-  "tests/daemon/test_liveness_reporter.py": 16,
-  "tests/daemon/test_module_state.py": 13,
-  "tests/daemon/test_route_execute_authz.py": 14,
-  "tests/daemon/test_scheduler_loop.py": 13,
-  "tests/daemon/test_wire_module_runtime.py": 21,
-  "tests/integration/test_email_outbound_safety.py": 15,
-  "tests/integration/test_telegram_conversation_resume_composition.py": 13,
-  "tests/modules/test_module_config_validation.py": 12,
-  "tests/smoke/test_daemon_lifecycle.py": 15
+  "tests/daemon/test_daemon.py": 1,
+  "tests/daemon/test_route_execute_authz.py": 14
 }
