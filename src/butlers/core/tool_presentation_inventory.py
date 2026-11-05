@@ -1152,7 +1152,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "core",
@@ -2136,7 +2136,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("pending_actions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "approvals",
@@ -3496,7 +3496,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3513,7 +3516,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3530,7 +3536,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3547,7 +3556,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3598,7 +3610,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3615,7 +3630,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "memory",
@@ -4441,7 +4459,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4458,7 +4476,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4475,7 +4493,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4492,7 +4510,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4509,7 +4527,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4526,7 +4544,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4577,7 +4595,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4594,7 +4612,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4736,7 +4754,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "steam",
@@ -4804,7 +4822,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "steam",
@@ -4855,7 +4873,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "telegram",
@@ -5127,7 +5145,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("education.mind_maps",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5161,7 +5179,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         write_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5229,7 +5247,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_maps", "public.entities"),
         write_stores=("education.mind_map_nodes", "public.entities"),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5348,7 +5366,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps", "scheduled_tasks", "state"),
         write_stores=("education.mind_maps", "state"),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5433,7 +5451,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("education.mind_maps", "state"),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5484,7 +5502,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.quiz_responses"),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5556,7 +5574,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "scheduled_tasks"),
         write_stores=("education.mind_map_nodes",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5573,7 +5591,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps", "scheduled_tasks"),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5590,7 +5608,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "state"),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5680,7 +5698,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes", "education.mind_maps"),
         write_stores=("education.mind_map_nodes",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5714,7 +5732,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.analytics_snapshots",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5731,7 +5749,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.analytics_snapshots",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -6587,7 +6605,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("finance",),
     ),
     *_declare(
         "finance",
@@ -6969,7 +6987,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7285,7 +7306,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7392,7 +7416,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7475,7 +7502,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7534,7 +7564,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7971,7 +8004,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("verdicts",),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "lifestyle",
@@ -7994,7 +8027,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("taste_signals", "verdicts", "works"),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "lifestyle",
@@ -8011,7 +8044,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("taste_signals", "verdicts", "works"),
         write_stores=(),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=("routine",),
     ),
     *_declare(
         "lifestyle",
@@ -9763,7 +9796,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("switchboard.butler_registry",),
         write_stores=("switchboard.butler_registry", "switchboard.butler_registry_eligibility_log"),
         recipient_params=RecipientParameters(),
-        categories=ALL_CATEGORIES,
+        categories=(),
     ),
     *_declare(
         "switchboard",
@@ -10520,6 +10553,62 @@ CATEGORY_SPECS = MappingProxyType(
         "telegram": _spec("module-telegram"),
         "travel": _spec("butler-travel"),
         "whatsapp": _spec("butler-messenger"),
+    }
+)
+
+
+#: Why each declaration narrower than ALL_CATEGORIES is safe: the output fields it
+#: returns, all structured with no owner, LLM or third-party free text (notes,
+#: memos, descriptions, typed titles, identity fields such as display and real
+#: names, message bodies, or a raw provider payload
+#: that can carry owner-named or third-party text, such as Spotify playlists).
+#: Any such field keeps all six, as do finance category labels (owner free text)
+#: and merchant, payee or service names (a pharmacy or clinic reveals health),
+#: and third-party catalog titles (works, games, achievements). Dated owner
+#: activity is routine. A contract test pins this set.
+NARROWED_CATEGORIES = MappingProxyType(
+    {
+        "learn_merchant_categories": "upserted count, as_of",
+        "measurement_delete": "deleted boolean",
+        "meal_delete": "deleted boolean",
+        "research_delete": "deleted boolean",
+        "symptom_delete": "deleted boolean",
+        "nutrition_summary": "calorie and macro totals and daily averages, meal count",
+        "health_hr_history": "daily heart-rate mean/min/max/count, summary, trend slope",
+        "health_hrv_history": "daily HRV mean/min/max/count, average RMSSD, coverage, trend",
+        "health_spo2_history": "daily SpO2 average/min/max, summary",
+        "health_breathing_rate_history": "daily breathing-rate mean/min/max/count, summary",
+        "health_activity_summary": "daily steps, distance, floors, activity minutes, averages",
+        "health_vo2_max_latest": "VO2 max value, range, midpoint, measured_at",
+        "taste_add_verdict": "verdict id, created_at",
+        "taste_backfill_ledger": "works and signals created counts",
+        "taste_get_summary": "work, signal and verdict counts by code-written kind",
+        "analytics_get_snapshot": "fixed mastery/retention/velocity metrics, time-of-day spread",
+        "analytics_get_trend": "snapshot rows of the same fixed metrics",
+        "curriculum_replan": "map id, node and edge counts, status",
+        "diagnostic_complete": "per-node quality and inferred mastery, counts, frontier rank",
+        "mastery_get_map_summary": "node and status counts, average mastery, struggling node ids",
+        "mind_map_create": "map id",
+        "mind_map_edge_delete": "no value",
+        "mind_map_node_create": "node id, entity id",
+        "spaced_repetition_record_response": "interval, ease, repetitions, next_review_at",
+        "spaced_repetition_schedule_cleanup": "removed count",
+        "teaching_flow_abandon": "no value",
+        "teaching_flow_start": "status, map id, session count, started_at, last_session_at",
+        "spotify_play": "status",
+        "spotify_pause": "status",
+        "spotify_skip_next": "status",
+        "spotify_skip_previous": "status",
+        "spotify_seek": "status, position_ms",
+        "spotify_set_volume": "status, volume_percent",
+        "spotify_save_tracks": "status, count",
+        "spotify_remove_saved_tracks": "status, count",
+        "steam_get_player_level": "player level",
+        "steam_get_current_players": "public player count",
+        "steam_resolve_vanity_url": "steam id, vanity url",
+        "module.states": "module names and enable/health states",
+        "list_butlers": "registry rows: name, endpoint, modules, liveness and eligibility",
+        "pending_action_count": "pending-action totals by status",
     }
 )
 
