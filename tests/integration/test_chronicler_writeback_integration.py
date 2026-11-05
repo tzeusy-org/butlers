@@ -41,6 +41,17 @@ async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
     from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
 
     pool = await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
+    # These tests hand-seed completed rollups, not a replay workload. Establish
+    # the same fixed control state before any evidence rows or producer calls.
+    assert await pool.fetchval("SELECT count(*) FROM daily_repair_days") == 0
+    control = await pool.fetchrow("SELECT blocked_reason FROM daily_repair_control WHERE singleton")
+    assert control is not None and control["blocked_reason"] is None
+    await pool.execute(
+        "UPDATE daily_repair_control SET timezone=$1, closed_through=$2, "
+        "replay_ack=replay_epoch WHERE singleton",
+        "UTC",
+        _DAY,
+    )
     await seed_source_registry(pool, sources=INITIAL_SOURCES)
     return pool
 

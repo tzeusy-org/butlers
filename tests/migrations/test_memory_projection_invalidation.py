@@ -856,3 +856,98 @@ def test_unrelated_role_cannot_execute_even_with_public_schema_access(
             conn.execute(text(f'DROP OWNED BY "{role}"'))
             conn.execute(text(f'DROP ROLE "{role}"'))
         admin.dispose()
+
+
+def _chronicler_admin_function_state(conn):
+    rows = (
+        conn.execute(
+            text(
+                "SELECT p.oid, p.proname, p.proowner, pg_get_functiondef(p.oid) AS body "
+                "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
+                "WHERE n.nspname='chronicler_memory_admin' "
+                "AND p.proname IN ('install_interface','finalize_interface') "
+                "AND p.pronargs=0 ORDER BY p.proname"
+            )
+        )
+        .mappings()
+        .all()
+    )
+    assert len(rows) == 2
+    result = []
+    for row in rows:
+        acl = conn.execute(
+            text(
+                "SELECT a.grantor,a.grantee,a.privilege_type,a.is_grantable "
+                "FROM pg_proc p CROSS JOIN LATERAL "
+                "aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a "
+                "WHERE p.oid=:oid ORDER BY 1,2,3,4"
+            ),
+            {"oid": row["oid"]},
+        ).all()
+        result.append((row["proname"], row["proowner"], row["body"], tuple(acl)))
+    return result
+
+
+@pytest.mark.parametrize("function", ["install_interface", "finalize_interface"])
+def test_chronicler_admin_bootstrap_refuses_wrong_function_owner(postgres_container, function):
+    # Function ownership is database-local; no cluster role is created or changed.
+    import psycopg2.errors
+
+    name = migration_db_name()
+    url = create_migrated_test_db(postgres_container, name, ["core"])
+    engine = create_engine(url)
+    admin_url = migration_bootstrap_db_url(postgres_container, name)
+    admin = create_engine(admin_url)
+    signature = f"chronicler_memory_admin.{function}()"
+    original_owner = None
+    try:
+        with admin.connect() as conn:
+            before = _chronicler_admin_function_state(conn)
+        _bootstrap_migration_prerequisites(admin_url, engine.url.username)
+        with admin.connect() as conn:
+            assert _chronicler_admin_function_state(conn) == before
+        with admin.begin() as conn:
+            original_owner = conn.scalar(
+                text(
+                    "SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid=to_regprocedure(:sig)"
+                ),
+                {"sig": signature},
+            )
+            had_create = conn.scalar(
+                text("SELECT has_schema_privilege(:role,'chronicler_memory_admin','CREATE')"),
+                {"role": engine.url.username},
+            )
+            conn.execute(
+                text(f'GRANT CREATE ON SCHEMA chronicler_memory_admin TO "{engine.url.username}"')
+            )
+            conn.execute(text(f'ALTER FUNCTION {signature} OWNER TO "{engine.url.username}"'))
+            if not had_create:
+                conn.execute(
+                    text(
+                        f'REVOKE CREATE ON SCHEMA chronicler_memory_admin FROM "{engine.url.username}"'
+                    )
+                )
+            tampered = _chronicler_admin_function_state(conn)
+            assert next(row[1] for row in tampered if row[0] == function) != next(
+                row[1] for row in before if row[0] == function
+            )
+        with pytest.raises(
+            psycopg2.errors.RaiseException,
+            match="Chronicler memory admin interface function is not owned by the bootstrap role",
+        ):
+            _bootstrap_migration_prerequisites(admin_url, engine.url.username)
+        with admin.connect() as conn:
+            assert _chronicler_admin_function_state(conn) == tampered
+    finally:
+        try:
+            if original_owner is not None:
+                with admin.begin() as conn:
+                    conn.execute(text(f'ALTER FUNCTION {signature} OWNER TO "{original_owner}"'))
+                _bootstrap_migration_prerequisites(admin_url, engine.url.username)
+                with admin.connect() as conn:
+                    assert _chronicler_admin_function_state(conn) == before
+        finally:
+            try:
+                engine.dispose()
+            finally:
+                admin.dispose()

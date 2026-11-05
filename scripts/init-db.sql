@@ -6760,6 +6760,7 @@ DECLARE
     )::name;
     v_bootstrap_is_superuser BOOLEAN;
     v_schema_owner OID;
+    v_bootstrap_owner OID;
 BEGIN
     IF NOT COALESCE((SELECT rolsuper FROM pg_catalog.pg_roles
                      WHERE rolname = current_user), false)
@@ -6798,6 +6799,21 @@ BEGIN
      WHERE namespace.nspname = 'chronicler_memory_admin';
     IF v_schema_owner IS NULL OR NOT COALESCE(v_bootstrap_is_superuser, false) THEN
         RAISE EXCEPTION 'Chronicler memory installer schema is not bootstrap-owned';
+    END IF;
+    SELECT oid INTO STRICT v_bootstrap_owner
+      FROM pg_catalog.pg_roles WHERE rolname = current_user;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema
+          ON admin_schema.oid = admin_function.pronamespace
+        WHERE admin_schema.nspname = 'chronicler_memory_admin'
+          AND admin_function.proname IN ('install_interface', 'finalize_interface')
+          AND admin_function.pronargs = 0
+          AND admin_function.proowner <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION
+            'Chronicler memory admin interface function is not owned by the bootstrap role';
     END IF;
     REVOKE ALL ON SCHEMA chronicler_memory_admin FROM PUBLIC;
 END;
