@@ -112,6 +112,8 @@ async def test_home_job_context_lifecycle():
     async with ctx as c:
         assert c is ctx
         assert isinstance(c.client, httpx.AsyncClient)
+        assert c.client.timeout == httpx.Timeout(30.0, connect=10.0)
+        assert str(c.client.base_url) == "http://ha.local:8123"
         merged = {k.lower(): v for k, v in c.client.headers.items()}
         assert "authorization" in merged
         assert "Bearer mytoken" in merged.get("authorization", merged.get("Authorization", ""))

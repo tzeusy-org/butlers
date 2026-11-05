@@ -7,7 +7,7 @@ startup (type='home_assistant_token'). Credentials are never logged in full.
 Transport layer:
 - REST: httpx.AsyncClient with Bearer token, Content-Type: application/json
 - WebSocket: aiohttp.ClientSession for the HA WebSocket API
-  - Auth flow: auth_required → auth → auth_ok
+  - Auth flow: server greeting → auth → auth_ok
   - Background message loop dispatching event/result/pong
   - Keepalive ping task with missed-pong detection
   - Auto-reconnect with exponential backoff (1s → 60s, with jitter)
@@ -18,7 +18,6 @@ Transport layer:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 import re
@@ -31,14 +30,20 @@ from urllib.parse import quote
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from butlers.connectors.home_assistant_statistics import (
-    VALID_STATISTICS_PERIODS,
-    HAStatisticsClient,
-)
 from butlers.core import approvals_hooks
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
+)
+from butlers.home_assistant_client import (
+    VALID_STATISTICS_PERIODS,
+    HAAuthInvalidError,
+    HAHandshakeProtocolError,
+    HAStatisticsClient,
+    authenticate,
+    decode_ws_text,
+    rest_client,
+    ws_url,
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import get_approval_execution_context
@@ -401,13 +406,8 @@ class HomeAssistantModule(Module):
         )
 
         # --- Create HTTP client ---
-        self._client = httpx.AsyncClient(
-            base_url=self._url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            verify=self._config.verify_ssl,
+        self._client = rest_client(
+            self._url, token, verify_ssl=self._config.verify_ssl, timeout=httpx.Timeout(5.0)
         )
 
         # --- Connect WebSocket and seed entity cache ---
@@ -808,19 +808,9 @@ class HomeAssistantModule(Module):
     # ------------------------------------------------------------------
 
     def _ws_url(self) -> str:
-        """Derive the WebSocket URL from the configured HA base URL.
-
-        ``http://`` → ``ws://``, ``https://`` → ``wss://``.
-        """
+        """Return the shared HA WebSocket endpoint."""
         assert self._url is not None
-        url = self._url.rstrip("/")
-        if url.startswith("https://"):
-            ws_url = "wss://" + url[len("https://") :]
-        elif url.startswith("http://"):
-            ws_url = "ws://" + url[len("http://") :]
-        else:
-            ws_url = url  # already ws:// or wss://
-        return ws_url + "/api/websocket"
+        return ws_url(self._url)
 
     async def _ws_connect_and_seed(self) -> None:
         """Connect WebSocket, authenticate, seed caches, start background tasks.
@@ -884,7 +874,7 @@ class HomeAssistantModule(Module):
         """Open WebSocket connection and complete the HA auth handshake.
 
         HA WebSocket auth flow:
-        1. Server sends: ``{"type": "auth_required", "ha_version": "..."}``
+        1. Server sends: the server greeting
         2. Client sends: ``{"type": "auth", "access_token": "..."}``
         3. Server replies: ``{"type": "auth_ok"}`` or ``{"type": "auth_invalid"}``
 
@@ -915,30 +905,17 @@ class HomeAssistantModule(Module):
         )
 
         try:
-            # Step 1: expect auth_required
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            if msg.get("type") != "auth_required":
-                raise RuntimeError(
-                    f"HomeAssistantModule: expected auth_required, got: {msg.get('type')!r}"
-                )
-
-            # Step 2: send auth
-            await self._ws_connection.send_json({"type": "auth", "access_token": self._token})
-
-            # Step 3: expect auth_ok or auth_invalid
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            msg_type = msg.get("type")
-            if msg_type == "auth_invalid":
-                raise RuntimeError(
-                    "HomeAssistantModule: WebSocket authentication failed (auth_invalid). "
-                    "Check the home_assistant_token in owner entity_info."
-                )
-            if msg_type != "auth_ok":
-                raise RuntimeError(
-                    f"HomeAssistantModule: unexpected auth response type: {msg_type!r}"
-                )
-        except Exception:
-            # Close the dangling connection before propagating to callers.
+            msg = await authenticate(self._ws_connection, self._token)
+        except HAAuthInvalidError:
+            await self._ws_close()
+            raise RuntimeError(
+                "HomeAssistantModule: authentication failed (auth_invalid). "
+                "Check the home_assistant_token in owner entity_info."
+            ) from None
+        except HAHandshakeProtocolError:
+            await self._ws_close()
+            raise RuntimeError("HomeAssistantModule: unexpected authentication response") from None
+        except (Exception, asyncio.CancelledError):
             await self._ws_close()
             raise
 
@@ -1005,21 +982,14 @@ class HomeAssistantModule(Module):
                 except TimeoutError:
                     continue
 
-                if raw.type == aiohttp.WSMsgType.TEXT:
+                if raw.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                     try:
-                        msg: dict[str, Any] = json.loads(raw.data)
-                    except json.JSONDecodeError:
-                        logger.warning("HomeAssistantModule: invalid JSON from WS: %r", raw.data)
+                        messages = decode_ws_text(raw.data)
+                    except ValueError:
+                        logger.warning("HomeAssistantModule: invalid WebSocket JSON withheld")
                         continue
-                    await self._dispatch_ws_payload(msg)
-
-                elif raw.type == aiohttp.WSMsgType.BINARY:
-                    try:
-                        msg = json.loads(raw.data)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        logger.warning("HomeAssistantModule: invalid binary WS message")
-                        continue
-                    await self._dispatch_ws_payload(msg)
+                    for msg in messages:
+                        await self._dispatch_ws_message(msg)
 
                 elif raw.type in (
                     aiohttp.WSMsgType.CLOSE,

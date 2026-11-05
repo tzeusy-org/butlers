@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.connectors.home_assistant_statistics import HAStatisticsError
+from butlers.home_assistant_client import HAStatisticsError
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
