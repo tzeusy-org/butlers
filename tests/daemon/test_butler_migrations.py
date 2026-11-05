@@ -313,14 +313,15 @@ async def _run_daemon_with_migration_tracking(
     butler_dir: Path,
     module: Module,
     *,
-    has_chain: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[str], list[str | None]]:
     """Run the daemon's own migration phases and return (chain_order, schema_list).
 
     The subject is which chains the startup phases pick, not the boot, so the two
-    phases run directly on a DB-free host. The migration runner and the chain probe
-    are the observation points (bu-rvgzmf.2).
+    phases run directly on a DB-free host. The butler chain is the real roster's
+    (``relationship`` has one, ``test-butler`` none). The migration runner is the
+    one observation point: executing the chains is real-PG work covered by the
+    migration suites, and the synthetic module chain has no revision (bu-rvgzmf.2).
     """
     import butlers.lifecycle as lifecycle
     from butlers.db import Database
@@ -341,7 +342,6 @@ async def _run_daemon_with_migration_tracking(
         schema_log.append(schema)
 
     monkeypatch.setattr(lifecycle, "run_migrations", track_migration)
-    monkeypatch.setattr(lifecycle, "has_butler_chain", lambda _name: has_chain)
 
     with patch("butlers.migrations.MODULES_DIR", module_root):
         host = await host_tools(butler_dir, pool=fake_pool())
@@ -362,7 +362,6 @@ async def _run_daemon_with_migration_tracking(
         with (
             patch("butlers.modules.registry.default_registry", return_value=registry),
             patch("butlers.migrations.run_migrations", side_effect=track_migration),
-            patch("butlers.migrations.has_butler_chain", return_value=has_chain),
             patch(
                 "butlers.db.db_params_from_env",
                 return_value={
@@ -392,7 +391,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(
     (tmp_path / "a").mkdir()
     butler_dir = _make_butler_toml(tmp_path / "a", "relationship", modules={"stub_mod": {}})
     call_log, _ = await _run_daemon_with_migration_tracking(
-        butler_dir, StubModule(), has_chain=True, monkeypatch=monkeypatch
+        butler_dir, StubModule(), monkeypatch=monkeypatch
     )
     assert call_log == ["migrate:core", "migrate:relationship", "migrate:stub_mod"]
 
@@ -400,7 +399,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(
     (tmp_path / "b").mkdir()
     butler_dir2 = _make_butler_toml(tmp_path / "b", "test-butler", modules={"stub_mod": {}})
     call_log2, _ = await _run_daemon_with_migration_tracking(
-        butler_dir2, StubModule(), has_chain=False, monkeypatch=monkeypatch
+        butler_dir2, StubModule(), monkeypatch=monkeypatch
     )
     assert call_log2 == ["migrate:core", "migrate:stub_mod"]
 
@@ -410,7 +409,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(
         tmp_path / "c", "relationship", modules={"stub_mod": {}}, db_schema="relationship"
     )
     _, schema_log = await _run_daemon_with_migration_tracking(
-        butler_dir3, StubModule(), has_chain=True, monkeypatch=monkeypatch
+        butler_dir3, StubModule(), monkeypatch=monkeypatch
     )
     assert schema_log == ["relationship", "relationship", "relationship"]
 

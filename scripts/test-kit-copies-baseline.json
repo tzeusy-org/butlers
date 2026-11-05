@@ -1,8 +1,4 @@
 {
-  "roster/switchboard/tests/test_ingest_ingestion_events.py": [
-    "_FakeConn",
-    "_FakePool"
-  ],
   "tests/api/test_butler_detail_blind_spots.py": [
     "_FakePool"
   ],
@@ -44,9 +40,6 @@
   ],
   "tests/core/test_fleet_events.py": [
     "_FakeConnection"
-  ],
-  "tests/core/test_ingestion_events.py": [
-    "_FakePool"
   ],
   "tests/dashboard/test_briefing_attention_contract.py": [
     "_make_pool"
