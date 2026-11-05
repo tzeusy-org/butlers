@@ -5,11 +5,12 @@ Covers memory module chain and relationship butler migration chain integrity.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -21,27 +22,10 @@ _MIGRATIONS_PATH = (
 )
 
 ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
-_MISSING_MODULE = object()
-
-
-def _load_module(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    previous_module = sys.modules.get(name, _MISSING_MODULE)
-    sys.modules[name] = mod
-    try:
-        spec.loader.exec_module(mod)
-    finally:
-        if previous_module is _MISSING_MODULE:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous_module
-    return mod
 
 
 def _load_migrations_module():
-    return _load_module(_MIGRATIONS_PATH, "butlers.migrations")
+    return load_migration(_MIGRATIONS_PATH, "butlers.migrations", register=True)
 
 
 _mod = _load_migrations_module()
@@ -103,9 +87,10 @@ class TestMemoryChainRegistration:
         config = _mod._build_alembic_config(
             "postgresql://unused@127.0.0.1:1/unused", ["memory"], target_schema=target_schema
         )
-        revision = _load_module(
+        revision = load_migration(
             MEMORY_MIGRATIONS_DIR / "015_grant_chronicler_private_memory.py",
             "memory_private_acl_control",
+            register=True,
         )
         output = StringIO()
         with EnvironmentContext(config, None) as environment:
@@ -184,19 +169,11 @@ class TestMemoryChainRegistration:
             ("016_fact_endorsement.py", "mem_016", "mem_015"),
         ]
 
-        def _load_migration(filename: str):
-            filepath = MEMORY_MIGRATIONS_DIR / filename
-            spec = importlib.util.spec_from_file_location(filename.removesuffix(".py"), filepath)
-            assert spec is not None and spec.loader is not None
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod
-
         revisions = []
         chain_map = {}
         for filename, expected_rev, expected_down_rev in _EXPECTED_CHAIN:
             assert (MEMORY_MIGRATIONS_DIR / filename).exists(), f"Missing migration: {filename}"
-            mod = _load_migration(filename)
+            mod = load_migration(MEMORY_MIGRATIONS_DIR / filename)
             assert mod.revision == expected_rev
             assert mod.down_revision == expected_down_rev
             assert mod.depends_on is None
@@ -204,7 +181,7 @@ class TestMemoryChainRegistration:
             revisions.append(mod.revision)
             chain_map[mod.revision] = mod.down_revision
 
-        root = _load_migration(_EXPECTED_CHAIN[0][0])
+        root = load_migration(MEMORY_MIGRATIONS_DIR / _EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
         current = "mem_016"
@@ -241,10 +218,6 @@ class TestRelationshipChainRegistration:
         ("002_align_contacts_schema.py", "rel_002", "rel_001"),
     ]
 
-    @classmethod
-    def _load_migration(cls, filename: str):
-        return _load_module(RELATIONSHIP_MIGRATIONS_DIR / filename, filename.removesuffix(".py"))
-
     def test_relationship_chain_structure_and_metadata(self) -> None:
         """Directory resolves correctly; 002 file is canonical; revisions/labels correct; linear."""
         # Directory resolves
@@ -259,7 +232,7 @@ class TestRelationshipChainRegistration:
         revisions = []
         chain_map = {}
         for filename, expected_revision, expected_down_revision in self._EXPECTED_CHAIN:
-            migration = self._load_migration(filename)
+            migration = load_migration(RELATIONSHIP_MIGRATIONS_DIR / filename)
             assert migration.revision == expected_revision
             assert migration.down_revision == expected_down_revision
             if expected_revision == "rel_001":

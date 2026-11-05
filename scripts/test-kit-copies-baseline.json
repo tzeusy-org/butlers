@@ -121,20 +121,6 @@
   "tests/jobs/test_spend_jobs.py": [
     "_make_pool"
   ],
-  "tests/modules/memory/test_consolidation_runs.py": [
-    "_FakeConn",
-    "_FakePool"
-  ],
-  "tests/modules/test_contact_backfill_atomicity.py": [
-    "_FakeConn",
-    "_FakePool"
-  ],
-  "tests/modules/test_contact_backfill_child_tables.py": [
-    "_FakePool"
-  ],
-  "tests/modules/test_module_google_health.py": [
-    "_FakePool"
-  ],
   "tests/test_benchmark_orchestration.py": [
     "_FakePool"
   ]
