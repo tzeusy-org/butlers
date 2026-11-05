@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.entity_fact_repoint import repoint_facts_on_conn as _repoint_facts_on_conn
 from butlers.modules.memory.tools._helpers import _serialize_row
 
@@ -262,6 +263,7 @@ async def entity_resolve(
     entity_type: str | None = None,
     context_hints: dict[str, Any] | None = None,
     enable_fuzzy: bool = False,
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve an ambiguous string to a ranked list of entity candidates.
 
@@ -317,6 +319,10 @@ async def entity_resolve(
     name_stripped = lookup.strip()
     name_lower = name_stripped.lower()
     hints = context_hints or {}
+    fact_visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="f"
+    )
+    fact_visibility_filter = f" AND {fact_visibility}" if fact_visibility is not None else ""
 
     # Build type filter clause
     type_params: list[Any] = [name_lower]
@@ -402,6 +408,7 @@ async def entity_resolve(
             WHERE (f.entity_id = d.id OR f.object_entity_id = d.id)
               AND f.validity IN ('active', 'fading')
               AND f.invalid_at IS NULL
+              {fact_visibility_filter}
         ) fc ON true
     """
 
@@ -452,11 +459,12 @@ async def entity_resolve(
     ]
     if fuzzy_ids:
         fc_rows = await pool.fetch(
-            """
+            f"""
             SELECT e_id, COUNT(f.id) AS cnt
             FROM UNNEST($1::uuid[]) AS e_id
             LEFT JOIN facts f ON (f.entity_id = e_id OR f.object_entity_id = e_id)
                 AND f.validity IN ('active', 'fading') AND f.invalid_at IS NULL
+                {fact_visibility_filter}
             GROUP BY e_id
             """,
             [uuid.UUID(eid) for eid in fuzzy_ids],
@@ -495,7 +503,9 @@ async def entity_resolve(
     # -------------------------------------------------------------------------
     if hints:
         entity_ids = list(candidates.keys())
-        await _apply_graph_neighborhood_scores(pool, entity_ids, candidates, hints)
+        await _apply_graph_neighborhood_scores(
+            pool, entity_ids, candidates, hints, memory_schema=memory_schema
+        )
 
     # -------------------------------------------------------------------------
     # Step 5: apply domain_scores from context_hints
@@ -584,6 +594,8 @@ async def _apply_graph_neighborhood_scores(
     entity_ids: list[str],
     candidates: dict[str, dict[str, Any]],
     hints: dict[str, Any],
+    *,
+    memory_schema: str | None = None,
 ) -> None:
     """Compute graph neighborhood similarity and boost candidate scores.
 
@@ -614,12 +626,17 @@ async def _apply_graph_neighborhood_scores(
 
     # Fetch facts for all candidate entities in a single query
     uuid_ids = [uuid.UUID(eid) for eid in entity_ids]
+    fact_visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="f"
+    )
+    fact_visibility_filter = f" AND {fact_visibility}" if fact_visibility is not None else ""
     fact_rows = await pool.fetch(
-        """
-        SELECT entity_id, predicate, content
-        FROM facts
-        WHERE entity_id = ANY($1)
-          AND validity IN ('active', 'fading')
+        f"""
+        SELECT f.entity_id, f.predicate, f.content
+        FROM facts AS f
+        WHERE f.entity_id = ANY($1)
+          AND f.validity IN ('active', 'fading')
+          {fact_visibility_filter}
         LIMIT 500
         """,
         uuid_ids,
@@ -660,6 +677,7 @@ async def entity_neighbors(
     max_depth: int = 2,
     predicate_filter: list[str] | None = None,
     direction: Literal["outgoing", "incoming", "both"] = "both",
+    memory_schema: str | None = None,
 ) -> list[dict[str, Any]]:
     """Traverse the entity graph via edge-facts and return neighboring entities.
 
@@ -695,6 +713,12 @@ async def entity_neighbors(
     if not exists:
         raise ValueError(f"entity_id {entity_id!r} does not exist")
 
+    fact_visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="f"
+    )
+    fact_visibility_clause = (
+        f"\n          AND {fact_visibility}" if fact_visibility is not None else ""
+    )
     params: list[Any] = [eid, max_depth]
     pred_clause = ""
     if predicate_filter:
@@ -710,7 +734,7 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
-          AND f.validity IN ('active', 'fading'){pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}"""
         rec_sql = f"""
         SELECT f.object_entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'outgoing'::text AS dir,
@@ -720,7 +744,7 @@ async def entity_neighbors(
         WHERE f.object_entity_id IS NOT NULL
           AND f.validity IN ('active', 'fading')
           AND f.object_entity_id != ALL(n.path)
-          AND n.depth < $2{pred_clause}"""
+          AND n.depth < $2{pred_clause}{fact_visibility_clause}"""
     elif direction == "incoming":
         base_sql = f"""
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
@@ -728,7 +752,7 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity IN ('active', 'fading'){pred_clause}"""
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}"""
         rec_sql = f"""
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
@@ -737,7 +761,7 @@ async def entity_neighbors(
         JOIN facts f ON f.object_entity_id = n.neighbor_id
         WHERE f.validity IN ('active', 'fading')
           AND f.entity_id != ALL(n.path)
-          AND n.depth < $2{pred_clause}"""
+          AND n.depth < $2{pred_clause}{fact_visibility_clause}"""
     else:  # both
         # PostgreSQL permits only one reference to the recursive CTE in the
         # recursive term. Group the two seed directions, then expand both
@@ -748,14 +772,14 @@ async def entity_neighbors(
                1 AS depth, ARRAY[$1::uuid, f.object_entity_id] AS path
         FROM facts f
         WHERE f.entity_id = $1 AND f.object_entity_id IS NOT NULL
-          AND f.validity IN ('active', 'fading'){pred_clause}
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}
         UNION ALL
         SELECT f.entity_id AS neighbor_id, f.predicate, f.content, f.id AS fact_id,
                'incoming'::text AS dir,
                1 AS depth, ARRAY[$1::uuid, f.entity_id] AS path
         FROM facts f
         WHERE f.object_entity_id = $1
-          AND f.validity IN ('active', 'fading'){pred_clause}
+          AND f.validity IN ('active', 'fading'){pred_clause}{fact_visibility_clause}
         )"""
         rec_sql = f"""
         SELECT CASE
@@ -781,7 +805,7 @@ async def entity_neighbors(
                   WHEN f.entity_id = n.neighbor_id THEN f.object_entity_id
                   ELSE f.entity_id
               END != ALL(n.path)
-          AND n.depth < $2{pred_clause}"""
+          AND n.depth < $2{pred_clause}{fact_visibility_clause}"""
 
     sql = f"""
     WITH RECURSIVE neighbors AS (

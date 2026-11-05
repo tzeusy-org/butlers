@@ -122,6 +122,33 @@ Database errors, failed decision persistence and cancellation roll back partial
 writes. Commit uncertainty raises `AdmissionUnavailable`; retrying the same
 durable source resolves any committed association without replenishing budget.
 
+### Owner audio (bu-dhloi1.20, REQ-audio-authorship-001..003)
+
+A transcript is connector-produced text, so an owner sender alone does not make
+it owner input (RFC0038 D5/D18). The accepted-source reader
+(`roster/switchboard/tools/ingestion/audio_admission.py`) recognises speech-derived text
+from the retained provider update (a caption-less Telegram voice/audio/video note
+whose text is not the connector's descriptor) or from any transcript claim, never
+from the words. Such text keeps owner authorship only when the producer's keyed
+`payload.audio_authorship` binding (`butlers.audio_authorship`) verifies under the
+server-held `AUDIO_AUTHORSHIP_KEY` the trusted reader is constructed with, and
+every bound fact matches the accepted row: channel, endpoint, original
+idempotency key and event id, sender, the update's provider media identity, a
+transform declared instruction-free (`ASR_TRANSFORMS`; only the Wyoming ASR
+protocol qualifies, generic HTTP/WebSocket STT does not), the exact stored text,
+a `transcribed` outcome, and an update with no forward, quote, external reply,
+inline-bot (`via_bot`) origin or connector span. Otherwise the owner stays the enclosing sender, the whole
+transcript is fenced as data and the goal starts exposed, so its admitted label
+is the unknown label. Non-owner senders stay third-party whatever their binding
+says. `payload.transcription` is outcome metadata only.
+
+A duplicate or replay of the same original identity resolves to the accepted
+row, so a later binding can neither upgrade authorship nor lower exposure. An
+STT failure keeps the connector's descriptor and named status, with no invented
+words. Dashboard recordings have no ingress yet: any transcript claim on a
+dashboard source fails closed. Without the key (the dark default) no transcript
+verifies, so owner audio admits exposed.
+
 ## Isolation and verification
 
 RFC0038 D6 tracks exposure per invocation. Since `sw_057` (bu-dhloi1.6, S1

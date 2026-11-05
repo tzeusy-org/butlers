@@ -274,6 +274,26 @@ class TestEntityResolve:
         results = await entity_resolve(mock_pool, "eve")
         assert all(r["score"] == _SCORE_EXACT_NAME for r in results)
 
+    async def test_configured_chronicler_resolution_counts_only_readable_facts(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        row = _entity_mock_row(uuid.uuid4(), "Alice", match_type="exact", fact_count=1)
+        mock_pool.fetchval = AsyncMock(return_value=True)
+        mock_pool.fetch = AsyncMock(return_value=[row])
+
+        results = await entity_resolve(
+            mock_pool, identifier="Alice", memory_schema="chronicler_mem"
+        )
+
+        assert results[0]["fact_count"] == 1
+        visibility_lookup = mock_pool.fetchval.await_args.args[0]
+        assert "to_regclass('chronicler_mem.facts_readable')" in visibility_lookup
+        discovery_query = mock_pool.fetch.await_args.args[0]
+        assert "chronicler_mem.facts_readable" in discovery_query
+        assert discovery_query.index("f.invalid_at IS NULL") < discovery_query.index(
+            "chronicler_mem.facts_readable"
+        )
+
     async def test_fact_count_in_return_shape(self, mock_pool: AsyncMock) -> None:
         row = _entity_mock_row(
             uuid.UUID(str(uuid.uuid4())), "Dave", match_type="exact", fact_count=3
@@ -561,6 +581,21 @@ class TestEntityNeighbors:
         mock_pool.fetchval = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="does not exist"):
             await entity_neighbors(mock_pool, ENTITY_STR)
+
+    async def test_configured_chronicler_neighbors_filter_each_recursive_arm(
+        self, mock_pool: AsyncMock
+    ) -> None:
+        mock_pool.fetchval = AsyncMock(side_effect=[1, True])
+        mock_pool.fetch = AsyncMock(return_value=[])
+
+        result = await entity_neighbors(
+            mock_pool, ENTITY_STR, direction="both", memory_schema="chronicler_mem"
+        )
+
+        assert result == []
+        query = mock_pool.fetch.await_args.args[0]
+        assert query.count("chronicler_mem.facts_readable") == 3
+        assert query.index("chronicler_mem.facts_readable") < query.index("ORDER BY")
 
     async def test_result_shape(self, mock_pool: AsyncMock) -> None:
         mock_pool.fetchval = AsyncMock(return_value=1)

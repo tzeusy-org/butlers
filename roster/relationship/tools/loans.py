@@ -237,7 +237,9 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
         embedding_engine = _get_embedding_engine()
 
         await conn.execute(
-            "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+            "UPDATE facts SET validity = 'superseded', invalid_at = $2, dropped_at "
+            "= CASE WHEN validity IN ('superseded', 'expired') THEN dropped_at "
+            "ELSE $2 END WHERE id = $1",
             loan_id,
             now,
         )

@@ -1,7 +1,7 @@
 """Steam play-history projection adapter.
 
 Projects daily playtime aggregates from ``connectors.steam_play_history``
-into Chronicler ``play_episode`` episodes.
+into Chronicler ``play_episode`` evidence. Situational fusion decides counted Play.
 
 Semantics:
 - Each row in ``connectors.steam_play_history`` maps to exactly one
@@ -285,7 +285,7 @@ class SteamPlayAdapter(ProjectionAdapter):
                         title=title,
                         payload=payload,
                         privacy=Privacy.NORMAL,
-                        layer=Layer.ACTIVITY,
+                        layer=Layer.EVIDENCE,
                         confidence=confidence,
                     ),
                 )

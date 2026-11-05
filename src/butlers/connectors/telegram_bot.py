@@ -44,6 +44,14 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
+from butlers.audio_authorship import (
+    AUDIO_AUTHORSHIP_KEY_NAME,
+    TELEGRAM_VOICE,
+    AudioAuthorship,
+    sha256_hex,
+    transform_for_protocol,
+    usable_key,
+)
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
@@ -300,6 +308,11 @@ class TelegramBotConnectorConfig:
     voice_transcription_url: str | None = None
     voice_transcription_protocol: str = "wyoming"
     voice_max_duration_s: int = DEFAULT_MAX_DURATION_S
+
+    # Tier-1 ``AUDIO_AUTHORSHIP_KEY`` resolved at startup through CredentialStore, never the
+    # environment. Absent means transcripts carry no authorship binding, so goal admission
+    # treats them as third-party (REQ-audio-authorship-002).
+    audio_authorship_key: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
@@ -1725,13 +1738,14 @@ class TelegramBotConnector:
 
     async def _transcribe_voice(
         self, msg: dict[str, Any], sender_id: str
-    ) -> tuple[str | None, dict[str, Any]]:
+    ) -> tuple[str | None, dict[str, Any], str | None]:
         """Run the owner voice-note pipeline: gate, bounds, download, transcode, transcribe.
 
-        Returns ``(transcript, payload.transcription)``; ``transcript`` is ``None`` on every
-        fallback row, leaving the ``[Voice message]`` descriptor in place. Audio buffers live only
-        in this frame and are dropped on every exit path; nothing here logs audio or transcript
-        content (telegram-voice-transcription: Unconditional In-Memory-Only Audio Disposal).
+        Returns ``(transcript, payload.transcription, media_sha256)``; ``transcript`` and the
+        audio digest are ``None`` on every fallback row, leaving the ``[Voice message]``
+        descriptor in place. Audio buffers live only in this frame and are dropped on every exit
+        path; nothing here logs audio or transcript content (telegram-voice-transcription:
+        Unconditional In-Memory-Only Audio Disposal).
         """
         status, transcript, result = await self._run_voice_pipeline(msg, sender_id)
         record_outcome(status)
@@ -1746,7 +1760,52 @@ class TelegramBotConnector:
             confidence=result.get("confidence"),
             language=result.get("language"),
         )
-        return transcript, outcome
+        return transcript, outcome, result.get("media_sha256")
+
+    def _audio_authorship(
+        self,
+        msg: dict[str, Any],
+        *,
+        idempotency_key: str,
+        external_event_id: str,
+        sender_id: str,
+        transcript: str,
+        media_sha256: str | None,
+    ) -> dict[str, Any] | None:
+        """Keyed binding of the owner's transcript to its voice note (REQ-audio-authorship-002).
+
+        Only after the pipeline proved owner sender, no forward and a successful transform.
+        ``None`` (no owner authorship at admission) without the credential, the provider media
+        identity, the audio digest, or a declared transform for the configured protocol. The
+        binding is marked even for an unqualified transform: admission, not the producer, decides
+        qualification from the declaration.
+        """
+        key = usable_key(self._config.audio_authorship_key)
+        transform = transform_for_protocol(self._config.voice_transcription_protocol)
+        voice = msg.get("voice")
+        media_ref = voice.get("file_unique_id") if isinstance(voice, dict) else None
+        if (
+            key is None
+            # An inline-bot message is bot content under the owner's name, not owner speech.
+            or msg.get("via_bot")
+            or transform is None
+            or not media_sha256
+            or not isinstance(media_ref, str)
+            or not media_ref
+        ):
+            return None
+        return AudioAuthorship(
+            channel=self._config.channel,
+            endpoint_identity=self._config.endpoint_identity,
+            idempotency_key=idempotency_key,
+            external_event_id=external_event_id,
+            sender_identity=sender_id,
+            source_media=TELEGRAM_VOICE,
+            media_ref=media_ref,
+            media_sha256=media_sha256,
+            transform=transform.id,
+            transcript_sha256=sha256_hex(transcript),
+        ).attest(key)
 
     async def _run_voice_pipeline(
         self, msg: dict[str, Any], sender_id: str
@@ -1798,6 +1857,9 @@ class TelegramBotConnector:
             if len(audio) > MAX_VOICE_BYTES:
                 return status.OVERSIZE, None, {}
 
+            # The digest, never the bytes, outlives this frame: it binds a transcript to the
+            # exact audio it came from (REQ-audio-authorship-002).
+            media_sha256 = sha256_hex(audio)
             fallback = status.TRANSCODE_FAILED
             pcm = await transcode_to_pcm(
                 audio, timeout_s=float(max_duration_s), max_duration_s=max_duration_s
@@ -1825,7 +1887,11 @@ class TelegramBotConnector:
             return (
                 status.TRANSCRIBED,
                 text,
-                {"confidence": result.confidence, "language": result.language},
+                {
+                    "confidence": result.confidence,
+                    "language": result.language,
+                    "media_sha256": media_sha256,
+                },
             )
         except Exception as exc:
             logger.warning(
@@ -2002,6 +2068,8 @@ class TelegramBotConnector:
         - payload.attachments: materialized photo/document blobs, if any
         - payload.transcription: voice-note transcription outcome, for caption-less voice notes
           (the owner's transcript replaces "[Voice message]" when transcription succeeds)
+        - payload.audio_authorship: keyed binding of that transcript to its voice note, only when
+          AUDIO_AUTHORSHIP_KEY is configured (goal admission verifies it; metadata never does)
         - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
         """
         update_id = str(update.get("update_id", "unknown"))
@@ -2076,10 +2144,19 @@ class TelegramBotConnector:
         # A caption-less voice note: the owner's transcript, when there is one, supersedes the
         # [Voice message] descriptor (connector-telegram-bot Tiered Text Extraction).
         transcription: dict[str, Any] | None = None
+        audio_authorship: dict[str, Any] | None = None
         if isinstance(msg.get("voice"), dict) and not msg.get("text") and not msg.get("caption"):
-            transcript, transcription = await self._transcribe_voice(msg, sender_id)
+            transcript, transcription, media_sha256 = await self._transcribe_voice(msg, sender_id)
             if transcript:
                 normalized_text = transcript
+                audio_authorship = self._audio_authorship(
+                    msg,
+                    idempotency_key=idem_key,
+                    external_event_id=update_id,
+                    sender_id=sender_id,
+                    transcript=transcript,
+                    media_sha256=media_sha256,
+                )
 
         payload: dict[str, Any] = {
             "raw": update,
@@ -2089,6 +2166,8 @@ class TelegramBotConnector:
             payload["attachments"] = attachments
         if transcription is not None:
             payload["transcription"] = transcription
+        if audio_authorship is not None:
+            payload["audio_authorship"] = audio_authorship
         # Forwarded and quoted third-party text (RFC 0038 D5). The forwarding owner stays the
         # sender; the span is what starts the goal exposed at admission.
         untrusted_spans = bot_message_spans(msg, normalized_text)
@@ -2487,6 +2566,17 @@ async def run_telegram_bot_connector() -> None:
                 "Telegram approval callbacks disabled: %s is not configured in the "
                 "credential store",
                 APPROVAL_CALLBACK_SECRET_KEY,
+            )
+        audio_authorship_key = await _resolve_telegram_bot_system_credential_from_db(
+            AUDIO_AUTHORSHIP_KEY_NAME
+        )
+        if audio_authorship_key:
+            config = replace(config, audio_authorship_key=audio_authorship_key)
+        elif config.voice_transcription_enabled:
+            logger.warning(
+                "Voice transcripts carry no owner authorship: %s is not configured in the "
+                "credential store",
+                AUDIO_AUTHORSHIP_KEY_NAME,
             )
         approval_callback_connector_token = await _resolve_telegram_bot_system_credential_from_db(
             APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY

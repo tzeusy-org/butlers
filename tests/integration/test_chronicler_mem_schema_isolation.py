@@ -62,17 +62,18 @@ _MEMORY_ONLY_TABLES = {"episode_tombstones", "facts", "rules", "memory_links", "
 
 @pytest.fixture(scope="module")
 def isolated_db_url(postgres_container) -> str:
-    """core + chronicler(domain) into ``chronicler``; memory into ``chronicler_mem``."""
-    return create_migrated_test_db(
+    """Keep core+domain in ``chronicler`` and explicitly prep private memory first."""
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core", "chronicler", "memory"],
-        schemas={
-            "core": "chronicler",
-            "chronicler": "chronicler",
-            "memory": "chronicler_mem",
-        },
+        chains=["core", "chronicler"],
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 def _tables_in_schema(db_url: str, schema: str) -> set[str]:

@@ -834,6 +834,17 @@ Scope: v1-mandatory
 - **THEN** the rows SHALL be demoted exactly once and the replay SHALL return the original receipts with no new writes
 - **AND** the same key presented with a different approved candidate set SHALL be refused, not replayed
 
+### Requirement: Lifecycle drop timestamps preserve truth history
+
+Nullable `facts.dropped_at` and `rules.forgotten_at` SHALL record the existing counted lifecycle transitions, independently of facts' bitemporal `invalid_at` and rules' distinct `retired_at`.
+
+#### Scenario: Duplicate terminal writes do not invent recent drops
+
+- **WHEN** an already superseded/expired fact or forgotten rule is written again
+- **THEN** its dedicated drop timestamp SHALL remain unchanged, including legacy NULL
+- **AND** forward/inverse supersession, entity repoint, roster replacement, decay and correction/plain forget SHALL stamp only a genuine transition inside their existing canonical write
+- **AND** existing goal taint, authority, graph/catalog/archive and transaction semantics SHALL remain unchanged.
+
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.
 - Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).
