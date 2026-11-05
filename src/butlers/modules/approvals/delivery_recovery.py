@@ -489,6 +489,7 @@ class ApprovalDeliveryRepository:
         """Commit the final cancellation-safe marker under action-first locks."""
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_action_then_owner_subject(connection, claim)
                 eligible = await self._lock_and_check_subject(connection, claim)
                 if not eligible:
                     return False
@@ -578,6 +579,9 @@ class ApprovalDeliveryRepository:
         self._validate_result(result)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                # A token decision holds the action, then the owner subject, then this
+                # presentation: settle in that order too, never presentation-first.
+                await self._lock_action_then_owner_subject(connection, claim)
                 current = await connection.fetchrow(
                     """
                     SELECT attempt_count
@@ -763,6 +767,34 @@ class ApprovalDeliveryRepository:
         ):
             approval_delivery_backlog.labels(schema=schema_name, kind=kind).set(value)
         return snapshot
+
+    @staticmethod
+    async def _lock_action_then_owner_subject(connection: Any, claim: DeliveryClaim) -> None:
+        """Take a single card's action row, then its owner-delivery subject (LOCK_ORDER).
+
+        Both stores are touched by the handoff marker and result and by every decision;
+        all of them lock ``pending_actions`` first, so they queue instead of deadlocking.
+        A cohort card has no direct action and no owner-delivery presentation.
+        """
+        action_id = await connection.fetchval(
+            """
+            SELECT pa.id
+              FROM approval_delivery_presentations AS p
+              JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+              JOIN pending_actions AS pa ON pa.id = i.action_id
+             WHERE p.id = $1 AND p.presentation_generation = $2
+             FOR UPDATE OF pa
+            """,
+            claim.presentation_id,
+            claim.presentation_generation,
+        )
+        if action_id is None:
+            return
+        owner_presentation = await owner_presentation_for(
+            connection, claim.presentation_id, claim.presentation_generation
+        )
+        if owner_presentation is not None:
+            await od.lock_subject_of(connection, owner_presentation)
 
     async def _lock_and_check_subject(self, connection: Any, claim: DeliveryClaim) -> bool:
         direct = await connection.fetchrow(

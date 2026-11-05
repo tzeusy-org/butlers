@@ -39,9 +39,13 @@ ledger tables refuses truncation (`42501`) for every role, owner included (the c
 core_293 precedent).
 
 Lock order, for every writer: the authority row (`pending_actions`), then the subject, then
-its presentations and tokens (`owner_delivery.LOCK_ORDER`). A writer that starts from a
-presentation or token reads its `subject_id` unlocked, locks the subject, then the child, so
-a send settlement and a redemption on the same subject cannot deadlock.
+the action's RFC 0023 delivery rows, then the subject's presentations and tokens
+(`owner_delivery.LOCK_ORDER`). Every path that touches both stores takes the action row first:
+decisions (`transition_pending_action` closes the subject before locking RFC 0023 rows), and
+the handoff marker and result (`mark_handoff_started`, `complete_handoff`), which lock the
+card's action and subject before its RFC 0023 presentation. A writer that starts from a
+presentation or token reads its `subject_id` unlocked, locks the subject, then the child. So
+a handoff result, a send settlement and a token decision on one card queue, never deadlock.
 
 ## Tokens
 

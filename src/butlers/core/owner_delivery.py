@@ -354,11 +354,31 @@ async def present(
     return Presentation(row["id"], subject_id, generation, surface, state, tokens)
 
 
-#: Lock order, everywhere: the authority row (held by the caller), then the subject row,
-#: before any of that subject's presentation or token rows is locked or written. The
-#: subject lock serializes every writer of one subject, so they queue instead of
-#: deadlocking (``tests/core/test_owner_delivery_lock_order.py``).
-LOCK_ORDER: Final = ("authority", "subject", "presentation|token")
+#: Lock order, everywhere: the authority row (``pending_actions``, held by the caller),
+#: then the subject row, then any RFC 0023 delivery row of that action, and only then the
+#: subject's presentation or token rows. Every path that touches both stores (decisions,
+#: handoff start and result) takes the authority row first, so they queue instead of
+#: deadlocking (``tests/core/test_owner_delivery_lock_order.py`` and the PG races in
+#: ``tests/integration/test_owner_delivery_ledger.py``).
+LOCK_ORDER: Final = ("authority", "subject", "rfc0023", "presentation|token")
+
+
+async def lock_subject_of(conn: Any, presentation_id: UUID) -> bool:
+    """Lock the subject of ``presentation_id`` only; ``False`` if there is none.
+
+    For callers that hold the authority row and must take the subject before touching
+    another store's rows (the RFC 0023 handoff), keeping :data:`LOCK_ORDER` global.
+    """
+    subject_id = await conn.fetchval(
+        "SELECT subject_id FROM public.owner_delivery_presentations WHERE id = $1",
+        presentation_id,
+    )
+    if not isinstance(subject_id, UUID):
+        return False
+    locked = await conn.fetchval(
+        "SELECT id FROM public.owner_delivery_subjects WHERE id = $1 FOR UPDATE", subject_id
+    )
+    return locked is not None
 
 
 async def _lock_subject_then_presentation(conn: Any, presentation_id: UUID) -> tuple[Any, Any]:
@@ -801,6 +821,7 @@ async def record_holding_reason(conn: Any, subject_id: UUID, receipt: dict[str, 
 __all__ = [
     "ACTIONS",
     "LOCK_ORDER",
+    "lock_subject_of",
     "append_receipt",
     "DeliveryInputs",
     "delivery_inputs",

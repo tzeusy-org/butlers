@@ -147,16 +147,20 @@ async def _redeem(
     digest: str | None = None,
     calls: list[str] | None = None,
     expect: str | None = None,
+    before_decide: Any = None,
 ) -> od.Redemption:
     """Redeem inside the authority transaction, deciding through the real approvals ops.
 
     ``expect`` is the action the caller's route stands for; by default the token's own
-    (the routes derive it the same way before redeeming).
+    (the routes derive it the same way before redeeming). ``before_decide`` is awaited
+    while the action and subject locks are held, to interleave a competing transaction.
     """
 
     async def decide(conn: Any, verb: str) -> dict[str, Any]:
         if calls is not None:
             calls.append(verb)
+        if before_decide is not None:
+            await before_decide()
         op = approvals_ops.approve_action if verb == "approve" else approvals_ops.reject_action
         result = await op(conn, action_id=str(action_id), actor_id="dashboard:rest-api")
         if "error" in result:
@@ -747,6 +751,88 @@ async def test_settling_a_send_and_redeeming_concurrently_never_deadlock(pool) -
         )
         assert not any(isinstance(r, BaseException) for r in results), results
         assert results[1].outcome == "won"
+
+
+class _HeldHandoff(_Runtime):
+    """A provider call that reports in only when the test releases it."""
+
+    def __init__(self, result: HandoffResult) -> None:
+        super().__init__(result)
+        self.handed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handoff(self, claim: DeliveryClaim, envelope: dict[str, Any]) -> HandoffResult:
+        self.envelopes.append(envelope)
+        self.handed.set()
+        await self.release.wait()
+        return self.result
+
+
+async def test_handoff_result_and_token_reject_on_one_card_never_deadlock(pool) -> None:
+    """complete_handoff takes the action first, as decisions do (LOCK_ORDER).
+
+    The reject holds the action and subject, then (in transition_pending_action) needs
+    the RFC 0023 presentation. The handoff result is released inside that window: a
+    presentation-first complete_handoff would hold the RFC 0023 row and wait for the
+    subject, a cycle PostgreSQL aborts as a deadlock.
+    """
+    await _enable(pool)
+    action_id = await _park(pool)
+    runtime = _HeldHandoff(HandoffResult("confirmed", provider_reference="81"))
+    worker = ApprovalDeliveryWorker(
+        ApprovalDeliveryRepository(pool), ApprovalDeliveryRenderer(), runtime
+    )
+    delivering = asyncio.create_task(worker.process_one())
+    await asyncio.wait_for(runtime.handed.wait(), 10)
+    rfc_state = await pool.fetchval(
+        "SELECT p.state FROM approval_delivery_presentations p "
+        "JOIN approval_delivery_intents i ON i.id = p.intent_id WHERE i.action_id = $1",
+        action_id,
+    )
+    assert rfc_state == "handoff_started"
+    reject = next(
+        a["callback_token"]
+        for a in runtime.envelopes[0]["actions"]
+        if a.get("callback_token", "").startswith("od1:") and a.get("verb") == "reject"
+    )
+
+    async def release_the_result_mid_decision() -> None:
+        runtime.release.set()
+        await asyncio.sleep(0.5)  # complete_handoff now runs and blocks on a lock
+
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            _redeem(
+                pool,
+                action_id,
+                reject,
+                surface="telegram",
+                expect="reject",
+                before_decide=release_the_result_mid_decision,
+            ),
+            delivering,
+            return_exceptions=True,
+        ),
+        20,
+    )
+    assert not any(isinstance(r, BaseException) for r in results), results
+    assert results[0].outcome == "won" and results[1] is True
+    assert await _state(pool, action_id) == ("rejected", "decided", 2)
+    settled = await pool.fetchrow(
+        "SELECT p.state AS rfc_state, a.outcome FROM approval_delivery_presentations p "
+        "JOIN approval_delivery_intents i ON i.id = p.intent_id "
+        "JOIN approval_delivery_attempts a ON a.presentation_id = p.id "
+        "AND a.outcome <> 'started' WHERE i.action_id = $1",
+        action_id,
+    )
+    # The decision cancelled the in-flight card; the late result is still receipted.
+    assert dict(settled) == {"rfc_state": "cancelled", "outcome": "confirmed"}
+    card = await pool.fetchrow(
+        "SELECT p.state, p.provider_ref FROM public.owner_delivery_presentations p "
+        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id WHERE s.source_ref = $1",
+        str(action_id),
+    )
+    assert dict(card) == {"state": "sent", "provider_ref": "81"}
 
 
 async def test_minted_tokens_stay_redeemable_after_the_flag_is_turned_off(pool) -> None:
