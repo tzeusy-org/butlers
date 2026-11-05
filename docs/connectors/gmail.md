@@ -8,7 +8,7 @@
 
 The Gmail connector (`src/butlers/connectors/gmail.py`) ingests new Gmail emails in near real-time using the Gmail API's watch/history delta flow. It supports both polling-based and Pub/Sub push-based ingestion, historical backfill, tiered ingestion policy, label filtering, attachment handling, and multi-account concurrent operation.
 
-The connector is implemented by `GmailConnectorRuntime`, managed by a `GmailConnectorManager` that supports dynamic multi-account discovery and lifecycle management.
+The connector is implemented by `GmailConnectorRuntime`, managed by a `GmailAccountSource` that supports dynamic multi-account discovery and lifecycle management.
 
 ## Live Ingestion Models
 
@@ -209,7 +209,7 @@ Multiple Gmail connectors can run concurrently, isolated per mailbox:
 - Each instance has a unique auto-resolved endpoint identity.
 - Each instance has its own DB-backed cursor.
 - Each instance MAY use different label filters.
-- The `GmailConnectorManager` periodically rescans for new accounts (default every 300 seconds).
+- The `GmailAccountSource` periodically rescans for new accounts (default every 300 seconds).
 
 ## Environment Variables
 
@@ -303,7 +303,7 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 ## Implementation Notes
 
 - `run_gmail_connector` discovers accounts from `public.google_accounts` and resolves each account's
-  Google OAuth credentials through `GmailConnectorManager._resolve_credentials_for_account` and
+  Google OAuth credentials through `GmailAccountSource._resolve_credentials_for_account` and
   `load_google_credentials`. App credentials come from `butler_secrets` through `CredentialStore`;
   the refresh token comes from the account's companion entity in `public.entity_info`. OAuth
   credentials never fall back to environment variables. `_create_shared_db_pool` keeps the
@@ -342,3 +342,9 @@ rescan interval remain separate. Account metadata overrides process defaults;
 OAuth credentials still come from the injected DB-backed resolver, and account
 workers keep health port zero. Static provider `gmail` and channel `email` come
 from the canonical descriptor, not identity environment variables.
+
+`GmailAccountSource` uses the shared `GoogleAccountFleet` supervisor. Its account
+loops retain Gmail discovery, Pub/Sub configuration, cursor identity and health
+semantics. Token refresh uses the shared locked cache and sixty-second expiry
+margin; cached reads do not emit a refresh-success metric. The token-endpoint
+provenance check still distinguishes refresh-grant failures from data API errors.

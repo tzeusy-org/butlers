@@ -427,3 +427,16 @@ preserving each entrypoint's boolean rules and validation order; per-account
 metadata, DB-resolved credentials and account health port zero are unchanged.
 Spotify no longer carries its two unused identity settings. S4 health-kit,
 service/bind and deployment work remains required and unfinished.
+
+### Google account supervision
+
+Gmail, Calendar and Drive use source adapters over `GoogleAccountFleet` for
+account reconciliation, periodic rescans, SIGHUP/manual reload, and owned
+shutdown. Each adapter retains its scope filter, account configuration, cursor
+and health/heartbeat behavior; Calendar still restarts dead account loops.
+Reconciliation is serialized so manual reload cannot race the timer. Startup
+errors and cancellation close already-owned loops and source resources.
+
+The Gmail, Calendar, Drive and Health processes remain four separate Deployments.
+Combining those Deployments is deferred; shared token or fleet code does not
+change their deployment, consent, database or credential boundaries.
