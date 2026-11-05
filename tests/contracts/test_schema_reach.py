@@ -774,6 +774,13 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         for table in ("budgets", "effects", "goals", "invocations")
     },
     (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.broker_refusals",
+    ): (
+        "sanctioned:RFC-0038: D7 durable broker refusal records in the Switchboard-owned "
+        "ledger (sw_056); qualified SQL allocated to capability_broker/ledger.py (bu-m1u7zy.12)"
+    ),
+    (
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",

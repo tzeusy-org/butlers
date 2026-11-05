@@ -37,7 +37,7 @@ from .contracts import (
     Reservation,
 )
 from .domains import DomainReceipt, Domains, ParkReceipt
-from .ledger import BrokerLedger
+from .ledger import UNPUBLISHED_CAPABILITY, BrokerLedger
 from .policy import decide, listable
 from .recipients import classify_recipients
 
@@ -160,21 +160,53 @@ class Broker:
     async def call(
         self, goal_id: UUID, token: str, name: str, arguments: dict[str, Any]
     ) -> BrokerResult:
-        self._require_available()
+        principal: Principal | None = None
         try:
-            # A detached snapshot: nothing can change the arguments after the digest.
-            args = parse_json_object(canonical_bytes(arguments))
-        except InvalidArguments:
-            raise BrokerRefused(Reason.POLICY) from None
-        args_digest = arguments_digest(args)
-        async with self._transaction() as ledger:
-            principal = await ledger.authenticate(goal_id, token)
-            reserved = await self._authorize(ledger, principal, name, args, args_digest)
-        if isinstance(reserved, BrokerRefused):
-            raise reserved
-        if reserved.decision.disposition is Disposition.PARK:
-            return await self._park(reserved, args)
-        return await self._forward(reserved, args)
+            self._require_available()
+            try:
+                # A detached snapshot: nothing can change the arguments after the digest.
+                args = parse_json_object(canonical_bytes(arguments))
+            except InvalidArguments:
+                raise BrokerRefused(Reason.POLICY) from None
+            args_digest = arguments_digest(args)
+            async with self._transaction() as ledger:
+                principal = await ledger.authenticate(goal_id, token)
+                reserved = await self._authorize(ledger, principal, name, args, args_digest)
+            if isinstance(reserved, BrokerRefused):
+                raise reserved
+            if reserved.decision.disposition is Disposition.PARK:
+                return await self._park(reserved, args)
+            return await self._forward(reserved, args)
+        except BrokerRefused as refusal:
+            await self._record_refusal(principal, name, refusal)
+            raise
+
+    async def _record_refusal(
+        self, principal: Principal | None, name: str, refusal: BrokerRefused
+    ) -> None:
+        """Durable D7 record in its own transaction: the call's own rolled back.
+
+        A record that cannot be written never changes the refusal the session
+        sees; the content-blind log line in ``_refused`` remains.
+        """
+        try:
+            async with self._transaction() as ledger:
+                recorded = await self._catalog_identity(ledger, name)
+                await ledger.record_refusal(principal, recorded, refusal.reason, refusal.effect_id)
+        except BrokerRefused:
+            logger.warning("broker refusal record unavailable reason=%s", refusal.reason.value)
+
+    async def _catalog_identity(self, ledger: BrokerLedger, name: str) -> str:
+        """The requested name if the live catalog publishes it, else a fixed marker.
+
+        A refused name is session-chosen text; an immutable record keeps only a
+        published capability identity (D17: refusal records stay content-blind).
+        """
+        try:
+            catalog = await self._live_catalog.load(ledger.connection)
+        except Exception:
+            return UNPUBLISHED_CAPABILITY
+        return name if catalog.get(name) is not None else UNPUBLISHED_CAPABILITY
 
     async def _authorize(
         self, ledger: BrokerLedger, principal: Principal, name: str, args, args_digest: str

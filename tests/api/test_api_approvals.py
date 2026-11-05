@@ -3582,3 +3582,47 @@ async def test_reply_template_drafts_are_owner_session_only_and_never_active(app
             json={"tool_name": "telegram_send_message", "tool_args": {"chat_id": "1"}},
         )
         assert forged.status_code == 404
+
+
+async def test_list_actions_filters_by_goal_and_returns_its_lineage(app):
+    """bu-m1u7zy.12: the dashboard can list one goal's approvals with their lineage."""
+    goal_id, invocation_id = uuid4(), uuid4()
+    row = _make_action(tool_name="email_send_message")
+    row.update(
+        goal_id=goal_id,
+        goal_invocation_id=invocation_id,
+        goal_depth=1,
+        goal_exposed=True,
+        goal_origin="owner",
+    )
+    app, conn = _app_with_mock_db(app, fetch_rows=[row], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions", params={"goal_id": str(goal_id)})
+        bad = await client.get("/api/approvals/actions", params={"goal_id": "not-a-goal"})
+    assert resp.status_code == 200, resp.text
+    [item] = resp.json()["data"]
+    assert item["goal"] == {
+        "goal_id": str(goal_id),
+        "invocation_id": str(invocation_id),
+        "depth": 1,
+        "exposed": True,
+        "origin": "owner",
+    }
+    [(count_sql, *count_args)] = [
+        call.args for call in conn.fetchval.await_args_list if "COUNT(*)" in call.args[0]
+    ]
+    list_sql, *list_args = conn.fetch.await_args.args
+    for sql, args in ((count_sql, count_args), (list_sql, list_args)):
+        assert "goal_id = $1" in sql and args == [goal_id]
+    assert bad.status_code == 422
+
+
+async def test_list_actions_without_goal_lineage_has_no_goal_block(app):
+    app, _ = _app_with_mock_db(app, fetch_rows=[_make_action()], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/approvals/actions")
+    assert resp.json()["data"][0]["goal"] is None

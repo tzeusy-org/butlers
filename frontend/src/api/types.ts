@@ -3572,6 +3572,17 @@ export interface ApprovalAction {
    */
   push_failed?: boolean;
   delivery?: ApprovalDeliveryTruth | null;
+  /** RFC 0038 lineage of a broker-parked effect; null for any other action. */
+  goal?: ApprovalGoalLineage | null;
+}
+
+/** The goal, invocation, depth, exposure and origin that parked an action. */
+export interface ApprovalGoalLineage {
+  goal_id: string;
+  invocation_id: string;
+  depth: number;
+  exposed: boolean;
+  origin: "owner" | "obligation" | "third_party" | "staffer";
 }
 
 /**
@@ -3884,6 +3895,8 @@ export interface ApprovalActionParams {
   tool_name?: string;
   status?: string;
   butler?: string;
+  /** Only actions this capability-broker goal parked. */
+  goal_id?: string;
   offset?: number;
   limit?: number;
 }

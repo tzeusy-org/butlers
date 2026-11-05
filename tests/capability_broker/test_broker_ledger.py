@@ -9,6 +9,7 @@ runs as ``butler_switchboard_rw`` under sw_047 RLS; the owning domain
 from __future__ import annotations
 
 import asyncio
+import itertools
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -28,7 +29,7 @@ from butlers.core.goal_admission import Grant, digest, encode_grants
 from butlers.core.tool_catalog import RecipientParameters
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.capability_broker.helpers import capability, notify
-from tests.switchboard.goal_ledger_fixtures import TABLES, codec
+from tests.switchboard.goal_ledger_fixtures import codec, reset_ledger
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -186,7 +187,7 @@ async def world(url, *, catalog=None, signer=True):
             url, server_settings={"search_path": f"{DOMAIN},public"}, **kwargs
         ) as domain,
     ):
-        await owner.execute("TRUNCATE " + ",".join("switchboard." + t for t in TABLES) + " CASCADE")
+        await reset_ledger(owner)
         # Domain rows are keyed by fresh effect ids and rules by fresh targets, so
         # tests never see each other's approvals. Exactly one live owner exists.
         await owner.execute(
@@ -612,3 +613,92 @@ async def test_broker_fails_closed_without_key_ledger_or_catalog(broker_db_url):
         assert w.forwarder.calls == []
         # Positive control: the same goal and token work with every dependency present.
         assert (await w.broker.call(goal, token, SEARCH.identity, {})).status == "returned"
+
+
+async def _refusal_rows(w, goal_id=None):
+    return [
+        tuple(row)
+        for row in await w.owner.fetch(
+            "SELECT goal_id, invocation_id, capability, reason FROM switchboard.broker_refusals "
+            "WHERE goal_id IS NOT DISTINCT FROM $1 ORDER BY created_at, id",
+            goal_id,
+        )
+    ]
+
+
+async def _privilege_state(w) -> dict:
+    """Who the runtime pool really is and what it holds on broker_refusals."""
+    runtime = dict(
+        await w.broker.pool.fetchrow(
+            "SELECT current_user, session_user, r.rolsuper, r.rolbypassrls, r.rolinherit, "
+            "has_table_privilege(current_user, 'switchboard.broker_refusals', 'DELETE') AS del, "
+            "has_table_privilege(current_user, 'switchboard.broker_refusals', 'UPDATE') AS upd "
+            "FROM pg_roles r WHERE r.rolname = current_user"
+        )
+    )
+    table = dict(
+        await w.owner.fetchrow(
+            "SELECT relowner::regrole::text AS owner, relacl::text AS acl, relrowsecurity, "
+            "relforcerowsecurity, current_user AS owner_pool_user "
+            "FROM pg_class WHERE oid = 'switchboard.broker_refusals'::regclass"
+        )
+    )
+    memberships = [
+        tuple(row)
+        for row in await w.owner.fetch(
+            "SELECT m.roleid::regrole::text, m.member::regrole::text, m.inherit_option, "
+            "m.set_option FROM pg_auth_members m "
+            "WHERE m.member = 'butler_switchboard_rw'::regrole "
+            "OR m.roleid = 'butler_switchboard_rw'::regrole"
+        )
+    ]
+    return {"runtime": runtime, "table": table, "memberships": memberships}
+
+
+async def test_every_refused_call_writes_a_durable_lineage_record(broker_db_url):
+    async with world(broker_db_url) as w:
+        grant = _grant(SEARCH, resources=(("account", ("a1",)),))
+        goal = await w.goal(grant, _grant(PAY), max_calls=1)
+        lead, token = await w.invocation(goal, grant, _grant(PAY))
+        assert await w.owner.fetchval("SELECT count(*) FROM switchboard.broker_refusals") == 0
+        for name, args, reason in (
+            (SEARCH.identity, {"account": "a2"}, Reason.RESOURCE),
+            (SEND.identity, {"text": "x"}, Reason.CAPABILITY),
+            (PAY.identity, {}, Reason.CAPABILITY),
+        ):
+            assert (await _refused(w.broker.call(goal, token, name, args))).reason is reason
+        # An unauthenticated call names no lineage it could not prove.
+        stranger = await _refused(w.broker.call(goal, mint_token()[0], SEARCH.identity, {}))
+        assert stranger.reason is Reason.AUTHENTICATION
+        assert await _refusal_rows(w) == [(None, None, SEARCH.identity, "authentication_refused")]
+        # The refusal's own transaction rolled back; its record did not.
+        await w.broker.call(goal, token, SEARCH.identity, {"account": "a1"})
+        budget = await _refused(w.broker.call(goal, token, SEARCH.identity, {"account": "a1"}))
+        assert budget.reason is Reason.BUDGET
+        assert await _refusal_rows(w, goal) == [
+            (goal, lead, SEARCH.identity, Reason.RESOURCE.value),
+            (goal, lead, SEND.identity, Reason.CAPABILITY.value),
+            (goal, lead, PAY.identity, Reason.CAPABILITY.value),
+            (goal, lead, SEARCH.identity, Reason.BUDGET.value),
+        ]
+        # The runtime role may record refusals but never rewrite, erase or
+        # truncate them, even with own-schema DML re-granted (core_001 / init-db
+        # replay), and neither may the owner.
+        await w.owner.execute(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON switchboard.broker_refusals "
+            "TO butler_switchboard_rw"
+        )
+        for pool, statement in itertools.product(
+            (w.broker.pool, w.owner),
+            (
+                "DELETE FROM switchboard.broker_refusals",
+                "UPDATE switchboard.broker_refusals SET reason = 'policy_refused'",
+                "TRUNCATE switchboard.broker_refusals",
+            ),
+        ):
+            try:
+                status = await pool.execute(statement)
+            except asyncpg.InsufficientPrivilegeError:
+                continue
+            pytest.fail(f"{statement!r} ran ({status}); {await _privilege_state(w)}")
+        assert await w.owner.fetchval("SELECT count(*) FROM switchboard.broker_refusals") == 5

@@ -51,6 +51,7 @@ from butlers.api.models.approval import (
     ApprovalDenyRequest,
     ApprovalDetail,
     ApprovalGatedTool,
+    ApprovalGoalLineage,
     ApprovalMetrics,
     ApprovalRule,
     ApprovalRuleCreateRequest,
@@ -583,6 +584,20 @@ def _pending_action_to_api(
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
+        goal=_goal_lineage(action),
+    )
+
+
+def _goal_lineage(action: PendingAction) -> ApprovalGoalLineage | None:
+    """A broker-parked action's lineage; ``legacy`` and non-goal rows carry none."""
+    if action.goal_id is None or action.goal_invocation_id is None:
+        return None
+    return ApprovalGoalLineage(
+        goal_id=str(action.goal_id),
+        invocation_id=str(action.goal_invocation_id),
+        depth=action.goal_depth if action.goal_depth is not None else 0,
+        exposed=bool(action.goal_exposed),
+        origin=action.goal_origin,  # type: ignore[arg-type]  # approvals_020 CHECK
     )
 
 
@@ -879,6 +894,9 @@ async def list_actions(
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
     origin: str | None = Query(default=None),
+    goal_id: UUID | None = Query(
+        default=None, description="Only actions a capability-broker goal parked (RFC 0038)."
+    ),
     *,
     db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
@@ -932,6 +950,11 @@ async def list_actions(
     if origin is not None:
         conditions.append(f"origin = ${idx}")
         args.append(origin)
+        idx += 1
+
+    if goal_id is not None:
+        conditions.append(f"goal_id = ${idx}")
+        args.append(goal_id)
         idx += 1
 
     if since is not None:

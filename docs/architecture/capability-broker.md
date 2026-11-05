@@ -129,6 +129,26 @@ with the `action_cancelled` delivery reason, admitted by `approvals_022`, so
 approved, never-executed ones become `abandoned`. An action whose effect was
 dispatched or settled is never touched (D14).
 
+## Refusal records and the goal filter (bu-m1u7zy.12)
+
+A refused `tools/call` rolls back its own transaction, so `Broker.call` then
+writes one row to `switchboard.broker_refusals` (`sw_056`) in a transaction of
+its own: the closed reason, the requested capability, the effect id a
+duplicate refusal names, and the goal and invocation only when the bearer token
+resolved. The capability is kept only when the live catalog publishes it;
+anything else, including any session-chosen text, is stored as the fixed
+`<unpublished>` marker, and a CHECK admits nothing else. Nothing else from the
+call is stored. The runtime role can insert and read. A statement-level trigger
+refuses every UPDATE, DELETE and TRUNCATE with SQLSTATE 42501, for the runtime
+role and the owner alike. The trigger is
+the guard, not the table grants, because core_001 and init-db.sql replays
+re-grant own-schema DML on every table. If the record cannot be written, the
+session still gets the same refusal, and the log line is still emitted.
+
+`GET /api/approvals/actions?goal_id=<uuid>` lists the actions one goal parked.
+Each action carries a `goal` block (goal, invocation, depth, exposure, origin),
+which is null for actions no goal parked.
+
 ## Fail closed
 
 Without a signing key, catalog source or domain seam the broker refuses every

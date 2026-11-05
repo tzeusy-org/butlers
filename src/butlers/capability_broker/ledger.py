@@ -9,6 +9,7 @@ the goal. No method does network I/O.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -34,6 +35,12 @@ _LIVE_EFFECTS = ("requested", "parked", "approved", "dispatched", "committed", "
 # Effects that have not reached the domain and that a Stop cancels (D11, D14).
 _CANCELLABLE = ("requested", "parked", "approved")
 _ENDED_INVOCATION = ("returned", "failed", "timed_out", "stopped", "escalated")
+# The requested name is session-supplied text. A refusal record keeps it only
+# when it is a catalog identity (``<domain>__<tool>``, which the broker checks
+# against the live catalog before writing). Anything else becomes this marker,
+# so an immutable row never holds free text (D17).
+UNPUBLISHED_CAPABILITY = "<unpublished>"
+_CATALOG_IDENTITY = re.compile(r"[a-z][a-z0-9_]{0,62}__[a-z][a-z0-9_]{0,126}")
 
 
 class BrokerLedger:
@@ -111,6 +118,26 @@ class BrokerLedger:
             goal_id,
             invocation_id,
             list(_ENDED_INVOCATION),
+        )
+
+    # -- refusal records (sw_056) -------------------------------------------------
+
+    async def record_refusal(
+        self,
+        principal: Principal | None,
+        capability: str,
+        reason: Reason,
+        effect_id: UUID | None = None,
+    ) -> None:
+        """One content-blind D7 refusal record, lineage only when authenticated."""
+        await self.connection.execute(
+            "INSERT INTO switchboard.broker_refusals "
+            "(goal_id, invocation_id, capability, reason, effect_id) VALUES ($1, $2, $3, $4, $5)",
+            principal.goal_id if principal else None,
+            principal.invocation_id if principal else None,
+            capability if _CATALOG_IDENTITY.fullmatch(capability) else UNPUBLISHED_CAPABILITY,
+            reason.value,
+            effect_id,
         )
 
     # -- per-call transaction ---------------------------------------------------
