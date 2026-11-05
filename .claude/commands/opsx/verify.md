@@ -29,6 +29,11 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
    - `schemaName`: The workflow being used (e.g., "spec-driven")
    - Which artifacts exist for this change
 
+   If a newly created `single-butler` or `living-specs` change has no local specs, verify its
+   `.openspec.yaml` has the generated `schema` and `created` fields plus `skip_specs: true`. Treat a
+   missing or malformed marker as a verification blocker; do not retrofit it onto a legacy or retained
+   delta change.
+
 3. **Get the change directory and load artifacts**
 
    ```bash
@@ -56,26 +61,20 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
      - Add CRITICAL issue for each incomplete task
      - Recommendation: "Complete task: <description>" or "Mark as done if already implemented"
 
-   **Spec Coverage**:
-   - If delta specs exist in `openspec/changes/<name>/specs/`:
-     - Extract all requirements (marked with "### Requirement:")
-     - For each requirement:
-       - Search codebase for keywords related to the requirement
-       - Assess if implementation likely exists
-     - If requirements appear unimplemented:
-       - Add CRITICAL issue: "Requirement not found: <requirement name>"
-       - Recommendation: "Implement requirement X: <description>"
+   **Contract Coverage**:
+   - If local delta specs exist, extract their requirements and scenarios and compare them with
+     implementation and tests.
+   - If the resolved schema intentionally has no local specs, inspect the affected canonical specs
+     and verify required same-change updates. Missing local specs are not a defect for that schema.
+   - Preserve the resolved schema and any existing designs; do not reinterpret a no-delta marker as
+     evidence of implementation or approval.
 
 6. **Verify Correctness**
 
    **Requirement Implementation Mapping**:
-   - For each requirement from delta specs:
-     - Search codebase for implementation evidence
-     - If found, note file paths and line ranges
-     - Assess if implementation matches requirement intent
-     - If divergence detected:
-       - Add WARNING: "Implementation may diverge from spec: <details>"
-       - Recommendation: "Review <file>:<lines> against requirement X"
+   - For each requirement from local deltas or affected canonical specs, find implementation
+     evidence, note paths and assess whether behavior matches the contract.
+   - If divergence is detected, add a WARNING with the concrete file and requirement reference.
 
    **Scenario Coverage**:
    - For each scenario in delta specs (marked with "#### Scenario:"):
@@ -98,9 +97,9 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
      - If contradiction detected:
        - Add WARNING: "Design decision not followed: <decision>"
        - Recommendation: "Update implementation or revise design.md to match reality"
-   - If no design.md and the single-butler change is eligible to omit it:
-     note the scope evidence and skip only document adherence. Continue full
-     contract, pattern, source, approval, task, test and executing-evidence review.
+   - If no design.md and the resolved `single-butler` scope is eligible to omit it, record the
+     boundary evidence and skip only design adherence. `living-specs` requires design. Continue
+     full contract, source, approval, task, test and executing-evidence review.
 
    **Code Pattern Consistency**:
    - Review new code for consistency with project patterns

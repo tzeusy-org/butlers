@@ -95,7 +95,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
     async def test_req_owner_condition_ledger_005_reconcile_then_resolve_round_trip(
         self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
-        """AC6/REQ-005: open via the MCP tool, close via the MCP tool, verify the row."""
+        """AC6/REQ-owner-condition-ledger-005: open via the MCP tool, close via the MCP tool, verify the row."""
         source = "finance:bill-overdue"
         fingerprint = compute_fingerprint(source, 1, {"bill_id": "roundtrip-utility"})
         creation_metadata = {
@@ -152,7 +152,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
     async def test_req_owner_condition_ledger_005_second_resolution_is_not_found(
         self, tools: dict[str, Any]
     ) -> None:
-        """REQ-005: an already-resolved identity answers not_found, not an error."""
+        """REQ-owner-condition-ledger-005: an already-resolved identity answers not_found, not an error."""
         source = "finance:bill-overdue"
         fingerprint = compute_fingerprint(source, 1, {"bill_id": "double-resolve"})
         await _open_condition(tools, source=source, fingerprint=fingerprint, metadata={})
@@ -170,7 +170,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
     async def test_req_owner_condition_ledger_005_never_observed_identity_is_not_found(
         self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
-        """REQ-005: a fingerprint that was never observed answers not_found and writes nothing."""
+        """REQ-owner-condition-ledger-005: a fingerprint that was never observed answers not_found and writes nothing."""
         source = "finance:bill-overdue"
         fingerprint = compute_fingerprint(source, 1, {"bill_id": "never-observed"})
 
@@ -184,7 +184,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
     async def test_req_owner_condition_ledger_005_invalid_reason_leaves_the_row_untouched(
         self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
-        """REQ-005: an unknown reason is an error AND the active row is byte-identical after."""
+        """REQ-owner-condition-ledger-005: an unknown reason is an error AND the active row is byte-identical after."""
         source = "finance:bill-overdue"
         fingerprint = compute_fingerprint(source, 1, {"bill_id": "invalid-reason"})
         await _open_condition(
@@ -216,13 +216,13 @@ class TestResolveOwnerConditionMcpRoundTrip:
     async def test_req_owner_condition_ledger_006_reserved_key_is_rejected_without_a_write(
         self, tools: dict[str, Any], core_pool: asyncpg.Pool, reserved_key: str
     ) -> None:
-        """A producer may not claim the keys the resolver writes (REQ-006).
+        """A producer may not claim the keys the resolver writes (REQ-owner-condition-ledger-006).
 
         This test replaces a pin on the opposite behaviour. Creation-wins
-        (REQ-004) used to apply to ``resolution_reason``/``evidence_closed``
+        (REQ-owner-condition-ledger-004) used to apply to ``resolution_reason``/``evidence_closed``
         too, so a producer that set one at creation time permanently kept its
         own value and the resolver's closing evidence -- the ``session_id``
-        provenance REQ-005 requires included -- was dropped with no error and
+        provenance REQ-owner-condition-ledger-005 requires included -- was dropped with no error and
         nothing in the returned envelope to show it. The old test pinned that
         loss as a known consequence. Reserving the two keys at this boundary
         makes its premise unreachable: the creation call now fails instead.

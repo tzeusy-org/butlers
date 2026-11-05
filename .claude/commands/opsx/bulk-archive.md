@@ -30,12 +30,12 @@ This skill allows you to batch-archive changes, handling spec conflicts intellig
 
 3. **Batch validation - gather status for all selected changes**
 
-   For each change, recheck the design requirement in
-   `about/heart-and-soul/development.md`. Only an eligible single-butler change
-   can omit design. Cross-butler contract, shared-across-butlers schema or
-   security boundary changes require it; unresolved missing required designs
-   must be completed before archive. Keep existing designs and all normal
-   implementation/sync/verification evidence, regardless of chosen schema.
+   For each change, honor its resolved schema and recheck the actual design requirement.
+   `single-butler` has proposal and tasks with optional design; `living-specs` requires design;
+   cross-butler contracts, shared schemas and security boundaries cannot omit it. Preserve existing
+   designs and all implementation, canonical-spec, sync and verification evidence. For a newly
+   created no-delta change, verify its generated schema/created metadata and `skip_specs: true`; if
+   either is missing or malformed, stop before including that change in the archive batch.
 
    For each selected change, collect:
 
@@ -50,6 +50,7 @@ This skill allows you to batch-archive changes, handling spec conflicts intellig
    c. **Delta specs** - Check `openspec/changes/<name>/specs/` directory
       - List which capability specs exist
       - For each, extract requirement names (lines matching `### Requirement: <name>`)
+      - For a new no-delta schema, verify metadata and required canonical-spec updates
 
 4. **Detect spec conflicts**
 

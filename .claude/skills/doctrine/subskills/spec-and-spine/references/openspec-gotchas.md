@@ -52,20 +52,16 @@ rg -l '^### Requirement: <Name>$' openspec/changes/*/specs/*/spec.md
 ```
 
 If two hit, archive one, rebuild the other from the refreshed baseline, and diff to prove nothing
-else moved. Re-run the grep after each archive. `make check-spec-overwrites` compares bodies against
-a digest-keyed ratchet (`scripts/spec-overwrite-baseline.json`). It catches deletions, not
-contradictions: a broader restatement still reads as preserved.
+else moved. Re-run the grep after each archive. OpenSpec strict validation checks scenario names,
+not requirement-body preservation or conflicts between stale restatements. The former local
+spec-overwrite body ratchet is retired, so compare each active delta against the current canonical
+requirement and review the exact union before archive. A broader restatement can still omit behavior
+while preserving scenario names.
 
-- The guard reads `## MODIFIED` blocks in `openspec/changes/` only. A green run says nothing about a
-  direct baseline edit or a `## REMOVED` block. Reviewers diff those, and any remove/add pair,
-  themselves.
-- Its "MODIFIED ... has no baseline requirement to overwrite" note is not benign: it means no
+- Direct baseline edits and `## REMOVED` blocks need explicit review; strict validation does not
+  prove their intended effect.
+- A "MODIFIED ... has no baseline requirement to overwrite" note is not benign: it means no
   baseline and no sibling ADD, and archive will abort.
-- A ratchet "healing" commit is proven only by rerunning `collect()` from
-  `check_spec_overwrites.py` on the commit and its parent and diffing per record. An entry can
-  vanish because its clause was already gone.
-- A rename orphans ratchet entries keyed on the old scenario name. Edit those records' `scenario`
-  field by hand; `--update-baseline` re-freezes the whole repo.
 
 ## Archive
 
@@ -77,14 +73,16 @@ contradictions: a broader restatement still reads as preserved.
 - Archive revalidates each rebuilt spec in full and stops at the first failure, so fixing one spec
   can reveal the next.
 - `--skip-specs` archives without applying deltas. It exits 0 and proves nothing.
-- The incomplete-task gate counts `- [ ]` checkboxes only. A heading-style `tasks.md` reports
-  "No tasks" and archives unprompted; `make check-countable-tasks` rejects that shape.
+- OpenSpec's incomplete-task gate counts `- [ ]` checkboxes only. A heading-style `tasks.md`
+  reports "No tasks" and can archive without noticing those headings; write countable checkbox
+  tasks. The former local countable-task guard is retired.
 - A change under `openspec/changes/archive/` is not evidence its requirements reached
-  `openspec/specs/`, because many archives were hand `git mv`s.
-  `scripts/check_archived_requirements_landed.py` checks this per requirement. A capability file
-  existing proves nothing; an empty `git log -- openspec/specs/<capability>` means it never landed.
-- `openspec/changes/archive/**` is not a definition source for cited REQ ids; only
-  `openspec/specs/**` and unarchived changes are (`scripts/check_cited_requirements_resolve.py`).
+  `openspec/specs/`, because some archives were hand `git mv`s. Inspect the actual canonical diff
+  and commit when checking that an archive applied its requirements; the former archived-landing
+  guard is retired.
+- `openspec/changes/archive/**` is not a definition source for cited REQ IDs. The repository's
+  `tests/contracts/test_requirement_citations.py` checks test citations against canonical specs and
+  complete retained ADDED/MODIFIED blocks only.
 
 ## Baselines and drift
 

@@ -68,13 +68,14 @@ def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
         tool.write_text(body)
         tool.chmod(0o755)
     prerequisites = (
+        "check-host-policy-selectors",
         "check-lock",
         "lint",
         "check-format",
         "check-for-update-joins",
         "check-em-dashes",
-        "check-spec-overwrites",
-        "check-countable-tasks",
+        "check-requirement-trace",
+        "check-requirement-citations",
         "check-duplicate-names",
         "check-session-links",
     )

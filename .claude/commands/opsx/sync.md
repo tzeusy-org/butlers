@@ -31,7 +31,11 @@ This is an **agent-driven** operation - you will read delta specs and directly e
    - `## REMOVED Requirements` - Requirements to remove
    - `## RENAMED Requirements` - Requirements to rename (FROM:/TO: format)
 
-   If no delta specs found, inform user and stop.
+   If no delta specs are found, check the resolved schema. For a new `single-butler` or
+   `living-specs` change with valid `skip_specs: true`, confirm required canonical-spec updates are
+   already in the source change, report that no sync is needed, and stop. If the new no-delta
+   change lacks `skip_specs: true` or its generated schema/created fields, stop and correct it before
+   proceeding. Do not add this marker to a legacy or retained delta change.
 
 3. **For each delta spec, apply changes to main specs**
 

@@ -148,12 +148,9 @@ def test_readonly_plan_executes_real_predicates_and_never_mutating_aggregate():
         "ruff-check",
         "ruff-format",
         "em-dashes",
-        "spec-overwrites",
-        "countable-tasks",
         "duplicate-names",
-        "archived-landed",
         "owner-emails",
-        "cited-requirements",
+        "requirement-citations",
         "openspec-strict",
     } <= set(names)
     assert all(

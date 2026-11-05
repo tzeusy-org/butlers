@@ -20,27 +20,35 @@ Fast-forward through artifact creation - generate everything needed to start imp
 
    **IMPORTANT**: Do NOT proceed without understanding what the user wants to build.
 
-2. **Create the change directory**
-   First classify the scope under `about/heart-and-soul/development.md`.
-   For a single-butler change that alters no cross-butler contract, schema
-   shared across butlers, or security boundary, proposal + delta specs + tasks
-   suffice: add `--schema single-butler` when omitting design. Otherwise use
-   the default `spec-driven` workflow and include a design. Keep and read
-   existing designs; folder placement alone does not establish eligibility.
+2. **Choose an explicit schema and create the change directory**
+   Classify the actual scope under `about/heart-and-soul/development.md` and determine whether the
+   change is part of a retained multi-PR delta program.
+
+   - New eligible single-butler work with no cross-butler contract, shared schema, or security
+     boundary uses `single-butler` (proposal → tasks; design may be added).
+   - New standalone work requiring a design but no change-local deltas uses `living-specs`
+     (proposal → design → tasks).
+   - Retained multi-PR delta programs stay on `spec-driven` with all current deltas and metadata.
+     Do not retag them or add `skip_specs`.
+
+   Create it with the selected schema explicitly:
    ```bash
-   openspec new change "<name>"
+   openspec new change "<name>" --schema <selected-schema>
    ```
-   This creates a scaffolded change at `openspec/changes/<name>/`.
-   If the change already exists, preserve its artifacts and recheck its scope
-   and selected schema before continuing. Do not delete a design to make it optional.
+   For a new `single-butler` or `living-specs` change, preserve the generated `schema` and `created`
+   values in `.openspec.yaml`, add `skip_specs: true`, and do not create a placeholder `specs/`
+   directory. These schemas use canonical specs as the maintained requirements; update affected
+   canonical requirements in the same source change when required behavior changes. Verify a new
+   no-delta change has its generated schema/created fields and `skip_specs: true` before continuing;
+   if they are missing or malformed, correct this new change first. If the change already exists,
+   preserve all artifacts and metadata and continue it under its resolved schema.
 
 3. **Get the artifact build order**
    ```bash
    openspec status --change "<name>" --json
    ```
-   Parse the JSON to get:
-   - `applyRequires`: array of artifact IDs needed before implementation (e.g., `["tasks"]`)
-   - `artifacts`: list of all artifacts with their status and dependencies
+   Parse `applyRequires` and the schema's artifact dependencies; do not infer a different schema
+   from the project default.
 
 4. **Create artifacts in sequence until apply-ready**
 

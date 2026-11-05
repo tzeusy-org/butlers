@@ -67,7 +67,7 @@ class TestReconcileSnapshotValidation:
     async def test_rejects_metadata_claiming_a_reserved_resolution_key(self, reserved_key: str):
         """REQ-owner-condition-ledger-006: the resolver's keys are not the producer's.
 
-        Creation-wins (REQ-004) is the right rule for producer evidence and the
+        Creation-wins (REQ-owner-condition-ledger-004) is the right rule for producer evidence and the
         wrong one for the keys resolution writes, where it would silently
         discard the closing evidence in favour of whatever the producer put
         there first. Rejecting here is what keeps the two rules compatible.

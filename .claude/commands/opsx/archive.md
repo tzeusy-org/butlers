@@ -22,12 +22,11 @@ Archive a completed change in the experimental workflow.
 
 2. **Check artifact completion status**
 
-   Recheck `about/heart-and-soul/development.md`. Missing design is allowed
-   for an eligible single-butler change, whose `single-butler` schema contains
-   proposal, specs and tasks. A change to a cross-butler contract, schema
-   shared across butlers, or security boundary still needs design; resolve a
-   missing required design before archive rather than treating it as optional.
-   Preserve any existing design and the normal delivery/sync/evidence gates.
+   Recheck `about/heart-and-soul/development.md` and honor the resolved schema. An eligible
+   `single-butler` change has proposal and tasks with optional design; `living-specs` requires design.
+   Cross-butler contracts, shared schemas and security boundaries cannot omit design. Preserve
+   existing designs, canonical-spec updates, delivery evidence and review gates.
+
 
    Run `openspec status --change "<name>" --json` to check artifact completion.
 
@@ -67,6 +66,14 @@ Archive a completed change in the experimental workflow.
    - If already synced: "Archive now", "Sync anyway", "Cancel"
 
    If user chooses sync, execute `/opsx:sync` logic. Proceed to archive regardless of choice.
+
+   **If no delta specs exist:**
+   - For a new `single-butler` or `living-specs` change, verify its generated metadata still has the
+     resolved schema and `skip_specs: true`; do not create placeholder deltas. If the marker or
+     generated schema/created metadata is missing or malformed, stop; do not archive the change as a
+     valid no-delta workflow.
+   - Check that any required canonical-spec update is present in the delivered source change.
+   - Report that no delta-spec sync was needed. Do not infer this path for a retained delta program.
 
 5. **Perform the archive**
 

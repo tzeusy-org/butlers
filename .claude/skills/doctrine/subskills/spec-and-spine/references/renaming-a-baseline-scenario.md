@@ -58,12 +58,11 @@ constrained.
 3. **Rebuild every unarchived `## MODIFIED` block** for that requirement
    against the refreshed baseline. They now omit a name the baseline carries
    and fail `openspec validate --strict` until repointed.
-4. **Repoint the frozen ratchet entries.** `scripts/spec-overwrite-baseline.json`
-   identifies a frozen loss by `(kind, scenario, digest)`, so a scenario
-   rename orphans every entry recorded under the old name and
-   `scripts/check_spec_overwrites.py` goes red. Edit the `scenario` field on
-   exactly those records. Do not run `--update-baseline`, which re-freezes the
-   whole repo and would swallow unrelated regressions.
+4. **Review the exact requirement transition.** Compare the removed and restored
+   requirement blocks and confirm that the intended scenario heading is the only
+   behavioral difference. OpenSpec strict validation checks scenario names but
+   does not prove that requirement bodies were preserved. The former local
+   body-loss ratchet is retired; do not update its removed baseline.
 
 Worked example in the archive:
 `openspec/changes/archive/2026-08-23-rename-fleet-halt-scenario-heading-step-1-retire`
@@ -88,18 +87,16 @@ and `...-step-2-restore`.
   rebuilt, which is real coordination cost when several changes are in flight
   against the same spec. This, not the mechanism, is why prevention is the
   primary advice.
-- **The body-level guard is blind to the whole procedure.**
-  `scripts/check_spec_overwrites.py` reads `## MODIFIED` sections only, so a
-  step-1 `REMOVED` that deletes an entire baseline requirement is invisible to
-  it. Nothing checks that step 2 restores what step 1 removed. That discipline
-  is yours: diff the restored block against the removed one and confirm the
-  heading is the only difference.
+- **No body-loss guard verifies the procedure.** A step-1 `REMOVED` and
+  step-2 `ADDED` pair must be reviewed directly. Diff the restored block against
+  the removed one and confirm that the intended heading change is the only
+  difference; OpenSpec strict validation does not compare the requirement bodies.
 - **If it is the last requirement in the spec**, step 1 deletes the capability's
   whole `spec.md`. Check before removing.
 
 ## Do not hand-edit the baseline instead
 
-Editing `openspec/specs/**/spec.md` directly is the failure mode
-`spec-overwrite-guard` exists to catch, and it collides with any open change at
-archive time. Both steps above go through `openspec archive`, which is what
-makes the baseline edit legitimate.
+Editing `openspec/specs/**/spec.md` directly bypasses the change and its
+review, and it can collide with any open change at archive time. Both steps
+above go through `openspec archive`, which applies the reviewed requirement
+change to the canonical baseline.

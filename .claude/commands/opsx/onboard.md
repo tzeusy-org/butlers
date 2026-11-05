@@ -37,7 +37,7 @@ I'll walk you through a complete change cycle—from idea to implementation—us
 1. Pick a small, real task in your codebase
 2. Explore the problem briefly
 3. Create a change (the container for our work)
-4. Build proposal → specs → tasks, adding design when required or chosen
+4. Build proposal → tasks, proposal → design → tasks, or the retained spec-driven artifact graph
 5. Implement the tasks
 6. Archive the completed change
 
@@ -157,32 +157,38 @@ Now let's create a change to hold our work.
 ```
 ## Creating a Change
 
-A "change" in OpenSpec holds the proposal, delta specs and tasks. A single-butler change needs no design unless it alters a cross-butler contract, a schema shared across butlers, or a security boundary; existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
+OpenSpec keeps canonical requirements in `openspec/specs/`. New single-butler work with no local deltas uses proposal and tasks; `living-specs` adds a required design. Both preserve the generated schema/created metadata and use `skip_specs: true`. Retained multi-PR delta programs stay spec-driven and keep their local deltas. Existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
 
 Let me create one for our task.
 ```
 
 **DO:** Create the change with a derived kebab-case name:
-Classify the actual scope first. Add `--schema single-butler` for an eligible
-single-butler exercise omitting design; use the default `spec-driven` schema
-when design is required or chosen. Existing spec/review/verification and
-owner-approval gates remain; schema readiness alone does not authorize work.
+Classify the actual scope and whether this is a retained multi-PR delta program. Use
+`--schema single-butler` for eligible new single-butler work without local deltas; use
+`--schema living-specs` when design is required but no local deltas are needed; keep
+`--schema spec-driven` for retained delta programs. New no-delta changes preserve their generated
+schema/created metadata and add `skip_specs: true`. Verify those fields and the marker before
+continuing; if they are missing or malformed, correct the new change first. Existing
+spec/review/verification and owner-approval gates remain; schema readiness alone does not authorize work.
 ```bash
-openspec new change "<derived-name>"
+openspec new change "<derived-name>" --schema <selected-schema>
 ```
 
 **SHOW:**
 ```
 Created: `openspec/changes/<name>/`
 
-The folder structure:
+The generated folder depends on the selected schema:
 ```
 openspec/changes/<name>/
+├── .openspec.yaml ← Keep schema/created; add skip_specs: true only for new no-delta schemas
 ├── proposal.md    ← Why we're doing this (empty, we'll fill it)
-├── design.md      ← How we'll build it (only when required or chosen)
-├── specs/         ← Detailed requirements (empty)
+├── design.md      ← Present for living-specs or when otherwise required/chosen
+├── specs/         ← Present only for spec-driven local-delta programs
 └── tasks.md       ← Implementation checklist (empty)
 ```
+Single-butler and living-specs intentionally have no `specs/` directory. Update an affected
+canonical requirement in the source change when required behavior changes.
 
 Now let's fill in the first artifact—the proposal.
 ```
@@ -215,13 +221,14 @@ Here's a draft proposal:
 
 [Bullet points of what will be different]
 
-## Capabilities
+## Canonical Contract Impact
 
-### New Capabilities
+- `openspec/specs/<capability>/spec.md`: [unchanged, updated in this change, or not applicable]
+
+## Local Delta Specs
+
+<!-- Required only for a resolved spec-driven program; new no-delta schemas do not create these. -->
 - `<capability-name>`: [brief description]
-
-### Modified Capabilities
-<!-- If modifying existing behavior -->
 
 ## Impact
 
@@ -244,7 +251,9 @@ Then write the content to `openspec/changes/<name>/proposal.md`.
 ```
 Proposal saved. This is your "why" document—you can always come back and refine it as understanding evolves.
 
-Next up: specs.
+Next, follow the resolved schema: `single-butler` goes to tasks (design may be added),
+`living-specs` goes to design, and `spec-driven` goes to its local delta specs. Do not create
+placeholder specs for either no-delta schema.
 ```
 
 ---
@@ -255,51 +264,25 @@ Next up: specs.
 ```
 ## Specs
 
-Specs define **what** we're building in precise, testable terms. They use a requirement/scenario format that makes expected behavior crystal clear.
+This phase applies only when the resolved schema is `spec-driven` and its proposal declares local
+deltas. Preserve the complete retained multi-PR program and author its actual ADDED/MODIFIED/
+REMOVED/RENAMED requirements with scenarios and trace lines.
 
-For a small task like this, we might only need one spec file.
-```
+For a new `single-butler` or `living-specs` change, skip this phase: those schemas have no
+change-local specs and use the canonical files under `openspec/specs/` as the maintained contract.
+When required behavior changes, update the affected canonical requirement in the same source change.
+Do not add an empty `specs/` directory or use `skip_specs` on a retained delta program.
 
-**DO:** Create the spec file:
-```bash
-mkdir -p openspec/changes/<name>/specs/<capability-name>
-```
-
-Draft the spec content:
-
-```
-Here's the spec:
-
----
-
-## ADDED Requirements
-
-### Requirement: <Name>
-
-<Description of what the system should do>
-
-#### Scenario: <Scenario name>
-
-- **WHEN** <trigger condition>
-- **THEN** <expected outcome>
-- **AND** <additional outcome if needed>
-
----
-
-This format—WHEN/THEN/AND—makes requirements testable. You can literally read them as test cases.
-```
-
-Save to `openspec/changes/<name>/specs/<capability>/spec.md`.
 
 ---
 
 ## Phase 7: Design
 
-For an eligible single-butler change with no design, explain the scope evidence
-and proceed to Phase 8 without creating a placeholder. If the change alters
-a cross-butler contract, shared-across-butlers schema or security boundary,
-complete this phase using `spec-driven`. Read any existing design in either
-case. This omits only the document, not technical judgment or verification.
+For an eligible single-butler change, design is optional. If a new standalone change crosses
+a cross-butler contract, shared schema or security boundary and has no local delta specs, use
+`living-specs` and complete this phase. Retained multi-PR delta programs stay spec-driven. Read any
+existing design in every case; choosing no local deltas does not omit technical judgment or
+verification.
 
 **EXPLAIN:**
 ```
@@ -355,7 +338,8 @@ Finally, we break the work into implementation tasks—checkboxes that drive the
 These should be small, clear, and in logical order.
 ```
 
-**DO:** Generate tasks based on specs and design:
+**DO:** Generate tasks from the proposal and resolved schema. Read the design when present and
+read affected canonical specs for no-delta schemas; read local specs for a spec-driven program:
 
 ```
 Here are the implementation tasks:
@@ -388,7 +372,7 @@ Save to `openspec/changes/<name>/tasks.md`.
 ```
 ## Implementation
 
-Now we implement each task, checking them off as we go. I'll announce each one and occasionally note how the specs/design informed the approach.
+Now we implement each task, checking them off as we go. I'll announce each one and note how the canonical contract, local deltas when present, and design inform the approach.
 ```
 
 **DO:** For each task:

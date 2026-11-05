@@ -122,13 +122,13 @@ Use `/opsx:ff` to fast-forward artifact creation:
 /opsx:ff <service>-integration
 ```
 
-This creates proposal, specs (one per capability), and tasks, plus a design
-when required or chosen. Follow `about/heart-and-soul/development.md`: design
-is required if the integration alters a cross-butler contract, a schema shared
-across butlers, or a security boundary. An eligible single-butler change can
-use the `single-butler` schema without a design; integrations that introduce
-shared account, credential or ingestion contracts must use `spec-driven` and
-include one. Existing designs and all spec/review/verification gates remain.
+Create artifacts for the actual workflow. A new eligible single-butler change without
+local delta specs can use `single-butler`; when the integration requires a design but does not
+need local deltas, use `living-specs`. Retained multi-PR delta programs keep `spec-driven` and
+their existing local requirements. A cross-butler contract, shared schema or security boundary
+requires a design. Keep canonical requirements in `openspec/specs/` and update an affected
+requirement in the source change when observable behavior changes. Read existing designs and
+preserve every spec, review and verification gate.
 
 ## Codex Adapter
 

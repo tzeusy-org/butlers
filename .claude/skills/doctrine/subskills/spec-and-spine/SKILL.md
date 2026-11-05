@@ -112,7 +112,7 @@ Use the OpenSpec workflow commands (installed and kept current by the `openspec`
 `.claude/commands/opsx/`) for the next step:
 
 - `/opsx:explore`: clarify a new capability before writing the change
-- `/opsx:new`: create a new change with proposal, delta specs and tasks; use the project-local `single-butler` schema when eligible to omit design, or `spec-driven` when design is required or chosen
+- `/opsx:new`: create a new change with an explicit schema; use `single-butler` for eligible work without local delta specs, `living-specs` when design is required without local delta specs, and `spec-driven` for retained local-delta programs. Keep canonical requirements current when observable behavior changes.
 - `/opsx:continue`: continue an in-progress change
 - `/opsx:ff`: fast-forward all artifacts needed to start implementing
 - `/opsx:apply`: implement an approved change
