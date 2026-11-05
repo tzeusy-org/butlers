@@ -25,6 +25,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from butlers.whatsapp_bridge_client import (
+    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+    DEFAULT_STANDALONE_BRIDGE_SOCKET,
+    BridgeClient,
+)
+from butlers.whatsapp_bridge_client import (
+    DEFAULT_SHARED_BRIDGE_SOCKET as DEFAULT_SHARED_BRIDGE_SOCKET,
+)
+
 logger = logging.getLogger(__name__)
 
 # The bridge owner has two deliberate deployment modes:
@@ -32,8 +41,6 @@ logger = logging.getLogger(__name__)
 # - compose clients use a named volume mounted at /tmp/wa-bridge.
 # Keep these names explicit so a client default is never mistaken for the standalone
 # listener default (bu-hrfd0).
-DEFAULT_STANDALONE_BRIDGE_SOCKET = "/tmp/wa-bridge.sock"
-DEFAULT_SHARED_BRIDGE_SOCKET = "/tmp/wa-bridge/bridge.sock"
 
 # ---------------------------------------------------------------------------
 # Exit-code classification
@@ -50,7 +57,6 @@ _EXIT_SESSION_INVALID = 2  # whatsmeow invalidated the session
 # "On the order of minutes, not weeks" — long enough that a normal ~15s
 # reconnect never trips it, short enough that a dead link surfaces the same
 # day rather than silently outage for weeks (see bu-5ocmh root cause).
-DEFAULT_INVALIDATED_SESSION_THRESHOLD_S = 300.0
 
 # ---------------------------------------------------------------------------
 # Backoff parameters
@@ -150,108 +156,6 @@ def _jittered_backoff(attempt: int) -> float:
     base = min(_BACKOFF_INITIAL_S * (_BACKOFF_MULTIPLIER**attempt), _BACKOFF_MAX_S)
     jitter = base * _BACKOFF_JITTER_FACTOR
     return base + random.uniform(-jitter, jitter)  # noqa: S311
-
-
-async def _http_post_unix(socket_path: str, path: str) -> dict[str, Any]:
-    """Issue a plain HTTP POST to *path* on the bridge Unix socket.
-
-    Returns the parsed JSON body.  Raises on network or parse errors.
-    Note: HTTP-level error status codes (4xx/5xx) are not raised; callers must
-    inspect the returned dict for error fields from the bridge.
-    """
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        request = (
-            f"POST {path} HTTP/1.0\r\n"
-            f"Host: localhost\r\n"
-            f"Content-Length: 0\r\n"
-            f"Connection: close\r\n"
-            f"\r\n"
-        )
-        writer.write(request.encode())
-        await writer.drain()
-
-        raw = await reader.read()
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-
-    return _parse_http_json(raw)
-
-
-async def _http_post_unix_with_body(
-    socket_path: str, path: str, body: dict[str, Any]
-) -> dict[str, Any]:
-    """Issue a plain HTTP POST with a JSON body to *path* on the bridge Unix socket.
-
-    Returns the parsed JSON body.  Raises on network or parse errors.
-    Note: HTTP-level error status codes (4xx/5xx) are not raised; callers must
-    inspect the returned dict for error fields from the bridge.
-    """
-    import json
-
-    encoded_body = json.dumps(body).encode()
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        request = (
-            f"POST {path} HTTP/1.0\r\n"
-            f"Host: localhost\r\n"
-            f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(encoded_body)}\r\n"
-            f"Connection: close\r\n"
-            f"\r\n"
-        )
-        writer.write(request.encode())
-        writer.write(encoded_body)
-        await writer.drain()
-
-        raw = await reader.read()
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-
-    return _parse_http_json(raw)
-
-
-async def _http_get_unix(socket_path: str, path: str) -> dict[str, Any]:
-    """Issue a plain HTTP GET to *path* on the bridge Unix socket."""
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        request = f"GET {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        writer.write(request.encode())
-        await writer.drain()
-
-        raw = await reader.read()
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-
-    return _parse_http_json(raw)
-
-
-def _parse_http_json(raw: bytes) -> dict[str, Any]:
-    """Extract and parse the JSON body from a raw HTTP/1.x response."""
-    import json
-
-    # Split headers from body
-    sep = b"\r\n\r\n"
-    idx = raw.find(sep)
-    if idx == -1:
-        raise ValueError("Malformed HTTP response: no header/body separator")
-    body_bytes = raw[idx + len(sep) :]
-    try:
-        return json.loads(body_bytes)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Bridge returned non-JSON body: {body_bytes!r}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -397,7 +301,7 @@ class BridgeSubprocessManager:
             return {}
         try:
             return await asyncio.wait_for(
-                _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
+                BridgeClient(self._config.bridge_socket).request_json("GET", _STATUS_ENDPOINT),
                 timeout=10.0,
             )
         except Exception:
@@ -597,7 +501,7 @@ class BridgeSubprocessManager:
         try:
             logger.info("Sending POST /disconnect to bridge …")
             await asyncio.wait_for(
-                _http_post_unix(self._config.bridge_socket, _DISCONNECT_ENDPOINT),
+                BridgeClient(self._config.bridge_socket).request_json("POST", _DISCONNECT_ENDPOINT),
                 timeout=5.0,
             )
         except Exception as exc:
@@ -813,7 +717,7 @@ class BridgeSubprocessManager:
 
         try:
             data = await asyncio.wait_for(
-                _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
+                BridgeClient(self._config.bridge_socket).request_json("GET", _STATUS_ENDPOINT),
                 timeout=10.0,
             )
             state = data.get("state", "unknown")
@@ -871,7 +775,7 @@ class BridgeSubprocessManager:
 
         try:
             data = await asyncio.wait_for(
-                _http_get_unix(self._config.bridge_socket, _STATUS_ENDPOINT),
+                BridgeClient(self._config.bridge_socket).request_json("GET", _STATUS_ENDPOINT),
                 timeout=10.0,
             )
         except TimeoutError:

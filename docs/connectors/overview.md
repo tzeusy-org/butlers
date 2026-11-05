@@ -249,6 +249,11 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 
 ## Implementation Notes
 
+- WhatsApp socket HTTP is implemented once in `butlers.whatsapp_bridge_client`;
+  the manager remains the connector-owned subprocess supervisor. Module and API
+  callers never acquire bridge ownership. ACK raw-byte limits apply before HTTP
+  parsing; SSE deadlines cover complete lines, not individual network chunks.
+
 - WhatsApp `pair_required` is a waiting state, not a failure. `BridgeSubprocessManager`
   (`src/butlers/connectors/bridge_manager.py`) treats it as startup-ready unconditionally, and
   `WhatsAppUserClientConnector._sse_event_loop` checks `is_awaiting_pairing` before its generic

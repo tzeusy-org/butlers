@@ -974,11 +974,27 @@ def test_allocation_sample_retains_reached_scan_after_late_failure(
         return engine
 
     monkeypatch.setattr(sqlalchemy, "create_engine", engine_factory)
-    monkeypatch.setattr(storage, "filesystem", lambda _: {"status": "ok"})
-    monkeypatch.setattr(storage, "docker_totals", lambda **_: {"status": "ok"})
+    fs = dict(status="ok", total_bytes=100, free_bytes=30, total_inodes=20, free_inodes=10)
+    monkeypatch.setattr(storage, "filesystem", lambda _: fs)
+
+    def docker_probe(*, steps):
+        steps.extend(
+            dict(stage=stage, outcome="ok", elapsed_ms=0) for stage in storage.DOCKER_STAGES
+        )
+        return dict(
+            status="ok",
+            filesystem=fs,
+            **{
+                key: dict(count=1, active=1, bytes=10)
+                for key in ("images", "containers", "volumes", "build_cache")
+            },
+        )
+
+    monkeypatch.setattr(storage, "docker_totals", docker_probe)
     observer.flush = lambda _: None
     observer.sample("periodic")
     row = observer.rows[-1]
+    assert storage._sample_state(row) == ("partial" if failed_stage else "complete")
     assert len(commands) == 1 and disposed == [True]
     assert row["pgdata"]["status"] == "ok"
     assert row["pgdata"]["total_bytes"] > 0
@@ -1013,3 +1029,147 @@ def test_allocation_sample_retains_reached_scan_after_late_failure(
         assert raised.value is original
     else:
         assert row["postgres"]["wal_bytes"] == 7
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_current_producer_inventory_distinguishes_complete_partial_and_malformed(
+    monkeypatch, tmp_path, partial
+):
+    import copy
+
+    observer = _allocation_observer(monkeypatch)
+    observer.binding.update(source="a" * 40, job="1")
+    data, _ = _real_allocation_command(monkeypatch, tmp_path)
+    (data / "base" / "10000").mkdir()
+    observer.database_event("intent", observer.container, "private", "C")
+    if not partial:
+        observer.database_event("ready", observer.container, "private", "C")
+    _fake_allocation_sql(monkeypatch, [(10000, "private", 1663)])
+    fs = dict(status="ok", total_bytes=100, free_bytes=30, total_inodes=20, free_inodes=10)
+    docker = dict(
+        status="ok",
+        filesystem=fs,
+        **{
+            key: dict(count=1, active=1, bytes=10)
+            for key in ("images", "containers", "volumes", "build_cache")
+        },
+    )
+
+    def docker_probe(*, steps):
+        steps.extend(
+            dict(stage=stage, outcome="ok", elapsed_ms=0) for stage in storage.DOCKER_STAGES
+        )
+        return docker
+
+    monkeypatch.setattr(storage, "filesystem", lambda _: fs)
+    monkeypatch.setattr(storage, "docker_totals", docker_probe)
+    observer.flush = lambda _: None
+    observer.sample("periodic")
+    row = observer.rows[-1]
+    assert storage._sample(row) is (not partial)
+    assert storage._sample_state(row) == ("partial" if partial else "complete")
+    assert row["postgres"]["reason"] == "logical_sizes_not_sampled"
+    monkeypatch.setenv("TEST_EVIDENCE_DIR", str(tmp_path))
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_WORKERS", "1")
+    monkeypatch.setattr(storage, "enabled", lambda: True)
+    binding = {key: value for key, value in observer.binding.items() if key != "server"}
+    binding["worker"] = "controller"
+    monkeypatch.setattr(storage, "identity", lambda: binding)
+    for phase in ("before_cleanup", "after_cleanup"):
+        storage.write_report(
+            "storage-" + phase + ".json",
+            dict(
+                version=1,
+                identity=binding,
+                phase=phase,
+                root=fs,
+                docker=docker,
+                probes={"docker": row["probes"]["docker"]},
+            ),
+        )
+    # Lifecycle endpoints use the supported legacy schema; the periodic row is producer output.
+    legacy = copy.deepcopy(row)
+    legacy["owned_allocation"] = dict(status="unknown", reason="not_observed")
+    legacy["probes"]["postgres"] = [
+        dict(stage=stage, outcome="ok", elapsed_ms=0) for stage in storage.PG_STAGES
+    ]
+    legacy["postgres"] = dict(
+        status="ok",
+        readonly=True,
+        attribution="prefix_only",
+        clone_current_bytes_status="unknown_untracked",
+        **{
+            key: 1
+            for key in (
+                "databases",
+                "template_named_databases",
+                "test_named_databases",
+                "database_bytes",
+                "largest_database_bytes",
+                "template_named_database_bytes",
+                "test_named_database_bytes",
+                "wal_bytes",
+                "temp_bytes_cumulative",
+            )
+        },
+    )
+    record = dict(
+        version=1,
+        identity=observer.binding,
+        status="observer_joined",
+        sample_limit_reached=False,
+        samples=[
+            {**legacy, "phase": "server_started", "elapsed_s": 0, "completed_elapsed_s": 0},
+            row,
+            {**legacy, "phase": "before_server_stop", "elapsed_s": row["completed_elapsed_s"]},
+        ],
+    )
+    storage.write_report("storage-gw0.json", record)
+    storage.inventory()
+    receipt = json.loads((tmp_path / "storage-inventory.json").read_bytes())
+    assert receipt["status"] == ("unknown" if partial else "sampled")
+    assert receipt["workers"][0]["status"] == ("unknown_partial_observer" if partial else "sampled")
+    # Every mutation starts from the actual producer row, not a parallel schema fixture.
+    for section, key, value in [
+        ("owned_allocation", "PRIVATE", 1),
+        ("owned_allocation", "physical_server", "bad"),
+        ("owned_allocation", "mapped", True),
+        ("owned_allocation", "matched", 0),
+        ("owned_allocation", "C_count", -1),
+        ("postgres", "readonly", False),
+        ("postgres", "readonly", 1),
+        ("owned_allocation", "reason", "PRIVATE"),
+    ]:
+        bad = copy.deepcopy(row)
+        bad[section][key] = value
+        assert storage._sample_state(bad) == "invalid"
+        record["samples"][1] = bad
+        storage.write_report("storage-gw0.json", record)
+        storage.inventory()
+        malformed = json.loads((tmp_path / "storage-inventory.json").read_bytes())
+        assert malformed["status"] == "unknown"
+        assert malformed["workers"][0]["status"] == "unknown_missing_or_invalid_observer"
+        assert "PRIVATE" not in json.dumps(malformed)
+    bad = copy.deepcopy(row)
+    bad["probes"]["postgres"][3]["stage"] = "PRIVATE"
+    assert storage._sample_state(bad) == "invalid"
+    # Valid-shaped but inconsistent physical identity cannot split one owned server.
+    other = copy.deepcopy(row)
+    other["owned_allocation"]["physical_server"] = "c" * 64
+    record["samples"] = [record["samples"][0], row, other, record["samples"][-1]]
+    storage.write_report("storage-gw0.json", record)
+    storage.inventory()
+    assert (
+        json.loads((tmp_path / "storage-inventory.json").read_bytes())["workers"][0]["status"]
+        == "unknown_missing_or_invalid_observer"
+    )
+    record["samples"].pop(2)
+    for key in ("source", "run", "attempt", "job", "worker"):
+        mismatched = copy.deepcopy(record)
+        mismatched["identity"][key] = "mismatched"
+        storage.write_report("storage-gw0.json", mismatched)
+        storage.inventory()
+        assert (
+            json.loads((tmp_path / "storage-inventory.json").read_bytes())["workers"][0]["status"]
+            == "unknown_missing_or_invalid_observer"
+        )

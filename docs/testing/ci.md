@@ -499,3 +499,13 @@ its allocation remains UNKNOWN with `cohort_complete=false`, and unavailable SQL
 metrics remain UNKNOWN. It does not retry or perform another scan. Direct probe
 callers still receive the original exception; the observer's safe boundary keeps
 the test verdict unchanged.
+
+The storage inventory decodes both the legacy prefix/logical report and the current
+owned-allocation report. A current complete cohort requires the fixed successful
+probe sequence, matching class/OID counts, stable physical-server identity and
+complete host/worker lifecycle evidence. Its logical database sizes remain
+`logical_sizes_not_sampled`; sampled allocated namespaces do not establish logical
+bytes or unique physical extents. Valid partial or racing observations are recorded
+as `unknown_partial_observer`, separately from missing/malformed reports, and keep
+the overall inventory UNKNOWN. No query, scan, timeout or observer lifetime is added
+by decoding. Actual net CI overhead remains unmeasured.

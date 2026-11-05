@@ -2,222 +2,109 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from unittest.mock import AsyncMock, MagicMock
 
-from butlers.connectors.whatsapp_user_client import (
-    WhatsAppUserClientConnector,
-    WhatsAppUserClientConnectorConfig,
+import pytest
+
+from tests.connectors.test_whatsapp_bridge_client import (
+    ACK,
+    ack_wire,
+    assert_peer_closed,
+    bridge_server,
+    connector_for,
 )
 
 
-async def test_request_backfill_uses_versioned_request_and_requires_accepted_ack(
-    monkeypatch,
-) -> None:
-    """The connector only treats the bridge's explicit v1 acknowledgement as success."""
-    connector = WhatsAppUserClientConnector(
-        WhatsAppUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            endpoint_identity="whatsapp:+12025551234",
-            backfill_window_h=24,
-        ),
-        cursor_pool=MagicMock(),
-    )
-    reader = asyncio.StreamReader()
-    reader.feed_data(
-        b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
-        b'{"schema_version":"whatsapp.backfill.v1","status":"accepted",'
-        b'"window_hours":24,"replay_event_count":2}'
-    )
-    reader.feed_eof()
-    writer = MagicMock()
-    writer.drain = AsyncMock()
-    writer.wait_closed = AsyncMock()
-    open_connection = AsyncMock(return_value=(reader, writer))
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.open_unix_connection",
-        open_connection,
-    )
-
-    await connector._request_backfill()
-
-    open_connection.assert_awaited_once()
-    assert open_connection.await_args.args == (connector._config.bridge_socket,)
-    writer.drain.assert_awaited_once()
-    writer.wait_closed.assert_awaited_once()
-    request = writer.write.call_args.args[0]
-    headers, body = request.split(b"\r\n\r\n", maxsplit=1)
-    assert b"POST /backfill HTTP/1.0" in headers
-    assert b"Content-Type: application/json" in headers
-    assert json.loads(body) == {
-        "schema_version": "whatsapp.backfill.v1",
-        "window_hours": 24,
-    }
-    assert int(headers.split(b"Content-Length: ")[1].split(b"\r\n", 1)[0]) == len(body)
-
-
-async def test_request_backfill_accepts_fragmented_http_acknowledgement(
-    monkeypatch,
-    caplog,
-) -> None:
-    """A valid HTTP/1.0 acknowledgement may arrive over more than one stream read."""
-    connector = WhatsAppUserClientConnector(
-        WhatsAppUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            endpoint_identity="whatsapp:+12025551234",
-            backfill_window_h=24,
-        ),
-        cursor_pool=MagicMock(),
-    )
-    reader = asyncio.StreamReader()
-    reader.feed_data(
-        b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
-        b'{"schema_version":"whatsapp.backfill.v1","status":"accepted",'
-    )
-
-    async def feed_remaining_response() -> None:
-        await asyncio.sleep(0)
-        reader.feed_data(b'"window_hours":24,"replay_event_count":2}')
-        reader.feed_eof()
-
-    remaining_response = asyncio.create_task(feed_remaining_response())
-    writer = MagicMock()
-    writer.drain = AsyncMock()
-    writer.wait_closed = AsyncMock()
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.open_unix_connection",
-        AsyncMock(return_value=(reader, writer)),
-    )
+async def test_request_backfill_uses_versioned_request_and_requires_accepted_ack(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="butlers.connectors.whatsapp_user_client")
+    async with bridge_server(tmp_path, ack_wire(), keep_open=True) as server:
+        connector = connector_for(server.path)
+        await connector._request_backfill()
+        await assert_peer_closed(server)
+    assert len(server.requests) == 1
+    assert server.path == connector._config.bridge_socket
+    headers, body = server.requests[0]
+    assert b"POST /backfill HTTP/1.1" in headers
+    assert b"content-type: application/json" in headers.lower()
+    assert json.loads(body) == {"schema_version": "whatsapp.backfill.v1", "window_hours": 24}
+    assert int(headers.lower().split(b"content-length: ")[1].split(b"\r\n", 1)[0]) == len(body)
+    assert "Backfill request accepted by bridge" in caplog.text
+    assert server.closed == 1
 
-    await connector._request_backfill()
-    await remaining_response
 
+async def test_request_backfill_accepts_fragmented_http_acknowledgement(tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="butlers.connectors.whatsapp_user_client")
+    async with bridge_server(
+        tmp_path, ack_wire(), fragments=17, delay=0.0001, keep_open=True
+    ) as server:
+        await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "Backfill request accepted by bridge" in caplog.text
     assert "Failed to request backfill from bridge" not in caplog.text
+    assert server.closed == 1
 
 
-async def test_request_backfill_rejects_oversized_acknowledgement_before_eof(
-    monkeypatch,
-    caplog,
-) -> None:
-    """The bridge acknowledgement has a fixed byte ceiling even before EOF."""
-    connector = WhatsAppUserClientConnector(
-        WhatsAppUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            endpoint_identity="whatsapp:+12025551234",
-            backfill_window_h=24,
-        ),
-        cursor_pool=MagicMock(),
-    )
-    reader = asyncio.StreamReader()
-    reader.feed_data(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n" + b"x" * 65_536)
-    writer = MagicMock()
-    writer.drain = AsyncMock()
-    writer.wait_closed = AsyncMock()
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.open_unix_connection",
-        AsyncMock(return_value=(reader, writer)),
-    )
-    original_wait_for = asyncio.wait_for
-
-    async def short_wait_for(awaitable, timeout):  # noqa: ASYNC109 - stands in for asyncio.wait_for
-        return await original_wait_for(awaitable, timeout=0.05)
-
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.wait_for",
-        short_wait_for,
-    )
+async def test_request_backfill_rejects_oversized_acknowledgement_before_eof(tmp_path, caplog):
     caplog.set_level(logging.WARNING, logger="butlers.connectors.whatsapp_user_client")
-
-    await connector._request_backfill()
-
+    response = b"HTTP/1.1 200 OK\r\nX-Pad: " + b"x" * 65536
+    async with bridge_server(tmp_path, response, keep_open=True) as server:
+        await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "WhatsApp backfill request failed" in caplog.text
     assert "Bridge /backfill acknowledgement exceeded" not in caplog.text
     record = next(
         item for item in caplog.records if item.message == "WhatsApp backfill request failed"
     )
     assert record.failure_class == "RuntimeError"
-    writer.wait_closed.assert_awaited_once()
+    assert server.closed == 1
 
 
 async def test_request_backfill_times_out_without_eof_without_stopping_connector(
-    monkeypatch,
+    tmp_path,
     caplog,
-) -> None:
-    """A bridge that never closes its HTTP/1.0 acknowledgement remains non-fatal."""
-    connector = WhatsAppUserClientConnector(
-        WhatsAppUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            endpoint_identity="whatsapp:+12025551234",
-            backfill_window_h=24,
-        ),
-        cursor_pool=MagicMock(),
-    )
-    reader = asyncio.StreamReader()
-    reader.feed_data(b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n")
-    writer = MagicMock()
-    writer.drain = AsyncMock()
-    writer.wait_closed = AsyncMock()
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.open_unix_connection",
-        AsyncMock(return_value=(reader, writer)),
-    )
-    original_wait_for = asyncio.wait_for
-
-    async def short_wait_for(awaitable, timeout):  # noqa: ASYNC109 - stands in for asyncio.wait_for
-        return await original_wait_for(awaitable, timeout=0.05)
-
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.wait_for",
-        short_wait_for,
-    )
+    monkeypatch,
+):
+    monkeypatch.setattr("butlers.connectors.whatsapp_user_client._BACKFILL_ACK_TIMEOUT_S", 0.05)
     caplog.set_level(logging.WARNING, logger="butlers.connectors.whatsapp_user_client")
-
-    await connector._request_backfill()
-
+    # No framing/body completion: HTTP/1.1 still requires EOF for this response.
+    async with bridge_server(
+        tmp_path, b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n", keep_open=True
+    ) as server:
+        await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "WhatsApp backfill request failed" in caplog.text
     assert "Backfill request accepted by bridge" not in caplog.text
     record = next(
         item for item in caplog.records if item.message == "WhatsApp backfill request failed"
     )
     assert record.failure_class == "TimeoutError"
-    writer.wait_closed.assert_awaited_once()
+    assert server.closed == 1
 
 
-async def test_request_backfill_rejects_nonaccepted_ack_without_raising(
-    monkeypatch,
-    caplog,
-) -> None:
-    """A malformed or rejected bridge acknowledgement is a non-fatal connector warning."""
-    connector = WhatsAppUserClientConnector(
-        WhatsAppUserClientConnectorConfig(
-            switchboard_mcp_url="http://localhost:41100/sse",
-            endpoint_identity="whatsapp:+12025551234",
-            backfill_window_h=24,
-        ),
-        cursor_pool=MagicMock(),
-    )
-    reader = asyncio.StreamReader()
-    reader.feed_data(
-        b"HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n"
-        b'{"schema_version":"whatsapp.backfill.v1","status":"rejected"}'
-    )
-    reader.feed_eof()
-    writer = MagicMock()
-    writer.drain = AsyncMock()
-    writer.wait_closed = AsyncMock()
-    monkeypatch.setattr(
-        "butlers.connectors.whatsapp_user_client.asyncio.open_unix_connection",
-        AsyncMock(return_value=(reader, writer)),
-    )
-
-    await connector._request_backfill()
-
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"status": "rejected"},
+        {"schema_version": "other"},
+        {"window_hours": 25},
+        {"window_hours": True},
+        {"replay_event_count": True},
+        {"replay_event_count": -1},
+        {"replay_event_count": "2"},
+        {"replay_event_count": None},
+    ],
+)
+async def test_request_backfill_rejects_nonaccepted_ack_without_raising(tmp_path, caplog, override):
+    caplog.set_level(logging.WARNING, logger="butlers.connectors.whatsapp_user_client")
+    async with bridge_server(
+        tmp_path, ack_wire(json.dumps(ACK | override).encode()), keep_open=True
+    ) as server:
+        await connector_for(server.path)._request_backfill()
+        await assert_peer_closed(server)
     assert "WhatsApp backfill request failed" in caplog.text
     record = next(
         item for item in caplog.records if item.message == "WhatsApp backfill request failed"
     )
     assert record.failure_class == "RuntimeError"
+    assert server.closed == 1

@@ -979,7 +979,7 @@ def _probe_steps(steps: Any, expected: tuple[str, ...]) -> bool:
     )
 
 
-def _sample(row: dict) -> bool:
+def _legacy_sample(row: dict) -> bool:
     if not isinstance(row, dict) or set(row) != {
         "phase",
         "elapsed_s",
@@ -1044,6 +1044,295 @@ def _sample(row: dict) -> bool:
             clone_current_bytes_status="unknown_untracked",
         )
     )
+
+
+_SAMPLE_REASONS = frozenset(
+    {
+        "command_timeout",
+        "command_failed",
+        "command_output_limit",
+        "measurement_unavailable",
+        "database_not_readonly",
+        "database_metadata_limit",
+        "database_metadata_shape",
+        "database_registry_limit",
+        "allocation_mapping",
+        "allocation_output_incomplete",
+        "allocation_output_range",
+        "allocation_output_shape",
+        "allocation_wal_temp_shape",
+        "docker_root_shape",
+        "docker_size_shape",
+        "docker_totals_shape",
+        "pgdata_shape",
+        "server_identity",
+        "server_mount_shape",
+        "server_not_running",
+        "server_state_shape",
+        "allocation_unavailable",
+        "logical_sizes_not_sampled",
+        "not_observed",
+    }
+)
+_ALLOCATION_PROBES = ("url", "connect", "readonly", *ALLOCATION_STAGES, "dispose")
+
+
+def _unknown_measurement(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and set(value) == {"status", "reason"}
+        and value["status"] == "unknown"
+        and isinstance(value["reason"], str)
+        and value["reason"] in _SAMPLE_REASONS
+    )
+
+
+def _partial_probe_steps(steps: Any, expected: tuple[str, ...]) -> bool:
+    if not isinstance(steps, list) or len(steps) > len(expected):
+        return False
+    # A failed operation ends its sequence; disposal can still run in finally.
+    failed = False
+    position = 0
+    disposed = False
+    for step in steps:
+        if not isinstance(step, dict) or set(step) != {"stage", "outcome", "elapsed_ms"}:
+            return False
+        stage = step["stage"]
+        if disposed:
+            return False
+        disposed = stage == "dispose"
+        if failed:
+            if stage != "dispose" or expected[-1] != "dispose":
+                return False
+        elif position >= len(expected) or stage != expected[position]:
+            return False
+        elapsed = step["elapsed_ms"]
+        if (
+            type(elapsed) not in (int, float)
+            or not math.isfinite(elapsed)
+            or not 0 <= elapsed <= 7_200_000
+        ):
+            return False
+        if not isinstance(step["outcome"], str) or step["outcome"] not in {
+            "ok",
+            "unavailable",
+            "command_timeout",
+            "command_failed",
+            "command_output_limit",
+            "not_readonly",
+            "connection",
+            "query_canceled",
+            "disk_full",
+            "permission",
+            "other",
+        }:
+            return False
+        failed = failed or step["outcome"] != "ok"
+        position += 1
+    return True
+
+
+def _allocation_state(value: Any, pgdata: Any) -> str:
+    if _unknown_measurement(value):
+        return "partial"
+    if not isinstance(value, dict):
+        return "invalid"
+    numeric = {
+        "scan_complete",
+        "expected",
+        "matched",
+        "missing",
+        "unmapped_oids",
+        "unmapped_bytes",
+        "other_paths",
+        "other_bytes",
+        "total_bytes",
+        "free_bytes",
+        "total_inodes",
+        "free_inodes",
+        "registered",
+        "mapped",
+    }
+    numeric |= {
+        f"{kind}_{suffix}" for kind in "TCFP" for suffix in ("count", "allocated_namespace_bytes")
+    }
+    fixed = {
+        "status",
+        "reason",
+        "physical_server",
+        "cohort_complete",
+        "accounting",
+        "unattributed_pgdata_status",
+    }
+    if set(value) != numeric | fixed or any(
+        type(value[k]) is not int or not 0 <= value[k] <= 2**53 - 1 for k in numeric
+    ):
+        return "invalid"
+    if (
+        not isinstance(value["physical_server"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["physical_server"]) is None
+        or type(value["cohort_complete"]) is not bool
+        or value["accounting"] != "allocated_namespace_not_logical_or_unique_extents"
+        or value["unattributed_pgdata_status"] != "unknown"
+        or value["mapped"] != value["expected"]
+        or value["matched"] != value["expected"]
+        or value["mapped"] > value["registered"]
+        or not 0 < value["registered"] <= MAX_DATABASES
+        or value["missing"] != 0
+        or value["scan_complete"] != 1
+        or sum(value[f"{kind}_count"] for kind in "TCFP") != value["mapped"]
+        or not isinstance(pgdata, dict)
+        or any(
+            value[k] != pgdata.get(k)
+            for k in ("total_bytes", "free_bytes", "total_inodes", "free_inodes")
+        )
+    ):
+        return "invalid"
+    if value["cohort_complete"]:
+        return (
+            "complete"
+            if (
+                value["status"] == "ok"
+                and value["reason"] == "complete_owned_cohort"
+                and value["mapped"] == value["registered"]
+                and value["P_count"] == 0
+            )
+            else "invalid"
+        )
+    return (
+        "partial"
+        if value["status"] == "unknown"
+        and isinstance(value["reason"], str)
+        and value["reason"] in {"cohort_not_validated", "cohort_changed_or_pending"}
+        else "invalid"
+    )
+
+
+def _sample_state(row: Any) -> str:
+    if not isinstance(row, dict):
+        return "invalid"
+    if "owned_allocation" not in row:
+        return "complete" if _legacy_sample(row) else "invalid"
+    legacy = {key: value for key, value in row.items() if key != "owned_allocation"}
+    allocation = row["owned_allocation"]
+    if allocation == _unknown("not_observed") and _legacy_sample(legacy):
+        return "complete"
+    if set(legacy) != {
+        "phase",
+        "elapsed_s",
+        "completed_elapsed_s",
+        "probes",
+        "events",
+        "root",
+        "docker",
+        "pgdata",
+        "postgres",
+    }:
+        return "invalid"
+    if (
+        row["phase"] not in {"server_started", "periodic", "create_error", "before_server_stop"}
+        or any(
+            type(row[k]) not in (int, float) or not math.isfinite(row[k])
+            for k in ("elapsed_s", "completed_elapsed_s")
+        )
+        or not 0 <= row["elapsed_s"] <= row["completed_elapsed_s"] <= 7200
+        or not _numbers(
+            row["events"], {"template_created", "clone_created", "create_failed", "storage_error"}
+        )
+        or not isinstance(row["probes"], dict)
+        or set(row["probes"]) != {"docker", "postgres"}
+    ):
+        return "invalid"
+    allocation_path = allocation != _unknown("not_observed")
+    expected = _ALLOCATION_PROBES if allocation_path else PG_STAGES
+    if not _partial_probe_steps(row["probes"]["docker"], DOCKER_STAGES) or not _partial_probe_steps(
+        row["probes"]["postgres"], expected
+    ):
+        return "invalid"
+    complete = True
+    for key, validator in (("root", _filesystem), ("docker", _docker)):
+        if not validator(row[key]):
+            if not _unknown_measurement(row[key]):
+                return "invalid"
+            complete = False
+    pgdata = row["pgdata"]
+    if (
+        isinstance(pgdata, dict)
+        and isinstance(pgdata.get("image_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", pgdata["image_sha256"])
+    ):
+        valid_pgdata = (
+            _numbers(
+                pgdata,
+                {
+                    "owned_running_servers",
+                    "owned_volumes",
+                    "total_bytes",
+                    "free_bytes",
+                    "total_inodes",
+                    "free_inodes",
+                },
+                status="ok",
+                image_sha256=pgdata["image_sha256"],
+            )
+            and pgdata["owned_running_servers"] == 1
+        )
+    else:
+        valid_pgdata = False
+    if not valid_pgdata:
+        if not _unknown_measurement(pgdata):
+            return "invalid"
+        complete = False
+    state = _allocation_state(allocation, pgdata)
+    if state == "invalid":
+        return state
+    postgres = row["postgres"]
+    if allocation_path:
+        valid_postgres = (
+            _numbers(
+                postgres,
+                {"wal_bytes", "temp_bytes_cumulative"},
+                status="unknown",
+                reason="logical_sizes_not_sampled",
+                readonly=True,
+            )
+            and postgres["readonly"] is True
+        )
+        if not valid_postgres and not _unknown_measurement(postgres):
+            return "invalid"
+        complete = complete and valid_postgres and state == "complete"
+    else:
+        # The failed legacy path is partial only with a closed UNKNOWN envelope.
+        if not _unknown_measurement(postgres) and not _numbers(
+            postgres,
+            {
+                "databases",
+                "template_named_databases",
+                "test_named_databases",
+                "database_bytes",
+                "largest_database_bytes",
+                "template_named_database_bytes",
+                "test_named_database_bytes",
+                "wal_bytes",
+                "temp_bytes_cumulative",
+            },
+            status="ok",
+            readonly=True,
+            attribution="prefix_only",
+            clone_current_bytes_status="unknown_untracked",
+        ):
+            return "invalid"
+        complete = False
+    complete = (
+        complete
+        and _probe_steps(row["probes"]["docker"], DOCKER_STAGES)
+        and _probe_steps(row["probes"]["postgres"], expected)
+    )
+    return "complete" if complete else "partial"
+
+
+def _sample(row: dict) -> bool:
+    return _sample_state(row) == "complete"
 
 
 def _read_report(path: Path) -> dict:
@@ -1115,7 +1404,15 @@ def inventory() -> None:
                 and value["sample_limit_reached"] is False
                 and isinstance(rows, list)
                 and 2 <= len(rows) < MAX_SAMPLES
-                and all(_sample(row) for row in rows)
+                and all(_sample_state(row) != "invalid" for row in rows)
+                and len(
+                    {
+                        row["owned_allocation"]["physical_server"]
+                        for row in rows
+                        if "physical_server" in row.get("owned_allocation", {})
+                    }
+                )
+                <= 1
                 and rows[0]["phase"] == "server_started"
                 and rows[-1]["phase"] == "before_server_stop"
                 and all(
@@ -1123,7 +1420,15 @@ def inventory() -> None:
                 )
             ):
                 raise Unknown("worker_report_incomplete")
-            reports.append({"worker": index, "status": "sampled", "bytes": path.stat().st_size})
+            reports.append(
+                {
+                    "worker": index,
+                    "status": "sampled"
+                    if all(_sample(row) for row in rows)
+                    else "unknown_partial_observer",
+                    "bytes": path.stat().st_size,
+                }
+            )
         except Exception:
             reports.append({"worker": index, "status": "unknown_missing_or_invalid_observer"})
     record = {
