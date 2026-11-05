@@ -483,6 +483,7 @@ class TestLifecycle:
             enable_shared_catalog=True,
             source_schema="private_memory",
             retry_failed=True,
+            memory_schema=None,
         )
 
     async def test_consolidation_hook_excludes_private_memory_from_failed_recovery(
@@ -1214,6 +1215,7 @@ class TestToolDelegation:
             min_confidence=0.2,
             filters=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1240,6 +1242,7 @@ class TestToolDelegation:
             filters=None,
             request_context=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1262,6 +1265,7 @@ class TestToolDelegation:
             "fact",
             "550e8400-e29b-41d4-a716-446655440000",
             read_policy=held_policy,
+            memory_schema=None,
         )
 
     @pytest.mark.parametrize(

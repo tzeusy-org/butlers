@@ -105,6 +105,8 @@ class ActivitySpan:
     source_name: str
     episode_type: str
     lane: str | None
+    provisional: bool = False
+    evidence_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,7 @@ class SituationBlock:
     bridged: bool
     provisional: bool
     confidence: Confidence
+    evidence_refs: tuple[str, ...] = ()
 
     def source_ref(self, local_date: str) -> str:
         kind = self.episode_type.removesuffix("_block")
@@ -308,6 +311,54 @@ def derive_blocks(
     ]
     owner_answers.extend(corrected)
     blocks: list[SituationBlock] = []
+    home = home_anchor(anchors)
+    away = []
+    for segment in segments:
+        anchor = nearest_anchor(anchors, segment.lat, segment.lon)
+        if (home is not None and not home.contains(segment.lat, segment.lon)) or (
+            anchor is not None and anchor.kind != KIND_HOME
+        ):
+            away.append((segment.start_at, segment.end_at))
+    play_spans = [
+        a
+        for a in activities
+        if a.source_name in {"steam.status_history", "steam.play_history"} and a.lane == "play"
+    ]
+    occupied = list(owner_answers)
+    higher = [(a.start_at, a.end_at) for a in activities if _outranks(a.lane, "play")]
+    for game in sorted(play_spans, key=lambda a: a.start_at):
+        for start, end in subtract(
+            max(day_start, game.start_at), min(day_end, game.end_at), [*away, *higher, *occupied]
+        ):
+            if end <= start:
+                continue
+            at_home = home is not None and any(
+                s.start_at <= start and s.end_at >= end and home.contains(s.lat, s.lon)
+                for s in segments
+            )
+            blocks.append(
+                SituationBlock(
+                    episode_type="play_block",
+                    lane="play",
+                    start_at=start,
+                    end_at=end,
+                    place_kind=KIND_HOME if at_home else "unknown",
+                    place_label=None,
+                    anchor_source=home.source if at_home and home else None,
+                    distance_from_home_m=None,
+                    place_episode_ids=(),
+                    bridged=False,
+                    provisional=game.provisional,
+                    confidence=Confidence.MEDIUM,
+                    evidence_refs=game.evidence_refs,
+                )
+            )
+            occupied.append((start, end))
+    # Only accepted Play displaces home; rejected remote play never erases an outing.
+    other_activities = [a for a in activities if a not in play_spans]
+    other_activities.extend(
+        ActivitySpan(b.start_at, b.end_at, SOURCE_NAME, "play_block", "play") for b in blocks
+    )
     for segment in sorted(segments, key=lambda s: s.start_at):
         start = max(segment.start_at, day_start)
         end = min(segment.end_at, day_end)
@@ -319,7 +370,7 @@ def derive_blocks(
         episode_type, lane, anchor, distance = classified
         preemptors = [
             (a.start_at, a.end_at)
-            for a in activities
+            for a in other_activities
             if a.source_name != OWNER_ANSWER_SOURCE and _outranks(a.lane, lane)
         ]
         place_kind = anchor.kind if anchor is not None else PLACE_KIND_UNREGISTERED
@@ -350,7 +401,7 @@ def derive_blocks(
                     ),
                 )
             )
-    return blocks
+    return sorted(blocks, key=lambda b: (b.start_at, b.end_at, b.episode_type))
 
 
 __all__ = [

@@ -1169,7 +1169,16 @@ class ButlerDaemon:
                 if memory_engine is not None and memory_pool is not None:
                     from butlers.chronicler.writeback import build_chronicler_fact_writer
 
-                    store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
+                    memory_schema = (memory_module._config.memory_schema or "").strip()
+                    if memory_schema:
+                        store_fact_fn = build_chronicler_fact_writer(
+                            memory_pool, memory_engine, memory_schema=memory_schema
+                        )
+                    else:
+                        logger.warning(
+                            "Chronicler fact write-back disabled because its memory module "
+                            "does not configure an explicit private memory_schema"
+                        )
 
             from butlers.chronicler.day_close_continuation import DayCloseContinuation
             from butlers.chronicler.day_close_refresh import held_refresh_service

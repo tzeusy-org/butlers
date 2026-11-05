@@ -51,7 +51,7 @@ A `public.memory_catalog` table SHALL provide a cross-butler searchable index of
 
 ### Requirement: Butler roles have narrow grants on public.memory_catalog
 
-Butler database roles SHALL have `INSERT` and `UPDATE` grants on `public.memory_catalog` only (not broader public schema grants). This enables direct catalog writes without routing through Switchboard.
+Butler database roles SHALL have `INSERT` and `UPDATE` grants on `public.memory_catalog` for direct catalog writes without routing through Switchboard. The separate atomic-disownment boundary MAY add only the exact caller privileges it needs; it SHALL NOT grant direct catalog `DELETE`, graph `INSERT`/`UPDATE`, `PUBLIC` execution, or connector execution. Managed bootstrap's preexisting broader public-table grants are a distinct deployment property and are not revoked by this requirement.
 
 #### Scenario: Butler can insert catalog entries
 
@@ -70,9 +70,18 @@ Butler database roles SHALL have `INSERT` and `UPDATE` grants on `public.memory_
 
 #### Scenario: All existing butler roles receive grants
 
-- **WHEN** the catalog migration runs
-- **THEN** all butler roles listed in the migration's role array MUST receive `GRANT INSERT, UPDATE ON public.memory_catalog`
+- **WHEN** the catalog write-behind migration runs
+- **THEN** all butler roles listed in that migration's role array MUST receive `GRANT INSERT, UPDATE ON public.memory_catalog`
 - **AND** the migration MUST follow the same pattern as `core_014` for butler role enumeration
+
+#### Scenario: Atomic invalidation uses exact invoker grants
+
+- **WHEN** the shared core migration installs the catalog-disownment primitive, or managed bootstrap replays grants after creating a canonical runtime role
+- **THEN** each existing canonical runtime role in the fixed 13-role allowlist MUST receive `USAGE ON SCHEMA public`, `SELECT, UPDATE` on `public.memory_catalog`, `SELECT, DELETE` on `public.entity_graph_edges`, and `EXECUTE` on the exact six-argument invalidation function
+- **AND** the primitive MUST be `SECURITY INVOKER`, use only public-qualified application relations with a `pg_catalog`-only function search path, and operate in the caller's transaction
+- **AND** migration-only installs MUST receive these explicit privileges without relying on creator default ACLs
+- **AND** `PUBLIC` and `connector_writer` MUST NOT receive function execution, while the migration's added grants MUST NOT include catalog `DELETE` or graph `INSERT`/`UPDATE`
+- **AND** late-created canonical roles MUST receive the same scoped privileges on actual bootstrap replay; managed bootstrap's existing broader public-table grants remain a separate topology
 
 ---
 
@@ -185,15 +194,14 @@ The storage layer SHALL mark a disowned fact's or rule's `public.memory_catalog`
 - **AND** the catalog row itself MUST NOT be deleted — butler roles hold no
   `DELETE` grant on `public.memory_catalog` (catalog GC is centralised)
 
-#### Scenario: Owning schema is resolved from the connection, not threaded per call
+#### Scenario: Projection invalidation follows the canonical source schema
 
-- **WHEN** the disownment cascade runs for any of the paths above
-- **THEN** the `source_schema` used to locate the catalog row MUST be resolved
-  via the connection's own `current_schema()` (butler pools connect with
-  `search_path = <schema>, public`) rather than requiring every caller to
-  thread `source_schema` through
-- **AND** if no catalog row matches (write-behind was disabled, or the row
-  predates it), the cascade MUST be a no-op rather than an error
+- **WHEN** a disownment path mutates a canonical relation using an explicit `memory_schema`
+- **THEN** its catalog and graph cascade MUST use that same schema as provenance, even when the pool's `current_schema()` names a different domain schema
+- **AND** a caller that omits `memory_schema` MUST resolve `source_schema` from `current_schema()` on the same caller connection before invoking the shared primitive
+- **AND** a correction audit event MUST be inserted into the same explicitly selected memory schema; an episode correction MUST not invoke fact/rule projection invalidation
+- **AND** only the exact `(source_schema, source_table, source_id)` catalog and graph rows MUST change, while a same-UUID row under another schema remains untouched
+- **AND** if no matching catalog row exists (write-behind was disabled, or the row predates it), the cascade MUST remain a no-op rather than an error
 
 ---
 

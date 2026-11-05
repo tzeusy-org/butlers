@@ -119,9 +119,10 @@ def test_at_home_with_a_game_running_is_play_and_the_rest_is_rest() -> None:
 
     assert _shape(blocks) == [
         (EPISODE_TYPE_HOME, _at(7), _at(20)),
+        ("play_block", _at(20), _at(22)),
         (EPISODE_TYPE_HOME, _at(22), _at(23, 59)),
     ]
-    assert {b.lane for b in blocks} == {"rest"}
+    assert {b.lane for b in blocks} == {"rest", "play"}
 
 
 def test_music_never_displaces_a_place_block() -> None:
@@ -347,3 +348,34 @@ def test_subtract_returns_ordered_remainders() -> None:
         (_at(10), _at(12)),
         (_at(13), _at(18)),
     ]
+
+
+def test_timed_steam_evidence_counts_play_and_splits_home() -> None:
+    game = ActivitySpan(
+        _at(20),
+        _at(22),
+        "steam.status_history",
+        "play_session",
+        "play",
+        provisional=True,
+        evidence_refs=("source-episode",),
+    )
+    blocks = _derive([_seg(_at(19), _at(23), _HOME)], [game])
+    assert _shape(blocks) == [
+        (EPISODE_TYPE_HOME, _at(19), _at(20)),
+        ("play_block", _at(20), _at(22)),
+        (EPISODE_TYPE_HOME, _at(22), _at(23)),
+    ]
+    play = next(b for b in blocks if b.episode_type == "play_block")
+    assert play.lane == "play" and play.provisional
+    assert play.evidence_refs == ("source-episode",)
+
+
+def test_play_is_clipped_away_but_counts_at_unknown_location() -> None:
+    game = ActivitySpan(_at(19), _at(23), "steam.status_history", "play_session", "play")
+    blocks = _derive([_seg(_at(20), _at(22), _OUTING)], [game])
+    assert [(b.start_at, b.end_at) for b in blocks if b.lane == "play"] == [
+        (_at(19), _at(20)),
+        (_at(22), _at(23)),
+    ]
+    assert any(b.lane == "social" for b in blocks)

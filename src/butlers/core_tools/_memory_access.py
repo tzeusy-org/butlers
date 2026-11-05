@@ -12,6 +12,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core_tools._base import ToolContext
 
 logger = logging.getLogger(__name__)
@@ -20,26 +21,52 @@ logger = logging.getLogger(__name__)
 _MEMORY_STORES: list[str] = ["episodes", "facts", "rules"]
 
 
-async def _query_drops_7d(pool: Any) -> int:
+async def _query_drops_7d(pool: Any, *, memory_schema: str | None = None) -> int:
     """Count memories dropped (expired/forgotten) in the last 7 days.
 
-    Sums soft-deleted facts, expired episodes, and forgotten rules so the
-    dashboard can surface retention pressure without a full stats query.
+    Counts superseded/expired facts by dropped_at, expired episodes by
+    expires_at, and forgotten rules by forgotten_at. One database as_of bounds
+    every branch inclusively to [as_of - 7 days, as_of]. NULL legacy transition
+    times are excluded, so pre-migration terminal history may be undercounted.
+    invalid_at retains its separate bitemporal meaning.
 
     Returns 0 when the memory schema is not present (table does not exist).
     """
+    visibility = await local_fact_visibility_condition(
+        pool, memory_schema=memory_schema, alias="facts"
+    )
+    visibility_filter = f" AND {visibility}" if visibility is not None else ""
+    guarded_chronicler_facts = (
+        memory_schema == "chronicler_mem"
+        and visibility is not None
+        and "chronicler_mem.facts_readable" in visibility
+    )
     try:
+        as_of = await pool.fetchval("SELECT now()")
         facts_dropped = await pool.fetchval(
-            "SELECT COUNT(*) FROM facts WHERE validity IN ('superseded', 'expired')"
-            " AND updated_at >= now() - interval '7 days'"
+            "SELECT COUNT(*) FROM facts AS facts "
+            "WHERE facts.validity IN ('superseded', 'expired') "
+            "AND facts.dropped_at >= $1::timestamptz - interval '7 days' "
+            "AND facts.dropped_at <= $1::timestamptz" + visibility_filter,
+            as_of,
         )
+    except Exception:
+        if guarded_chronicler_facts:
+            raise
+        logger.debug("drops_7d facts query failed — memory schema may be absent", exc_info=True)
+        return 0
+
+    try:
         episodes_dropped = await pool.fetchval(
-            "SELECT COUNT(*) FROM episodes WHERE expires_at <= now()"
-            " AND expires_at >= now() - interval '7 days'"
+            "SELECT COUNT(*) FROM episodes WHERE expires_at <= $1::timestamptz"
+            " AND expires_at >= $1::timestamptz - interval '7 days'",
+            as_of,
         )
         rules_dropped = await pool.fetchval(
             "SELECT COUNT(*) FROM rules WHERE (metadata->>'forgotten')::boolean IS TRUE"
-            " AND updated_at >= now() - interval '7 days'"
+            " AND forgotten_at >= $1::timestamptz - interval '7 days'"
+            " AND forgotten_at <= $1::timestamptz",
+            as_of,
         )
         return int((facts_dropped or 0) + (episodes_dropped or 0) + (rules_dropped or 0))
     except Exception:
@@ -90,14 +117,33 @@ def register_memory_access_tool(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 "drops_7d": 0,
             }
 
-        drops_7d = await _query_drops_7d(pool)
+        # The module owns the configured memory pool. In particular, a private
+        # Chronicler memory schema must not be counted through the domain pool
+        # supplied in the core ToolContext.
+        cfg = getattr(memory_mod, "_config", None)
+        memory_schema = getattr(cfg, "memory_schema", None)
+        get_memory_pool = getattr(memory_mod, "_get_pool", None)
+        if callable(get_memory_pool):
+            try:
+                memory_pool = get_memory_pool()
+            except Exception:
+                logger.debug("memory pool unavailable for drops_7d", exc_info=True)
+                memory_pool = None
+        else:
+            # Compatibility for lightweight modules without their own pool is
+            # safe only when no separate memory schema is configured.
+            memory_pool = pool if memory_schema is None else None
+        drops_7d = (
+            await _query_drops_7d(memory_pool, memory_schema=memory_schema)
+            if memory_pool is not None
+            else 0
+        )
 
         # Resolve the embedding model name from the memory module config.
         # ``MemoryModuleConfig.embedding_model`` always has a string default
         # ("all-MiniLM-L6-v2"), so the config-sourced path is authoritative.
         # The ``or`` fallback is kept only for defensiveness against test
         # doubles or malformed modules that pass ``embedding_model=None``.
-        cfg = getattr(memory_mod, "_config", None)
         embedding_model: str = getattr(cfg, "embedding_model", None) or "all-MiniLM-L6-v2"
 
         return {

@@ -258,3 +258,12 @@ holds. Durability and tighten-only triggers guard every role; see the
 [capability broker](../architecture/capability-broker.md#owner-law-s1-bu-dhloi110). See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
+
+### Steam status evidence
+
+`connectors.steam_status_history` (core_314) is append-only observed Steam
+status evidence for the Chronicler projection, unique on `(steam_id, observed_at)`.
+The connector records detected changes independently of ingest; Chronicler reads
+through its SELECT-only runtime role. The established `connector_writer` role
+writes the table. Bootstrap replay maintains the read grant. The table survives
+source downgrade so rolling back a producer cannot erase captured observations.

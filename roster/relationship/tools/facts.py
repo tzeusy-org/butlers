@@ -49,7 +49,9 @@ async def _fact_set_spo(
     await pool.execute(
         """
         UPDATE facts
-        SET validity = 'superseded'
+        SET validity = 'superseded',
+            dropped_at = CASE WHEN validity IN ('superseded', 'expired')
+                              THEN dropped_at ELSE now() END
         WHERE entity_id = $1
           AND predicate = $2
           AND scope = 'relationship'

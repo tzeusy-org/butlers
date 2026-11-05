@@ -438,7 +438,7 @@ Both tools are read-only and idempotent.
 
 **Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
 
-The owning `source_schema` for a disownment cascade is resolved from the connection's own `current_schema()` rather than threaded through every caller — butler pools connect with `search_path = <schema>, public`, so this reliably matches whatever schema the row was originally cataloged under.
+Unqualified daemon disownment cascades resolve `source_schema` from the caller connection's own `current_schema()`; butler pools connect with `search_path = <schema>, public`, so this matches the schema where the row was cataloged. Dashboard callers that qualify a private memory relation pass that owning schema explicitly through the canonical write, correction event, and projection cascade; the shared function never infers it from its pinned search path.
 
 **Purge semantics.** A purged fact's catalog row is marked stale, not deleted — butler roles hold no `DELETE` grant on `public.memory_catalog` (catalog GC is centralised), so a purge-triggered delete isn't even possible from a butler's own role.
 
@@ -562,3 +562,51 @@ None. The memory module is a leaf module with no dependencies on other modules.
 - [Module System](module-system.md)
 - [Knowledge Base](knowledge-base.md) -- entity data model and predicate vocabulary
 - [Approvals Module](approvals.md) -- approval gates for memory mutations
+
+### Explicit private-schema disownment
+
+Dashboard callers can use a domain pool while passing `memory_schema` for an
+owned private memory namespace. Forget and rule retirement carry that explicit
+schema through canonical writes and catalog/graph provenance. Correction audit
+rows are inserted into that same private namespace. The additive keyword-only
+`source_schema` argument to `cascade_fact_retraction` provides the same contract
+for external callers with qualified canonical SQL. Only omitted schemas resolve
+`current_schema()` on the caller connection; an explicit schema never falls
+back to its pool's search path. Canonical, audit and mandatory projection changes
+remain in the same transaction, so a projection failure rolls them all back.
+
+The mandatory cascade and catalog-only supersession write-behind use the shared
+`public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)`
+function installed by core_315. Its invoker authority preserves the caller's
+transaction and underlying table privileges. Graph invalidation is mandatory for
+disownment; postcommit supersession remains catalog-only and best effort. The
+optional final redaction flag additionally clears copied catalog summary, title,
+embedding and search data; it requires graph invalidation. The primitive never
+changes canonical memories or deletes catalog rows. Ordinary retraction retains
+historical text. Exact provenance prevents changes to other source schemas or tables.
+
+Core_314 supports managed-bootstrap and migration-only installs using explicit
+public schema usage, catalog SELECT/UPDATE, graph SELECT/DELETE and exact function
+EXECUTE grants for existing canonical runtime roles. PUBLIC and connector execution
+are not granted. Bootstrap replay applies those grants when a canonical role is
+created later; managed bootstrap's existing broader public-table grants remain a
+separate deployment property. Missing permissions fail the mandatory transaction.
+A schema-local downgrade retains this shared boundary and additive grants for
+other schema/runtime consumers. No deployment can run the new helper before the
+core revision is installed.
+
+
+### Lifecycle transition timestamps
+
+`facts.dropped_at` records entry into superseded/expired; `rules.forgotten_at`
+records entry into the existing forgotten=true state. These nullable fields
+have no default or legacy backfill. Duplicate terminal writes preserve the old
+time, including NULL; initial forgotten rules use their insertion time. They do
+not replace bitemporal `invalid_at` or rule-retirement `retired_at`.
+
+The memory-access seven-day integer counts those two timestamps plus episode
+`expires_at` inside one database-clock inclusive seven-day window. Future/NULL
+times are excluded, so legacy terminal history can be undercounted. Existing
+canonical/catalog/graph rollback boundaries remain; store_fact catalog
+write-behind and quick-fact/gift separate pool calls do not acquire broader
+atomicity from these fields.

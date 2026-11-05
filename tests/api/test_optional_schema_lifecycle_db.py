@@ -80,15 +80,27 @@ def lifecycle_db_url(fresh_db) -> str:
 @pytest.fixture
 def chronicler_memory_db_url(fresh_db) -> str:
     """Chronicler's domain and private memory schemas, separately."""
-    schemas = {"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"}
-    return fresh_db("core", "chronicler", "memory", schemas=schemas)
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    schemas = {"core": "chronicler", "chronicler": "chronicler"}
+    url = fresh_db(
+        "core",
+        "chronicler",
+        schemas=schemas,
+        revisions={"chronicler": "chronicler_029"},
+    )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 @pytest.fixture
 def chronicler_domain_only_db_url(fresh_db) -> str:
     """Chronicler without its optional private memory schema."""
     return fresh_db(
-        "core", "chronicler", schemas={"core": "chronicler", "chronicler": "chronicler"}
+        "core",
+        "chronicler",
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
 
 
