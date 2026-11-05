@@ -1018,7 +1018,7 @@ async def test_health_degraded(butler_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_startup_failure_propagation(monkeypatch) -> None:
+async def test_startup_failure_propagation() -> None:
     """A fatal phase error propagates and stops every later phase.
 
     Credentials are validated before the database is provisioned, and the database
@@ -1042,9 +1042,8 @@ async def test_startup_failure_propagation(monkeypatch) -> None:
     async def database(_daemon, _state):
         ran.append("database")
 
-    monkeypatch.setattr(lifecycle, "STARTUP_PHASES", [credentials, database])
     with pytest.raises(CredentialError, match="missing PG_DSN"):
-        await lifecycle.run_startup(MagicMock())
+        await lifecycle.run_startup(MagicMock(), [credentials, database])
     assert ran == ["credentials"]
 
 

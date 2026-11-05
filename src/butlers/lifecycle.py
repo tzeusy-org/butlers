@@ -18,7 +18,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -747,14 +747,16 @@ _STARTUP_ERROR_CATEGORIES = (
 )
 
 
-async def run_startup(daemon: Any) -> None:
+async def run_startup(daemon: Any, phases: Sequence[Phase] | None = None) -> None:
     """Execute the ordered startup phases with fresh per-run state.
 
     Fatal errors propagate and prevent later phases. Each module phase retains
-    its own non-fatal failure handling and dependent-module cascading.
+    its own non-fatal failure handling and dependent-module cascading. *phases*
+    defaults to ``STARTUP_PHASES``; a caller may run another sequence through the
+    same loop (its failure labelling and propagation).
     """
     state = StartupState()
-    for phase in STARTUP_PHASES:
+    for phase in STARTUP_PHASES if phases is None else phases:
         try:
             await phase(daemon, state)
         except Exception as exc:

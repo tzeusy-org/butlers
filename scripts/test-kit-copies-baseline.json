@@ -2,10 +2,6 @@
   "roster/relationship/tests/test_entity_facts_repoint_on_merge.py": [
     "_make_pool"
   ],
-  "roster/switchboard/tests/test_ingest_ingestion_events.py": [
-    "_FakeConn",
-    "_FakePool"
-  ],
   "tests/api/test_butler_detail_blind_spots.py": [
     "_FakePool"
   ],
@@ -48,31 +44,10 @@
   "tests/core/test_fleet_events.py": [
     "_FakeConnection"
   ],
-  "tests/core/test_ingestion_events.py": [
-    "_FakePool"
-  ],
   "tests/dashboard/test_briefing_attention_contract.py": [
     "_make_pool"
   ],
   "tests/integration/test_migrated_core_postgres_pool.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay_health.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay_relationship.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_overlay_travel.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_prep.py": [
-    "_FakePool"
-  ],
-  "tests/jobs/test_calendar_prep_message_context.py": [
     "_FakePool"
   ],
   "tests/test_benchmark_orchestration.py": [

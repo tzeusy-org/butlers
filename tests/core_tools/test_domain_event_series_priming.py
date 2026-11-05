@@ -9,7 +9,6 @@ renamed job or a dropped step fails here instead of silently hiding first failur
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from opentelemetry import metrics
@@ -23,6 +22,7 @@ from butlers.config import list_butlers
 from butlers.core.domain_event_contracts import get_contract_registry
 from butlers.core_tools import _domain_events
 from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -89,14 +89,13 @@ def test_sweep_probe_matches_roster_schedule_and_job_registry() -> None:
     assert probed == {_domain_events._SWEEP_EMITTER_BUTLER}
 
 
-async def test_startup_primes_publisher_and_sweep_routes_at_zero(reader, monkeypatch) -> None:
-    """Step 8d4 primes own routes per publisher, and every route under the sweep emitter."""
-    monkeypatch.setattr(lifecycle, "_ensure_owner_entity", AsyncMock())
-    monkeypatch.setattr(lifecycle, "upsert_provider_feature_catalogue", AsyncMock())
-    monkeypatch.setattr(
-        "butlers.core.domain_event_contracts.materialize_own_contracts",
-        AsyncMock(return_value=[]),
-    )
+async def test_startup_primes_publisher_and_sweep_routes_at_zero(reader) -> None:
+    """Step 8d4 primes own routes per publisher, and every route under the sweep emitter.
+
+    The whole shared-bootstrap phase runs, nothing patched (bu-rvgzmf.2), on a
+    database before migrations: no table exists, so the owner, catalogue and
+    contract steps before 8d4 no-op.
+    """
     configs = {config.name: config for config in list_butlers()}
     routes = _declared_routes()
     sweep_daemon = next(
@@ -108,7 +107,8 @@ async def test_startup_primes_publisher_and_sweep_routes_at_zero(reader, monkeyp
 
     for name in (publisher, sweep_daemon.name):
         await lifecycle._startup_shared_bootstrap(
-            SimpleNamespace(config=configs[name]), SimpleNamespace(pool=object())
+            SimpleNamespace(config=configs[name]),
+            lifecycle.StartupState(pool=fake_pool(fetchval=False)),
         )
 
     def expected(emitter: str, emitted_routes: set[tuple[str, str]]) -> set[tuple]:

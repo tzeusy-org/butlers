@@ -11,14 +11,14 @@ Covers the relationship ``calendar_overlay_contribution`` deterministic job:
 - zero LLM (handler takes only ``(pool, job_args)``; no spawner)
 
 No real database required — ``state_set`` / ``state_list`` / ``state_delete``
-are patched to capture writes/deletes, and ``pool.fetch`` is routed by SQL text.
+are patched to capture writes/deletes, and the job's two ``pool.fetch`` reads
+answer queued row sets (``tests.jobs.calendar_contribution_harness``).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -28,61 +28,13 @@ from butlers.jobs.calendar_overlay import (
     overlay_key,
     run_relationship_calendar_overlay_contribution,
 )
+from butlers.testing.fake_pool import FakePool
+from tests.jobs.calendar_contribution_harness import ContributionStateStore, run_overlay_job
 
 pytestmark = pytest.mark.unit
 
 _TODAY = date(2026, 6, 21)
 _TODAY_STR = "2026-06-21"
-
-
-# ---------------------------------------------------------------------------
-# Fake pool + state-store capture harness
-# ---------------------------------------------------------------------------
-
-
-class _FakePool:
-    """Routes ``pool.fetch`` to important_dates/reminder row lists by SQL content."""
-
-    def __init__(
-        self,
-        *,
-        dates: list[dict[str, Any]] | None = None,
-        reminders: list[dict[str, Any]] | None = None,
-    ) -> None:
-        self._dates = dates or []
-        self._reminders = reminders or []
-        self.fetch_calls: list[str] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        self.fetch_calls.append(sql)
-        if "FROM important_dates" in sql:
-            return self._dates
-        if "FROM facts" in sql:
-            return self._reminders
-        raise AssertionError(f"unexpected query: {sql}")
-
-
-class _StateCapture:
-    """Captures state_set/state_list/state_delete into an in-memory dict."""
-
-    def __init__(self, seed: dict[str, Any] | None = None) -> None:
-        self.store: dict[str, Any] = dict(seed or {})
-        self.deleted: list[str] = []
-        self.set_calls: list[str] = []
-
-    async def state_set(self, pool: Any, key: str, value: Any) -> int:
-        self.store[key] = value
-        self.set_calls.append(key)
-        return 1
-
-    async def state_list(self, pool: Any, prefix: str | None = None, keys_only: bool = True):
-        if prefix is None:
-            return sorted(self.store)
-        return sorted(k for k in self.store if k.startswith(prefix))
-
-    async def state_delete(self, pool: Any, key: str) -> None:
-        self.store.pop(key, None)
-        self.deleted.append(key)
 
 
 def _date(name: str, label: str, on: date, *, year: int | None = None, posture: str = "active"):
@@ -105,17 +57,14 @@ async def _run(
     dates: list[dict[str, Any]] | None = None,
     reminders: list[dict[str, Any]] | None = None,
     seed: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], _StateCapture, _FakePool]:
-    pool = _FakePool(dates=dates, reminders=reminders)
-    cap = _StateCapture(seed=seed)
-    with (
-        patch("butlers.jobs.calendar_overlay.today_sgt", return_value=_TODAY),
-        patch("butlers.jobs.calendar_overlay.state_set", new=cap.state_set),
-        patch("butlers.jobs.calendar_overlay.state_list", new=cap.state_list),
-        patch("butlers.jobs.calendar_overlay.state_delete", new=cap.state_delete),
-    ):
-        result = await run_relationship_calendar_overlay_contribution(pool, None)
-    return result, cap, pool
+) -> tuple[dict[str, Any], ContributionStateStore, FakePool]:
+    return await run_overlay_job(
+        run_relationship_calendar_overlay_contribution,
+        first=dates,
+        second=reminders,
+        seed=seed,
+        today=_TODAY,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,15 +282,9 @@ def test_handler_registered_and_callable_no_spawner():
 
 async def test_no_llm_session_spawned():
     """The job path must not construct or invoke any LLM spawner."""
-    with patch("butlers.jobs.calendar_overlay.today_sgt", return_value=_TODAY):
-        cap = _StateCapture()
-        pool = _FakePool()
-        with (
-            patch("butlers.jobs.calendar_overlay.state_set", new=cap.state_set),
-            patch("butlers.jobs.calendar_overlay.state_list", new=cap.state_list),
-            patch("butlers.jobs.calendar_overlay.state_delete", new=cap.state_delete),
-        ):
-            result = await run_relationship_calendar_overlay_contribution(pool, None)
+    # The handler takes only (pool, job_args); the strict pool refuses any read
+    # or write beyond the two queued source fetches.
+    result, _, pool = await _run()
     assert result["butler"] == "relationship"
     # Only important_dates + reminder (facts) queries were issued — no LLM fan-out.
-    assert len(pool.fetch_calls) == 2
+    assert pool.fetch.await_count == 2

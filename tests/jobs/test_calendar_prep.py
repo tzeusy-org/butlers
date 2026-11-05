@@ -7,105 +7,61 @@ Covers the relationship ``calendar_prep_contribution`` deterministic job:
 - prune of stale per-event keys for events outside the window (no-op when none)
 - zero LLM (handler takes only ``(pool, job_args)``; no spawner)
 
-No real database required — ``state_set`` / ``state_list`` / ``state_delete`` are
-patched to capture writes/deletes, and ``pool.fetch`` is routed by SQL text.
+The DB-free tests patch ``state_set`` / ``state_list`` / ``state_delete`` to capture
+writes/deletes and answer the job's ``pool.fetch`` reads with queued rows in call
+order; the commitment filter/ordering/cap test runs on real Postgres.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
 
+from butlers.core.state import state_get
 from butlers.jobs.calendar_prep import (
     MAX_COMMITMENTS_PER_ATTENDEE,
     PREP_KEY_PREFIX,
     prep_key,
     run_relationship_calendar_prep_contribution,
 )
+from butlers.testing.fake_pool import FakePool
+from tests.jobs.calendar_contribution_harness import (
+    ContributionStateStore,
+    patch_state,
+    source_reads,
+)
 
 pytestmark = pytest.mark.unit
 
 
-class _FakePool:
-    """Routes ``pool.fetch`` to the prep job's six queries by SQL content."""
-
-    def __init__(
-        self,
-        *,
-        events: list[dict[str, Any]] | None = None,
-        names: list[dict[str, Any]] | None = None,
-        tiers: list[dict[str, Any]] | None = None,
-        notes: list[dict[str, Any]] | None = None,
-        last_met: list[dict[str, Any]] | None = None,
-        commitments_by_entity: dict[Any, list[dict[str, Any]]] | None = None,
-        commitments_raise_for: set[Any] | None = None,
-    ) -> None:
-        self._events = events or []
-        self._names = names or []
-        self._tiers = tiers or []
-        self._notes = notes or []
-        self._last_met = last_met or []
-        self._commitments_by_entity = {
-            str(entity_id): rows for entity_id, rows in (commitments_by_entity or {}).items()
-        }
-        self._commitments_raise_for = {
-            str(entity_id) for entity_id in (commitments_raise_for or set())
-        }
-        self.fetch_calls: list[str] = []
-
-    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
-        self.fetch_calls.append(sql)
-        if "array_agg(DISTINCT cee.entity_id)" in sql:
-            return self._events
-        if "FROM public.entities" in sql:
-            return self._names
-        if "FROM public.owner_conditions" in sql:
-            entity_id = str(args[0])
-            if entity_id in self._commitments_raise_for:
-                raise RuntimeError("owner_conditions unavailable")
-            rows = self._commitments_by_entity.get(entity_id, [])
-            rows = sorted(rows, key=lambda row: (str(row["fingerprint"]), str(row["id"])))
-            rows = sorted(rows, key=lambda row: row["last_confirmed_at"], reverse=True)
-            rows = sorted(rows, key=lambda row: row["escalation_level"], reverse=True)
-            return rows[: int(args[1])]
-        if "dunbar_tier_override" in sql:
-            return self._tiers
-        if "predicate = ANY($2::text[])" in sql:
-            return self._notes
-        if "DISTINCT ON (cee.entity_id)" in sql:
-            return self._last_met
-        raise AssertionError(f"unexpected query: {sql}")
+_MODULE = "butlers.jobs.calendar_prep"
 
 
-class _StateCapture:
-    """Captures state_set/state_list/state_delete into an in-memory dict."""
+def _prep_reads(
+    *,
+    events: list[dict[str, Any]],
+    names: list[dict[str, Any]] | None = None,
+    tiers: list[dict[str, Any]] | None = None,
+    notes: list[dict[str, Any]] | None = None,
+    last_met: list[dict[str, Any]] | None = None,
+    commitments: list[list[dict[str, Any]] | BaseException] | None = None,
+) -> FakePool:
+    """The job's reads in order.
 
-    def __init__(self, seed: dict[str, Any] | None = None) -> None:
-        self.store: dict[str, Any] = dict(seed or {})
-        self.deleted: list[str] = []
-
-    async def state_set(self, _pool: Any, key: str, value: Any) -> int:
-        self.store[key] = value
-        return 1
-
-    async def state_list(self, _pool: Any, *, prefix: str) -> list[str]:
-        return [k for k in self.store if k.startswith(prefix)]
-
-    async def state_delete(self, _pool: Any, key: str) -> None:
-        self.store.pop(key, None)
-        self.deleted.append(key)
-
-
-def _patch_state(capture: _StateCapture):
-    return patch.multiple(
-        "butlers.jobs.calendar_prep",
-        state_set=capture.state_set,
-        state_list=capture.state_list,
-        state_delete=capture.state_delete,
+    Upcoming linked events; then, when any attendee is linked, names, Dunbar
+    tiers, notes and last-met; then one owner_conditions commitment read per
+    resolved attendee, in event attendee order.
+    """
+    if not any(event["entity_ids"] for event in events):
+        return source_reads(events)
+    return source_reads(
+        events, names or [], tiers or [], notes or [], last_met or [], *(commitments or [])
     )
 
 
@@ -113,7 +69,7 @@ async def test_populated_writes_attendee_context():
     """An entity-linked event yields one envelope with resolved attendee context."""
     event_id = uuid4()
     alice, bob = uuid4(), uuid4()
-    pool = _FakePool(
+    pool = _prep_reads(
         events=[
             {
                 "event_id": event_id,
@@ -143,10 +99,11 @@ async def test_populated_writes_attendee_context():
                 "title": "Quarterly sync",
             }
         ],
+        commitments=[[], []],
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_relationship_calendar_prep_contribution(pool, None)
 
     assert result["events_written"] == 1
@@ -172,58 +129,147 @@ async def test_populated_writes_attendee_context():
     assert bob_att["commitments"] == []
 
 
-async def test_commitments_are_escalation_sorted_and_capped_per_attendee():
-    """REQ-calendar-overlay-aggregation-005: select a capped L3-to-L0 commitment set."""
-    event_id = uuid4()
-    alice = uuid4()
-    rows = [
-        {
-            "id": f"condition-{i:02d}",
-            "kind": "promise",
-            "direction": "owner_to_other",
-            "summary": f"Commitment {i}",
-            "deadline": f"2026-07-{i + 1:02d}T09:00:00+00:00",
-            "escalation_level": level,
-            "last_confirmed_at": datetime(2026, 6, 1 + recency, tzinfo=UTC),
-            "fingerprint": fingerprint,
-        }
-        for i, (level, recency, fingerprint) in enumerate(
-            [
-                ("L0", 12, "fingerprint-z"),
-                ("L3", 1, "fingerprint-a"),
-                ("L0", 10, "fingerprint-a"),
-                ("L2", 2, "fingerprint-b"),
-                ("L0", 10, "fingerprint-a"),
-                ("L1", 3, "fingerprint-c"),
-                ("L0", 9, "fingerprint-d"),
-                ("L0", 8, "fingerprint-e"),
-                ("L0", 7, "fingerprint-f"),
-                ("L0", 6, "fingerprint-g"),
-                ("L0", 5, "fingerprint-h"),
-                ("L0", 4, "fingerprint-i"),
-            ]
-        )
-    ]
-    pool = _FakePool(
-        events=[
-            {
-                "event_id": event_id,
-                "title": "Team lunch",
-                "starts_at": datetime(2026, 6, 25, 12, 0, tzinfo=UTC),
-                "entity_ids": [alice],
-            }
-        ],
-        names=[{"id": alice, "name": "Alice Tan"}],
-        commitments_by_entity={alice: rows},
+async def _seed_linked_event(
+    pool: asyncpg.Pool, title: str, starts_at: datetime
+) -> tuple[Any, Any]:
+    """One entity-linked upcoming event; returns ``(event_id, attendee_entity_id)``."""
+    entity_id = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type) "
+        "VALUES ('Alice Tan', 'person') RETURNING id"
     )
-    cap = _StateCapture()
+    source_id = await pool.fetchval(
+        "INSERT INTO calendar_sources (source_key, source_kind) "
+        "VALUES ('prep-test', 'provider_event') RETURNING id"
+    )
+    event_id = await pool.fetchval(
+        """
+        INSERT INTO calendar_events
+            (source_id, origin_ref, title, timezone, starts_at, ends_at, source_butler)
+        VALUES ($1, 'prep-test-event', $2, 'UTC', $3, $4, 'relationship')
+        RETURNING id
+        """,
+        source_id,
+        title,
+        starts_at,
+        starts_at + timedelta(hours=1),
+    )
+    await pool.execute(
+        "INSERT INTO calendar_event_entities (event_id, entity_id) VALUES ($1, $2)",
+        event_id,
+        entity_id,
+    )
+    return event_id, entity_id
 
-    with _patch_state(cap):
+
+async def _seed_commitment(
+    pool: asyncpg.Pool,
+    *,
+    n: int,
+    counterparty: Any,
+    level: str,
+    last_confirmed_at: datetime,
+    fingerprint: str,
+    condition_class: str = "commitment",
+    resolved: bool = False,
+) -> None:
+    """One owner_conditions commitment row; ``n`` orders the ``id`` tiebreak."""
+    metadata = {
+        "class": condition_class,
+        "kind": "promise",
+        "direction": "owner_to_other",
+        "deadline": f"2026-07-{n % 28 + 1:02d}T09:00:00+00:00",
+        "counterparty_entity_id": str(counterparty),
+    }
+    await pool.execute(
+        """
+        INSERT INTO public.owner_conditions
+            (id, source, fingerprint, episode, state, escalation_level, last_confirmed_at,
+             summary, metadata, resolved_at, recovered_after_s)
+        VALUES ($1, $2, $3, 1, $4, $5, $6, $7, $8::text::jsonb,
+                CASE WHEN $9 THEN now() END, CASE WHEN $9 THEN 1.0 END)
+        """,
+        UUID(int=n + 1),
+        f"prep-test-{n}",
+        fingerprint,
+        "resolved" if resolved else "open",
+        level,
+        last_confirmed_at,
+        f"Commitment {n}",
+        json.dumps(metadata),
+        resolved,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_commitments_are_escalation_sorted_and_capped_per_attendee(db):
+    """REQ-calendar-overlay-aggregation-005: select a capped L3-to-L0 commitment set.
+
+    Real Postgres: the open/aging, commitment-class, per-counterparty filter and the
+    escalation / recency / fingerprint / id ordering with its LIMIT are the subject.
+    """
+    pool = await db("core", "memory", "relationship", schema="relationship", max_size=1)
+    event_id, alice = await _seed_linked_event(
+        pool, "Team lunch", datetime(2026, 6, 25, 12, 0, tzinfo=UTC)
+    )
+    ranked = [
+        ("L0", 12, "fingerprint-z"),
+        ("L3", 1, "fingerprint-a"),
+        ("L0", 10, "fingerprint-a"),
+        ("L2", 2, "fingerprint-b"),
+        ("L0", 10, "fingerprint-a"),
+        ("L1", 3, "fingerprint-c"),
+        ("L0", 9, "fingerprint-d"),
+        ("L0", 8, "fingerprint-e"),
+        ("L0", 7, "fingerprint-f"),
+        ("L0", 6, "fingerprint-g"),
+        ("L0", 5, "fingerprint-h"),
+        ("L0", 4, "fingerprint-i"),
+    ]
+    assert len(ranked) == MAX_COMMITMENTS_PER_ATTENDEE + 2
+    for n, (level, recency, fingerprint) in enumerate(ranked):
+        await _seed_commitment(
+            pool,
+            n=n,
+            counterparty=alice,
+            level=level,
+            last_confirmed_at=datetime(2026, 6, 1 + recency, tzinfo=UTC),
+            fingerprint=fingerprint,
+        )
+    # L3 decoys that would sort first if the state, class or counterparty filter broke.
+    newest = datetime(2026, 6, 30, tzinfo=UTC)
+    await _seed_commitment(
+        pool,
+        n=20,
+        counterparty=alice,
+        level="L3",
+        last_confirmed_at=newest,
+        fingerprint="decoy-resolved",
+        resolved=True,
+    )
+    await _seed_commitment(
+        pool,
+        n=21,
+        counterparty=alice,
+        level="L3",
+        last_confirmed_at=newest,
+        fingerprint="decoy-class",
+        condition_class="obligation",
+    )
+    await _seed_commitment(
+        pool,
+        n=22,
+        counterparty=uuid4(),
+        level="L3",
+        last_confirmed_at=newest,
+        fingerprint="decoy-counterparty",
+    )
+
+    with patch(f"{_MODULE}.today_sgt", return_value=date(2026, 6, 21)):
         await run_relationship_calendar_prep_contribution(pool, None)
 
-    commitments = cap.store[prep_key(str(event_id))]["attendees"][0]["commitments"]
-    assert len(commitments) == MAX_COMMITMENTS_PER_ATTENDEE
-    assert len(rows) == MAX_COMMITMENTS_PER_ATTENDEE + 2
+    envelope = await state_get(pool, prep_key(str(event_id)))
+    commitments = envelope["attendees"][0]["commitments"]
     assert [commitment["summary"] for commitment in commitments] == [
         "Commitment 1",
         "Commitment 3",
@@ -236,27 +282,21 @@ async def test_commitments_are_escalation_sorted_and_capped_per_attendee():
         "Commitment 8",
         "Commitment 9",
     ]
-    owner_conditions_query = next(
-        sql for sql in pool.fetch_calls if "FROM public.owner_conditions" in sql
-    )
-    assert "metadata->>'class'" in owner_conditions_query
-    assert "metadata->>'counterparty_entity_id'" in owner_conditions_query
-    assert "state IN ('open', 'aging')" in owner_conditions_query
-    assert (
-        """ORDER BY escalation_level DESC,
-                             last_confirmed_at DESC,
-                             fingerprint ASC,
-                             id ASC
-                    LIMIT $2"""
-        in owner_conditions_query
-    )
+    assert commitments[0] == {
+        "kind": "promise",
+        "direction": "owner_to_other",
+        "summary": "Commitment 1",
+        "deadline": "2026-07-02T09:00:00+00:00",
+        "escalation_level": "L3",
+        "fingerprint": "fingerprint-a",
+    }
 
 
 async def test_commitment_query_failure_keeps_existing_context_and_logs_warning(caplog):
     """REQ-calendar-overlay-aggregation-005: commitment failure preserves prep context."""
     event_id = uuid4()
     alice = uuid4()
-    pool = _FakePool(
+    pool = _prep_reads(
         events=[
             {
                 "event_id": event_id,
@@ -283,11 +323,11 @@ async def test_commitment_query_failure_keeps_existing_context_and_logs_warning(
                 "title": "Quarterly sync",
             }
         ],
-        commitments_raise_for={alice},
+        commitments=[RuntimeError("owner_conditions unavailable")],
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap), caplog.at_level("WARNING", logger="butlers.jobs.calendar_prep"):
+    with patch_state(_MODULE, cap), caplog.at_level("WARNING", logger="butlers.jobs.calendar_prep"):
         await run_relationship_calendar_prep_contribution(pool, None)
 
     attendee = cap.store[prep_key(str(event_id))]["attendees"][0]
@@ -303,10 +343,10 @@ async def test_commitment_query_failure_keeps_existing_context_and_logs_warning(
 
 async def test_empty_when_no_events():
     """No entity-linked events in the window → no writes (honest empty cache)."""
-    pool = _FakePool(events=[])
-    cap = _StateCapture()
+    pool = _prep_reads(events=[])
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_relationship_calendar_prep_contribution(pool, None)
 
     assert result["events_written"] == 0
@@ -318,7 +358,7 @@ async def test_unresolved_attendee_yields_empty_context():
     """An event whose linked entity is not in the registry → has_context=false."""
     event_id = uuid4()
     ghost = uuid4()
-    pool = _FakePool(
+    pool = _prep_reads(
         events=[
             {
                 "event_id": event_id,
@@ -329,9 +369,9 @@ async def test_unresolved_attendee_yields_empty_context():
         ],
         names=[],  # ghost entity not resolvable
     )
-    cap = _StateCapture()
+    cap = ContributionStateStore()
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_relationship_calendar_prep_contribution(pool, None)
 
     assert result["events_written"] == 1
@@ -345,7 +385,7 @@ async def test_prune_removes_stale_event_keys():
     live_event = uuid4()
     stale_event = uuid4()
     alice = uuid4()
-    pool = _FakePool(
+    pool = _prep_reads(
         events=[
             {
                 "event_id": live_event,
@@ -355,11 +395,14 @@ async def test_prune_removes_stale_event_keys():
             }
         ],
         names=[{"id": alice, "name": "Alice Tan"}],
+        commitments=[[]],
     )
     # Seed a stale envelope from a previous run for an event no longer in range.
-    cap = _StateCapture(seed={f"{PREP_KEY_PREFIX}{stale_event}": {"butler": "relationship"}})
+    cap = ContributionStateStore(
+        seed={f"{PREP_KEY_PREFIX}{stale_event}": {"butler": "relationship"}}
+    )
 
-    with _patch_state(cap):
+    with patch_state(_MODULE, cap):
         result = await run_relationship_calendar_prep_contribution(pool, None)
 
     assert result["pruned"] == 1
