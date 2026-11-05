@@ -12,15 +12,13 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
-from butlers.daemon import ButlerDaemon
 from butlers.migrations import (
     _build_alembic_config,
     _discover_butler_chains,
@@ -311,101 +309,24 @@ def _make_butler_toml(
     return tmp_path
 
 
-def _patch_infra():
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    transaction_depth = 0
-    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def _transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        try:
-            yield
-        finally:
-            transaction_depth -= 1
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "has_butler_chain": patch("butlers.lifecycle.has_butler_chain"),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=MagicMock()),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_pool": mock_pool,
-    }
-
-
 async def _run_daemon_with_migration_tracking(
     butler_dir: Path,
-    registry: ModuleRegistry,
+    module: Module,
     *,
     has_chain: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[list[str], list[str | None]]:
-    """Start daemon and return (chain_order, schema_list) from migration calls."""
-    patches = _patch_infra()
+    """Run the daemon's own migration phases and return (chain_order, schema_list).
+
+    The subject is which chains the startup phases pick, not the boot, so the two
+    phases run directly on a DB-free host. The migration runner and the chain probe
+    are the observation points (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+    from butlers.db import Database
+    from butlers.testing.fake_pool import fake_pool
+    from butlers.testing.tool_host import host_tools
+
     call_log: list[str] = []
     schema_log: list[str | None] = []
     module_root = butler_dir / "module_chains"
@@ -415,38 +336,29 @@ async def _run_daemon_with_migration_tracking(
         "# Directory presence, not a hook, selects this chain.\n"
     )
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"] as mock_mig,
-        patches["has_butler_chain"] as mock_has_chain,
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["recover_route_inbox"],
-        patch("butlers.migrations.MODULES_DIR", module_root),
-    ):
-        mock_has_chain.return_value = has_chain
+    async def track_migration(db_url, chain="core", schema=None):
+        call_log.append(f"migrate:{chain}")
+        schema_log.append(schema)
 
-        async def track_migration(db_url, chain="core", schema=None):
-            call_log.append(f"migrate:{chain}")
-            schema_log.append(schema)
+    monkeypatch.setattr(lifecycle, "run_migrations", track_migration)
+    monkeypatch.setattr(lifecycle, "has_butler_chain", lambda _name: has_chain)
 
-        mock_mig.side_effect = track_migration
-
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
+    with patch("butlers.migrations.MODULES_DIR", module_root):
+        host = await host_tools(butler_dir, pool=fake_pool())
+        daemon = host.daemon
+        daemon.db = Database(db_name="butlers", schema=daemon.config.db_schema)
+        daemon._modules = [module]
+        state = lifecycle.StartupState()
+        await lifecycle._startup_core_migrations(daemon, state)
+        await lifecycle._startup_module_migrations(daemon, state)
 
         daemon_calls, daemon_schemas = list(call_log), list(schema_log)
         call_log.clear()
         schema_log.clear()
         from butlers.cli import _migrate_all
 
+        registry = ModuleRegistry()
+        registry.register(type(module))
         with (
             patch("butlers.modules.registry.default_registry", return_value=registry),
             patch("butlers.migrations.run_migrations", side_effect=track_migration),
@@ -468,19 +380,19 @@ async def _run_daemon_with_migration_tracking(
     return call_log, schema_log
 
 
-async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -> None:
+async def test_butler_migration_ordering_and_schema_forwarding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """REQ-core-modules-010: directory selection agrees across CLI and daemon.
 
     Migration ordering: with chain runs core→butler→module; without chain skips butler.
     All chains receive the butler's configured schema."""
-    registry_with_mod = ModuleRegistry()
-    registry_with_mod.register(StubModule)
 
     # With chain + module: core→butler→module
     (tmp_path / "a").mkdir()
     butler_dir = _make_butler_toml(tmp_path / "a", "relationship", modules={"stub_mod": {}})
     call_log, _ = await _run_daemon_with_migration_tracking(
-        butler_dir, registry_with_mod, has_chain=True
+        butler_dir, StubModule(), has_chain=True, monkeypatch=monkeypatch
     )
     assert call_log == ["migrate:core", "migrate:relationship", "migrate:stub_mod"]
 
@@ -488,7 +400,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -
     (tmp_path / "b").mkdir()
     butler_dir2 = _make_butler_toml(tmp_path / "b", "test-butler", modules={"stub_mod": {}})
     call_log2, _ = await _run_daemon_with_migration_tracking(
-        butler_dir2, registry_with_mod, has_chain=False
+        butler_dir2, StubModule(), has_chain=False, monkeypatch=monkeypatch
     )
     assert call_log2 == ["migrate:core", "migrate:stub_mod"]
 
@@ -498,7 +410,7 @@ async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -
         tmp_path / "c", "relationship", modules={"stub_mod": {}}, db_schema="relationship"
     )
     _, schema_log = await _run_daemon_with_migration_tracking(
-        butler_dir3, registry_with_mod, has_chain=True
+        butler_dir3, StubModule(), has_chain=True, monkeypatch=monkeypatch
     )
     assert schema_log == ["relationship", "relationship", "relationship"]
 
