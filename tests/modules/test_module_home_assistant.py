@@ -31,6 +31,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
+import httpx
 import pytest
 from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
@@ -393,12 +394,15 @@ class TestOnStartup:
             "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(side_effect=_resolve),
         ):
-            with patch("httpx.AsyncClient", return_value=MagicMock()):
+            with patch("httpx.AsyncClient", return_value=MagicMock()) as factory:
                 with patch.object(HomeAssistantModule, "_ws_connect_and_seed", new=AsyncMock()):
                     await ha_module.on_startup(config={}, db=mock_db)
 
         assert ha_module._url == "http://ha.local"
         assert ha_module._token == "test-token"
+        assert factory.call_args.kwargs["verify"] is False
+        assert factory.call_args.kwargs["timeout"] == httpx.Timeout(5.0)
+        assert factory.call_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
 
     async def test_startup_raises_if_url_missing(self, ha_module: HomeAssistantModule) -> None:
         mock_db = MagicMock()
@@ -1665,3 +1669,33 @@ async def test_owner_notifier_does_not_authorize_unresolved_data_targets(
     assert "non-owner communication" in case.park.await_args.kwargs["why"]
     assert case.park.await_args.kwargs["tool_args"] == args
     case.client.post.assert_not_awaited()
+
+
+async def test_ws_malformed_frame_withholds_content_and_keeps_valid_delivery(
+    ha_module: HomeAssistantModule, caplog: pytest.LogCaptureFixture
+) -> None:
+    from types import SimpleNamespace
+
+    import aiohttp
+
+    secret = "SYNTHETIC-HA-PRIVATE-FRAME"
+    ha_module._shutdown = False
+    ha_module._ws_connected = True
+    ha_module._record_ha_source_error = AsyncMock()
+    ha_module._start_poll_fallback = MagicMock()
+    ha_module._schedule_reconnect = MagicMock()
+    ha_module._dispatch_ws_message = AsyncMock()
+    ha_module._ws_connection = SimpleNamespace(
+        closed=False,
+        receive=AsyncMock(
+            side_effect=[
+                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=secret),
+                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data='{"type":"pong"}'),
+                SimpleNamespace(type=aiohttp.WSMsgType.CLOSE),
+            ]
+        ),
+    )
+    await ha_module._ws_message_loop()
+    ha_module._dispatch_ws_message.assert_awaited_once_with({"type": "pong"})
+    assert secret not in caplog.text
+    assert any("invalid" in r.getMessage() for r in caplog.records)
