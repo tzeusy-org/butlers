@@ -76,14 +76,60 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
     postgres_container, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(migration._TEMPLATES_ENV, raising=False)
+    metadata_events = []
+    original_event = migration._storage_database
+
+    def record_event(event, container, name, kind):
+        metadata_events.append((event, container, name, kind))
+        original_event(event, container, name, kind)
+
+    monkeypatch.setattr(migration, "_storage_database", record_event)
     migrations: list[str] = []
     real_migrate = migration._migrate
     monkeypatch.setattr(
         migration, "_migrate", lambda url, **k: migrations.append(url) or real_migrate(url, **k)
     )
+    key = migration.template_key(postgres_container, chains=["core"], schemas={}, revisions={})
+    cached_template = migration._TEMPLATES.get(key)
     first = migration.create_migrated_test_db(
         postgres_container, migration.migration_db_name(), chains=["core"]
     )
+    first_name = urlparse(first).path.lstrip("/")
+    assert ("created", postgres_container, first_name, "C") in metadata_events
+    assert ("ready", postgres_container, first_name, "C") in metadata_events
+    selected_template = migration._TEMPLATES[key]
+    if cached_template is not None:
+        assert cached_template is selected_template
+        assert not any(kind == "T" for _, _, _, kind in metadata_events)
+    else:
+        assert ("ready", postgres_container, selected_template.name, "T") in metadata_events
+    from butlers.testing import storage
+
+    admin = create_engine(postgres_container.get_connection_url())
+    try:
+        with admin.connect() as connection:
+            metadata = storage._metadata(connection.execute(text(storage._METADATA_SQL)).all())
+            assert type(metadata[first_name]) is int and metadata[first_name] > 0
+            ready_templates = {
+                name for event, _, name, kind in metadata_events if event == "ready" and kind == "T"
+            }
+            assert selected_template.name in metadata and ready_templates <= set(metadata)
+            assert (
+                type(metadata[selected_template.name]) is int
+                and metadata[selected_template.name] > 0
+            )
+            assert (
+                connection.execute(
+                    text(
+                        "SELECT datistemplate AND NOT datallowconn FROM pg_database WHERE datname = :name"
+                    ),
+                    {"name": selected_template.name},
+                ).scalar_one()
+                is True
+            )
+    finally:
+        admin.dispose()
+
     second = migration.create_migrated_test_db(
         postgres_container, migration.migration_db_name(), chains=["core"]
     )
@@ -216,7 +262,10 @@ def test_template_storage_observes_complete_lifecycle(monkeypatch, stage, disk_f
     request = dict(chains=["core"], schemas={}, revisions={})
     if stage == "success":
         first = migration._migrated_template(container, **request)
+        cold_snapshot = observer.database_snapshot()
+        assert cold_snapshot[2][first.name][:2] == ("T", "ready")
         assert migration._migrated_template(container, **request) is first
+        assert observer.database_snapshot() == cold_snapshot
         assert calls == ["database_create", "migration", "finalize", "finalize", "dispose"]
         assert observer.events == dict(
             template_created=1, clone_created=0, create_failed=0, storage_error=0
@@ -232,5 +281,8 @@ def test_template_storage_observes_complete_lifecycle(monkeypatch, stage, disk_f
         assert observer.wake_event.is_set()
         assert migration._TEMPLATES == {}
         assert calls.count("dispose") == int(stage == "finalize")
+    states = list(observer.database_snapshot()[2].values())
+    assert len(states) == 1 and states[0][0] == "T"
+    assert states[0][1] == ("ready" if stage == "success" else "intent")
     assert all(not lock.locked() for lock in migration._TEMPLATE_LOCKS.values())
     assert observer.thread.ident is None
