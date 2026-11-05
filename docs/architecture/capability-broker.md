@@ -18,6 +18,7 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `ledger.py` | SQL over the sw_047 goal ledger, its sw_057 labels and sw_059 owner-law holds; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
+| `aliases.py` | The `AliasResolver` seam, canonical argument pinning, term-id canonicalisation and `CalendarAliases` |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
 | `forwarder.py` | `HttpForwarder`: one `tools/call` per dispatch; D12 receipt mapping; the verified stamp account |
 | `server.py` | MCP streamable HTTP goal endpoint at `/goals/{goal_id}/mcp`, `BrokerSwitch`, `session_app` |
@@ -45,7 +46,9 @@ last unit of budget: exactly one wins).
    child), and every restricted resource argument must name granted
    identifiers. A selection-bound parameter without a grant restriction has an
    empty scope; today's catalog declares none.
-3. Classify recipients and decide (`policy.decide`). Refusals contact no domain.
+3. Resolve declared resource aliases to canonical ids
+   ([Resolved aliases](#resolved-aliases-bu-dhloi130)); the rest of the call uses
+   them. Classify recipients and decide (`policy.decide`). Refusals contact no domain.
    Then apply the owner law ([Owner law](#owner-law-s1-bu-dhloi110)), which can
    only refuse or turn a dispatch into a per-event park.
 4. Check the budget (exhaustion commits `budget_exhausted` on the goal), refuse a
@@ -339,8 +342,41 @@ selected capability ([MCP model](../concepts/mcp-model.md)). Any other
 narrowing is refused at write with 422 `owner_policy_narrowing_unsupported`. At
 match time, a stored term narrowed on a param the current catalog no longer
 marks alias-free for the called capability holds every call of that capability.
-A domain alias-resolver seam would let aliasable params narrow later; it is not
-built.
+
+### Resolved aliases (bu-dhloi1.30)
+
+A param the catalog declares in `alias_resolvers` (param to a closed kind; today
+only `calendar`, on every calendar tool's `calendar_id`/`calendar_ids`) can also
+narrow. `capability_broker/aliases.py` holds the seam. After the grant scope
+check (which stays on the raw arguments) and before recipients, `decide` and
+owner law, the broker asks its trusted `AliasResolver` (a constructor input like
+`Domains`; `CalendarAliases` reads each domain's discovered provider
+`calendar_sources`) for each value's canonical id, under `alias_timeout`
+(2 s by default):
+
+- Every value of a param resolves to an answer that resolves to itself (a fixed
+  point): the call's arguments are replaced by the canonical ids. Those are what
+  is digested, signed into the assertion, dispatched and parked, so the domain
+  receives an id it resolves to itself and cannot re-resolve the call to another
+  resource after the check.
+- Anything else (no answer, a non-fixed-point answer, an error, the deadline, no
+  resolver, an omitted param) leaves the param unresolved. The call keeps its
+  arguments, and a term narrowed on that param selects it, as for any aliasable
+  param.
+- A term's narrowing ids on a resolved param are resolved too, so a term written
+  as `primary` holds the owner's calendar id. A term id that does not resolve
+  drops that narrowing, and the term holds every call on its selector.
+
+For `calendar`, an id resolves when, trimmed, it is a discovered provider
+calendar; `primary` resolves to the calendar whose id is the one discovered
+account's address, and to nothing when there is no account or more than one.
+
+At the approval fence the approved (or owner-edited) arguments are never
+rewritten. A param counts as resolved there only when its value is already the
+canonical id, so an edit naming an alias cannot release a term. Entity and
+contact merges are not resolved: `entity_id` params stay `alias_free_params`, and
+a merge survivor is not substituted. Nothing constructs the broker until the M6
+switch, so the seam is dark.
 
 Identifiers are compared in canonical form, both when
 stored and when matched: a UUID in any spelling becomes its lowercase
