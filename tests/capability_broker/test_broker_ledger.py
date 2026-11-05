@@ -956,9 +956,11 @@ async def _relationship_domain(w, report: dict):
 
 async def _identity_fact(w, entity, authority, writer=(None, None)):
     await w.owner.execute(
+        # rel_037: only an owner-authored (or confirmed) fact is verified.
         "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src, "
-        "conf, observed_at, validity, content_authority, taint_goal_id, taint_invocation_id) "
-        "VALUES ($1, 'has-email', $2, 'literal', 'relationship', 1.0, now(), 'active', $3, $4, $5)",
+        "conf, observed_at, validity, content_authority, verified, taint_goal_id, "
+        "taint_invocation_id) VALUES ($1, 'has-email', $2, 'literal', 'relationship', 1.0, "
+        "now(), 'active', $3, $3 IN ('owner', 'owner_device'), $4, $5)",
         entity,
         f"{uuid4().hex[:8]}@example.test",
         authority,

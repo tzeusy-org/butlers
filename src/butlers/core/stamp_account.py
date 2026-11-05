@@ -142,7 +142,7 @@ def account_records(
 
 def attach_report(result: Any, account: StampAccount, lineage: Any) -> Any:
     """Return ``result`` with the account in ``_meta``, replacing any handler value."""
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
 
     if not isinstance(result, ToolResult):
         return result

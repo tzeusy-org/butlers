@@ -18,7 +18,7 @@ import httpx
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastmcp import FastMCP
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 
 from butlers.capability_broker.assertions import LIFETIME_SECONDS, AssertionSigner
 from butlers.capability_broker.contracts import Decision, Reservation
