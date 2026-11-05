@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from asyncpg import Connection, Pool
 
 from butlers.core import entity_graph_edges
+from butlers.core.goal_lineage import refuse_owner_authority_under_exposure, taint_stamp
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
     get_current_runtime_session_id,
@@ -1088,8 +1089,11 @@ async def _stamp_authority(
     An explicit ``content_authority`` is honoured only for server-internal
     callers that derived it themselves (consolidation); MCP-facing tools never
     expose the argument.  Otherwise it is derived from the routing context.
+    Under an exposed goal lineage an explicit owner-class authority is refused
+    (RFC 0038 D6).
     """
     if content_authority is not None:
+        refuse_owner_authority_under_exposure(content_authority)
         return ContentAuthority(validate_authority(content_authority), authority_entity_id)
     return await resolve_content_authority(pool, routing_context)
 
@@ -1241,9 +1245,10 @@ async def _insert_episode_record(
         INSERT INTO episodes (id, butler, session_id, content, embedding, search_vector,
                               importance, expires_at, metadata, tenant_id, request_id,
                               retention_class, sensitivity, embedding_model_version,
-                              content_authority, authority_entity_id)
+                              content_authority, authority_entity_id,
+                              taint_goal_id, taint_invocation_id)
         VALUES ($1, $2, $3, $4, $5, {tsvector_sql("$6")}, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16)
+                $15, $16, $17, $18)
     """
     await conn.execute(
         sql,
@@ -1263,6 +1268,7 @@ async def _insert_episode_record(
         embedding_model_version,
         authority.authority if authority else None,
         authority.entity_id if authority else None,
+        *taint_stamp(),
     )
 
 
@@ -1295,7 +1301,9 @@ async def _update_episode_record(
             sensitivity = $10,
             embedding_model_version = $11,
             content_authority = $12,
-            authority_entity_id = $13
+            authority_entity_id = $13,
+            taint_goal_id = COALESCE($14, taint_goal_id),
+            taint_invocation_id = COALESCE($15, taint_invocation_id)
         WHERE id = $1
     """
     await conn.execute(
@@ -1313,6 +1321,7 @@ async def _update_episode_record(
         embedding_model_version,
         authority.authority if authority else None,
         authority.entity_id if authority else None,
+        *taint_stamp(),
     )
 
 
@@ -1480,7 +1489,8 @@ async def _insert_fact_record(
             created_at, last_confirmed_at, tags, metadata, entity_id,
             object_entity_id, valid_at, tenant_id, request_id,
             idempotency_key, observed_at, retention_class, sensitivity,
-            embedding_model_version, content_authority, authority_entity_id
+            embedding_model_version, content_authority, authority_entity_id,
+            taint_goal_id, taint_invocation_id
         )
         VALUES (
             $1, $2, $3, $4, $5, {tsvector_sql("$6")},
@@ -1489,7 +1499,8 @@ async def _insert_fact_record(
             $15, $15, $16, $17, $18,
             $19, $20, $21, $22,
             $23, $24, $25, $26,
-            $27, $28, $29
+            $27, $28, $29,
+            $30, $31
         )
     """
     await conn.execute(
@@ -1523,6 +1534,7 @@ async def _insert_fact_record(
         embedding_model_version,
         authority.authority if authority else None,
         authority.entity_id if authority else None,
+        *taint_stamp(),
     )
 
 
@@ -2436,12 +2448,13 @@ async def store_rule(
                            applied_count, success_count, harmful_count,
                            source_episode_id, source_butler, created_at, tags, metadata,
                            tenant_id, request_id, retention_class, sensitivity,
-                           embedding_model_version, content_authority, authority_entity_id)
+                           embedding_model_version, content_authority, authority_entity_id,
+                           taint_goal_id, taint_invocation_id)
         VALUES ($1, $2, $3, {tsvector_sql("$4")}, $5, 'candidate',
                 0.5, 0.01, 0.0,
                 0, 0, 0,
                 $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                $15, $16, $17)
+                $15, $16, $17, $18, $19)
     """
 
     await pool.execute(
@@ -2463,6 +2476,7 @@ async def store_rule(
         embedding_engine.model_name,
         authority.authority,
         authority.entity_id,
+        *taint_stamp(),
     )
 
     # -------------------------------------------------------------------------

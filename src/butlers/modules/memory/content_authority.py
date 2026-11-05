@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from butlers.core.goal_lineage import current_lineage
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.core.tool_call_capture import (
     current_runtime_session_locator_is_unbound,
@@ -184,7 +185,19 @@ async def resolve_content_authority(
 
     ``routing_context=None`` reads the current runtime session's context; callers
     outside that task (the Spawner's episode hook) pass the context explicitly.
+
+    A broker-forwarded call (RFC 0038 D7) derives authority from its verified
+    goal lineage only, never from a spawner-derived session: exposed or
+    third-party lineage is ``third_party``, unexposed owner lineage is
+    ``owner``, obligation and staffer lineage is ``system``.
     """
+    lineage = current_lineage()
+    if lineage is not None:
+        if lineage.exposed or lineage.origin == "third_party":
+            return ContentAuthority(THIRD_PARTY)
+        if lineage.origin == "owner":
+            return ContentAuthority(OWNER, await fetch_owner_entity_id(pool))
+        return ContentAuthority(SYSTEM)
     if routing_context is None:
         routing_context = get_current_runtime_session_routing_context()
         if not routing_context and current_runtime_session_locator_is_unbound():

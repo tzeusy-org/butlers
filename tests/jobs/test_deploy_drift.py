@@ -23,7 +23,7 @@ Covers:
   currently drifted (AC3 -- a clean comparison is what resolves a prior
   episode).
 
-No real database required — pools are faked/mocked; the underlying
+No real database required — pools are kit ``fake_pool`` doubles or mocks; the underlying
 reconcile_snapshot lifecycle behavior itself (open/confirm/escalate/resolve,
 concurrency) is covered against real Postgres by
 tests/core/test_infra_conditions.py and
@@ -58,6 +58,8 @@ from butlers.jobs.deploy_drift import (
     run_migration_drift_check,
 )
 from butlers.testing.db_manager import db_manager
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records
 
 pytestmark = pytest.mark.unit
 
@@ -67,19 +69,11 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-class _FakePool:
-    """Fake asyncpg pool: schema-aware .fetch() for alembic_version reads."""
-
-    def __init__(self, *, revisions_by_schema: dict[str, list[str] | Exception]):
-        self._revisions_by_schema = revisions_by_schema
-
-    async def fetch(self, sql: str, *args):
-        for schema, revisions in self._revisions_by_schema.items():
-            if f'"{schema}".alembic_version' in sql:
-                if isinstance(revisions, Exception):
-                    raise revisions
-                return [{"version_num": r} for r in revisions]
-        raise AssertionError(f"Unexpected schema query: {sql}")
+def _alembic_versions(revisions: list[str] | Exception) -> FakePool:
+    """A switchboard pool whose ``alembic_version`` read answers *revisions* or raises."""
+    if isinstance(revisions, Exception):
+        return fake_pool(fetch=AsyncMock(side_effect=revisions))
+    return fake_pool(fetch=records({"version_num": r} for r in revisions))
 
 
 # ---------------------------------------------------------------------------
@@ -118,13 +112,14 @@ def test_expected_chains_by_schema_includes_core_butler_and_module_chains(monkey
 
 
 async def test_actual_revisions_returns_rows_for_existing_table():
-    pool = _FakePool(revisions_by_schema={"finance": ["core_010", "finance_003"]})
+    pool = _alembic_versions(["core_010", "finance_003"])
     result = await _actual_revisions(pool, "finance")
     assert result == {"core_010", "finance_003"}
+    pool.fetch.assert_awaited_once_with('SELECT version_num FROM "finance".alembic_version')
 
 
 async def test_actual_revisions_treats_missing_table_as_empty_not_a_failure():
-    pool = _FakePool(revisions_by_schema={"finance": asyncpg.UndefinedTableError()})
+    pool = _alembic_versions(asyncpg.UndefinedTableError())
     result = await _actual_revisions(pool, "finance")
     assert result == set()
 
@@ -155,7 +150,7 @@ async def test_compute_drift_report_all_aligned_is_not_drifted(monkeypatch):
             "finance": {"finance_001", "finance_002"},
         },
     )
-    pool = _FakePool(revisions_by_schema={"finance": ["core_005", "finance_002"]})
+    pool = _alembic_versions(["core_005", "finance_002"])
     db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
@@ -177,7 +172,7 @@ async def test_compute_drift_report_detects_a_dark_revision(monkeypatch):
     )
     # DB is stuck at core_003 -- core_004/core_005 never got deployed (the
     # bu-zhfd0 shape). finance chain is fine.
-    pool = _FakePool(revisions_by_schema={"finance": ["core_003", "finance_002"]})
+    pool = _alembic_versions(["core_003", "finance_002"])
     db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
@@ -201,7 +196,7 @@ async def test_compute_drift_report_never_applied_chain_reports_none_actual(monk
             "finance": {"finance_001", "finance_002"},
         },
     )
-    pool = _FakePool(revisions_by_schema={"finance": ["core_005"]})  # finance chain never applied
+    pool = _alembic_versions(["core_005"])  # finance chain never applied
     db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
@@ -228,7 +223,7 @@ async def test_compute_drift_report_is_degraded_when_a_schema_query_raises(monke
         heads={"core": "core_005"},
         revision_ids={"core": {"core_005"}},
     )
-    pool = _FakePool(revisions_by_schema={"finance": RuntimeError("permission denied")})
+    pool = _alembic_versions(RuntimeError("permission denied"))
     db = db_manager({"switchboard": pool})
 
     report = await compute_drift_report(db)
