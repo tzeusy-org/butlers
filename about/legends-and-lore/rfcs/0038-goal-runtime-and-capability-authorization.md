@@ -1209,7 +1209,7 @@ invocation lineage.
 | 0020 Calendar overlay read exception | Remains. |
 | 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable, and no standing rule targets or approves an `always_per_event` capability (D4, D6, D13). |
 | 0022 Cross-process event transport | Remains; events from effects carry goal lineage for caused admissions. |
-| 0023 Approval delivery intent recovery | Remains. |
+| 0023 Approval delivery intent recovery | Remains as the transport queue (claims, leases, attempts); its delivery identity and callback tokens map to S6 subjects, presentations and `od1` tokens through `public.owner_delivery_source_map` (bu-dhloi1.13; `docs/api_and_protocols/owner-delivery.md`). |
 | 0024 Messenger correspondence ledger (proposed) | Independent. |
 | 0025 Beads projection exporter (draft) | Independent. |
 | 0026 Commitment lifecycle (draft) | Commitments that need reasoning become obligations (D5). |

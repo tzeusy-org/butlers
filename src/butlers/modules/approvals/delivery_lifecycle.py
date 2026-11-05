@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from butlers.core.owner_delivery import close_for_authority
 from butlers.metrics_registry import get_or_create_counter
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
@@ -378,6 +379,15 @@ async def transition_pending_action(
             reason=event_reason,
             metadata=event_metadata or {"tool_name": action.tool_name},
             occurred_at=database_now,
+        )
+        # Every path that leaves pending (token, legacy callback, dashboard, expiry,
+        # cancellation) resolves the owner-delivery subject in this transaction, so
+        # no presented token can authorize anything afterwards. No subject: no-op.
+        await close_for_authority(
+            connection,
+            kind="approval",
+            source_ref=str(action_id),
+            status=effective_status.value,
         )
         if (
             effective_status is ActionStatus.APPROVED

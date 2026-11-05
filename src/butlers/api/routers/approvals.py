@@ -81,6 +81,7 @@ from butlers.api.models.approval import (
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as audit_router
+from butlers.core import owner_delivery
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.modules.approvals import operations as approvals_ops
@@ -3617,6 +3618,68 @@ async def _require_presented_call_unchanged(
         raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
 
 
+#: Binds no owner, so every token refuses ``wrong_owner`` when the owner is unresolved.
+_NO_OWNER = UUID(int=0)
+
+
+class _OwnerDeliveryDecisionRefused(Exception):
+    """The owning decision refused after the subject CAS; the transaction rolls back."""
+
+    def __init__(self, result: dict[str, Any]) -> None:
+        super().__init__("owner-delivery decision refused")
+        self.result = dict(result) if "error" in result else {"error": "Decision refused"}
+
+
+def _raise_owner_delivery_refusal(result: dict[str, Any]) -> None:
+    if result.get("error") == "owner_delivery_refused":
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "owner_delivery_refused", "reason": result.get("reason")},
+        )
+
+
+async def _redeem_owner_delivery(
+    conn: Any,
+    parsed_id: UUID,
+    stored_tool_args: Any,
+    *,
+    token: str,
+    surface: owner_delivery.Surface,
+    decide: owner_delivery.Decide,
+    audit_actor: str,
+    audit_action: str,
+    audit_note: str | None = None,
+) -> dict[str, Any]:
+    """Redeem one card token on the locked action; mark the result for the caller."""
+    raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
+    redemption = await owner_delivery.redeem(
+        conn,
+        token,
+        kind="approval",
+        source_ref=str(parsed_id),
+        owner_entity=await owner_delivery.owner_entity_id(conn) or _NO_OWNER,
+        surface=surface,
+        current_action_digest=args_digest(raw if isinstance(raw, dict) else None),
+        decide=decide,
+    )
+    if redemption.outcome == "refused":
+        return {"error": "owner_delivery_refused", "reason": redemption.reason}
+    if redemption.outcome == "duplicate":
+        latest = await conn.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
+        if latest is None:
+            return {"error": f"Approval not found: {parsed_id}"}
+        return {**PendingAction.from_row(latest).to_dict(), "_owner_delivery": "duplicate"}
+    await audit_router.append(
+        conn,
+        _decision_audit_actor(audit_actor),
+        audit_action,
+        target=str(parsed_id),
+        note=audit_note,
+        result="success",
+    )
+    return {**redemption.result, "_owner_delivery": "won"}
+
+
 async def approve_owning_action(
     *,
     parsed_id: UUID,
@@ -3634,13 +3697,20 @@ async def approve_owning_action(
     require_displayed_call: bool = False,
     create_rule: bool = False,
     decision_memory_writer: DecisionMemoryWriter | None = None,
+    owner_delivery_token: str | None = None,
+    owner_delivery_surface: owner_delivery.Surface | None = None,
 ) -> ApiResponse[ApprovalAction]:
     """Shared verified decision/audit/dispatch on an already selected owner.
 
     Calendar supplies the actual canonical pending args read from this pool;
     callers cannot select an approval id or standing rule through that API.
+    ``owner_delivery_token`` (bu-dhloi1.13) redeems one single-use card token in the
+    same transaction as the decision: a refused, stale or replayed token decides and
+    dispatches nothing.
     """
     action_id = str(parsed_id)
+    if owner_delivery_token is not None and (edits or create_rule):
+        raise HTTPException(status_code=403, detail="Card tokens decide the call as shown.")
     # Use a single connection + transaction for the read, optional edits update,
     # approve, and audit so that an edits UPDATE / approve transition cannot
     # persist while the audit append fails. AuditTableNotAvailableError is
@@ -3649,7 +3719,7 @@ async def approve_owning_action(
     # spec), rolling this transaction back.
     action_row = None
 
-    async def decide(conn):
+    async def decide(conn: Any) -> dict[str, Any]:
         nonlocal action_row
         # The row lock makes the presented-digest check below atomic with the
         # status transition: the stored call cannot change in between.
@@ -3661,6 +3731,33 @@ async def approve_owning_action(
             # bu-m1u7zy.6: the owner decides a goal effect as parked; an edit would
             # change the arguments the broker's effect digest commits to.
             raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
+
+        if owner_delivery_token is not None:
+            if action_row is None:
+                return {"error": f"Approval not found: {action_id}"}
+
+            async def _approve(locked: Any, verb: str) -> dict[str, Any]:
+                outcome = await approvals_ops.approve_action(
+                    locked,
+                    action_id=action_id,
+                    actor_id=actor_id,
+                    promotion_eligible=promotion_eligible,
+                    decision_memory_writer=None,
+                )
+                if verb != "approve" or "error" in outcome:
+                    raise _OwnerDeliveryDecisionRefused(outcome)
+                return outcome
+
+            return await _redeem_owner_delivery(
+                conn,
+                parsed_id,
+                action_row["tool_args"],
+                token=owner_delivery_token,
+                surface=owner_delivery_surface or "dashboard",
+                decide=_approve,
+                audit_actor=actor_id,
+                audit_action="approval.approve",
+            )
 
         if require_displayed_call:
             preview = (
@@ -3742,6 +3839,7 @@ async def approve_owning_action(
 
         return result
 
+    result: dict[str, Any]
     async with target_pool.acquire() as conn:
         if create_rule:
             parameters = dict(
@@ -3753,9 +3851,15 @@ async def approve_owning_action(
                 conn, "approve_with_rule", parameters, decide, audit_owned=True
             )
         else:
-            async with audit_transaction(conn):
-                result = await decide(conn)
+            try:
+                async with audit_transaction(conn):
+                    result = await decide(conn)
+            except _OwnerDeliveryDecisionRefused as refused:
+                # The authority refused after the subject CAS: all of it rolled back.
+                result = refused.result
 
+    owner_delivery_outcome = result.pop("_owner_delivery", None)
+    _raise_owner_delivery_refusal(result)
     if "error" in result:
         if result["error"] == "dashboard_step_up_required":
             raise HTTPException(status_code=403, detail=result)
@@ -3777,8 +3881,14 @@ async def approve_owning_action(
             # must not become a failed decision because its memory sink failed.
             logger.exception("Post-commit standing-rule memory writeback failed")
 
-    # A goal effect is decided here but run only by the capability broker.
-    if action_row is not None and not is_receipt(result) and not is_goal_effect(action_row):
+    # A goal effect is decided here but run only by the capability broker. A replayed
+    # card token answers with the current state and dispatches nothing.
+    if (
+        action_row is not None
+        and not is_receipt(result)
+        and not is_goal_effect(action_row)
+        and owner_delivery_outcome != "duplicate"
+    ):
         tool_name = action_row["tool_name"]
         raw_args = action_row["tool_args"]
         tool_args_for_dispatch = (
@@ -3807,6 +3917,8 @@ async def approve_owning_action(
     # 'approved' means approved-but-not-yet-dispatched (e.g. no reachable daemon);
     # it stays retry-able. Surface this so the FE never claims success falsely.
     action_resp.dispatched = action_resp.status == "executed"
+    if owner_delivery_outcome == "duplicate":
+        return ApiResponse(data=action_resp)
     # Emit stream event: approved → executed if dispatch succeeded, else just approved
     _emit_kind = "executed" if action_resp.status == "executed" else "approved"
     emit_approvals_event(
@@ -3851,29 +3963,85 @@ async def deny_approval(
     if found is None:
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
+    return await deny_owning_action(
+        parsed_id=parsed_id,
+        actor_id=actor_id,
+        reason=request.reason,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+    )
+
+
+async def deny_owning_action(
+    *,
+    parsed_id: UUID,
+    actor_id: str,
+    reason: str | None,
+    action_butler: str,
+    target_pool: Any,
+    db_mgr: DatabaseManager,
+    owner_delivery_token: str | None = None,
+    owner_delivery_surface: owner_delivery.Surface | None = None,
+) -> ApiResponse[ApprovalAction]:
+    """Shared reject/audit/memory path; a card token redeems in the same transaction."""
+    action_id = str(parsed_id)
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
+    result: dict[str, Any]
+
+    async def _reject(locked: Any, verb: str) -> dict[str, Any]:
+        outcome = await approvals_ops.reject_action(
+            locked, action_id=action_id, reason=reason, actor_id=actor_id
+        )
+        if verb != "reject" or "error" in outcome:
+            raise _OwnerDeliveryDecisionRefused(outcome)
+        return outcome
 
     # AuditTableNotAvailableError is intentionally NOT caught here — it
     # propagates to the app-level handler, which returns 503
     # {"error": "audit_unavailable"} (dashboard-audit-log spec), rolling the
     # deny transition back with it.
-    async with target_pool.acquire() as conn, audit_transaction(conn):
-        result = await approvals_ops.reject_action(
-            conn,
-            action_id=action_id,
-            reason=request.reason,
-            actor_id=actor_id,
-        )
-        if "error" not in result:
-            await audit_router.append(
-                conn,
-                _decision_audit_actor(actor_id),
-                "approval.deny",
-                target=action_id,
-                note=request.reason,
-                result="success",
-            )
+    try:
+        async with target_pool.acquire() as conn, audit_transaction(conn):
+            if owner_delivery_token is not None:
+                locked_row = await conn.fetchrow(
+                    "SELECT tool_args FROM pending_actions WHERE id = $1 FOR UPDATE", parsed_id
+                )
+                if locked_row is None:
+                    result = {"error": f"Approval not found: {action_id}"}
+                else:
+                    result = await _redeem_owner_delivery(
+                        conn,
+                        parsed_id,
+                        locked_row["tool_args"],
+                        token=owner_delivery_token,
+                        surface=owner_delivery_surface or "dashboard",
+                        decide=_reject,
+                        audit_actor=actor_id,
+                        audit_action="approval.deny",
+                        audit_note=reason,
+                    )
+            else:
+                result = await approvals_ops.reject_action(
+                    conn,
+                    action_id=action_id,
+                    reason=reason,
+                    actor_id=actor_id,
+                )
+                if "error" not in result:
+                    await audit_router.append(
+                        conn,
+                        _decision_audit_actor(actor_id),
+                        "approval.deny",
+                        target=action_id,
+                        note=reason,
+                        result="success",
+                    )
+    except _OwnerDeliveryDecisionRefused as refused:
+        result = refused.result
 
+    owner_delivery_outcome = result.pop("_owner_delivery", None)
+    _raise_owner_delivery_refusal(result)
     if "error" in result:
         if result["error"] == "dashboard_step_up_required":
             raise HTTPException(status_code=403, detail=result)
@@ -3884,22 +4052,25 @@ async def deny_approval(
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
 
+    duplicate = owner_delivery_outcome == "duplicate"
     # The audit transaction above is the state boundary. Write memory only
     # after it commits, otherwise an audit failure could leave a false tally.
-    if decision_memory_writer is not None:
+    if decision_memory_writer is not None and not duplicate:
         await decision_memory_writer.record_terminal_decision(
             PendingAction.from_dict(result), "rejected"
         )
 
     result.setdefault("butler", action_butler)
     action = ApprovalAction(**{k: result[k] for k in ApprovalAction.model_fields if k in result})
+    if duplicate:
+        return ApiResponse(data=action)
     emit_approvals_event(
         "rejected",
         action_id,
         butler=action_butler,
         tool_name=action.tool_name,
         status="rejected",
-        reason=request.reason,
+        reason=reason,
     )
     return ApiResponse(data=action)
 

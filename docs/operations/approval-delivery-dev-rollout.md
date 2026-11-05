@@ -126,3 +126,11 @@ Do not change RFC 0023's status to enabled-in-dev until dated actual evidence sa
 - Row barrier ordering: `src/butlers/core/approval_delivery_worker.py:229–250,314–328`; lock-free source proof: `src/butlers/modules/approvals/delivery_recovery.py:106–179`; committed source start/heartbeat/completion: same file `440–534`; independent Messenger provider/confirmation: `src/butlers/core/approval_delivery_transport.py:200–230,239–315`.
 - Default-off/worker startup: `src/butlers/modules/approvals/rollout.py:17–45`, `src/butlers/core/approval_delivery_worker.py:372–405`; receiver routing: `docs/operations/receiver-derived-routing-cutover.md:4–16,80–88`.
 - Governing activation/new-actions-only/retained-data rollback: `openspec/specs/approval-delivery-intent-recovery/spec.md:258–277`; genuine quiet/burst/prepared behavior: same file `163–183,242–251`; RFC status remains separately gated at `about/legends-and-lore/rfcs/0023-durable-approval-delivery-intent-recovery.md:3`.
+
+## Canonical owner delivery flag (separate gate)
+
+`public.owner_delivery_rollout.enabled` (core_317, default `false`) is a separate gate from
+the RFC 0023 rollout rows and is **not** part of this runbook's activation. Enabling it, the
+`bridge_existing` backfill and the `parity` check that must precede it are described in
+[Owner delivery](../api_and_protocols/owner-delivery.md#rfc-0023-successor-map-and-cutover)
+and need their own authorization. Include its value in the safe baselines of step 1.6.

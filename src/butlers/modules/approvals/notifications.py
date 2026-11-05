@@ -187,11 +187,14 @@ def build_approval_request_envelope(
     owner_recipient: str,
     callback_secret: str,
     dashboard_base_url: str | None = None,
+    owner_tokens: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build one owner-only ``approval_request`` envelope for a parked action.
 
     Approve and Reject are attached only when the card shows the whole stored
-    call; otherwise the owner gets Open only.
+    call; otherwise the owner gets Open only. ``owner_tokens`` (canonical owner
+    delivery, bu-dhloi1.13) replaces the legacy ``apr1`` HMAC tokens: when given,
+    a button is attached only for an action it holds a single-use token for.
     """
     action_id = _action_id(action)
     requested_at = _as_aware_datetime(action.get("requested_at"), field_name="requested_at")
@@ -199,7 +202,11 @@ def build_approval_request_envelope(
         action, dashboard_base_url=dashboard_base_url, origin_butler=origin_butler
     )
     actions: list[dict[str, Any]] = []
-    if card.offer_decision:
+    if card.offer_decision and owner_tokens is not None:
+        if owner_tokens.get("approve") and owner_tokens.get("reject"):
+            for verb in ("approve", "reject"):
+                actions.append({"verb": verb, "callback_token": owner_tokens[verb]})
+    elif card.offer_decision:
         for verb, token_verb in (("approve", "a"), ("reject", "r")):
             actions.append(
                 {

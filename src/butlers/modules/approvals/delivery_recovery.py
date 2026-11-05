@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Literal
 
+from butlers.core import owner_delivery as od
 from butlers.core.approval_delivery_worker import (
     SAFE_REASON_CODES,
     DeliveryClaim,
@@ -19,6 +20,10 @@ from butlers.metrics_registry import get_or_create_gauge
 from butlers.modules.approvals.notifications import (
     build_approval_digest_envelope,
     build_approval_request_envelope,
+)
+from butlers.modules.approvals.owner_delivery_bridge import (
+    owner_presentation_for,
+    prepare_telegram_presentation,
 )
 from butlers.modules.approvals.previews import args_digest
 
@@ -383,6 +388,48 @@ class ApprovalDeliveryRepository:
             origin_butler=row["owning_schema"],
         )
 
+    async def prepare_owner_delivery(
+        self, claim: DeliveryClaim, owner_recipient: str
+    ) -> dict[str, str] | None:
+        """Open this card's owner-delivery subject and presentation; ``None`` while off.
+
+        Runs under the action-first lock of the fenced claim. The returned single-use
+        tokens exist only in memory until the envelope is handed to Messenger.
+        """
+        if claim.presentation_mode != "single":
+            return None
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                if not await od.rollout_enabled(connection):
+                    return None
+                action = await connection.fetchrow(
+                    """
+                    SELECT pa.*, i.id AS intent_id
+                      FROM approval_delivery_presentations AS p
+                      JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                      JOIN pending_actions AS pa ON pa.id = i.action_id
+                     WHERE p.id = $1 AND p.presentation_generation = $2
+                       AND p.claim_token = $3 AND p.claim_fence = $4
+                       AND p.state = 'claimed' AND pa.status = 'pending'
+                     FOR UPDATE OF pa
+                    """,
+                    claim.presentation_id,
+                    claim.presentation_generation,
+                    claim.claim_token,
+                    claim.claim_fence,
+                )
+                if action is None:
+                    raise od.OwnerDeliveryRefused("claim_unavailable")
+                presentation = await prepare_telegram_presentation(
+                    connection,
+                    action=action,
+                    intent_id=action["intent_id"],
+                    rfc_presentation_id=claim.presentation_id,
+                    rfc_generation=claim.presentation_generation,
+                    owner_recipient=owner_recipient,
+                )
+                return dict(presentation.tokens)
+
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool:
         """Record a proven pre-provider failure and schedule from database time."""
         self._validate_reason(reason_code)
@@ -498,6 +545,13 @@ class ApprovalDeliveryRepository:
                     claim.claim_fence,
                     row["updated_at"],
                 )
+                # The bridged owner-delivery presentation leaves pending in the same
+                # transaction: from here a crash is an honest ``unknown``.
+                owner_presentation = await owner_presentation_for(
+                    connection, claim.presentation_id, claim.presentation_generation
+                )
+                if owner_presentation is not None:
+                    await od.begin_send(connection, owner_presentation)
                 return True
 
     async def heartbeat(self, claim: DeliveryClaim) -> bool:
@@ -575,6 +629,9 @@ class ApprovalDeliveryRepository:
                         provider_reference=result.provider_reference,
                         completed_at=now,
                     )
+                    # A card that landed after its action resolved is still receipted;
+                    # its stale buttons then show up for retraction.
+                    await self._settle_owner_presentation(connection, claim, result)
                     return True
                 attempt_number = int(current["attempt_count"])
                 now = await connection.fetchval("SELECT clock_timestamp()")
@@ -619,7 +676,30 @@ class ApprovalDeliveryRepository:
                     provider_reference=result.provider_reference,
                     completed_at=now,
                 )
+                await self._settle_owner_presentation(connection, claim, result)
                 return True
+
+    @staticmethod
+    async def _settle_owner_presentation(
+        connection: Any, claim: DeliveryClaim, result: HandoffResult
+    ) -> None:
+        """Mirror one handoff result onto the bridged presentation; ambiguity stays unknown."""
+        owner_presentation = await owner_presentation_for(
+            connection, claim.presentation_id, claim.presentation_generation
+        )
+        if owner_presentation is None:
+            return
+        outcome: od.SendOutcome = "unknown"
+        if result.classification == "confirmed":
+            outcome = "sent"
+        elif result.classification == "safe_retry":
+            outcome = "failed"
+        await od.record_send(
+            connection,
+            owner_presentation,
+            outcome=outcome,
+            provider_ref=result.provider_reference if outcome == "sent" else None,
+        )
 
     async def backlog_snapshot(self) -> DeliveryBacklogSnapshot:
         """Return safe derived due, lease, ambiguity, and stuck truth."""
@@ -835,6 +915,7 @@ class ApprovalDeliveryRenderer:
         *,
         owner_recipient: str,
         callback_secret: str,
+        owner_tokens: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         return build_approval_request_envelope(
             action=subject.action,
@@ -842,6 +923,7 @@ class ApprovalDeliveryRenderer:
             owner_recipient=owner_recipient,
             callback_secret=callback_secret,
             dashboard_base_url=self._dashboard_base_url,
+            owner_tokens=owner_tokens,
         )
 
     def render_digest(
