@@ -46,8 +46,12 @@ _RESTORE_LINK = "DROP TRIGGER IF EXISTS fail_owner_link ON episode_entities"
 
 
 @pytest.fixture
-async def chronicler_pool(db) -> asyncpg.Pool:
-    p = await db("core", "chronicler", min_size=2, max_size=5)
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    p = await open_prepared_chronicler_pool(
+        db, fresh_db, "core", "chronicler", min_size=2, max_size=5
+    )
     await seed_source_registry(p, sources=INITIAL_SOURCES)
     return p
 

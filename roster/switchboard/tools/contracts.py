@@ -19,7 +19,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-from butlers.connectors.catalog import ingress_providers_by_channel
+from butlers.connector_catalog import ingress_providers_by_channel
 from butlers.ingestion_spans import SpanKind, normalize_spans
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -246,6 +246,32 @@ class IngestTranscriptionV1(BaseModel):
     stt_backend: NonEmptyStr | None = None
 
 
+class IngestAudioAuthorshipV1(BaseModel):
+    """A producer's keyed binding of one transcript to its source audio (REQ-audio-authorship-002).
+
+    Separate from ``transcription`` outcome metadata. Carries digests and the provider media
+    identity, never audio, transcript text or key material. It is no authority by itself: goal
+    admission verifies the tag with the server-held key and re-checks every field against the
+    accepted row and retained provider update (``butlers.audio_authorship``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    v: int
+    channel: NonEmptyStr
+    endpoint_identity: NonEmptyStr
+    idempotency_key: NonEmptyStr
+    external_event_id: NonEmptyStr
+    sender_identity: NonEmptyStr
+    source_media: NonEmptyStr
+    media_ref: NonEmptyStr
+    media_sha256: NonEmptyStr
+    transform: NonEmptyStr
+    transcript_sha256: NonEmptyStr
+    outcome: NonEmptyStr
+    tag: NonEmptyStr
+
+
 class IngestPayloadV1(BaseModel):
     """Source payload for canonical ingest payloads.
 
@@ -270,6 +296,8 @@ class IngestPayloadV1(BaseModel):
     only: no routing step reads it."""
     transcription: IngestTranscriptionV1 | None = None
     """Connector speech-to-text outcome; absent when no transcription attempt was evaluated."""
+    audio_authorship: IngestAudioAuthorshipV1 | None = None
+    """Keyed producer binding for a transcript; absent unless the producer could attest one."""
 
     @model_validator(mode="before")
     @classmethod

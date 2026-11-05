@@ -83,7 +83,7 @@ class _FactPool:
     async def fetchrow(self, query: str, *args: object):
         if (
             self._row is not None
-            and "FROM facts WHERE id" in query
+            and ("FROM facts WHERE id" in query or "FROM facts AS facts WHERE facts.id" in query)
             and str(args[0]) == str(self._row["id"])
         ):
             return self._row

@@ -15,8 +15,9 @@ Receipt mapping (D12):
 * anything after the call was sent (timeout, broken stream) propagates, and
   the broker records the effect ``unknown``; it is never retried here.
 
-Stamped output is never trusted here: ``stamped_owner_untainted`` stays false
-until a domain store reports its stamps (D6).
+Stamped output is never trusted here: no domain reports its stamp account yet
+(``stamped_owner_untainted``, ``stamped_writers``), so every stamped read joins
+the unknown label (D6, S1).
 """
 
 from __future__ import annotations

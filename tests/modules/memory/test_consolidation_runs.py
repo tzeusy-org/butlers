@@ -526,3 +526,45 @@ class TestRunConsolidationWritesAuditRow:
             "failed",
             "Consolidation execution failed.",
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_private_memory_dedup_visibility_precedes_limit(monkeypatch) -> None:
+    """Caller wiring/SQL shape only; the DB-backed cases prove claim and audit SQL."""
+    claim_rows = [
+        {
+            "id": uuid.UUID("00000000-0000-0000-0000-000000000001"),
+            "butler": "general",
+            "content": "episode",
+            "importance": 5.0,
+            "metadata": {},
+            "created_at": _BASE_TIME,
+            "tenant_id": "t1",
+            "consolidation_attempts": 0,
+        }
+    ]
+    pool = fake_pool(fetch=[], fetchval=True, execute="INSERT 0 1")
+    monkeypatch.setattr(consolidation_module, "claim_batch", AsyncMock(return_value=claim_rows))
+
+    async def execute_consolidation(**kwargs: Any) -> dict[str, Any]:
+        return _exec_result(
+            1, facts_created=3, facts_updated=2, rules_created=1, confirmations_made=4
+        )
+
+    _stub_runtime_pipeline(monkeypatch, execute_consolidation)
+    spawner = _FakeSpawner()
+    stats = await consolidation_module.run_consolidation(
+        pool,
+        embedding_engine=None,
+        cc_spawner=spawner,
+        memory_schema="chronicler_mem",
+    )
+    fact_query = next(
+        call.args[0] for call in pool.fetch.await_args_list if "FROM facts" in call.args[0]
+    )
+    assert "chronicler_mem.facts_readable" in fact_query
+    assert fact_query.index("facts_readable") < fact_query.index("LIMIT 100")
+    assert stats["facts_created"] == 3
+    assert stats["groups_consolidated"] == 1
+    assert spawner.trigger_sources == ["schedule:consolidation"]

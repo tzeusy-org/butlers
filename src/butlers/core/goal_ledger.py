@@ -12,6 +12,7 @@ from butlers.core.goal_admission import (
     digest,
     encode_grants,
 )
+from butlers.core.goal_labels import Label
 
 
 class GoalLedger:
@@ -121,21 +122,26 @@ class GoalLedger:
             "SELECT * FROM switchboard.effects WHERE id=$1 FOR UPDATE", id
         )
 
-    async def increase_exposure(self, goal_id, exposed):
-        await self.connection.execute(
-            "UPDATE switchboard.goals SET exposed=true, updated_at=now() "
-            "WHERE id=$1 AND $2 AND NOT exposed",
-            goal_id,
-            exposed,
-        )
+    async def deliver(self, decision, source, outside_content=False):
+        """A joined reply reaches its goal only through this inbox row.
 
-    async def deliver(self, decision, source):
-        # A joined reply reaches its goal only through this inbox row; the
-        # unique source key keeps one delivery per incoming envelope.
+        The unique source key keeps one delivery per incoming envelope. sw_057
+        labels the row with the owner reply and the effect it answers, and
+        raises the goal's reporting union; outside content carried in the
+        reply itself adds unknown provenance (S1). The row's consumer joins
+        that label, so a running lead is exposed by the reply it reads, not
+        by the goal's union.
+        """
+        columns, placeholders, values = "", "", ()
+        if outside_content:
+            version, instr, data, sens = Label.unknown().to_row()
+            columns = ",label_version,label_instr,label_data,label_sens"
+            placeholders = ",$8,$9,$10,$11"
+            values = (version, instr, data, sens)
         await self.connection.execute(
             "INSERT INTO switchboard.goal_inbox "
-            "(id,goal_id,decision_id,source_key,source_ref,delivery_ref,reply_effect_id) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            f"(id,goal_id,decision_id,source_key,source_ref,delivery_ref,reply_effect_id{columns}) "
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7{placeholders})",
             uuid4(),
             decision.goal_id,
             decision.decision_id,
@@ -143,6 +149,7 @@ class GoalLedger:
             source.id,
             self.facts.reply_delivery,
             self.reply_effect,
+            *values,
         )
 
     async def quota_counts(self, origin, source):

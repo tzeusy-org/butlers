@@ -15,11 +15,14 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `recipients.py` | Owner rule 2: classify each `recipient_params` party (UUID, email, Telegram, WhatsApp) with the core-notify owner-resolution rule |
 | `policy.py` | Dispatch, park or refuse from effect class, exposure, park-only, approval mode and approval policy |
 | `actuation.py` | RFC 0028 risk map adapter: the tier of an `actuate` call (`ha_call_service`, `ha_activate_scene`) |
-| `ledger.py` | SQL over the sw_047 goal ledger; one goal row lock per transaction |
+| `ledger.py` | SQL over the sw_047 goal ledger, its sw_057 labels and sw_059 owner-law holds; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
 | `server.py` | MCP streamable HTTP goal endpoint at `/goals/{goal_id}/mcp`, `BrokerSwitch`, `session_app` |
+| `typed.py` | M7: the one adopted closed typed shape, exact value validation, the held typed-value relaxation |
+| `boundaries.py` | M7: SQL over the sw_058 handles, extraction cache and child results; the `Extractor` seam |
+| `m7_report.py` | M7: content-blind gate report and the exact held owner decisions |
 
 `src/butlers/core/capability_json.py` holds the one RFC 8785 canonicalizer and
 the golden vectors (`capability_digest_vectors.json`, `golden_vectors()`) that
@@ -42,6 +45,8 @@ last unit of budget: exactly one wins).
    identifiers. A selection-bound parameter without a grant restriction has an
    empty scope; today's catalog declares none.
 3. Classify recipients and decide (`policy.decide`). Refusals contact no domain.
+   Then apply the owner law ([Owner law](#owner-law-s1-bu-dhloi110)), which can
+   only refuse or turn a dispatch into a per-event park.
 4. Check the budget (exhaustion commits `budget_exhausted` on the goal), refuse a
    repeat of a live, committed or unknown effect with the same capability and
    argument digest (returning that effect's id), insert the effect row
@@ -50,8 +55,95 @@ last unit of budget: exactly one wins).
 The forward happens after commit, signed with the D7 field list. Tools declaring
 `idempotency = key_required` receive the `effect_id` as the idempotency key. The
 broker retries once only on a `not_received` receipt; any other transport
-failure settles the effect `unknown`. Untrusted output, and stamped output the
-domain does not vouch for, exposes the invocation (and so the goal).
+failure settles the effect `unknown`. A committed receipt's output label is
+joined into the calling invocation in the settling transaction, before the
+result reaches the model (see [Invocation labels](#invocation-labels-s1-bu-dhloi16)).
+
+## Invocation labels (S1, bu-dhloi1.6)
+
+Policy reads the calling invocation's own S1 label (`Principal.label`, from
+`sw_057`), never the goal's union: `Principal.exposed` is the label's exposure
+(or a legacy Boolean, which sw_057 keeps equal to it). A clean sibling keeps
+dispatching after another sibling reads untrusted content. An unreadable,
+missing or unknown label refuses `authentication_refused`. The label is not
+added to the signed assertion; the assertion's `exposed` is the invocation's.
+`butlers.core.goal_labels` is the Python grammar; sw_057 CHECKs are the store's.
+
+Every producer, deferred path and reader of a label:
+
+| Path | Label effect | Where |
+| --- | --- | --- |
+| Admission | admitted label from `admitted_exposed` (unknown or owner), joined with a causing effect's label | sw_057 `goal_label_goal`; `goal_admission.effect_exposed` |
+| Invocation start | admitted label; a child joins its caller; a replacement lead joins every earlier lead and recorded effect (`child` / `recovery`) | sw_057 `goal_label_invocation` |
+| Broker read | committed output joins `{owner}` (trusted) or `{world}` (untrusted) plus the capability's categories; stamped output, see D6 stores (`read`) | `BrokerLedger.settle` |
+| Child result | the lead joins its child's label (`child`) | `Broker.read_child_result` |
+| Joined reply | inbox row = owner ∪ answered effect's label ∪ unknown for outside content; the reader joins it on consumption (`inbox`) | sw_057 `goal_label_inbox`; `GoalLedger.deliver`; `Broker.consume_inbox` |
+| Effect | snapshots its requesting label at insert; immutable | sw_057 `goal_label_effect` |
+| Park, approval, edit, retry | the approved call runs under the requesting invocation's current label, which must cover the effect's snapshot; an edited effect row snapshots that label | `BrokerLedger.begin_approved` |
+| Receipt / unknown / not_received | no output join unless committed; the effect label never changes | `Broker._forward` |
+| Goal union | every invocation and inbox label joins it; reporting only | sw_057 `goal_invocation_exposure` |
+| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no complete stamp account from the store, joins `{world}` and all six | `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
+| Reply evidence | a reply to a prompt of an exposed goal is outside content (goal union; conservative) | `accepted_source.py` `_reply` |
+
+Stored labels resolve through the writer pointer (lead decision on
+bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
+Unstamped legacy records keep their content-authority behaviour (original
+authority preserved, or unknown). No domain reports its stamp account over the
+wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
+until one does.
+
+Until the per-tool `categories` declaration lands and is made required
+(bu-dhloi1.27, a switch-release blocker), categories are derived from the descriptor's D4
+`output_sensitivity` (`contracts.declared_categories`): `ordinary` is an
+explicit owner-catalog declaration of no sensitive category and carries none;
+anything undeclared or not `ordinary` carries all six.
+Concurrent joins are single-statement unions under the row lock, so neither
+principal nor category is lost.
+
+`switchboard.invocation_exposure_measurements` (owner-only view) counts
+invocations, effects and approval-routed effects by role, `exposure_cause`, the
+retained pre-switch gate (`goal_union_exposed`: the goal aggregate sw_047 used)
+and the switched gate (`invocation_exposed`). Rows with the first true and the
+second false are the invocations the switch stopped restricting. There is no
+target value; it is evidence for the rollout.
+
+Typed boundaries and containment are built (next section) but dark; no
+typed-value or cited-evidence relaxation is adopted.
+
+## Typed boundaries (M7, bu-4c7nvp.1.2)
+
+Built dark and unconditional on the owner's typed-value choice: they constrain
+what reaches a model, never what a value may do. Every row below joins the
+label it reads; none narrows one.
+
+| Boundary | Behaviour | Where |
+| --- | --- | --- |
+| Quarantine | With `quarantine_reads` on, a committed result whose label would newly expose the reader (exposed I/D the reader does not hold) is stored in `goal_handles` with that full label, writers included, and the model gets only `{"handle": <id>}`. A reader already holding the label, or content with no canonical form, takes the ordinary join. Categories alone never quarantine | `Broker._settle_holding` |
+| `handle.read` | Free-text dereference: joins the handle's label (cause `read`) before the content is returned. Only a handle of the caller's goal, by exact id; anything else is `resource_outside_grant` | `Broker.read_handle` |
+| Extract | The injected `Extractor` sees only the handle's content and the schema. The schema must be the closed shape and may not hold handle slots (content never selects the next dereference); the output must match exactly or the call refuses and nothing is cached. The caller joins the handle's whole label | `Broker.extract` |
+| Extraction cache | Keyed by content digest, source label, schema digest and extractor identity; no caller identity. A hit joins the cached (source) label into each reader | `extraction_cache` |
+| `goal.return` | Only a child, only once, only a value matching the result schema the runner fixed at launch (`fix_child_result_schema`); handle values must be handles of the same goal. Stores the result and ends the child | `Broker.goal_return` |
+| `goal.await` | The lead's own child: status, result (when returned) and effect statuses from the ledger. Every await joins the child's label (cause `child`), since all of it reflects the child's behaviour | `Broker.goal_await` |
+| Contain | Owner D13 action under dashboard step-up; later envelopes from the source are record-only. See [goal ledger and admission](goal-ledger-and-admission.md#contained-sources-m7-bu-4c7nvp12) | `core.source_containment` |
+
+The adopted shape (`typed.parse_schema`) is an object of at most 16 named
+slots, each a boolean, a bounded integer or number, a token from a bounded enum
+(identifier characters only), a calendar date, a UTC instant (`...Z`), an
+opaque same-goal handle, or a bounded unique array (`maxItems` <= 32,
+`uniqueItems`) of one of those. A free or patterned string, URL, hostname,
+address, UUID selector (recipient, device or resource), nested object, `$ref`,
+description, default or any unknown keyword refuses the whole schema.
+
+`typed.TYPED_VALUE_RELAXATION` is `None` and `typed.typed_value_label` returns
+the source label unchanged: with the typed-value decision held on
+bu-4c7nvp.1.1, a typed date or amount carries its source's exposure into the
+next effect, which therefore keeps the under-exposure policy. Recipient,
+device and resource selectors are not typed values at all.
+`m7_report.m7_report` (owner connection) returns the exposure and
+approval-cause rows of `invocation_exposure_measurements`, sw_058 store counts,
+the exact typed-value question and the cited-label hold (bu-7ry1sy);
+`release_gate_satisfied()` is false until an adopted decision replaces the
+held constant.
 
 ## Recipients and owner rules
 
@@ -128,6 +220,108 @@ with the `action_cancelled` delivery reason, admitted by `approvals_022`, so
 `action_rejected` still means only an owner rejection) and
 approved, never-executed ones become `abandoned`. An action whose effect was
 dispatched or settled is never touched (D14).
+
+## Owner law (S1, bu-dhloi1.10)
+
+The owner can hold calls with a tighten-only overlay (REQ-capability-authorization-020).
+`butlers.core.owner_policy` is the reader and the one writer; storage is
+`sw_059`'s `switchboard.owner_policy_*`.
+
+A term is `never` or `always_ask`. It selects by one of three things: an exact
+catalog capability identity, a region (the catalog `owner_domain`) or an effect
+class. It can be narrowed by resource arguments. It is matched against the
+current catalog on every call, so a later capability in a selected region or
+class is held too. A narrowing may name only resource arguments the current
+catalog declares for the selected capabilities; any other key is refused when
+the term is written (`owner_policy_invalid`).
+
+Canonicalisation cannot make an aliasable identifier safe. Calendar's
+`calendar_id: "primary"` reaches the owner's calendar, so a deny on
+`owner@gmail.com` would be released by `primary`. A narrowing is therefore
+admitted only on params the catalog declares `alias_free_params` for every
+selected capability ([MCP model](../concepts/mcp-model.md)). Any other
+narrowing is refused at write with 422 `owner_policy_narrowing_unsupported`. At
+match time, a stored term narrowed on a param the current catalog no longer
+marks alias-free for the called capability holds every call of that capability.
+A domain alias-resolver seam would let aliasable params narrow later; it is not
+built.
+
+Identifiers are compared in canonical form, both when
+stored and when matched: a UUID in any spelling becomes its lowercase
+hyphenated form, and any other identifier is NFKC-normalised, trimmed and
+case-folded. A term is a deny-list, so matching fails closed. A narrowed term
+holds a call in any of these cases:
+
+- the call omits the narrowed argument;
+- the argument is an empty list;
+- the argument is a non-string or has no canonical form;
+- the argument names a held resource in any spelling.
+
+The term is lifted only when every identifier the call names is canonical and
+outside the narrowing.
+
+The constraint order is catalog/origin grant, then exposure/category/slot (step
+2 and `decide`), then owner law, then health/admission (budget and duplicate in
+`reserve`). The broker has no mode stage, and none is invented.
+
+- `never` refuses `policy_refused`.
+- `always_ask` turns the decision into a per-event park: no standing rule
+  applies, and the exact call is parked. Reads cannot park yet (a read has no
+  pending action), so on a `read` it refuses with its own reason,
+  `owner_policy_ask_on_read`, which sw_059 adds to the `broker_refusals` reason
+  set; the owner can tell it apart from `never`.
+- Neither grants. An ungranted, out-of-scope, transact or otherwise refused call
+  stays refused for its own reason, before the law is read.
+- A park the domain cannot hold (`approvals_enabled` false) refuses
+  `broker_unavailable`.
+
+The broker reads the singleton `owner_policy_state.generation` `FOR SHARE` in
+the goal-locked call transaction. A writer takes it `FOR UPDATE`, so a change
+lands before a call or after its effect fence, never between. The next call,
+including the next one in the same invocation, sees it. `execute_approved`
+re-reads the law before dispatch, so a `never` added after a park refuses the
+approved call. The owner's approval stays recorded (`approved`); a committed
+effect is never described as undone.
+
+A missing state row, an unreadable term or a read failure refuses
+`broker_unavailable`. Expiry is judged on the database clock and drops only its
+own term.
+
+Every held call writes one content-blind row to `owner_policy_holds`. The
+disposition is `refused` (linked to its `broker_refusals` row and, at execution,
+the effect) or `parked` (the effect id, which is also the pending action id).
+The row also carries the holding constraint, the policy generation and every
+holding term as `{id, version, term, selector_kind, selector}`, `never` first.
+Its typed receipt `{stage: owner_law, constraint, generation, terms}` is exactly
+`BrokerRefused.hold` / `PolicyHold.receipt()`; the owner read serializes it
+identically for the refusal, the effect and its pending action
+(`test_the_owner_read_and_the_broker_receipts_serialize_identically`). The
+session sees only the closed reason.
+
+Changes go through expected-version CAS, with one receipt per owner action id:
+a retry returns that receipt, and a different change under the same id
+conflicts. A change only tightens: `always_ask` to `never`, or a later or no
+expiry. A loosening refuses `dashboard_step_up_required`: the dashboard
+step-up kinds (`scripts/init-db.sql`) have no policy-loosening kind yet, so
+loosening is the one missing mutation path (activation: bu-dhloi1.29). An
+expiry still lapses its term.
+
+Mutation paths. This is the whole set, pinned by
+`tests/contracts/test_owner_policy_mutation_paths.py`.
+
+| Path | Writes | Guard |
+| --- | --- | --- |
+| `POST /api/owner-policy/terms`, `POST /api/owner-policy/terms/{id}/tighten` | terms, receipts, generation via `OwnerPolicyWriter` | verified owner dashboard session (`owner_dashboard_session_required`); tighten-only CAS |
+| `Broker` ledger `record_hold` | holds | runtime role, insert-only |
+| Switchboard daemon role (broker, every MCP tool, connector callbacks) | nothing else | sw_059 RLS: terms and generation read-only, receipts invisible |
+| Direct SQL, any role | — | triggers refuse DELETE/TRUNCATE everywhere, UPDATE of receipts/holds, and any term UPDATE that loosens, skips a version, rewrites the selector or reuses the owner action |
+
+`GET /api/owner-policy` lists every term with its version, expiry and whether it
+is active, plus the generation. `GET /api/owner-policy/holds` takes exactly
+one of `goal_id`, `effect_id` (also the pending action id) or `refusal_id` and
+returns those holds with their typed receipts. Both need the dashboard session.
+Not here: `/status` and owner cards rendering the receipt (bu-dhloi1.13, S6
+surfaces), and the policy-loosening step-up kind (bu-dhloi1.29).
 
 ## Refusal records and the goal filter (bu-m1u7zy.12)
 
@@ -237,3 +431,6 @@ unchanged.
 - The runner (token issuance on launch, goal tools, Stop itself) and the M6
   switch that constructs the broker and turns domain verification on.
 - The service-plane tool inventory that domain verification exempts.
+- The M7 goal tools on the MCP endpoint (`handle.read`, extract, `goal.return`,
+  `goal.await`), a production `Extractor`, `quarantine_reads`, the step-up
+  installer's `contain` kind (bu-dhloi1.29) and an owner Contain route.

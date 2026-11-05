@@ -23,10 +23,12 @@ pytestmark = [
 
 
 @pytest.fixture
-async def chronicler_pool(db) -> asyncpg.Pool:
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
     # The blocker and two overlapping writers need three connections; a larger
     # pool proves serialization comes from the DB lock.
-    return await db("chronicler", min_size=3, max_size=6)
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(db, fresh_db, "chronicler", min_size=3, max_size=6)
 
 
 def _result(*, prose: str, date_label: str, timezone: str = "UTC") -> SimpleNamespace:

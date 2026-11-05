@@ -1087,6 +1087,11 @@ async def ingest_v1(
     # session can tell the owner a voice note was not transcribed. Metadata, never authority.
     if envelope.payload.transcription is not None:
         raw_payload["payload"]["transcription"] = envelope.payload.transcription.model_dump()
+    # 6e. Keep the producer's keyed transcript binding for goal admission to verify
+    # (REQ-audio-authorship-002). Retained with the accepted row so a duplicate or replay
+    # resolves to this row's decision; nothing on the routing path reads it.
+    if envelope.payload.audio_authorship is not None:
+        raw_payload["payload"]["audio_authorship"] = envelope.payload.audio_authorship.model_dump()
     raw_payload = _strip_null_bytes(raw_payload)
 
     # 7. Ensure partition exists for received_at — committed immediately,

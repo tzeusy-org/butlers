@@ -64,19 +64,35 @@ async def reset_ledger(owner):
     """Empty the goal ledger between tests.
 
     sw_056's trigger refuses TRUNCATE on ``broker_refusals``, which TRUNCATE ...
-    CASCADE reaches through its goal foreign key. This test-only reset, run as
-    the owner, lifts that trigger for its own transaction alone.
+    CASCADE reaches through its goal foreign key, and sw_057's refuses it on
+    ``invocations`` and ``effects``, and sw_059's on the owner-policy terms,
+    receipts and holds (which it also empties; the generation row stays). This
+    test-only reset, run as the owner, lifts whichever of those guards the
+    pinned revision has, for its own transaction alone.
     """
     async with owner.acquire() as connection, connection.transaction():
-        await connection.execute(
-            "ALTER TABLE switchboard.broker_refusals DISABLE TRIGGER immutable_broker_refusal"
+        guards = await connection.fetch(
+            "SELECT c.relname, t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'switchboard' "
+            "AND t.tgname = ANY($1::text[])",
+            ["immutable_broker_refusal", "durable_goal_lineage", "owner_policy_durable"],
         )
+        for guard in guards:
+            await connection.execute(
+                f"ALTER TABLE switchboard.{guard['relname']} DISABLE TRIGGER {guard['tgname']}"
+            )
+        policy = [
+            f"switchboard.{table}"
+            for table in ("owner_policy_holds", "owner_policy_receipts", "owner_policy_terms")
+            if any(guard["relname"] == table for guard in guards)
+        ]
         await connection.execute(
-            "TRUNCATE " + ",".join("switchboard." + t for t in TABLES) + " CASCADE"
+            "TRUNCATE " + ",".join(["switchboard." + t for t in TABLES] + policy) + " CASCADE"
         )
-        await connection.execute(
-            "ALTER TABLE switchboard.broker_refusals ENABLE TRIGGER immutable_broker_refusal"
-        )
+        for guard in guards:
+            await connection.execute(
+                f"ALTER TABLE switchboard.{guard['relname']} ENABLE TRIGGER {guard['tgname']}"
+            )
 
 
 @pytest.fixture

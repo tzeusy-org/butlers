@@ -14,7 +14,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from butlers.core.goal_admission import decode_grants, digest, encode_grants
+from butlers.core.goal_labels import EXPOSURE_CAUSES, Label
 from butlers.core.goal_ledger import GoalLedger
+from butlers.core.owner_policy import PolicyHold, PolicyUnavailable, hold_for, read_policy
 
 from .contracts import (
     BrokerRefused,
@@ -55,7 +57,7 @@ class BrokerLedger:
         await self.connection.execute("SET LOCAL lock_timeout = '5s'")
         await self.connection.execute("SET LOCAL statement_timeout = '5s'")
         return await self.connection.fetchrow(
-            "SELECT id, status, origin, exposed, catalog_digest, ceiling "
+            "SELECT id, status, origin, catalog_digest, ceiling "
             "FROM switchboard.goals WHERE id = $1 FOR UPDATE",
             goal_id,
         )
@@ -71,22 +73,60 @@ class BrokerLedger:
 
     @staticmethod
     def _principal(goal, invocation) -> Principal:
+        """The authenticated invocation; an unreadable label refuses (S1)."""
         try:
             snapshot = invocation["grant_snapshot"]
             grants = decode_grants(snapshot)
             if encode_grants(grants) != snapshot or digest(snapshot) != invocation["grant_digest"]:
                 raise ValueError("grant_snapshot")
+            label = Label.from_row(
+                invocation["label_version"],
+                invocation["label_instr"],
+                invocation["label_data"],
+                invocation["label_sens"],
+            )
             return Principal(
                 goal["id"],
                 invocation["id"],
                 invocation["depth"],
                 goal["origin"],
-                bool(goal["exposed"] or invocation["exposed"]),
+                # S1 first switch: the invocation's own chain, never the goal
+                # union. sw_057 keeps the Boolean equal to the label, so a
+                # legacy row keeps its old restriction.
+                label.exposed or invocation["exposed"] is not False,
                 goal["catalog_digest"],
                 grants,
+                label,
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             raise BrokerRefused(Reason.AUTHENTICATION) from None
+
+    async def _join(self, goal_id: UUID, invocation_id: UUID, label: Label, cause: str) -> bool:
+        """Join ``label`` into the invocation (S1); the goal must already be locked.
+
+        The union is taken against the row as it is when this statement runs,
+        so concurrent joins never lose a principal or category. ``cause`` is
+        recorded only if this join is the one that first exposes it.
+        """
+        if cause not in EXPOSURE_CAUSES:
+            raise ValueError("exposure_cause")
+        _, instr, data, sens = label.to_row()
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.invocations SET "
+            "label_instr = switchboard.goal_label_union(label_instr, $3::text[]), "
+            "label_data = switchboard.goal_label_union(label_data, $4::text[]), "
+            "label_sens = switchboard.goal_label_union(label_sens, $5::text[]), "
+            "exposure_cause = COALESCE(exposure_cause, CASE WHEN "
+            "switchboard.goal_label_exposed($3::text[], $4::text[]) THEN $6 END), "
+            "updated_at = now() WHERE goal_id = $1 AND id = $2 RETURNING id",
+            goal_id,
+            invocation_id,
+            instr,
+            data,
+            sens,
+            cause,
+        )
+        return row is not None
 
     # -- tokens (runner-private; never an MCP route) ---------------------------
 
@@ -120,6 +160,51 @@ class BrokerLedger:
             list(_ENDED_INVOCATION),
         )
 
+    # -- label joins at the runner's reads (runner-private; S1) ------------------
+
+    async def consume_inbox(self, goal_id: UUID, invocation_id: UUID, inbox_id: UUID) -> bool:
+        """Deliver one inbox row to a running invocation and join its label.
+
+        The consumption and the join commit together (cause ``inbox``), so the
+        reader is exposed before the reply can reach its model. False when the
+        row is not this goal's or was already consumed.
+        """
+        goal = await self._lock_goal(goal_id)
+        if goal is None or goal["status"] != "running":
+            raise BrokerRefused(Reason.GOAL)
+        row = await self.connection.fetchrow(
+            "UPDATE switchboard.goal_inbox SET consumed_at = clock_timestamp() "
+            "WHERE goal_id = $1 AND id = $2 AND consumed_at IS NULL "
+            "RETURNING label_version, label_instr, label_data, label_sens",
+            goal_id,
+            inbox_id,
+        )
+        if row is None:
+            return False
+        label = Label.from_row(*row.values())
+        if not await self._join(goal_id, invocation_id, label, "inbox"):
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        return True
+
+    async def read_child_result(self, goal_id: UUID, lead_id: UUID, child_id: UUID) -> Label:
+        """A lead reading its child's result joins the child's label (cause ``child``)."""
+        if await self._lock_goal(goal_id) is None:
+            raise BrokerRefused(Reason.GOAL)
+        child = await self.connection.fetchrow(
+            "SELECT label_version, label_instr, label_data, label_sens "
+            "FROM switchboard.invocations "
+            "WHERE goal_id = $1 AND id = $2 AND parent_invocation_id = $3",
+            goal_id,
+            child_id,
+            lead_id,
+        )
+        if child is None:
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        label = Label.from_row(*child.values())
+        if not await self._join(goal_id, lead_id, label, "child"):
+            raise BrokerRefused(Reason.AUTHENTICATION)
+        return label
+
     # -- refusal records (sw_056) -------------------------------------------------
 
     async def record_refusal(
@@ -128,16 +213,75 @@ class BrokerLedger:
         capability: str,
         reason: Reason,
         effect_id: UUID | None = None,
+        hold: PolicyHold | None = None,
     ) -> None:
-        """One content-blind D7 refusal record, lineage only when authenticated."""
-        await self.connection.execute(
+        """One content-blind D7 refusal record, lineage only when authenticated.
+
+        An owner-law refusal also records its holding terms (sw_059), linked
+        to the refusal record, in the same transaction.
+        """
+        recorded = capability if _CATALOG_IDENTITY.fullmatch(capability) else UNPUBLISHED_CAPABILITY
+        refusal_id = await self.connection.fetchval(
             "INSERT INTO switchboard.broker_refusals "
-            "(goal_id, invocation_id, capability, reason, effect_id) VALUES ($1, $2, $3, $4, $5)",
+            "(goal_id, invocation_id, capability, reason, effect_id) VALUES ($1, $2, $3, $4, $5) "
+            "RETURNING id",
             principal.goal_id if principal else None,
             principal.invocation_id if principal else None,
-            capability if _CATALOG_IDENTITY.fullmatch(capability) else UNPUBLISHED_CAPABILITY,
+            recorded,
             reason.value,
             effect_id,
+        )
+        if hold is not None and principal is not None and recorded != UNPUBLISHED_CAPABILITY:
+            await self.record_hold(
+                principal, recorded, "refused", hold, effect_id=effect_id, refusal_id=refusal_id
+            )
+
+    # -- owner law (sw_059; S1, REQ-capability-authorization-020) ----------------
+
+    async def owner_law(self, capability: Capability, args: dict[str, Any]) -> PolicyHold | None:
+        """The owner's active terms on this call, read under this transaction.
+
+        The generation row is held ``FOR SHARE`` until the call commits, so a
+        concurrent owner change lands before this call or after its effect
+        fence, never between. Unreadable policy refuses (fail closed).
+        """
+        try:
+            policy = await read_policy(self.connection)
+        except PolicyUnavailable:
+            raise BrokerRefused(Reason.UNAVAILABLE) from None
+        return hold_for(
+            policy,
+            capability.identity,
+            capability.domain,
+            capability.effect_class,
+            args,
+            capability.alias_free_params,
+        )
+
+    async def record_hold(
+        self,
+        principal: Principal,
+        capability: str,
+        disposition: str,
+        hold: PolicyHold,
+        *,
+        effect_id: UUID | None = None,
+        refusal_id: UUID | None = None,
+    ) -> None:
+        await self.connection.execute(
+            "INSERT INTO switchboard.owner_policy_holds (id, goal_id, invocation_id, capability, "
+            "disposition, term, effect_id, refusal_id, generation, terms) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)",
+            uuid4(),
+            principal.goal_id,
+            principal.invocation_id,
+            capability,
+            disposition,
+            hold.constraint,
+            effect_id,
+            refusal_id,
+            hold.generation,
+            hold.refs,
         )
 
     # -- per-call transaction ---------------------------------------------------
@@ -173,23 +317,9 @@ class BrokerLedger:
         Budget exhaustion is *returned*, not raised, so the caller commits the
         goal's ``budget_exhausted`` transition before refusing.
         """
-        budget = await self.connection.fetchrow(
-            "SELECT max_calls, used_calls, reserved_calls, deadline > clock_timestamp() AS live "
-            "FROM switchboard.budgets WHERE goal_id = $1 FOR UPDATE",
-            principal.goal_id,
-        )
-        if budget is None:
-            raise BrokerRefused(Reason.UNAVAILABLE)
-        if (
-            not budget["live"]
-            or budget["used_calls"] + budget["reserved_calls"] >= budget["max_calls"]
-        ):
-            await self.connection.execute(
-                "UPDATE switchboard.goals SET status = 'budget_exhausted', updated_at = now() "
-                "WHERE id = $1 AND status = 'running'",
-                principal.goal_id,
-            )
-            return BrokerRefused(Reason.BUDGET)
+        exhausted = await self._budget_exhausted(principal.goal_id)
+        if exhausted is not None:
+            return exhausted
         effect_id = None
         if capability.effect_class != "read":
             previous = await self.connection.fetchval(
@@ -217,14 +347,44 @@ class BrokerLedger:
                 args_digest,
                 status,
             )
-        await self.connection.execute(
-            "UPDATE switchboard.budgets SET used_calls = used_calls + 1, updated_at = now() "
-            "WHERE goal_id = $1",
-            principal.goal_id,
-        )
+        await self._charge(principal.goal_id)
         return Reservation(
             principal, capability, decision, uuid4(), effect_id, args_digest, recipient
         )
+
+    async def _budget_exhausted(self, goal_id: UUID) -> BrokerRefused | None:
+        budget = await self.connection.fetchrow(
+            "SELECT max_calls, used_calls, reserved_calls, deadline > clock_timestamp() AS live "
+            "FROM switchboard.budgets WHERE goal_id = $1 FOR UPDATE",
+            goal_id,
+        )
+        if budget is None:
+            raise BrokerRefused(Reason.UNAVAILABLE)
+        if (
+            not budget["live"]
+            or budget["used_calls"] + budget["reserved_calls"] >= budget["max_calls"]
+        ):
+            await self.connection.execute(
+                "UPDATE switchboard.goals SET status = 'budget_exhausted', updated_at = now() "
+                "WHERE id = $1 AND status = 'running'",
+                goal_id,
+            )
+            return BrokerRefused(Reason.BUDGET)
+        return None
+
+    async def _charge(self, goal_id: UUID) -> None:
+        await self.connection.execute(
+            "UPDATE switchboard.budgets SET used_calls = used_calls + 1, updated_at = now() "
+            "WHERE goal_id = $1",
+            goal_id,
+        )
+
+    async def charge_call(self, goal_id: UUID) -> BrokerRefused | None:
+        """A goal tool call (D8) draws one call from the D10 budget, like any call."""
+        exhausted = await self._budget_exhausted(goal_id)
+        if exhausted is None:
+            await self._charge(goal_id)
+        return exhausted
 
     # -- settlement -------------------------------------------------------------
 
@@ -234,19 +394,26 @@ class BrokerLedger:
         status: str,
         *,
         receipt_ref: str | None = None,
-        expose: bool = False,
+        output: Label | None = None,
+        writers: tuple[tuple[Any, Any], ...] = (),
     ) -> None:
-        """Record a domain receipt (D11) and any exposure the output caused (D6)."""
+        """Record a domain receipt (D11) and join the label its output carries (D6, S1).
+
+        A stamped read's tainted records name their writer invocation
+        (``taint_goal_id``, ``taint_invocation_id``); each writer's persisted
+        label is joined with ``output``. The join commits with the receipt,
+        before the result can reach the model; sw_057 raises the goal's
+        reporting union as well.
+        """
         principal = reservation.principal
         await self._lock_goal(principal.goal_id)
-        if expose:
-            # Monotonic; the sw_047 trigger marks the goal exposed too.
-            await self.connection.execute(
-                "UPDATE switchboard.invocations SET exposed = true, updated_at = now() "
-                "WHERE goal_id = $1 AND id = $2 AND NOT exposed",
-                principal.goal_id,
-                principal.invocation_id,
-            )
+        if output is not None:
+            for pointer in writers:
+                output = output.join(await self.writer_label(pointer))
+        if output is not None and not await self._join(
+            principal.goal_id, principal.invocation_id, output, "read"
+        ):
+            raise BrokerRefused(Reason.UNAVAILABLE)
         if reservation.effect_id is None:
             return
         row = await self.connection.fetchrow(
@@ -260,6 +427,27 @@ class BrokerLedger:
         )
         if row is None:
             raise BrokerRefused(Reason.UNAVAILABLE)
+
+    async def writer_label(self, pointer: Any) -> Label:
+        """The persisted label of a stored record's writer invocation (D6, S1).
+
+        Resolved through the record's ``(taint_goal_id, taint_invocation_id)``
+        pointer. A missing, malformed, dangling or unreadable pointer is the
+        unknown label (``{world}``, all six categories): it never reads clean.
+        """
+        try:
+            goal_id, invocation_id = pointer
+            if not isinstance(goal_id, UUID) or not isinstance(invocation_id, UUID):
+                return Label.unknown()
+            row = await self.connection.fetchrow(
+                "SELECT label_version, label_instr, label_data, label_sens "
+                "FROM switchboard.invocations WHERE goal_id = $1 AND id = $2",
+                goal_id,
+                invocation_id,
+            )
+            return Label.unknown() if row is None else Label.from_row(*row.values())
+        except (TypeError, ValueError):
+            return Label.unknown()
 
     async def mark_parked(self, reservation: Reservation, approval_ref: str) -> bool:
         """requested -> parked. False when a Stop cancelled it while in flight."""
@@ -305,7 +493,10 @@ class BrokerLedger:
             raise BrokerRefused(Reason.GOAL)
         effect = await self.connection.fetchrow(
             "SELECT e.*, i.depth, i.exposed AS invocation_exposed, i.grant_snapshot, "
-            "i.grant_digest FROM switchboard.effects e JOIN switchboard.invocations i "
+            "i.grant_digest, i.label_version AS invocation_label_version, "
+            "i.label_instr AS invocation_label_instr, i.label_data AS invocation_label_data, "
+            "i.label_sens AS invocation_label_sens "
+            "FROM switchboard.effects e JOIN switchboard.invocations i "
             "ON (i.goal_id, i.id) = (e.goal_id, e.invocation_id) "
             "WHERE e.goal_id = $1 AND e.id = $2 FOR UPDATE OF e",
             goal_id,
@@ -324,14 +515,28 @@ class BrokerLedger:
                 effect_id,
             )
             return BrokerRefused(Reason.GOAL)
+        # The approved call runs under its requesting invocation's current label,
+        # which covers the effect's own snapshot: approval never narrows it.
         invocation = {
             "id": effect["invocation_id"],
             "depth": effect["depth"],
             "exposed": effect["invocation_exposed"],
             "grant_snapshot": effect["grant_snapshot"],
             "grant_digest": effect["grant_digest"],
+            "label_version": effect["invocation_label_version"],
+            "label_instr": effect["invocation_label_instr"],
+            "label_data": effect["invocation_label_data"],
+            "label_sens": effect["invocation_label_sens"],
         }
         principal = self._principal(goal, invocation)
+        effect_label = Label.from_row(
+            effect["label_version"],
+            effect["label_instr"],
+            effect["label_data"],
+            effect["label_sens"],
+        )
+        if not principal.label.covers(effect_label):
+            raise BrokerRefused(Reason.POLICY)
         if (
             catalog_capability is None
             or catalog_capability.identity != effect["capability"]

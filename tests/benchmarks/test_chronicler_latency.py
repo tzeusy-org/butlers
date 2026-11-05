@@ -26,6 +26,7 @@ is shared correctly under pytest-xdist.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import statistics
 import time
@@ -170,16 +171,20 @@ async def chronicler_pool(postgres_container):
     Shares the session-scoped postgres_container to avoid repeated Docker
     container startups across test workers.
     """
-    from butlers.testing.migration import create_migrated_test_pool
+    from butlers.testing.db import open_pool
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head
 
-    pool = await create_migrated_test_pool(
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
         postgres_container,
-        chains=["core", "chronicler"],
-        schemas={"chronicler": "chronicler"},
-        pool_schema="chronicler",
-        min_pool_size=2,
-        max_pool_size=5,
+        migration_db_name(),
+        ["core", "chronicler"],
+        {"chronicler": "chronicler"},
+        {"chronicler": "chronicler_029"},
     )
+    await prepare_chronicler_current_head(db_url, domain_schema="chronicler")
+    pool = await open_pool(db_url, schema="chronicler", min_size=2, max_size=5)
     try:
         await _insert_source_adapters(pool)
         n = await _insert_synthetic_episodes(pool)

@@ -414,12 +414,18 @@ async def test_by_day_result_sorted_day_then_category():
     base = datetime(2024, 3, 15, 10, 0, 0, tzinfo=_UTC)
     rows = [
         _make_episode_row(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=base + timedelta(days=1),
             end_at=base + timedelta(days=1, hours=1),
         ),
         _make_episode_row(start_at=base, end_at=base + timedelta(hours=1)),
+        _make_episode_row(
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
+            start_at=base + timedelta(hours=2),
+            end_at=base + timedelta(hours=3),
+        ),
     ]
     app, _ = _build_app(rows)
     async with httpx.AsyncClient(
@@ -432,6 +438,8 @@ async def test_by_day_result_sorted_day_then_category():
     assert resp.status_code == 200
     data = resp.json()
     keys = [(r["day"], r["category"]) for r in data]
+    assert len(keys) == 3
+    assert set(keys) == {("2024-03-15", "play"), ("2024-03-15", "work"), ("2024-03-16", "play")}
     assert keys == sorted(keys)
 
 
@@ -631,8 +639,8 @@ async def test_by_category_multiple_categories_separate_buckets():
     rows = [
         _make_episode_row(start_at=day_start, end_at=day_start + timedelta(hours=2)),
         _make_episode_row(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=day_start + timedelta(hours=3),
             end_at=day_start + timedelta(hours=4),
         ),
@@ -677,8 +685,8 @@ async def test_by_category_sorted_by_total_seconds_desc_then_category_asc():
     day_start = datetime(2024, 3, 15, 9, 0, 0, tzinfo=_UTC)
     rows = [
         _make_episode_row(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=day_start,
             end_at=day_start + timedelta(hours=1),
         ),
@@ -703,8 +711,7 @@ async def test_by_category_sorted_by_total_seconds_desc_then_category_asc():
     assert resp.status_code == 200
     buckets = resp.json()["data"]["buckets"]
     assert len(buckets) == 3
-    # work=3h > travel=2h > play=1h. (music+gaming would both fold into Play,
-    # so Play here is a single spotify episode.)
+    # work=3h > travel=2h > play=1h from a counted situation block.
     assert buckets[0]["category"] == "work"
     assert buckets[1]["category"] == "travel"
     assert buckets[2]["category"] == "play"

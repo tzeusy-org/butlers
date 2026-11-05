@@ -59,7 +59,7 @@ from butlers.api.oauth_scope_registry import (
 )
 from butlers.api.routers.audit import append as _audit_append
 from butlers.api.routers.ingestion_pipeline import prometheus_aggregates_available
-from butlers.connectors.catalog import discovery_connectors
+from butlers.connector_catalog import discovery_connectors
 from butlers.core.connector_registry_roles import (
     CHECKPOINT as _ROLE_CHECKPOINT,
 )

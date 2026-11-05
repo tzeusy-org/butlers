@@ -167,8 +167,13 @@ class ProjectionAdapter(abc.ABC):
             await set_cursor(
                 chronicler_pool, self.source_name, result.watermark, result.watermark_key
             )
+        await self.save_checkpoint(chronicler_pool, result)
+        return result
+
+    async def save_checkpoint(self, pool: asyncpg.Pool, result: AdapterResult) -> None:
+        """Publish a completed projection; subclasses may add atomic local state."""
         await upsert_checkpoint(
-            chronicler_pool,
+            pool,
             self.source_name,
             watermark=result.watermark,
             watermark_id=result.watermark_id,
@@ -176,7 +181,6 @@ class ProjectionAdapter(abc.ABC):
             rows_projected=result.rows_projected,
             error=result.error,
         )
-        return result
 
     def _llm_probe(self) -> None:
         """Hook used by guardrail tests to detect forbidden LLM calls.

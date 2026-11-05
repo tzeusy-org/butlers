@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from butlers.connectors.catalog import canonical_connector_types
+from butlers.connector_catalog import canonical_connector_types
 from butlers.core.goal_admission import EvidenceRefused
 from butlers.core.known_contact_state import (
     CLASSIFICATION_KEY,

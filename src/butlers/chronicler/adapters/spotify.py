@@ -26,6 +26,7 @@ Semantics:
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
 """
 
+# Listening remains evidence for reconstruction and quiet-run detection, never a Play lane.
 from __future__ import annotations
 
 import json
@@ -225,7 +226,7 @@ class SpotifySessionAdapter(ProjectionAdapter):
                         title=title,
                         payload=payload,
                         privacy=Privacy.NORMAL,
-                        layer=Layer.ACTIVITY,
+                        layer=Layer.EVIDENCE,
                         confidence=confidence,
                     ),
                 )

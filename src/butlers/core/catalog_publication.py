@@ -118,7 +118,13 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
             ):
                 raise ValueError
             kwargs = dict(item)
-            for key in ("resource_params", "safety_args", "read_stores", "write_stores"):
+            for key in (
+                "resource_params",
+                "safety_args",
+                "read_stores",
+                "write_stores",
+                "alias_free_params",
+            ):
                 if kwargs[key] is not None:
                     if type(kwargs[key]) is not list:
                         raise ValueError

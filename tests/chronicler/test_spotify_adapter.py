@@ -23,7 +23,7 @@ from butlers.chronicler.adapters.spotify import (
     SOURCE_NAME,
     SpotifySessionAdapter,
 )
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
 
@@ -189,6 +189,7 @@ async def test_episode_fields_from_row() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     ep = upserted[0]
+    assert ep.layer == Layer.EVIDENCE
     assert ep.source_name == SOURCE_NAME
     assert ep.episode_type == EPISODE_TYPE_LISTENING
     assert ep.start_at == _NOW

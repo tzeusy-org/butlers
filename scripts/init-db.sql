@@ -490,6 +490,15 @@ BEGIN
             _role
         );
 
+        -- Exact invoker boundary installed by core_315. Replay also repairs
+        -- late-created canonical roles without depending on creator defaults.
+        IF to_regprocedure('public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)') IS NOT NULL THEN
+            REVOKE EXECUTE ON FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean) FROM PUBLIC;
+            EXECUTE format('GRANT SELECT, UPDATE ON public.memory_catalog TO %I', _role);
+            EXECUTE format('GRANT SELECT, DELETE ON public.entity_graph_edges TO %I', _role);
+            EXECUTE format('GRANT EXECUTE ON FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean) TO %I', _role);
+        END IF;
+
         -- Butler roles may read connector-owned tables (for dashboards/routes).
         EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, _role);
         EXECUTE format(
@@ -631,6 +640,7 @@ BEGIN
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, 'butler_chronicler_rw');
     FOREACH _table IN ARRAY ARRAY[
         'steam_play_history',
+        'steam_status_history',
         'owntracks_points',
         'home_assistant_history'
     ] LOOP
@@ -6737,3 +6747,590 @@ BEGIN
  END IF;
 END $stepup_grant$;
 RESET ROLE;
+
+-- ── Chronicler private-memory projection boundary ─────────────────────────
+-- A public row id is the only input accepted by the two public visibility
+-- interfaces. The fixed bootstrap-owned installer below is called by the core
+-- migration and by every bootstrap replay; the private NOLOGIN role owns only
+-- the narrow readers and never becomes a runtime role.
+DO $chronicler_memory_roles$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    v_bootstrap_is_superuser BOOLEAN;
+    v_schema_owner OID;
+    v_bootstrap_owner OID;
+BEGIN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_catalog.pg_roles
+                     WHERE rolname = current_user), false)
+       OR current_user::name = v_migration_role THEN
+        RAISE EXCEPTION 'Chronicler memory boundary requires privileged init-db bootstrap';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles
+                   WHERE rolname = 'chronicler_memory_owner') THEN
+        EXECUTE 'CREATE ROLE chronicler_memory_owner '
+            || 'NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB '
+            || 'NOREPLICATION NOBYPASSRLS';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles AS owner_role
+        WHERE owner_role.rolname = 'chronicler_memory_owner'
+          AND NOT owner_role.rolcanlogin AND NOT owner_role.rolinherit
+          AND NOT owner_role.rolsuper AND NOT owner_role.rolcreaterole
+          AND NOT owner_role.rolcreatedb AND NOT owner_role.rolreplication
+          AND NOT owner_role.rolbypassrls
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+              WHERE membership.roleid = owner_role.oid OR membership.member = owner_role.oid
+          )
+    ) THEN
+        RAISE EXCEPTION 'Chronicler memory definer owner is not fixed and membership-free';
+    END IF;
+    IF pg_catalog.to_regnamespace('chronicler_memory_admin') IS NULL THEN
+        EXECUTE pg_catalog.format(
+            'CREATE SCHEMA chronicler_memory_admin AUTHORIZATION %I', current_user
+        );
+    END IF;
+    SELECT namespace.nspowner, bootstrap.rolsuper
+      INTO v_schema_owner, v_bootstrap_is_superuser
+      FROM pg_catalog.pg_namespace AS namespace
+      JOIN pg_catalog.pg_roles AS bootstrap ON bootstrap.oid = namespace.nspowner
+     WHERE namespace.nspname = 'chronicler_memory_admin';
+    IF v_schema_owner IS NULL OR NOT COALESCE(v_bootstrap_is_superuser, false) THEN
+        RAISE EXCEPTION 'Chronicler memory installer schema is not bootstrap-owned';
+    END IF;
+    SELECT oid INTO STRICT v_bootstrap_owner
+      FROM pg_catalog.pg_roles WHERE rolname = current_user;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema
+          ON admin_schema.oid = admin_function.pronamespace
+        WHERE admin_schema.nspname = 'chronicler_memory_admin'
+          AND admin_function.proname IN ('install_interface', 'finalize_interface')
+          AND admin_function.pronargs = 0
+          AND admin_function.proowner <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION
+            'Chronicler memory admin interface function is not owned by the bootstrap role';
+    END IF;
+    REVOKE ALL ON SCHEMA chronicler_memory_admin FROM PUBLIC;
+END;
+$chronicler_memory_roles$;
+
+CREATE OR REPLACE FUNCTION chronicler_memory_admin.install_interface()
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $chronicler_install$
+BEGIN
+    IF pg_catalog.to_regclass('public.memory_catalog') IS NULL
+       OR pg_catalog.to_regclass('public.entity_graph_edges') IS NULL THEN
+        RETURN;
+    END IF;
+
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION chronicler_memory_admin.projection_row_visible(
+            p_projection_id uuid, p_is_graph boolean
+        ) RETURNS boolean
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+        AS $body$
+        DECLARE
+            v_source_schema text;
+            v_source_table text;
+            v_source_id uuid;
+            v_rows bigint;
+            v_fact record;
+            v_fact_date date;
+            v_closed_through date;
+            v_replay_epoch bigint;
+            v_replay_ack bigint;
+            v_blocked_reason text;
+            v_timezone text;
+            v_redacted boolean;
+            v_pending boolean;
+            v_reason boolean;
+            v_detail jsonb;
+            v_first date;
+        BEGIN
+            IF p_projection_id IS NULL OR p_is_graph IS NULL THEN
+                RETURN false;
+            END IF;
+            IF p_is_graph THEN
+                EXECUTE 'SELECT source_schema, source_table, source_id '
+                     || 'FROM public.entity_graph_edges WHERE id = $1'
+                  INTO v_source_schema, v_source_table, v_source_id USING p_projection_id;
+            ELSE
+                EXECUTE 'SELECT source_schema, source_table, source_id '
+                     || 'FROM public.memory_catalog WHERE id = $1'
+                  INTO v_source_schema, v_source_table, v_source_id USING p_projection_id;
+            END IF;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 THEN
+                RETURN false;
+            END IF;
+            IF v_source_schema IS DISTINCT FROM 'chronicler_mem'
+               OR v_source_table IS DISTINCT FROM 'facts' THEN
+                RETURN true;
+            END IF;
+            IF v_source_id IS NULL
+               OR pg_catalog.to_regclass('chronicler_mem.facts') IS NULL THEN
+                RETURN false;
+            END IF;
+
+            -- All private relation references stay dynamic: this function is
+            -- installed before the optional chronicler_mem and chronicler chains.
+            EXECUTE 'SELECT source_butler, predicate, content_authority, validity, '
+                 || 'invalid_at, subject, tags, metadata '
+                 || 'FROM chronicler_mem.facts WHERE id = $1'
+              INTO v_fact USING v_source_id;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 THEN
+                RETURN false;
+            END IF;
+
+            IF pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions')
+               IS NOT NULL THEN
+                EXECUTE 'SELECT EXISTS ('
+                     || 'SELECT 1 FROM chronicler.daily_repair_fact_dispositions '
+                     || 'WHERE fact_id = $1 AND disposition = ''disposed'' AND redacted)'
+                  INTO v_redacted USING v_source_id;
+                IF v_redacted THEN
+                    RETURN false;
+                END IF;
+            END IF;
+
+            IF v_fact.content_authority IN ('owner', 'owner_device') THEN
+                RETURN true;
+            END IF;
+            IF v_fact.predicate NOT IN (
+                'lane-skew', 'sleep-debt', 'revisit-low-confidence-block'
+            ) THEN
+                RETURN true;
+            END IF;
+            IF v_fact.source_butler IS DISTINCT FROM 'chronicler'
+               OR v_fact.validity IS NULL
+               OR v_fact.validity NOT IN ('active', 'fading')
+               OR v_fact.invalid_at IS NOT NULL
+               OR pg_catalog.jsonb_typeof(v_fact.metadata) IS DISTINCT FROM 'object'
+               OR v_fact.metadata->>'source' IS DISTINCT FROM 'chronicler'
+               OR pg_catalog.jsonb_typeof(v_fact.tags) IS DISTINCT FROM 'array' THEN
+                RETURN false;
+            END IF;
+
+            IF v_fact.predicate = 'sleep-debt' THEN
+                v_detail := v_fact.metadata->'as_of';
+                IF pg_catalog.jsonb_typeof(v_detail) IS DISTINCT FROM 'string'
+                   OR v_fact.subject IS DISTINCT FROM 'sleep'
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'debt_seconds') IS DISTINCT FROM 'number'
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'shortfall_days') IS DISTINCT FROM 'number'
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'window_days') IS DISTINCT FROM 'number'
+                   OR NOT v_fact.tags @> '["chronicler-insight", "sleep-debt"]'::jsonb THEN
+                    RETURN false;
+                END IF;
+                v_first := NULLIF(v_fact.metadata->>'as_of', '')::date;
+            ELSIF v_fact.predicate = 'lane-skew' THEN
+                v_detail := v_fact.metadata->'local_date';
+                IF pg_catalog.jsonb_typeof(v_detail) IS DISTINCT FROM 'string'
+                   OR COALESCE(v_fact.metadata->>'lane', '') = ''
+                   OR v_fact.subject IS DISTINCT FROM (v_fact.metadata->>'lane' || ' lane')
+                   OR v_fact.metadata->>'direction' IS NULL
+                   OR v_fact.metadata->>'direction' NOT IN ('up', 'down')
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'seconds') IS DISTINCT FROM 'number'
+                   OR NOT v_fact.tags @> pg_catalog.jsonb_build_array(
+                       'chronicler-insight', 'lane-skew', v_fact.metadata->>'lane'
+                   ) THEN
+                    RETURN false;
+                END IF;
+                v_first := NULLIF(v_fact.metadata->>'local_date', '')::date;
+            ELSE
+                v_detail := v_fact.metadata->'local_date';
+                IF pg_catalog.jsonb_typeof(v_detail) IS DISTINCT FROM 'string'
+                   OR v_fact.metadata->>'flag_type' IS NULL
+                   OR v_fact.metadata->>'flag_type' NOT IN ('feeder_dark', 'sleep_missing')
+                   OR v_fact.metadata->>'severity' IS NULL
+                   OR v_fact.subject IS DISTINCT FROM (
+                       (v_fact.metadata->>'local_date') || ' ' || (v_fact.metadata->>'flag_type')
+                   )
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'detail') IS DISTINCT FROM 'object'
+                   OR NOT v_fact.tags @> pg_catalog.jsonb_build_array(
+                       'chronicler-self-reminder', v_fact.metadata->>'flag_type'
+                   ) THEN
+                    RETURN false;
+                END IF;
+                v_first := NULLIF(v_fact.metadata->>'local_date', '')::date;
+            END IF;
+
+            -- Invalid dates are an unclassified source row. Other SQL/ACL errors
+            -- are allowed to propagate instead of becoming an empty success.
+            IF v_first IS NULL THEN
+                RETURN false;
+            END IF;
+            v_fact_date := v_first;
+            IF pg_catalog.to_regclass('chronicler.daily_repair_control') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_days') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_source_redactions') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_retention_spans') IS NULL
+               OR pg_catalog.to_regclass('chronicler.episodes') IS NULL
+               OR pg_catalog.to_regclass('chronicler.v_episodes_corrected') IS NULL THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT closed_through, replay_epoch, replay_ack, blocked_reason, timezone '
+                 || 'FROM chronicler.daily_repair_control WHERE singleton'
+              INTO v_closed_through, v_replay_epoch, v_replay_ack, v_blocked_reason, v_timezone;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 OR v_blocked_reason IS NOT NULL OR v_timezone IS NULL OR v_timezone = ''
+               OR v_replay_epoch IS DISTINCT FROM v_replay_ack
+               OR v_fact_date > v_closed_through THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT EXISTS ('
+                 || 'SELECT 1 FROM chronicler.daily_repair_days '
+                 || 'WHERE local_date = $1 AND facts_pending)'
+              INTO v_pending USING v_fact_date;
+            IF v_pending THEN
+                RETURN false;
+            END IF;
+
+            EXECUTE 'SELECT disposition = ''disposed'' OR redacted '
+                 || 'FROM chronicler.daily_repair_fact_dispositions '
+                 || 'WHERE fact_id = $1 AND local_date = $2 '
+                 || 'ORDER BY generation DESC LIMIT 1'
+              INTO v_pending USING v_source_id, v_fact_date;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows > 0 AND v_pending THEN
+                RETURN false;
+            END IF;
+
+            -- An admitted cursor and an unadmitted currently-expired source both
+            -- hold the exact dependent day closed. The live source query is
+            -- read-only and uses only the narrow columns granted by the 030
+            -- finalizer; it prevents a timeout rollback from exposing old rows.
+            EXECUTE 'SELECT EXISTS ('
+                 || 'SELECT 1 FROM chronicler.daily_repair_retention_spans AS span '
+                 || 'WHERE $1 BETWEEN span.cursor_date AND '
+                 || 'LEAST(span.last_date + 28, $2))'
+              INTO v_pending USING v_fact_date, v_closed_through;
+            IF v_pending THEN
+                RETURN false;
+            END IF;
+            EXECUTE $q$
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM chronicler.episodes AS raw
+                    JOIN chronicler.v_episodes_corrected AS effective
+                      ON effective.id = raw.id
+                    CROSS JOIN chronicler.daily_repair_control AS control
+                    WHERE (raw.privacy = 'restricted' OR raw.tombstone_at IS NOT NULL
+                           OR (raw.retention_days IS NOT NULL
+                               AND raw.start_at + pg_catalog.make_interval(days => raw.retention_days)
+                                   < pg_catalog.clock_timestamp())
+                           OR effective.privacy = 'restricted'
+                           OR effective.tombstone_at IS NOT NULL
+                           OR (effective.retention_days IS NOT NULL
+                               AND effective.start_at + pg_catalog.make_interval(days => effective.retention_days)
+                                   < pg_catalog.clock_timestamp()))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM chronicler.daily_repair_source_redactions AS redaction
+                          WHERE redaction.source_id = raw.id
+                      )
+                      AND (
+                          $1 BETWEEN (raw.start_at AT TIME ZONE control.timezone)::date
+                              AND LEAST(COALESCE(
+                                  ((raw.end_at - interval '1 microsecond')
+                                      AT TIME ZONE control.timezone)::date,
+                                  control.closed_through), control.closed_through) + 28
+                          OR $1 BETWEEN (effective.start_at AT TIME ZONE control.timezone)::date
+                              AND LEAST(COALESCE(
+                                  ((effective.end_at - interval '1 microsecond')
+                                      AT TIME ZONE control.timezone)::date,
+                                  control.closed_through), control.closed_through) + 28
+                      )
+                )
+            $q$ INTO v_pending USING v_fact_date;
+            IF v_pending THEN
+                RETURN false;
+            END IF;
+            RETURN true;
+        EXCEPTION
+            WHEN invalid_datetime_format OR datetime_field_overflow THEN
+                RETURN false;
+        END
+        $body$
+    $ddl$;
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.chronicler_catalog_row_visible(p_row_id uuid)
+        RETURNS boolean LANGUAGE sql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp
+        AS $body$
+            SELECT chronicler_memory_admin.projection_row_visible(p_row_id, false)
+        $body$
+    $ddl$;
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.chronicler_graph_row_visible(p_row_id uuid)
+        RETURNS boolean LANGUAGE sql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp
+        AS $body$
+            SELECT chronicler_memory_admin.projection_row_visible(p_row_id, true)
+        $body$
+    $ddl$;
+
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.guard_chronicler_catalog_identity()
+        RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog
+        AS $body$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'
+                   AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                    RAISE EXCEPTION 'only Chronicler may create private-fact catalog pointers'
+                        USING ERRCODE = '42501';
+                END IF;
+                RETURN NEW;
+            END IF;
+            IF ((OLD.source_schema = 'chronicler_mem' AND OLD.source_table = 'facts')
+                OR (NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'))
+               AND (OLD.id IS DISTINCT FROM NEW.id
+                    OR OLD.source_schema IS DISTINCT FROM NEW.source_schema
+                    OR OLD.source_table IS DISTINCT FROM NEW.source_table
+                    OR OLD.source_id IS DISTINCT FROM NEW.source_id)
+               AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                RAISE EXCEPTION 'only Chronicler may retarget private-fact catalog pointers'
+                    USING ERRCODE = '42501';
+            END IF;
+            RETURN NEW;
+        END
+        $body$
+    $ddl$;
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.guard_chronicler_graph_identity()
+        RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog
+        AS $body$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'
+                   AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                    RAISE EXCEPTION 'only Chronicler may create private-fact graph pointers'
+                        USING ERRCODE = '42501';
+                END IF;
+                RETURN NEW;
+            END IF;
+            IF ((OLD.source_schema = 'chronicler_mem' AND OLD.source_table = 'facts')
+                OR (NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'))
+               AND (OLD.id IS DISTINCT FROM NEW.id
+                    OR OLD.source_schema IS DISTINCT FROM NEW.source_schema
+                    OR OLD.source_table IS DISTINCT FROM NEW.source_table
+                    OR OLD.source_id IS DISTINCT FROM NEW.source_id)
+               AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                RAISE EXCEPTION 'only Chronicler may retarget private-fact graph pointers'
+                    USING ERRCODE = '42501';
+            END IF;
+            RETURN NEW;
+        END
+        $body$
+    $ddl$;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'public.memory_catalog'::regclass
+          AND trigger_row.tgname = 'chronicler_catalog_identity_guard'
+          AND NOT trigger_row.tgisinternal
+          AND trigger_row.tgfoid = 'public.guard_chronicler_catalog_identity()'::regprocedure
+          AND trigger_row.tgenabled = 'O'
+    ) THEN
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+                   WHERE trigger_row.tgrelid = 'public.memory_catalog'::regclass
+                     AND trigger_row.tgname = 'chronicler_catalog_identity_guard'
+                     AND NOT trigger_row.tgisinternal) THEN
+            RAISE EXCEPTION 'unexpected Chronicler catalog identity trigger shape';
+        END IF;
+        CREATE TRIGGER chronicler_catalog_identity_guard
+        BEFORE INSERT OR UPDATE ON public.memory_catalog
+        FOR EACH ROW EXECUTE FUNCTION public.guard_chronicler_catalog_identity();
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'public.entity_graph_edges'::regclass
+          AND trigger_row.tgname = 'chronicler_graph_identity_guard'
+          AND NOT trigger_row.tgisinternal
+          AND trigger_row.tgfoid = 'public.guard_chronicler_graph_identity()'::regprocedure
+          AND trigger_row.tgenabled = 'O'
+    ) THEN
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+                   WHERE trigger_row.tgrelid = 'public.entity_graph_edges'::regclass
+                     AND trigger_row.tgname = 'chronicler_graph_identity_guard'
+                     AND NOT trigger_row.tgisinternal) THEN
+            RAISE EXCEPTION 'unexpected Chronicler graph identity trigger shape';
+        END IF;
+        CREATE TRIGGER chronicler_graph_identity_guard
+        BEFORE INSERT OR UPDATE ON public.entity_graph_edges
+        FOR EACH ROW EXECUTE FUNCTION public.guard_chronicler_graph_identity();
+    END IF;
+END
+$chronicler_install$;
+REVOKE ALL ON FUNCTION chronicler_memory_admin.install_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION chronicler_memory_admin.finalize_interface()
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $chronicler_finalize$
+DECLARE
+    v_bootstrap OID;
+    v_owner OID;
+    v_role TEXT;
+BEGIN
+    SELECT proowner INTO v_bootstrap
+      FROM pg_catalog.pg_proc
+     WHERE oid = 'chronicler_memory_admin.finalize_interface()'::regprocedure;
+    IF v_bootstrap IS NULL OR NOT COALESCE(
+        (SELECT rolsuper FROM pg_catalog.pg_roles WHERE oid = v_bootstrap), false
+    ) THEN
+        RAISE EXCEPTION 'Chronicler memory finalizer is not bootstrap-owned';
+    END IF;
+    SELECT oid INTO v_owner FROM pg_catalog.pg_roles
+     WHERE rolname = 'chronicler_memory_owner'
+       AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+       AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication
+       AND NOT rolbypassrls;
+    IF v_owner IS NULL OR EXISTS (
+        SELECT 1 FROM pg_catalog.pg_auth_members
+        WHERE roleid = v_owner OR member = v_owner
+    ) THEN
+        RAISE EXCEPTION 'Chronicler memory owner role is not membership-free';
+    END IF;
+    PERFORM chronicler_memory_admin.install_interface();
+    IF pg_catalog.to_regclass('public.memory_catalog') IS NULL
+       OR pg_catalog.to_regclass('public.entity_graph_edges') IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- PostgreSQL requires the new owner to have CREATE on each destination
+    -- schema while ownership is transferred. The role is NOLOGIN and has no
+    -- memberships; remove CREATE immediately after the three fixed transfers.
+    EXECUTE 'GRANT CREATE ON SCHEMA chronicler_memory_admin TO chronicler_memory_owner';
+    EXECUTE 'GRANT CREATE ON SCHEMA public TO chronicler_memory_owner';
+    EXECUTE 'ALTER FUNCTION chronicler_memory_admin.projection_row_visible(uuid, boolean) '
+         || 'OWNER TO chronicler_memory_owner';
+    EXECUTE 'ALTER FUNCTION public.chronicler_catalog_row_visible(uuid) '
+         || 'OWNER TO chronicler_memory_owner';
+    EXECUTE 'ALTER FUNCTION public.chronicler_graph_row_visible(uuid) '
+         || 'OWNER TO chronicler_memory_owner';
+    EXECUTE 'REVOKE CREATE ON SCHEMA chronicler_memory_admin FROM chronicler_memory_owner';
+    EXECUTE 'REVOKE CREATE ON SCHEMA public FROM chronicler_memory_owner';
+    EXECUTE 'REVOKE ALL ON FUNCTION chronicler_memory_admin.projection_row_visible(uuid, boolean) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.chronicler_catalog_row_visible(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.chronicler_graph_row_visible(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.guard_chronicler_catalog_identity() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.guard_chronicler_graph_identity() FROM PUBLIC';
+    EXECUTE 'GRANT USAGE ON SCHEMA chronicler_memory_admin TO chronicler_memory_owner';
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO chronicler_memory_owner';
+    EXECUTE 'REVOKE ALL ON public.memory_catalog FROM chronicler_memory_owner';
+    EXECUTE 'REVOKE ALL ON public.entity_graph_edges FROM chronicler_memory_owner';
+    EXECUTE 'GRANT SELECT (id, source_schema, source_table, source_id) '
+         || 'ON public.memory_catalog TO chronicler_memory_owner';
+    EXECUTE 'GRANT SELECT (id, source_schema, source_table, source_id) '
+         || 'ON public.entity_graph_edges TO chronicler_memory_owner';
+
+    IF pg_catalog.to_regclass('chronicler_mem.facts') IS NOT NULL THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA chronicler_mem TO chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler_mem.facts FROM chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (id, source_butler, predicate, content_authority, validity, '
+             || 'invalid_at, subject, tags, metadata) ON chronicler_mem.facts '
+             || 'TO chronicler_memory_owner';
+    END IF;
+    IF pg_catalog.to_regclass('chronicler.episodes') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.v_episodes_corrected') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_control') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_days') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_source_redactions') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_retention_spans') IS NOT NULL THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA chronicler TO chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.episodes FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.v_episodes_corrected FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_control FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_days FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_fact_dispositions FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_source_redactions FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_retention_spans FROM chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (id, start_at, end_at, privacy, retention_days, tombstone_at) '
+             || 'ON chronicler.episodes TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (id, start_at, end_at, privacy, retention_days, tombstone_at) '
+             || 'ON chronicler.v_episodes_corrected TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (singleton, timezone, closed_through, replay_epoch, replay_ack, blocked_reason) '
+             || 'ON chronicler.daily_repair_control TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (local_date, facts_pending) '
+             || 'ON chronicler.daily_repair_days TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (fact_id, local_date, generation, disposition, redacted) '
+             || 'ON chronicler.daily_repair_fact_dispositions TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (source_id) '
+             || 'ON chronicler.daily_repair_source_redactions TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (last_date, cursor_date) '
+             || 'ON chronicler.daily_repair_retention_spans TO chronicler_memory_owner';
+    END IF;
+
+    FOR v_role IN SELECT rolname::text FROM pg_catalog.pg_roles
+                   WHERE rolname <> 'chronicler_memory_owner' LOOP
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION chronicler_memory_admin.projection_row_visible(uuid, boolean) FROM %I',
+            v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.guard_chronicler_catalog_identity() FROM %I', v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.guard_chronicler_graph_identity() FROM %I', v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.chronicler_catalog_row_visible(uuid) FROM %I',
+            v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.chronicler_graph_row_visible(uuid) FROM %I',
+            v_role
+        );
+    END LOOP;
+    FOREACH v_role IN ARRAY ARRAY[
+        'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+        'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+        'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+        'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+    ] LOOP
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = v_role) THEN
+            EXECUTE pg_catalog.format(
+                'GRANT EXECUTE ON FUNCTION public.chronicler_catalog_row_visible(uuid) TO %I',
+                v_role
+            );
+            EXECUTE pg_catalog.format(
+                'GRANT EXECUTE ON FUNCTION public.chronicler_graph_row_visible(uuid) TO %I',
+                v_role
+            );
+        END IF;
+    END LOOP;
+END
+$chronicler_finalize$;
+REVOKE ALL ON FUNCTION chronicler_memory_admin.finalize_interface() FROM PUBLIC;
+DO $chronicler_migration_grant$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+BEGIN
+    EXECUTE pg_catalog.format(
+        'GRANT USAGE ON SCHEMA chronicler_memory_admin TO %I', v_migration_role
+    );
+    EXECUTE pg_catalog.format(
+        'GRANT EXECUTE ON FUNCTION chronicler_memory_admin.finalize_interface() TO %I',
+        v_migration_role
+    );
+END
+$chronicler_migration_grant$;
+DO $chronicler_memory_replay$
+BEGIN
+    IF pg_catalog.to_regclass('public.memory_catalog') IS NOT NULL
+       AND pg_catalog.to_regclass('public.entity_graph_edges') IS NOT NULL THEN
+        PERFORM chronicler_memory_admin.finalize_interface();
+    END IF;
+END
+$chronicler_memory_replay$;
