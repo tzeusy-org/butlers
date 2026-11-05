@@ -8,8 +8,14 @@ on a ``tool_host`` (``src/butlers/testing/tool_host.py``). Neither patches the
 lifecycle, so a test file must not:
 
 - patch a ``butlers.lifecycle.*`` target (``patch("butlers.lifecycle.X")``,
-  ``monkeypatch.setattr("butlers.lifecycle.X", ...)``), or
-- patch a private ``ButlerDaemon`` method (``patch.object(ButlerDaemon, "_x")``).
+  ``monkeypatch.setattr("butlers.lifecycle.X", ...)``),
+- patch an attribute of the lifecycle module object
+  (``monkeypatch.setattr(lifecycle, "X", ...)``, ``patch.object(lifecycle, "X")``)
+  where the name is bound, in the call's scope, by ``import butlers.lifecycle as
+  <name>``, ``from butlers import lifecycle [as <name>]`` or ``import
+  butlers.lifecycle`` (``butlers.lifecycle``), or
+- patch a private ``ButlerDaemon`` method (``patch.object(ButlerDaemon, "_x")``,
+  ``monkeypatch.setattr(ButlerDaemon, "_x", ...)``).
 
 Existing patches are frozen per file, as counts, in
 ``scripts/test-boot-patches-baseline.json``. A file may hold at most its count;
@@ -41,6 +47,14 @@ def is_test_file(path: str) -> bool:
     return parts[0] == "tests" or (parts[0] == "roster" and "tests" in parts[1:-1])
 
 
+LIFECYCLE_MODULE = "butlers.lifecycle"
+OBJECT_PATCHERS = {"setattr", "object", "multiple"}
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+# What an import binds a name to: the lifecycle module, the ``butlers`` package
+# (so ``butlers.lifecycle`` reaches it), or anything else.
+_LIFECYCLE, _PACKAGE, _OTHER = "lifecycle", "package", "other"
+
+
 def _callee(node: ast.Call) -> str:
     func = node.func
     if isinstance(func, ast.Attribute):
@@ -55,24 +69,102 @@ def _str_arg(node: ast.Call, index: int) -> str | None:
     return None
 
 
+def _own_nodes(scope: ast.AST):
+    """Nodes in *scope*, not descending into nested functions, lambdas or classes."""
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        node = pending.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _bindings(scope: ast.AST) -> dict[str, str]:
+    """Each name *scope* binds, and what to. A lifecycle import wins over others."""
+    found: dict[str, set[str]] = {}
+
+    def bind(name: str, kind: str) -> None:
+        found.setdefault(name, set()).add(kind)
+
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        args = scope.args
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+            if arg is not None:
+                bind(arg.arg, _OTHER)
+    for node in _own_nodes(scope):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bind(alias.asname, _LIFECYCLE if alias.name == LIFECYCLE_MODULE else _OTHER)
+                else:
+                    root = alias.name.split(".")[0]
+                    bind(root, _PACKAGE if root == "butlers" else _OTHER)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                is_lifecycle = node.level == 0 and (
+                    f"{node.module}.{alias.name}" == LIFECYCLE_MODULE
+                )
+                bind(alias.asname or alias.name, _LIFECYCLE if is_lifecycle else _OTHER)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bind(node.id, _OTHER)
+        elif isinstance(node, _SCOPES) and not isinstance(node, ast.Lambda):
+            bind(node.name, _OTHER)
+    order = (_LIFECYCLE, _PACKAGE, _OTHER)
+    return {name: next(kind for kind in order if kind in kinds) for name, kinds in found.items()}
+
+
+def _resolve(name: str, chain: list[dict[str, str]]) -> str | None:
+    for bindings in reversed(chain):
+        if name in bindings:
+            return bindings[name]
+    return None
+
+
+def _is_lifecycle(node: ast.expr, chain: list[dict[str, str]]) -> bool:
+    if isinstance(node, ast.Name):
+        return _resolve(node.id, chain) == _LIFECYCLE
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "lifecycle"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "butlers"
+        and _resolve("butlers", chain) == _PACKAGE
+    )
+
+
+def _is_patch(node: ast.Call, chain: list[dict[str, str]]) -> bool:
+    callee = _callee(node)
+    if callee in PATCHERS and (_str_arg(node, 0) or "").startswith(LIFECYCLE_PREFIX):
+        return True
+    if callee not in OBJECT_PATCHERS or not node.args:
+        return False
+    target = node.args[0]
+    if _is_lifecycle(target, chain):
+        return True
+    return (
+        callee in {"object", "setattr"}
+        and isinstance(target, ast.Name)
+        and target.id == "ButlerDaemon"
+        and (_str_arg(node, 1) or "").startswith("_")
+    )
+
+
 def boot_patches(source: str) -> int:
     """How many lifecycle-phase patches *source* holds."""
-    count = 0
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        callee = _callee(node)
-        if callee in PATCHERS and (_str_arg(node, 0) or "").startswith(LIFECYCLE_PREFIX):
-            count += 1
-        elif (
-            callee == "object"
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "ButlerDaemon"
-            and (_str_arg(node, 1) or "").startswith("_")
-        ):
-            count += 1
-    return count
+
+    def count(scope: ast.AST, enclosing: list[dict[str, str]]) -> int:
+        chain = [*enclosing, _bindings(scope)]
+        # A class body's names are not visible inside its methods.
+        inner = enclosing if isinstance(scope, ast.ClassDef) else chain
+        total = 0
+        for node in _own_nodes(scope):
+            if isinstance(node, ast.Call) and _is_patch(node, chain):
+                total += 1
+            elif isinstance(node, _SCOPES):
+                total += count(node, inner)
+        return total
+
+    return count(ast.parse(source), [])
 
 
 def tracked_test_files(root: Path) -> list[str]:

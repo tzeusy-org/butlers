@@ -88,8 +88,9 @@ from butlers.modules.calendar import (
     _subtract_busy,
     classify_sync_error_kind,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.mcp import registered_tools, tool_fn
-from butlers.testing.records import Record
+from butlers.testing.records import Record, row
 
 # The retained historical permission-test narratives describe the original enforcement.
 # Effects now refuse unavailable state; the real-lookup availability test below covers
@@ -3745,19 +3746,19 @@ class TestCalendarModuleExtraStatusFields:
 class TestCalendarProposeEvent:
     """Tests for calendar_propose_event / _propose_event."""
 
-    def _make_pool(
+    def _proposal_store(
         self, *, insert_id: uuid.UUID | None = None, existing_id: uuid.UUID | None = None
-    ) -> MagicMock:
-        """Pool stub: fetchrow returns a row with insert_id (or None on conflict), fetchval returns existing_id."""
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value={"id": insert_id} if insert_id is not None else None)
-        pool.fetchval = AsyncMock(return_value=existing_id)
-        return pool
+    ) -> FakePool:
+        """The INSERT returns insert_id (no row on conflict); the lookup returns existing_id."""
+        return fake_pool(
+            fetchrow=row(id=insert_id) if insert_id is not None else None,
+            fetchval=existing_id,
+        )
 
     async def test_insert_creates_pending_row(self) -> None:
         """_propose_event inserts a row and returns the new proposal id."""
         proposal_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=proposal_id)
+        pool = self._proposal_store(insert_id=proposal_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)
@@ -3780,7 +3781,7 @@ class TestCalendarProposeEvent:
     async def test_duplicate_source_event_id_returns_existing(self) -> None:
         """Duplicate source_event_id is a no-op — returns existing proposal id."""
         existing_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=None, existing_id=existing_id)
+        pool = self._proposal_store(insert_id=None, existing_id=existing_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)
@@ -3801,7 +3802,7 @@ class TestCalendarProposeEvent:
     async def test_no_provider_call_made(self) -> None:
         """_propose_event never touches the provider client."""
         proposal_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=proposal_id)
+        pool = self._proposal_store(insert_id=proposal_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)
@@ -3822,7 +3823,7 @@ class TestCalendarProposeEvent:
     async def test_mcp_tool_registered_and_returns_proposal_id(self) -> None:
         """calendar_propose_event MCP tool is registered and returns proposal_id as string."""
         proposal_id = uuid.uuid4()
-        pool = self._make_pool(insert_id=proposal_id)
+        pool = self._proposal_store(insert_id=proposal_id)
         mod = CalendarModule()
         mod._butler_name = "finance"
         mod._db = SimpleNamespace(pool=pool)

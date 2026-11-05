@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -18,22 +19,9 @@ from butlers.api.chat_stream import (
     open_chat_stream_listener,
     publish_chat_stream_event,
 )
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
-
-
-class _FakePool:
-    """Fake asyncpg pool/connection capturing execute() calls."""
-
-    def __init__(self, *, raise_on_execute: Exception | None = None) -> None:
-        self._raise_on_execute = raise_on_execute
-        self.execute_calls: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.execute_calls.append((query, args))
-        if self._raise_on_execute is not None:
-            raise self._raise_on_execute
-        return "SELECT 1"
 
 
 def test_chat_stream_channel_strips_hyphens_and_stays_under_the_identifier_limit():
@@ -51,14 +39,14 @@ def test_chat_stream_channel_is_stable_for_the_same_request_id():
 
 
 async def test_publish_chat_stream_event_sends_pg_notify_on_the_request_channel():
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
     request_id = uuid4()
 
     ok = await publish_chat_stream_event(pool, request_id, "token", {"content": "hi"})
 
     assert ok is True
-    assert len(pool.execute_calls) == 1
-    query, args = pool.execute_calls[0]
+    pool.execute.assert_awaited_once()
+    query, *args = pool.execute.await_args.args
     assert "pg_notify" in query
     assert args[0] == chat_stream_channel(request_id)
     envelope = json.loads(args[1])
@@ -66,19 +54,19 @@ async def test_publish_chat_stream_event_sends_pg_notify_on_the_request_channel(
 
 
 async def test_publish_chat_stream_event_defaults_data_to_empty_dict():
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
     request_id = uuid4()
 
     ok = await publish_chat_stream_event(pool, request_id, "reply_ready")
 
     assert ok is True
-    _, args = pool.execute_calls[0]
+    _, *args = pool.execute.await_args.args
     envelope = json.loads(args[1])
     assert envelope == {"type": "reply_ready", "data": {}}
 
 
 async def test_publish_chat_stream_event_swallows_notify_failure():
-    pool = _FakePool(raise_on_execute=RuntimeError("connection lost"))
+    pool = fake_pool(execute=AsyncMock(side_effect=RuntimeError("connection lost")))
 
     ok = await publish_chat_stream_event(pool, uuid4(), "token", {"content": "hi"})
 
@@ -86,17 +74,17 @@ async def test_publish_chat_stream_event_swallows_notify_failure():
 
 
 async def test_publish_chat_stream_event_drops_oversized_payload():
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
     huge_data = {"content": "x" * 8500}
 
     ok = await publish_chat_stream_event(pool, uuid4(), "token", huge_data)
 
     assert ok is False
-    assert pool.execute_calls == []
+    pool.execute.assert_not_awaited()
 
 
 async def test_publish_chat_stream_event_drops_non_serializable_data():
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
 
     class _Unserializable:
         def __repr__(self) -> str:
@@ -105,7 +93,7 @@ async def test_publish_chat_stream_event_drops_non_serializable_data():
     ok = await publish_chat_stream_event(pool, uuid4(), "token", {"bad": _Unserializable()})
 
     assert ok is False
-    assert pool.execute_calls == []
+    pool.execute.assert_not_awaited()
 
 
 async def test_open_chat_stream_listener_returns_none_when_connect_fails(monkeypatch):
@@ -178,8 +166,6 @@ async def test_open_chat_stream_listener_queues_and_returns_notify_payloads(monk
 
 
 async def test_connection_notify_failure_rolls_back_only_its_savepoint():
-    from unittest.mock import AsyncMock, MagicMock
-
     import asyncpg
 
     connection = MagicMock(spec=asyncpg.pool.PoolConnectionProxy)
