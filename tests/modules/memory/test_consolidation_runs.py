@@ -3,10 +3,11 @@
 Covers:
   (a) Unit — core_119 migration structure, revision wiring, the additive-only
       (no-drop) guarantee, and source-text guards.
-  (b) Unit — write-on-completion logic in run_consolidation:
-        - _record_consolidation_run emits the expected INSERT and is best-effort.
+  (b) Write-on-completion logic in run_consolidation, on the real core + memory
+      chains (claims, failure transitions and dedup reads are real SQL):
+        - _record_consolidation_run writes the audit row and is best-effort.
         - run_consolidation writes one audit row per successfully consolidated
-          (tenant, butler) group, with the group's counts.
+          (tenant, butler) authority partition, with its counts.
 
 The table's privileges on the real core chain (append-only for butler roles,
 core_308) are pinned in tests/migrations/test_consolidation_runs_grants.py.
@@ -14,18 +15,27 @@ core_308) are pinned in tests/migrations/test_consolidation_runs_grants.py.
 
 from __future__ import annotations
 
-import importlib.util
+import shutil
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.modules.memory import consolidation as consolidation_module
-from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.migration import load_migration
+
+_db_backed = [
+    pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="session"),
+    pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
+]
 
 # ---------------------------------------------------------------------------
-# Migration file path / loader
+# Migration file path
 # ---------------------------------------------------------------------------
 
 _CORE_MIGRATION_PATH = (
@@ -35,14 +45,6 @@ _CORE_MIGRATION_PATH = (
     / "core"
     / "core_119_consolidation_runs.py"
 )
-
-
-def _load_core():
-    spec = importlib.util.spec_from_file_location("core_119", _CORE_MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +57,7 @@ class TestCore119Structure:
     def test_migration_wiring(self):
         """core_119 exists, declares its revision/down_revision chain, and is callable."""
         assert _CORE_MIGRATION_PATH.exists(), f"Migration file not found: {_CORE_MIGRATION_PATH}"
-        mod = _load_core()
+        mod = load_migration(_CORE_MIGRATION_PATH)
         assert mod.revision == "core_119"
         assert mod.down_revision == "core_118"  # chains from the current core head
         assert callable(mod.upgrade)
@@ -100,76 +102,79 @@ class TestCore119Structure:
 
 
 # ---------------------------------------------------------------------------
-# Fakes for the write-on-completion logic
+# Real-DB seeding and runtime doubles
 # ---------------------------------------------------------------------------
 
 
-_FakeTransaction = AsyncCtx
+@pytest.fixture
+async def memory_pool(db):
+    """``episodes``, ``facts``, ``rules`` and ``public.consolidation_runs``, flat in public."""
+    return await db("core", "memory")
 
 
-_FakeAcquire = AsyncCtx
+_BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
 
 
-class _FakeConn:
-    """Connection used during the FOR UPDATE SKIP LOCKED claim phase."""
+async def _seed_episodes(
+    pool,
+    *episodes: tuple[str, str, str | None],
+) -> list[uuid.UUID]:
+    """Insert pending ``(tenant_id, butler, content_authority)`` episodes in claim order.
 
-    def __init__(self, claim_rows: list[dict], statements: list[tuple]):
-        self._claim_rows = claim_rows
-        self._statements = statements
-        self.executes: list[tuple] = []
-
-    def is_in_transaction(self):
-        return True
-
-    def transaction(self):
-        return _FakeTransaction(None)
-
-    async def fetch(self, query, *args, **kwargs):
-        if "last_consolidation_error=" in query:
-            self._statements.append((query, args))
-            return [
-                dict(
-                    row,
-                    consolidation_status="failed",
-                    consolidation_attempts=row["consolidation_attempts"] + 1,
-                )
-                for row in self._claim_rows
-            ]
-        return self._claim_rows
-
-    async def execute(self, *args, **kwargs):
-        self.executes.append(args)
-        return "UPDATE 0"
+    ``created_at`` increases with position so the real claim order
+    (tenant, butler, created_at, id) is the argument order within a group.
+    """
+    ids = [uuid.uuid4() for _ in episodes]
+    await pool.executemany(
+        "INSERT INTO episodes (id, tenant_id, butler, content, content_authority, created_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        [
+            (episode_id, tenant, butler, f"episode {i}", authority, _BASE_TIME + timedelta(i))
+            for i, (episode_id, (tenant, butler, authority)) in enumerate(
+                zip(ids, episodes, strict=True)
+            )
+        ],
+    )
+    return ids
 
 
-class _FakePool:
-    """Records every execute() call so audit-row INSERTs can be asserted."""
+async def _audit_rows(pool) -> list[tuple]:
+    rows = await pool.fetch(
+        "SELECT butler, episodes_processed, facts_produced, facts_updated, rules_created, "
+        "confirmations_made, errors FROM public.consolidation_runs ORDER BY id"
+    )
+    return [tuple(r) for r in rows]
 
-    def __init__(self, claim_rows: list[dict], *, execute_should_raise: bool = False):
-        self.executes: list[tuple] = []
-        self._conn = _FakeConn(claim_rows, self.executes)
-        self.fetch_results: list[list[dict]] = []
-        self._execute_should_raise = execute_should_raise
 
-    def acquire(self):
-        return _FakeAcquire(self._conn)
+async def _episode_state(pool, episode_id: uuid.UUID) -> tuple:
+    return tuple(
+        await pool.fetchrow(
+            "SELECT consolidation_status, last_consolidation_error FROM episodes WHERE id = $1",
+            episode_id,
+        )
+    )
 
-    async def fetch(self, *args, **kwargs):
-        # existing-facts / existing-rules dedup context fetches — empty is fine.
-        return []
 
-    async def execute(self, query: str, *args, **kwargs):
-        self.executes.append((query, args))
-        if self._execute_should_raise:
-            raise RuntimeError("simulated audit-write failure")
-        return "INSERT 0 1"
+def _exec_result(episodes: int, **counts: int) -> dict[str, Any]:
+    return {
+        "facts_created": counts.get("facts_created", 0),
+        "facts_updated": counts.get("facts_updated", 0),
+        "rules_created": counts.get("rules_created", 0),
+        "confirmations_made": counts.get("confirmations_made", 0),
+        "episodes_consolidated": episodes,
+        "episode_ttl_days": None,
+        "errors": [],
+    }
 
-    def consolidation_run_inserts(self) -> list[tuple]:
-        return [
-            (query, args)
-            for (query, args) in self.executes
-            if "INSERT INTO public.consolidation_runs" in query
-        ]
+
+def _stub_runtime_pipeline(monkeypatch, execute_consolidation) -> None:
+    """Replace parse + execute so the test controls each partition's outcome."""
+    monkeypatch.setattr(consolidation_module, "execute_consolidation", execute_consolidation)
+    monkeypatch.setattr(
+        consolidation_module,
+        "parse_consolidation_output",
+        lambda output: type("P", (), {"parse_errors": []})(),
+    )
 
 
 class _FakeSpawnerResult:
@@ -210,16 +215,16 @@ class _FakeSpawner:
 
 
 # ---------------------------------------------------------------------------
-# (b) Unit — _record_consolidation_run
+# (b) _record_consolidation_run
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestRecordConsolidationRun:
-    async def test_emits_insert_with_expected_columns_and_params(self):
-        pool = _FakePool(claim_rows=[])
+    pytestmark = _db_backed
+
+    async def test_writes_one_audit_row_with_the_given_counts(self, memory_pool):
         await consolidation_module._record_consolidation_run(
-            pool,
+            memory_pool,
             butler="general",
             episodes_processed=4,
             facts_produced=3,
@@ -228,24 +233,13 @@ class TestRecordConsolidationRun:
             confirmations_made=5,
             errors=0,
         )
-        inserts = pool.consolidation_run_inserts()
-        assert len(inserts) == 1
-        query, args = inserts[0]
-        for column in (
-            "butler",
-            "episodes_processed",
-            "facts_produced",
-            "facts_updated",
-            "rules_created",
-            "confirmations_made",
-            "errors",
-        ):
-            assert column in query
-        # Params are positional in column order.
-        assert args == ("general", 4, 3, 2, 1, 5, 0)
+        assert await _audit_rows(memory_pool) == [("general", 4, 3, 2, 1, 5, 0)]
 
+
+@pytest.mark.unit
+class TestRecordConsolidationRunBestEffort:
     async def test_best_effort_swallows_db_errors(self):
-        pool = _FakePool(claim_rows=[], execute_should_raise=True)
+        pool = fake_pool(execute=AsyncMock(side_effect=RuntimeError("simulated audit failure")))
         # Must not raise even when the INSERT fails (table not yet migrated, etc.).
         await consolidation_module._record_consolidation_run(
             pool,
@@ -257,21 +251,22 @@ class TestRecordConsolidationRun:
             confirmations_made=0,
             errors=0,
         )
+        pool.execute.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
-# (b) Unit — run_consolidation writes one audit row per successful group
+# (b) run_consolidation writes one audit row per successful partition
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.unit
 class TestRunConsolidationWritesAuditRow:
-    async def test_empty_backlog_does_not_spawn(self):
-        pool = _FakePool(claim_rows=[])
+    pytestmark = _db_backed
+
+    async def test_empty_backlog_does_not_spawn(self, memory_pool):
         spawner = _FakeSpawner()
 
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=object(),
             cc_spawner=spawner,
         )
@@ -279,116 +274,51 @@ class TestRunConsolidationWritesAuditRow:
         assert stats["episodes_processed"] == 0
         assert stats["groups"] == {}
         assert spawner.calls == 0
+        assert await _audit_rows(memory_pool) == []
 
-    async def test_one_audit_row_per_successful_group_with_counts(self, monkeypatch):
-        claim_rows = [
-            {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "butler": "general",
-                "content": "c",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-            }
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
-
-        exec_result = {
-            "facts_created": 3,
-            "facts_updated": 2,
-            "rules_created": 1,
-            "confirmations_made": 4,
-            "episodes_consolidated": 1,
-            "episode_ttl_days": None,
-            "errors": [],
-        }
+    async def test_one_audit_row_per_successful_group_with_counts(self, memory_pool, monkeypatch):
+        await _seed_episodes(memory_pool, ("t1", "general", None))
 
         async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
-            return exec_result
+            return _exec_result(
+                1, facts_created=3, facts_updated=2, rules_created=1, confirmations_made=4
+            )
 
-        monkeypatch.setattr(
-            consolidation_module, "execute_consolidation", _fake_execute_consolidation
-        )
-        monkeypatch.setattr(
-            consolidation_module,
-            "parse_consolidation_output",
-            lambda output: type("P", (), {"parse_errors": []})(),
-        )
-        monkeypatch.setattr(
-            consolidation_module, "build_consolidation_prompt", lambda **kwargs: "prompt"
-        )
-
+        _stub_runtime_pipeline(monkeypatch, _fake_execute_consolidation)
         spawner = _FakeSpawner()
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=None,
             cc_spawner=spawner,
         )
 
-        inserts = pool.consolidation_run_inserts()
-        assert len(inserts) == 1, "expected exactly one audit row for one successful group"
-        _query, args = inserts[0]
         # (butler, episodes_processed, facts_produced, facts_updated,
         #  rules_created, confirmations_made, errors)
-        assert args == ("general", 1, 3, 2, 1, 4, 0)
+        assert await _audit_rows(memory_pool) == [("general", 1, 3, 2, 1, 4, 0)]
         # Aggregate stats still returned as before.
         assert stats["facts_created"] == 3
         assert stats["groups_consolidated"] == 1
         assert spawner.trigger_sources == ["schedule:consolidation"]
 
     async def test_same_butler_in_two_tenants_gets_disjoint_groups_and_request_ids(
-        self, monkeypatch
+        self, memory_pool, monkeypatch
     ) -> None:
-        tenant_a_ids = [uuid.uuid4(), uuid.uuid4()]
-        tenant_b_ids = [uuid.uuid4()]
-        claim_rows = [
-            {
-                "id": episode_id,
-                "butler": "general",
-                "content": f"episode-{episode_id}",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": tenant_id,
-                "consolidation_attempts": 0,
-            }
-            for tenant_id, episode_ids in (
-                ("tenant-a", tenant_a_ids),
-                ("tenant-b", tenant_b_ids),
-            )
-            for episode_id in episode_ids
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
+        ids = await _seed_episodes(
+            memory_pool,
+            ("tenant-a", "general", None),
+            ("tenant-b", "general", None),
+            ("tenant-a", "general", None),
+        )
+        tenant_a_ids, tenant_b_ids = [ids[0], ids[2]], [ids[1]]
         execute_calls: list[dict[str, Any]] = []
 
         async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
             execute_calls.append(kwargs)
-            return {
-                "facts_created": 0,
-                "facts_updated": 0,
-                "rules_created": 0,
-                "confirmations_made": 0,
-                "episodes_consolidated": len(kwargs["source_episode_ids"]),
-                "episode_ttl_days": None,
-                "errors": [],
-            }
+            return _exec_result(len(kwargs["source_episode_ids"]))
 
-        monkeypatch.setattr(
-            consolidation_module, "execute_consolidation", _fake_execute_consolidation
-        )
-        monkeypatch.setattr(
-            consolidation_module,
-            "parse_consolidation_output",
-            lambda output: type("P", (), {"parse_errors": []})(),
-        )
-        monkeypatch.setattr(
-            consolidation_module, "build_consolidation_prompt", lambda **kwargs: "prompt"
-        )
-
+        _stub_runtime_pipeline(monkeypatch, _fake_execute_consolidation)
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=None,
             cc_spawner=_FakeSpawner(),
         )
@@ -407,81 +337,68 @@ class TestRunConsolidationWritesAuditRow:
         assert len(set(request_ids)) == 2
 
     async def test_each_authority_partition_consolidates_in_its_own_session(
-        self, monkeypatch
+        self, memory_pool, monkeypatch
     ) -> None:
         """REQ-module-memory-005: one tenant/butler group splits by persisted authority."""
-        owner_ids = [uuid.uuid4(), uuid.uuid4()]
-        system_ids = [uuid.uuid4()]
-        other_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
-        authorities = {
-            owner_ids[0]: "owner",
-            other_ids[0]: "third_party",
-            system_ids[0]: "system",
-            owner_ids[1]: "owner_device",
-            other_ids[1]: None,
-            other_ids[2]: "mixed",
-        }
-        claim_rows = [
-            {
-                "id": episode_id,
-                "butler": "general",
-                "content": f"episode-{episode_id}",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-                "content_authority": authority,
-            }
-            # Interleave so partitioning cannot lean on claim order.
-            for episode_id, authority in authorities.items()
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
-        dedup_queries: list[str] = []
+        # Interleave so partitioning cannot lean on claim order.
+        authorities = ["owner", "third_party", "system", "owner_device", None, "mixed"]
+        ids = await _seed_episodes(
+            memory_pool, *[("t1", "general", authority) for authority in authorities]
+        )
+        owner_ids = [ids[0], ids[3]]
+        system_ids = [ids[2]]
+        other_ids = [ids[1], ids[4], ids[5]]
 
-        async def _recording_fetch(query: str, *args: Any) -> list[dict]:
-            dedup_queries.append(" ".join(query.split()))
-            return []
+        # Dedup candidates: one owner-class and one system fact/rule, buried under
+        # a full LIMIT's worth of newer third-party ones (facts LIMIT 100, rules
+        # LIMIT 50). Filtering by partition before LIMIT is the only way the
+        # owner and system sessions still see theirs.
+        await memory_pool.executemany(
+            "INSERT INTO facts (subject, predicate, content, source_butler, tenant_id, "
+            "content_authority, created_at) VALUES ($1, 'note', $1, 'general', 't1', $2, $3)",
+            [("owner-fact", "owner", _BASE_TIME), ("system-fact", "system", _BASE_TIME)]
+            + [
+                (f"third-party-fact-{i}", "third_party", _BASE_TIME + timedelta(days=1, seconds=i))
+                for i in range(100)
+            ],
+        )
+        await memory_pool.executemany(
+            "INSERT INTO rules (content, source_butler, tenant_id, content_authority, created_at) "
+            "VALUES ($1, 'general', 't1', $2, $3)",
+            [("owner-rule", "owner_device", _BASE_TIME), ("system-rule", "system", _BASE_TIME)]
+            + [
+                (f"third-party-rule-{i}", "third_party", _BASE_TIME + timedelta(days=1, seconds=i))
+                for i in range(50)
+            ],
+        )
 
-        pool.fetch = _recording_fetch  # type: ignore[method-assign]
-        prompts: list[list[uuid.UUID]] = []
+        prompts: list[dict[str, Any]] = []
         execute_calls: list[dict[str, Any]] = []
 
         async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
             execute_calls.append(kwargs)
-            return {
-                "facts_created": 0,
-                "facts_updated": 0,
-                "rules_created": 0,
-                "confirmations_made": 0,
-                "episodes_consolidated": len(kwargs["source_episode_ids"]),
-                "episode_ttl_days": None,
-                "errors": [],
-            }
+            return _exec_result(len(kwargs["source_episode_ids"]))
 
         def _prompt(**kwargs: Any) -> str:
-            prompts.append([episode["id"] for episode in kwargs["episodes"]])
+            prompts.append(kwargs)
             return "prompt"
 
-        monkeypatch.setattr(
-            consolidation_module, "execute_consolidation", _fake_execute_consolidation
-        )
-        monkeypatch.setattr(
-            consolidation_module,
-            "parse_consolidation_output",
-            lambda output: type("P", (), {"parse_errors": []})(),
-        )
+        _stub_runtime_pipeline(monkeypatch, _fake_execute_consolidation)
         monkeypatch.setattr(consolidation_module, "build_consolidation_prompt", _prompt)
         spawner = _FakeSpawner()
 
         stats = await consolidation_module.run_consolidation(
-            pool, embedding_engine=None, cc_spawner=spawner
+            memory_pool, embedding_engine=None, cc_spawner=spawner
         )
 
         # A system-stamped episode gets its own session (bu-dhloi1.26): sharing one
         # with third-party content would let it restate that content as system.
         assert spawner.calls == 3
-        assert prompts == [owner_ids, system_ids, other_ids]
+        assert [[e["id"] for e in p["episodes"]] for p in prompts] == [
+            owner_ids,
+            system_ids,
+            other_ids,
+        ]
         assert [call["source_episode_ids"] for call in execute_calls] == [
             owner_ids,
             system_ids,
@@ -496,122 +413,73 @@ class TestRunConsolidationWritesAuditRow:
         assert stats["groups"] == {"t1/general": 6}
         assert stats["groups_consolidated"] == 3
         assert stats["episodes_consolidated"] == 6
-        assert len(pool.consolidation_run_inserts()) == 3
+        assert [r[1] for r in await _audit_rows(memory_pool)] == [2, 1, 3]
 
         # Dedup candidates are filtered by partition in SQL, before LIMIT, so a
         # third-party fact or rule never reaches the owner or system prompt.
-        assert len(dedup_queries) == 6
-        predicates = [
-            "content_authority IN ('owner', 'owner_device')",
-            "content_authority = 'system'",
-            "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device', 'system')",
-        ]
-        for index, query in enumerate(dedup_queries):
-            predicate = predicates[index // 2]
-            assert predicate in query
-            assert query.index(predicate) < query.index("LIMIT")
+        owner, system, non_owner = prompts
+        assert [f["subject"] for f in owner["existing_facts"]] == ["owner-fact"]
+        assert [r["content"] for r in owner["existing_rules"]] == ["owner-rule"]
+        assert [f["subject"] for f in system["existing_facts"]] == ["system-fact"]
+        assert [r["content"] for r in system["existing_rules"]] == ["system-rule"]
+        assert len(non_owner["existing_facts"]) == 100
+        assert all(f["subject"].startswith("third-party") for f in non_owner["existing_facts"])
+        assert len(non_owner["existing_rules"]) == 50
+        assert all(r["content"].startswith("third-party") for r in non_owner["existing_rules"])
 
-    async def test_failed_partition_does_not_block_the_other_partition(self, monkeypatch) -> None:
-        owner_id, other_id = uuid.uuid4(), uuid.uuid4()
-        claim_rows = [
-            {
-                "id": episode_id,
-                "butler": "general",
-                "content": "c",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-                "content_authority": authority,
-            }
-            for episode_id, authority in ((owner_id, "owner"), (other_id, "third_party"))
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
+    async def test_failed_partition_does_not_block_the_other_partition(
+        self, memory_pool, monkeypatch
+    ) -> None:
+        owner_id, other_id = await _seed_episodes(
+            memory_pool, ("t1", "general", "owner"), ("t1", "general", "third_party")
+        )
 
         async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
             if kwargs["authority_partition"] == "owner":
                 raise ValueError("out-of-partition evidence")
-            return {
-                "facts_created": 1,
-                "facts_updated": 0,
-                "rules_created": 0,
-                "confirmations_made": 0,
-                "episodes_consolidated": 1,
-                "episode_ttl_days": None,
-                "errors": [],
-            }
+            return _exec_result(1, facts_created=1)
 
-        monkeypatch.setattr(
-            consolidation_module, "execute_consolidation", _fake_execute_consolidation
-        )
-        monkeypatch.setattr(
-            consolidation_module,
-            "parse_consolidation_output",
-            lambda output: type("P", (), {"parse_errors": []})(),
-        )
+        _stub_runtime_pipeline(monkeypatch, _fake_execute_consolidation)
         monkeypatch.setattr(
             consolidation_module, "build_consolidation_prompt", lambda **kwargs: "prompt"
         )
 
         stats = await consolidation_module.run_consolidation(
-            pool, embedding_engine=None, cc_spawner=_FakeSpawner()
+            memory_pool, embedding_engine=None, cc_spawner=_FakeSpawner()
         )
 
         assert stats["groups_consolidated"] == 1
         assert stats["facts_created"] == 1
         assert stats["errors"] == ["Failed to consolidate general"]
-        failure_updates = [
-            args for query, args in pool.executes if "last_consolidation_error" in query
-        ]
-        assert len(failure_updates) == 1
-        assert [owner_id] in failure_updates[0]
-        assert len(pool.consolidation_run_inserts()) == 1
+        assert await _episode_state(memory_pool, owner_id) == (
+            "failed",
+            "Consolidation execution failed.",
+        )
+        # The stub leaves the sibling's lease for its own executor; it is not failed.
+        assert (await _episode_state(memory_pool, other_id))[0] == "pending"
+        assert [r[1] for r in await _audit_rows(memory_pool)] == [1]
 
-    async def test_no_audit_row_when_no_spawner(self, monkeypatch):
+    async def test_no_audit_row_when_no_spawner(self, memory_pool):
         # Without a spawner, no group is consolidated → no audit row written.
-        claim_rows = [
-            {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "butler": "general",
-                "content": "c",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-            }
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
+        await _seed_episodes(memory_pool, ("t1", "general", None))
 
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=None,
             cc_spawner=None,
         )
-        assert pool.consolidation_run_inserts() == []
+        assert await _audit_rows(memory_pool) == []
+        assert stats["episodes_processed"] == 1
         assert stats["groups_consolidated"] == 0
 
     @pytest.mark.parametrize("output", [None, " \n\t"])
     async def test_missing_runtime_output_records_actionable_failure(
-        self, output: str | None
+        self, memory_pool, output: str | None
     ) -> None:
-        claim_rows = [
-            {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "butler": "switchboard",
-                "content": "c",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-            }
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
+        (episode_id,) = await _seed_episodes(memory_pool, ("t1", "switchboard", None))
 
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=None,
             cc_spawner=_FakeSpawner(output=output),
         )
@@ -619,28 +487,15 @@ class TestRunConsolidationWritesAuditRow:
         detail = "Consolidation runtime returned no output."
         assert stats["groups_consolidated"] == 0
         assert stats["errors"] == [f"runtime session failed for switchboard: {detail}"]
-        failure_updates = [
-            args for query, args in pool.executes if "last_consolidation_error" in query
-        ]
-        assert failure_updates[0][0] == detail
+        assert await _episode_state(memory_pool, episode_id) == ("failed", detail)
 
-    async def test_unsuccessful_runtime_without_error_records_fallback_detail(self) -> None:
-        claim_rows = [
-            {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "butler": "switchboard",
-                "content": "c",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-            }
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
+    async def test_unsuccessful_runtime_without_error_records_fallback_detail(
+        self, memory_pool
+    ) -> None:
+        (episode_id,) = await _seed_episodes(memory_pool, ("t1", "switchboard", None))
 
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=None,
             cc_spawner=_FakeSpawner(success=False),
         )
@@ -648,28 +503,13 @@ class TestRunConsolidationWritesAuditRow:
         detail = "Consolidation runtime reported a failure."
         assert stats["groups_consolidated"] == 0
         assert stats["errors"] == [f"runtime session failed for switchboard: {detail}"]
-        failure_updates = [
-            args for query, args in pool.executes if "last_consolidation_error" in query
-        ]
-        assert failure_updates[0][0] == detail
+        assert await _episode_state(memory_pool, episode_id) == ("failed", detail)
 
-    async def test_invalid_evidence_uses_existing_group_failure_path(self) -> None:
-        claim_rows = [
-            {
-                "id": "00000000-0000-0000-0000-000000000001",
-                "butler": "relationship",
-                "content": "c",
-                "importance": 5.0,
-                "metadata": {},
-                "created_at": None,
-                "tenant_id": "t1",
-                "consolidation_attempts": 0,
-            }
-        ]
-        pool = _FakePool(claim_rows=claim_rows)
+    async def test_invalid_evidence_uses_existing_group_failure_path(self, memory_pool) -> None:
+        (episode_id,) = await _seed_episodes(memory_pool, ("t1", "relationship", None))
 
         stats = await consolidation_module.run_consolidation(
-            pool,
+            memory_pool,
             embedding_engine=None,
             cc_spawner=_FakeSpawner(
                 output=(
@@ -681,8 +521,8 @@ class TestRunConsolidationWritesAuditRow:
 
         assert stats["groups_consolidated"] == 0
         assert stats["errors"] == ["Failed to consolidate relationship"]
-        assert pool.consolidation_run_inserts() == []
-        failure_updates = [
-            args for query, args in pool.executes if "last_consolidation_error" in query
-        ]
-        assert failure_updates[0][0] == "Consolidation execution failed."
+        assert await _audit_rows(memory_pool) == []
+        assert await _episode_state(memory_pool, episode_id) == (
+            "failed",
+            "Consolidation execution failed.",
+        )
