@@ -17,7 +17,7 @@ the containment (and is one of its descendants) or sees it.
 There is no release here, so a record-only decision is never replayed into a
 goal. Nothing constructs a caller until the runtime switch; the trusted
 step-up interface admits only the rule kinds until its installer gains
-``contain``, so today every call returns the handoff.
+``contain`` (bu-dhloi1.29), so today every call returns the handoff.
 """
 
 from __future__ import annotations

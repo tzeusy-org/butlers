@@ -104,7 +104,8 @@ containment state, consumed atomically with the `sw_058`
 `switchboard.source_containments` insert. Without an admitted consumption it
 writes nothing and returns the open-dashboard handoff. The installed step-up
 interface admits only the rule kinds today, so every Contain returns the
-handoff until its trusted installer gains `contain`.
+handoff until its trusted installer gains `contain` (bu-dhloi1.29, the
+activation path).
 
 A containment is permanent evidence: it records the goals already descended
 from the partition (admitted or joined from it, then goals caused by those,

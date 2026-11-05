@@ -329,4 +329,4 @@ unchanged.
 - The service-plane tool inventory that domain verification exempts.
 - The M7 goal tools on the MCP endpoint (`handle.read`, extract, `goal.return`,
   `goal.await`), a production `Extractor`, `quarantine_reads`, the step-up
-  installer's `contain` kind and an owner Contain route.
+  installer's `contain` kind (bu-dhloi1.29) and an owner Contain route.
