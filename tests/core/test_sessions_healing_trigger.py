@@ -11,9 +11,10 @@ Covers:
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -21,23 +22,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # TRIGGER_SOURCES constant and _is_valid_trigger_source
 # ---------------------------------------------------------------------------
-
-
-class _FakePool:
-    """Fake asyncpg pool that captures fetchval/execute calls."""
-
-    def __init__(self, *, return_id: uuid.UUID | None = None) -> None:
-        self._return_id = return_id or uuid.uuid4()
-        self.fetchval_calls: list[tuple[str, tuple]] = []
-        self.execute_calls: list[tuple[str, tuple]] = []
-
-    async def fetchval(self, sql: str, *args: Any) -> uuid.UUID:
-        self.fetchval_calls.append((sql, args))
-        return self._return_id
-
-    async def execute(self, sql: str, *args: Any) -> str:
-        self.execute_calls.append((sql, args))
-        return "UPDATE 1"
 
 
 async def test_healing_trigger_sources_create_and_fingerprint() -> None:
@@ -61,12 +45,13 @@ async def test_healing_trigger_sources_create_and_fingerprint() -> None:
     assert _is_valid_trigger_source("healing:foo") is False
 
     # session_create accepts 'healing' and 'deadline:<task-name>'; rejects invalid
-    pool = _FakePool()
+    session_id = uuid.uuid4()
+    pool = fake_pool(fetchval=session_id, execute="SELECT 1")
     result = await session_create(
         pool, prompt="Healing agent", trigger_source="healing", request_id=str(uuid.uuid4())
     )
-    assert result == pool._return_id
-    assert len(pool.fetchval_calls) == 1
+    assert result == session_id
+    assert pool.fetchval.await_count == 1
 
     deadline_id = await session_create(
         pool,
@@ -74,8 +59,8 @@ async def test_healing_trigger_sources_create_and_fingerprint() -> None:
         trigger_source="deadline:release-monitoring",
         request_id=str(uuid.uuid4()),
     )
-    assert deadline_id == pool._return_id
-    assert len(pool.fetchval_calls) == 2
+    assert deadline_id == session_id
+    assert pool.fetchval.await_count == 2
 
     with pytest.raises(ValueError, match="healing"):
         await session_create(
@@ -83,13 +68,12 @@ async def test_healing_trigger_sources_create_and_fingerprint() -> None:
         )
 
     # session_set_healing_fingerprint issues UPDATE; no raise on zero rows
-    pool2 = _FakePool()
-    session_id = uuid.uuid4()
+    pool2 = fake_pool(execute="UPDATE 1")
     fingerprint = "a" * 64
     await session_set_healing_fingerprint(pool2, session_id, fingerprint)
-    assert len(pool2.execute_calls) == 1
-    sql, args = pool2.execute_calls[0]
-    assert "healing_fingerprint" in sql
-    assert session_id in args
-    assert fingerprint in args
+    pool2.execute.assert_awaited_once()
+    sql, *args = pool2.execute.await_args.args
+    assert "SET healing_fingerprint = $2" in sql
+    assert args == [session_id, fingerprint]
+    pool2.execute.return_value = "UPDATE 0"
     await session_set_healing_fingerprint(pool2, uuid.uuid4(), "b" * 64)

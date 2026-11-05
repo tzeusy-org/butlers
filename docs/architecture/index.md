@@ -8,6 +8,7 @@
 - [Butler Daemon](butler-daemon.md) — daemon internals, startup sequence, core components
 - [Database Design](database-design.md) — public schema, per-butler schemas, JSONB patterns
 - [Observability](observability.md) — OpenTelemetry, Grafana, Tempo, trace propagation
+- [Capability Broker](capability-broker.md) — the dark RFC 0038 goal endpoint, per-call checks, parking and assertions
 - [Email Priority Queuing](email-priority-queuing.md) — email priority and queuing design
 - [Pre-Classification Triage](pre-classification-triage.md) — pre-classification triage design
 - [Thread Affinity Routing](thread-affinity-routing.md) — thread affinity routing design

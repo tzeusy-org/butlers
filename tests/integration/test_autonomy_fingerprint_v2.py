@@ -117,3 +117,29 @@ async def test_v2_counts_only_v2_rows_and_pins_the_fingerprinted_args(
     )
     assert rule is not None
     assert rule["arg_constraints"] == {"chat_id": {"type": "exact", "value": "mom_123"}}
+
+
+@pytest.mark.parametrize(("exposed", "recorded"), [(True, 0), (False, 1)])
+async def test_approving_an_exposed_goal_effect_never_counts_toward_promotion(
+    approvals_pool: asyncpg.Pool, exposed: bool, recorded: int
+) -> None:
+    """RFC 0038 D13: only the exposed lineage is excluded; the control still counts."""
+    from butlers.modules.approvals.operations import approve_action
+
+    action_id = uuid.uuid4()
+    await approvals_pool.execute(
+        "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, goal_id, "
+        "goal_invocation_id, goal_depth, goal_exposed, goal_origin) "
+        "VALUES ($1, 'notify', $2, 'pending', now(), $3, $4, 0, $5, 'owner')",
+        action_id,
+        {"entity_id": "mom", "message": "hi"},
+        uuid.uuid4(),
+        uuid.uuid4(),
+        exposed,
+    )
+    result = await approve_action(approvals_pool, str(action_id), actor_id="owner")
+    assert result.get("status") == "approved"
+    count = await approvals_pool.fetchval(
+        "SELECT count(*) FROM autonomy_approval_history WHERE action_id = $1", action_id
+    )
+    assert count == recorded

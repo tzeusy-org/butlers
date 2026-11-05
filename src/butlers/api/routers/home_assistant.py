@@ -41,6 +41,7 @@ from butlers.credential_store import (
     resolve_owner_entity_info,
     upsert_owner_entity_info,
 )
+from butlers.home_assistant_client import rest_client
 
 logger = logging.getLogger(__name__)
 
@@ -146,11 +147,8 @@ async def _validate_ha_connection(url: str, token: str) -> None:
     probe_url = f"{base}/api/"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(
-                probe_url,
-                headers={"Authorization": f"Bearer {token}"},
-            )
+        async with rest_client(base, token, timeout=10.0) as client:
+            resp = await client.get(probe_url)
     except httpx.TimeoutException as exc:
         raise _HAValidationError(
             f"Connection to Home Assistant timed out: {exc}",

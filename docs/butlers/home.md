@@ -127,7 +127,7 @@ verification matrices; they claim no measured live latency or token savings.
 
 ## Implementation Notes
 
-- Recorder statistics go through `connectors/home_assistant_statistics.py::HAStatisticsClient` and
+- Recorder statistics go through `butlers.home_assistant_client.HAStatisticsClient` and
   the WebSocket command `recorder/statistics_during_period`. Energy consumption aggregates the
   per-period `change`, never cumulative `sum`; provider errors stay bounded and sanitised.
 - Transport readiness is stronger than WebSocket authentication: health stays degraded, with REST
@@ -177,3 +177,27 @@ inherit an owner-mapped service handle's identity. They remain unresolved
 communication audiences while the independent protected-actuation gate remains
 in force. Home Assistant's [legacy notify handler](https://github.com/home-assistant/core/blob/dev/homeassistant/components/notify/legacy.py)
 forwards a generic service's explicit target to its notification platform.
+
+
+### Shared Home Assistant transports
+
+`butlers.home_assistant_client` owns the shared WebSocket authentication exchange,
+closed dictionary/coalesced-list decoding, recorder statistics and REST factory.
+Connector and module reconnect loops keep their own sessions, subscriptions,
+message IDs, caches and keepalive tasks. One-shot statistics owns and closes its
+own session; it does not share the persistent connection unless its caller
+explicitly supplies the existing command sender.
+
+Malformed frames are withheld from diagnostics. Authentication refusal retains
+fixed configuration guidance rather than provider-supplied text. The older
+module authentication scenario's server-message wording does not describe this
+existing privacy boundary; this refactor preserves the content-free mapping.
+The shared client adds no service-call WebSocket command, actuation authority,
+POST retry or approval/receipt bypass.
+
+REST fallback and history recovery keep an absolute 30-second per-call budget
+around the caller-owned HTTPX client. HTTPX phase timeouts alone do not provide
+that total bound. These migrated aiohttp owners keep redirects enabled and environment proxies off;
+existing HTTPX owners keep their prior environment policy, TLS and timeout
+settings. The module retains its long-lived client; jobs and settings probes
+close their per-call clients. Missing job credentials still omit Authorization.

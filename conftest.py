@@ -721,7 +721,12 @@ def provisioned_postgres_pool(
             min_pool_size=min_pool_size,
             max_pool_size=max_pool_size,
         )
+        from butlers.testing.storage import database_event
+
+        database_event("intent", postgres_container, db.db_name, "F")
         await db.provision()
+        database_event("created", postgres_container, db.db_name, "F")
+        database_event("ready", postgres_container, db.db_name, "F")
         pool_kwargs = {
             "host": db.host,
             "port": db.port,

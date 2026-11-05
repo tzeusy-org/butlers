@@ -28,12 +28,16 @@ from butlers.modules.approvals.autonomy_tracker import (
     compute_fingerprint as _compute_fingerprint,
 )
 from butlers.modules.approvals.autonomy_tracker import (
+    counts_toward_promotion as _counts_toward_promotion,
+)
+from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.decision_memory import DecisionMemoryWriter
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
+from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
 from butlers.modules.approvals.stepup import descriptive_savepoint, remember_rule, run_rule_write
@@ -305,8 +309,8 @@ async def _approve_action_write(
                 updated_row = await tracker_connection.fetchrow(
                     "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-                if updated_row is not None:
-                    updated_action = PendingAction.from_row(updated_row)
+                updated_action = PendingAction.from_row(updated_row) if updated_row else None
+                if updated_action is not None and _counts_toward_promotion(updated_action):
                     await _record_approval(tracker_connection, updated_action)
                     # Use a minimal config namespace with defaults (no module import needed)
                     _default_config = type(
@@ -348,6 +352,9 @@ async def _approve_action_write(
     result = PendingAction.from_row(final_row).to_dict()
     if rule_dict is not None:
         result["created_rule"] = rule_dict
+    if is_goal_effect(row):
+        # The owner's decision stands; only the capability broker runs it.
+        result["execution_code"] = GOAL_EFFECT_REQUIRES_BROKER
 
     return result
 

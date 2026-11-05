@@ -11,41 +11,25 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
 
-class _FakePool:
-    """Fake asyncpg pool that captures fetchval calls."""
-
-    def __init__(
-        self,
-        *,
-        return_id: uuid.UUID | None = None,
-        fetchval_results: list[Any] | None = None,
-    ) -> None:
-        self._return_id = return_id or uuid.uuid4()
-        self._fetchval_results = list(fetchval_results or [])
-        self.fetchval_calls: list[tuple[str, tuple]] = []
-
-    async def fetchval(self, sql: str, *args: Any) -> uuid.UUID:
-        self.fetchval_calls.append((sql, args))
-        if self._fetchval_results:
-            result = self._fetchval_results.pop(0)
-            if isinstance(result, Exception):
-                raise result
-            return result
-        return self._return_id
+def _insert_args(pool, call: int = 0) -> tuple:
+    """Bound parameters ($1..$12) of the nth sessions INSERT."""
+    return pool.fetchval.await_args_list[call].args[1:]
 
 
 async def test_session_create_validation_and_return() -> None:
     """None request_id raises before DB call; valid call returns pool UUID."""
     from butlers.core.sessions import session_create
 
-    pool = _FakePool()
+    pool = fake_pool()
     with pytest.raises(ValueError, match="request_id is required"):
         await session_create(
             pool,
@@ -53,10 +37,10 @@ async def test_session_create_validation_and_return() -> None:
             trigger_source="tick",
             request_id=None,  # type: ignore[arg-type]
         )
-    assert pool.fetchval_calls == []
+    pool.fetchval.assert_not_awaited()
 
     expected_id = uuid.uuid4()
-    pool2 = _FakePool(return_id=expected_id)
+    pool2 = fake_pool(fetchval=expected_id, execute="SELECT 1")
     effective_prompt = "Synthetic system prompt"
     provenance = [
         {
@@ -76,7 +60,7 @@ async def test_session_create_validation_and_return() -> None:
         prompt_provenance=provenance,
     )
     assert result == expected_id
-    insert_args = pool2.fetchval_calls[0][1]
+    insert_args = _insert_args(pool2)
     assert insert_args[8] == effective_prompt
     assert insert_args[9] == hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
     assert insert_args[10] == provenance
@@ -99,11 +83,11 @@ async def test_session_create_drops_stale_ingestion_event_link(monkeypatch: pyte
     request_id = str(uuid.uuid4())
     ingestion_event_id = str(uuid.uuid4())
     expected_id = uuid.uuid4()
-    pool = _FakePool(
-        fetchval_results=[
-            _IngestionEventFkViolation("missing ingestion event"),
-            expected_id,
-        ]
+    pool = fake_pool(
+        fetchval=AsyncMock(
+            side_effect=[_IngestionEventFkViolation("missing ingestion event"), expected_id]
+        ),
+        execute="SELECT 1",
     )
 
     result = await sessions.session_create(
@@ -115,11 +99,11 @@ async def test_session_create_drops_stale_ingestion_event_link(monkeypatch: pyte
     )
 
     assert result == expected_id
-    assert len(pool.fetchval_calls) == 2
-    assert pool.fetchval_calls[0][1][4] == request_id
-    assert pool.fetchval_calls[0][1][5] == ingestion_event_id
-    assert pool.fetchval_calls[1][1][4] == request_id
-    assert pool.fetchval_calls[1][1][5] is None
+    assert pool.fetchval.await_count == 2
+    assert _insert_args(pool, 0)[4] == request_id
+    assert _insert_args(pool, 0)[5] == ingestion_event_id
+    assert _insert_args(pool, 1)[4] == request_id
+    assert _insert_args(pool, 1)[5] is None
 
 
 @pytest.mark.parametrize(
@@ -132,7 +116,7 @@ async def test_session_create_invalid_trigger_source_raises(trigger_source: str)
 
     with pytest.raises(ValueError, match="Invalid trigger_source"):
         await session_create(
-            _FakePool(),
+            fake_pool(),
             prompt="Bad trigger",
             trigger_source=trigger_source,
             request_id=str(uuid.uuid4()),

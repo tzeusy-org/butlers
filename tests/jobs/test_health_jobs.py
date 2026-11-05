@@ -2,7 +2,9 @@
 
 Verifies that health_jobs.run_insight_scan queries the facts table via unqualified
 name (resolved through search_path to public.facts) rather than hard-coding the
-public schema.  No real database required; asyncpg is mocked.
+public schema.  No real database required: that is a SQL-text convention (production
+resolves either spelling to public.facts, so a real database cannot tell them apart),
+and the query behaviour itself runs on real Postgres in roster/health/tests/test_jobs.py.
 
 Follow-up to merged PR #1610 which fixed briefing.py. See:
   roster/health/jobs/health_jobs.py — three query sites fixed here.
@@ -17,39 +19,34 @@ Call order within run_insight_scan:
 
 from __future__ import annotations
 
+from itertools import chain, repeat
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from butlers.jobs._roster_loader import load_roster_jobs
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records
 
 pytestmark = pytest.mark.unit
 
 # Shared sentinel: one predicate row to make the inner loops run once.
 _PREDICATE_ROWS = [{"predicate": "measurement_weight"}]
-_NO_ROWS: list[Any] = []
 
 
-def _make_pool(fetch_side_effect: list[list[Any]]) -> MagicMock:
-    """Build a mock pool.
+def _one_predicate_scan_pool() -> FakePool:
+    """A health pool whose first ``fetch`` (gap detection) answers one predicate row.
 
-    ``fetch`` returns the next queued row-list, or ``[]`` once the queue is
-    exhausted. The fallback keeps these SQL-isolation tests robust to the extra
-    queries issued by later scan sections (e.g. cross-signal correlation), which
-    no-op on empty results.
+    Every later read answers ``[]`` and every scalar ``0``, so each inner loop fires
+    once and later scan sections (e.g. cross-signal correlation) no-op.
     """
-    pool = MagicMock()
-    queue = list(fetch_side_effect)
-
-    def _next_fetch(*args: Any, **kwargs: Any) -> list[Any]:
-        return queue.pop(0) if queue else []
-
-    pool.fetch = AsyncMock(side_effect=_next_fetch)
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.execute = AsyncMock()
-    return pool
+    return fake_pool(
+        fetch=AsyncMock(side_effect=chain([records(_PREDICATE_ROWS)], repeat([]))),
+        fetchrow=None,
+        fetchval=0,
+        execute=None,
+    )
 
 
 async def _fake_propose(*args, **kwargs):
@@ -95,7 +92,7 @@ class _RoutingPool:
 )
 async def test_insight_scan_facts_queries_use_search_path_isolation(sql_marker):
     # One predicate row makes every inner loop fire once so all three query sites run.
-    pool = _make_pool([_PREDICATE_ROWS, _NO_ROWS, _NO_ROWS, _NO_ROWS, _NO_ROWS])
+    pool = _one_predicate_scan_pool()
 
     with patch(
         "butlers.tools.switchboard.insight.broker.propose_insight_candidate",

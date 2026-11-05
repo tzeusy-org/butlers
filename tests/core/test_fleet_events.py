@@ -21,29 +21,21 @@ import asyncpg
 import pytest
 
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL, publish_fleet_event
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
 
-class _FakePool:
-    """Fake asyncpg pool/connection capturing execute() calls."""
-
-    def __init__(self, *, raise_on_execute: Exception | None = None) -> None:
-        self._raise_on_execute = raise_on_execute
-        self.execute_calls: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.execute_calls.append((query, args))
-        if self._raise_on_execute is not None:
-            raise self._raise_on_execute
-        return "SELECT 1"
+def _notify_args(pool) -> list[tuple[Any, ...]]:
+    """Positional args of each ``execute`` call the publisher issued."""
+    return [call.args for call in pool.execute.await_args_list]
 
 
-class _FakeConnection(_FakePool, asyncpg.Connection):
+class _FakeConnection(asyncpg.Connection):
     """A connection-shaped lifecycle seam; real SQL health is verified with Postgres."""
 
     def __init__(self):
-        _FakePool.__init__(self)
+        self.execute = AsyncMock(return_value="SELECT 1")
         self.isolation = MagicMock()
         self.isolation.start = AsyncMock()
         self.isolation.commit = AsyncMock()
@@ -59,16 +51,15 @@ class _FakeConnection(_FakePool, asyncpg.Connection):
 
 # Spec: REQ-core-fleet-events-001
 async def test_publish_fleet_event_sends_pg_notify_with_channel_and_json_payload():
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
 
     ok = await publish_fleet_event(pool, "session", {"phase": "started", "session_id": "abc"})
 
     assert ok is True
-    assert len(pool.execute_calls) == 1
-    query, args = pool.execute_calls[0]
-    assert "pg_notify" in query
-    assert args[0] == FLEET_EVENTS_CHANNEL
-    envelope = json.loads(args[1])
+    [(query, channel, payload)] = _notify_args(pool)
+    assert query == "SELECT pg_notify($1, $2)"
+    assert channel == FLEET_EVENTS_CHANNEL
+    envelope = json.loads(payload)
     assert envelope == {
         "type": "session",
         "data": {"phase": "started", "session_id": "abc"},
@@ -77,13 +68,13 @@ async def test_publish_fleet_event_sends_pg_notify_with_channel_and_json_payload
 
 # Spec: REQ-core-fleet-events-001
 async def test_publish_fleet_event_defaults_data_to_empty_dict():
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
 
     ok = await publish_fleet_event(pool, "heartbeat")
 
     assert ok is True
-    _, args = pool.execute_calls[0]
-    envelope = json.loads(args[1])
+    [(_, _, payload)] = _notify_args(pool)
+    envelope = json.loads(payload)
     assert envelope == {"type": "heartbeat", "data": {}}
 
 
@@ -94,7 +85,7 @@ async def test_publish_fleet_event_swallows_notify_failure(monkeypatch, stalled,
     from butlers import fleet_events
 
     monkeypatch.setattr(fleet_events, "_PUBLISH_TIMEOUT_S", 0.02, raising=False)
-    pool = _FakePool(raise_on_execute=RuntimeError("connection lost"))
+    pool = fake_pool(execute=AsyncMock(side_effect=RuntimeError("connection lost")))
     released = asyncio.Event()
     if stalled:
 
@@ -138,7 +129,7 @@ async def test_publish_fleet_event_swallows_missing_execute_method():
 # Spec: REQ-core-fleet-events-002
 @pytest.mark.parametrize("encoded_size", [7800, 7801])
 async def test_publish_fleet_event_drops_oversized_payload(encoded_size):
-    pool = _FakePool()
+    pool = fake_pool(execute="SELECT 1")
     # Default JSON escaping makes the non-ASCII character six encoded bytes.
     data = {"blob": "é"}
     overhead = len(json.dumps({"type": "notification", "data": data}).encode("utf-8"))
@@ -148,12 +139,12 @@ async def test_publish_fleet_event_drops_oversized_payload(encoded_size):
     ok = await publish_fleet_event(pool, "notification", data)
 
     assert ok is (encoded_size == 7800)
-    assert len(pool.execute_calls) == (1 if ok else 0)
+    assert pool.execute.await_count == (1 if ok else 0)
 
 
 # Spec: REQ-core-fleet-events-002
 async def test_publish_fleet_event_drops_non_serializable_data():
-    pool = _FakePool()
+    pool = fake_pool()
 
     class _Unserializable:
         def __repr__(self) -> str:
@@ -162,7 +153,7 @@ async def test_publish_fleet_event_drops_non_serializable_data():
     ok = await publish_fleet_event(pool, "spend", {"bad": _Unserializable()})
 
     assert ok is False
-    assert pool.execute_calls == []
+    pool.execute.assert_not_awaited()
 
 
 # Spec: REQ-core-fleet-events-002, REQ-core-fleet-events-007

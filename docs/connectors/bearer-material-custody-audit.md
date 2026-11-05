@@ -582,3 +582,15 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 <!-- custody-probe:end -->
+
+
+### HA shared transport relocation
+
+The HA WebSocket greeting/authentication, frame decoder, recorder statistics and
+REST construction now live in `butlers.home_assistant_client`. The connector,
+module and one-shot statistics caller retain independent connection lifetimes.
+Malformed text/binary JSON and authentication refusals expose fixed diagnostics,
+not raw frames or provider messages. Coalesced dictionary messages reach the
+existing owner dispatchers. This is a transport/logging boundary only: the HA
+raw-event/evidence, prompt and restart-custody GAP/UNKNOWN findings above remain
+open. No live HA call or broader bearer-scrub result is implied.

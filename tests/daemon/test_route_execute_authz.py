@@ -15,7 +15,6 @@ import json
 import subprocess
 import sys
 import uuid
-from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,9 +23,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from butlers.daemon import ButlerDaemon
 from butlers.modules.telegram import TelegramProviderResponseError
 from butlers.testing.daemon import FakeRuntime, write_butler_config
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
@@ -110,7 +109,6 @@ async def test_registered_approval_self_link_resolves_or_delivers_inert(
     monkeypatch.setenv("DASHBOARD_URL", origin)
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
-        _patch_infra(),
     )
     telegram = next(module for module in daemon._modules if module.name == "telegram")
     monkeypatch.setattr(
@@ -299,13 +297,11 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
     from butlers.core.tool_call_capture import get_current_runtime_session_id
     from butlers.modules.approvals.module import ApprovalsModule
 
-    patches = _patch_infra()
+    store = _EnvelopeApprovalStore()
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-        patches,
+        store,
     )
-    store = _EnvelopeApprovalStore()
-    daemon.db.pool = store
     modules = {module.name: module for module in daemon._modules}
     send = AsyncMock(return_value={"ok": True, "result": {"message_id": 991}, "message_id": "991"})
     if channel == "telegram":
@@ -420,13 +416,11 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
     from butlers.core.delivery_rendering import inert_delivery_content
     from butlers.modules.approvals.module import ApprovalsModule
 
-    patches = _patch_infra()
+    store = _EnvelopeApprovalStore()
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-        patches,
+        store,
     )
-    store = _EnvelopeApprovalStore()
-    daemon.db.pool = store
     telegram = next(module for module in daemon._modules if module.name == "telegram")
     ref = "s3://butlers/health/statement.pdf"
     blobs = {ref: b"%PDF reviewed statement"}
@@ -557,7 +551,6 @@ async def test_registered_delivery_replay_rejects_tampered_wrong_tool_and_child_
 
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}}),
-        _patch_infra(),
     )
     approval = ApprovalsModule()
     await approval.on_startup({}, daemon.db.pool)
@@ -647,7 +640,6 @@ async def test_registered_recovery_enforces_inert_provider_contract(
     monkeypatch.setenv("DASHBOARD_URL", "https://dashboard.example.test")
     daemon, route_execute = await _start_daemon_with_route_execute(
         _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
-        _patch_infra(),
     )
     modules = {module.name: module for module in daemon._modules}
     whatsapp = WhatsAppModule()
@@ -833,138 +825,38 @@ def _make_butler_toml(
     return tmp_path
 
 
-def _patch_infra():
-    mock_pool = AsyncMock()
-    mock_pool.fetchval.return_value = None
-
-    async def fetchrow(query, *args):
-        if "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow.side_effect = fetchrow
-    mock_connection = AsyncMock()
-    # The runtime row agrees with Git: no conditional update or audit append.
-    # Runtime-config still enters its unconditional audit_transaction scope.
-    mock_connection.fetchrow.return_value = None
-
-    transaction_depth = 0
-    mock_connection.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
-
-    @asynccontextmanager
-    async def transaction():
-        nonlocal transaction_depth
-        transaction_depth += 1
-        try:
-            yield
-        finally:
-            transaction_depth -= 1
-
-    mock_connection.transaction = MagicMock(side_effect=transaction)
-
-    @asynccontextmanager
-    async def acquire():
-        yield mock_connection
-
-    mock_pool.acquire = MagicMock(side_effect=acquire)
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
+def _db_free_pool() -> AsyncMock:
+    """A DB-free pool for host cases whose subject is delivery, not SQL."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = None
+    pool.fetchrow.return_value = None
+    return pool
 
 
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
+async def _start_daemon_with_route_execute(butler_dir: Path, pool: Any = None):
+    """The butler's real route.execute after its own module phases, on a DB-free host.
 
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
+    The subject is messenger delivery through route.execute, not the boot: the
+    first case of that concern boots for real (``_shared_messenger``). The host
+    registers the core tools with the daemon's own code; module selection, config,
+    startup and module-tool phases then run unpatched in startup's order. No
+    provider connects and nothing is patched (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
 
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
+    pool = _db_free_pool() if pool is None else pool
+    host = await host_tools(butler_dir, pool=pool)
+    daemon = host.daemon
+    daemon.spawner = MagicMock(drain=AsyncMock())
+    state = lifecycle.StartupState(pool=pool)
+    for phase in (
+        lifecycle._startup_modules,
+        lifecycle._startup_module_config,
+        lifecycle._startup_module_startup,
+        lifecycle._startup_module_tools,
     ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
+        await phase(daemon, state)
+    return daemon, await host.tool("route.execute")
 
 
 def _route_request_context(

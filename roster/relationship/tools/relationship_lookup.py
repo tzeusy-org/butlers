@@ -317,6 +317,15 @@ async def _classify_state(pool: asyncpg.Pool, entity_id: uuid.UUID) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _taint(row: Any) -> dict[str, str | None]:
+    """RFC 0038 D6: the exposed goal lineage that wrote this fact, if any."""
+    goal_id, invocation_id = row.get("taint_goal_id"), row.get("taint_invocation_id")
+    return {
+        "taint_goal_id": str(goal_id) if goal_id is not None else None,
+        "taint_invocation_id": str(invocation_id) if invocation_id is not None else None,
+    }
+
+
 async def _fetch_identity_facts(
     pool: asyncpg.Pool,
     entity_id: uuid.UUID,
@@ -335,6 +344,8 @@ async def _fetch_identity_facts(
             f."primary",
             f.observed_at,
             f.last_seen,
+            f.taint_goal_id,
+            f.taint_invocation_id,
             {identity_staleness_band_sql("f")} AS staleness_band
         FROM relationship.entity_facts f
         WHERE f.subject  = $1
@@ -360,6 +371,7 @@ async def _fetch_identity_facts(
             "observed_at": r["observed_at"],
             "last_seen": r["last_seen"],
             "staleness_band": r["staleness_band"],
+            **_taint(r),
         }
         for r in rows
     ]
@@ -393,6 +405,8 @@ async def _fetch_narrative_facts(
             f.source_butler AS src,
             f.confidence  AS conf,
             f.observed_at,
+            f.taint_goal_id,
+            f.taint_invocation_id,
             (
                 CASE WHEN f.object_entity_id IS NOT NULL THEN 'entity' ELSE 'literal' END
             ) AS object_kind,
@@ -418,6 +432,7 @@ async def _fetch_narrative_facts(
             "observed_at": r["observed_at"],
             # last_seen intentionally omitted — narrative store has no such column.
             "staleness_band": r["staleness_band"],
+            **_taint(r),
         }
         for r in rows
     ]
