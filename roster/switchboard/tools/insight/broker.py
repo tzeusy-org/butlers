@@ -36,7 +36,7 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
-from butlers.core.goal_lineage import taint_insert
+from butlers.core.goal_lineage import taint_insert, taint_read
 from butlers.core.insight_premise import normalize_premise
 from butlers.telegram_api import terminal_telegram_metadata
 from butlers.telegram_text import MAX_VISIBLE_UNITS, PartialDeliveryLatch, text_units
@@ -2651,11 +2651,11 @@ async def delivery_cycle(
     # an equal-priority candidate that cannot survive until the next regular
     # cycle wins the deadline tiebreak.
     rows = await pool.fetch(
-        """
+        f"""
         SELECT id, origin_butler, priority, category, dedup_key,
                cooldown_days, expires_at, message, channel, metadata,
-               prepared_action_id, created_at, premise
-        FROM insight_candidates
+               prepared_action_id, created_at, premise, {taint_read("c")}
+        FROM insight_candidates c
         WHERE id = ANY($1::uuid[]) AND status = 'pending'
         """,
         eligible_ids,

@@ -57,6 +57,39 @@ async def test_reads_return_the_taint_stamp(read):
     assert "taint_goal_id" in sql and "taint_invocation_id" in sql
 
 
+async def test_an_exposed_fact_set_stamps_the_goal_lineage(monkeypatch):
+    """fact_set is a grantable record capability: an exposed call's fact is tainted."""
+    from butlers.core.capability_json import arguments_digest
+    from butlers.core.goal_lineage import VerifiedLineage, lineage_scope
+    from butlers.tools.relationship import facts
+
+    monkeypatch.setattr(facts, "resolve_contact_entity_id", AsyncMock(return_value=uuid.uuid4()))
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    pool.fetchrow = AsyncMock(
+        return_value=row(id=uuid.uuid4(), predicate="employer", content="Acme", created_at=None)
+    )
+    await facts.fact_set(pool, uuid.uuid4(), "employer", "Acme")
+    dark_sql, *dark_params = pool.fetchrow.await_args.args
+    assert "taint_" not in dark_sql and len(dark_params) == 5
+
+    exposed = VerifiedLineage(
+        goal_id=uuid.uuid4(),
+        invocation_id=uuid.uuid4(),
+        depth=0,
+        origin="owner",
+        exposed=True,
+        capability="fact_set",
+        args_digest=arguments_digest({}),
+        call_id=uuid.uuid4(),
+    )
+    with lineage_scope(exposed):
+        await facts.fact_set(pool, uuid.uuid4(), "employer", "Acme")
+    sql, *params = pool.fetchrow.await_args.args
+    assert "taint_goal_id, taint_invocation_id" in sql and "$6, $7" in sql
+    assert params[-2:] == [exposed.goal_id, exposed.invocation_id]
+
+
 @pytest.mark.parametrize("read", [_fetch_identity_facts, _fetch_narrative_facts, note_list])
 async def test_an_untainted_row_reads_back_null(read):
     pool = MagicMock()

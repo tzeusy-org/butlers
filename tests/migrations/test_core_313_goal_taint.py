@@ -10,12 +10,14 @@ from __future__ import annotations
 import importlib.util
 import shutil
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 
+from butlers.core.goal_lineage import taint_read
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _CORE = Path(__file__).resolve().parents[2] / "alembic/versions/core"
@@ -83,3 +85,22 @@ def test_columns_are_added_idempotently_and_removed_by_the_last_downgrade(engine
     _run(engine, "upgrade")
     with engine.begin() as conn:
         assert list(conn.execute(text(_COLUMNS)).scalars()) == _EXPECTED
+
+
+@_docker
+@pytest.mark.integration
+def test_readers_return_the_stamp_and_tolerate_a_schema_before_core_313(engine) -> None:
+    goal = "0b6a3a52-8d53-4a52-9d55-2f4ad4a4a001"
+    invocation = "0b6a3a52-8d53-4a52-9d55-2f4ad4a4a002"
+    stamped = (
+        f"SELECT {taint_read('r')} FROM (VALUES ('{goal}'::uuid, '{invocation}'::uuid))"
+        " AS r(taint_goal_id, taint_invocation_id)"
+    )
+    with engine.begin() as conn:
+        assert tuple(conn.execute(text(stamped)).one()) == (UUID(goal), UUID(invocation))
+    _run(engine, "downgrade")
+    with engine.begin() as conn:  # the columns are gone; the readers still run
+        for table in ("dashboard_messages", "insight_candidates"):
+            conn.execute(text(f"SELECT {taint_read('r')} FROM public.{table} r"))
+        unstamped = f"SELECT {taint_read('r')} FROM (VALUES (1)) AS r(id)"
+        assert tuple(conn.execute(text(unstamped)).one()) == (None, None)

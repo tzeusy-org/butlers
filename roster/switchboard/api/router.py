@@ -40,6 +40,7 @@ from butlers.api.models import (
 )
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.config import load_config
+from butlers.core.goal_lineage import taint_read
 from butlers.core.mcp_urls import runtime_mcp_url
 from butlers.core.prometheus import async_query
 from butlers.roster_imports import roster_module
@@ -423,8 +424,9 @@ async def list_insight_candidates(
         rows = await pool.fetch(
             "SELECT id, origin_butler, priority, category, dedup_key, cooldown_days,"
             " expires_at, message, channel, metadata, created_at, status,"
-            " delivered_at, delivery_attempt_count, prepared_action_id"
-            " FROM public.insight_candidates"
+            " delivered_at, delivery_attempt_count, prepared_action_id,"
+            f" {taint_read('c')}"
+            " FROM public.insight_candidates c"
             f" WHERE {where}"
             " ORDER BY priority DESC, created_at ASC"
             f" LIMIT ${idx}",
@@ -452,6 +454,10 @@ async def list_insight_candidates(
             delivered_at=str(r["delivered_at"]) if r["delivered_at"] else None,
             delivery_attempt_count=int(r["delivery_attempt_count"] or 0),
             prepared_action_id=str(r["prepared_action_id"]) if r["prepared_action_id"] else None,
+            **{
+                column: str(r[column]) if r.get(column) else None
+                for column in ("taint_goal_id", "taint_invocation_id")
+            },
         )
         for r in rows
     ]

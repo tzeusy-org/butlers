@@ -1766,7 +1766,7 @@ SCHEMA ConversationCancelResponse 15f4639a8649
 SCHEMA ConversationCitation 42efa50442dd
 SCHEMA ConversationCreateRequest 8b677eddc5ea
 SCHEMA ConversationDetail 5e6c5816b69d
-SCHEMA ConversationMessage 6b0ca8ae9da8
+SCHEMA ConversationMessage 19ef93695373
 SCHEMA ConversationSearchResult b0d1caeb0bc3
 SCHEMA ConversationStats 178cd1f3bfaf
 SCHEMA ConversationSummary d06c7bc454c4
@@ -1954,7 +1954,7 @@ SCHEMA IngestionRuleTestResult 4a77834d83ee
 SCHEMA IngestionRuleUpdate 52a10546f841
 SCHEMA IngestionWindowRollup aaeac75b7973
 SCHEMA InitialFact 908283087ff5
-SCHEMA InsightCandidate 4796bfef6f16
+SCHEMA InsightCandidate f49db833cb9a
 SCHEMA InsightDeliveryState 535cd9056b06
 SCHEMA InsightFeedbackResponse 7fe3d006ae3b
 SCHEMA InstanceFacts 11804c344f34

@@ -186,6 +186,19 @@ def taint_insert(first_param: int) -> TaintInsert:
     )
 
 
+def taint_read(row_ref: str) -> str:
+    """Select-list fragment returning the D6 stamp of ``row_ref``'s row, NULL before core_313.
+
+    The same pinned-revision and stand-in schemas are read too, so a reader
+    takes the stamp from the whole row (``to_jsonb``) instead of naming the
+    columns: a table without them reads null rather than failing.
+    """
+    return ", ".join(
+        f"(to_jsonb({row_ref}) ->> '{column}')::uuid AS {column}"
+        for column in ("taint_goal_id", "taint_invocation_id")
+    )
+
+
 def event_lineage() -> dict[str, Any]:
     """Lineage columns for a domain event or audit row written by this call."""
     lineage = _current.get()

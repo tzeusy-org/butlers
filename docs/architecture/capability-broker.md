@@ -166,10 +166,12 @@ replaces the spawner-derived context:
   | relationship entity facts | `rel_039` | `relationship_lookup` identity facts |
   | narrative facts (memory facts) | `mem_017` | `relationship_lookup` narrative facts |
   | captures | `core_313` | `CaptureService` rows (`SELECT *` / `RETURNING *`) |
-  | conversation history | `core_313` | not yet: dashboard projections name their columns |
-  | insight candidates | `core_313` | not yet: broker and dashboard reads name their columns |
+  | conversation history | `core_313` | `butlers.api.conversations` message readers and `ConversationMessage` |
+  | insight candidates | `core_313` | `GET /api/switchboard/insights` and the delivery-cycle read |
 
-  ;
+  The shared `public` readers take the stamp with `goal_lineage.taint_read`
+  (`to_jsonb(<row>) ->> …`), so a schema before `core_313` reads null instead
+  of failing;
 - `public.domain_events` rows record the producing call's `goal_id`,
   `goal_invocation_id`, `goal_effect_id` and `goal_exposed` (`core_313`), read
   back by `get_event` and `list_events`;

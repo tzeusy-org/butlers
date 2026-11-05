@@ -5963,6 +5963,10 @@ export interface Message {
   page_context?: PageContext | null;
   /** When `page_context` was captured; null whenever `page_context` is null. */
   captured_at?: string | null;
+  /** RFC 0038 D6: the exposed goal that wrote this message; null otherwise. */
+  taint_goal_id?: string | null;
+  /** RFC 0038 D6: the exposed goal invocation that wrote this message. */
+  taint_invocation_id?: string | null;
 }
 
 /** Summary of a dashboard conversation (list view). */
@@ -10441,6 +10445,9 @@ export interface InsightCandidate {
   status: string;
   delivered_at: string | null;
   delivery_attempt_count: number;
+  /** RFC 0038 D6: the exposed goal that proposed this candidate; null otherwise. */
+  taint_goal_id?: string | null;
+  taint_invocation_id?: string | null;
 }
 
 /** Query parameters for GET /api/switchboard/insights. */

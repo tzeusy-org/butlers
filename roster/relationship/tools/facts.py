@@ -18,6 +18,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_insert
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -59,10 +60,12 @@ async def _fact_set_spo(
         key,
     )
 
+    taint = taint_insert(6)
     row = await pool.fetchrow(
-        """
-        INSERT INTO facts (subject, predicate, content, metadata, validity, scope, entity_id)
-        VALUES ($1, $2, $3, $4, 'active', 'relationship', $5)
+        f"""
+        INSERT INTO facts (subject, predicate, content, metadata, validity, scope, entity_id
+                           {taint.columns})
+        VALUES ($1, $2, $3, $4, 'active', 'relationship', $5{taint.placeholders})
         RETURNING id, subject, predicate, content, metadata, created_at
         """,
         subject,
@@ -70,6 +73,7 @@ async def _fact_set_spo(
         value,
         {},
         entity_id,
+        *taint.values,
     )
     if row is None:
         raise RuntimeError("INSERT INTO facts returned no row")
