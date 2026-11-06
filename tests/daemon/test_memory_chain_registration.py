@@ -15,10 +15,10 @@ from butlers.testing.migration import load_migration
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
-# Load the migrations module from src/butlers/migrations.py
+# Load the migrations module from src/butlers/migrations/__init__.py
 # ---------------------------------------------------------------------------
 _MIGRATIONS_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "migrations.py"
+    Path(__file__).resolve().parent.parent.parent / "src" / "butlers" / "migrations" / "__init__.py"
 )
 
 ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
@@ -148,6 +148,7 @@ class TestMemoryChainRegistration:
             "016_fact_endorsement.py",
             "017_goal_taint.py",
             "018_drop_transition_timestamps.py",
+            "019_projection_replica_identity.py",
         ]
         assert has_butler_chain("memory") is False
         assert has_butler_chain("nonexistent_butler_xyz") is False
@@ -171,6 +172,7 @@ class TestMemoryChainRegistration:
             ("016_fact_endorsement.py", "mem_016", "mem_015"),
             ("017_goal_taint.py", "mem_017", "mem_016"),
             ("018_drop_transition_timestamps.py", "mem_018", "mem_017"),
+            ("019_projection_replica_identity.py", "mem_019", "mem_018"),
         ]
 
         revisions = []
@@ -188,7 +190,7 @@ class TestMemoryChainRegistration:
         root = load_migration(MEMORY_MIGRATIONS_DIR / _EXPECTED_CHAIN[0][0])
         assert root.branch_labels == ("memory",)
         assert len(revisions) == len(set(revisions))
-        current = "mem_018"
+        current = "mem_019"
         path = [current]
         while chain_map.get(current) is not None:
             current = chain_map[current]
@@ -213,6 +215,7 @@ class TestMemoryChainRegistration:
             "mem_016",
             "mem_017",
             "mem_018",
+            "mem_019",
         ]
 
 

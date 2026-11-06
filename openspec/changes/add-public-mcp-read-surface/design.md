@@ -72,7 +72,7 @@ unidentified sender's entity is named `Unknown (<channel> <value>)`, which
 embeds the raw email address or phone number (`src/butlers/identity.py:1067-1071`).
 `metadata` is never published (D4), and PG17 does not publish generated columns
 (D2 rule 6). [Observed] The dashboard promote route clears `unidentified`
-without renaming the entity (`src/butlers/api/routers/memory.py:2792-2799`),
+without renaming the entity (`src/butlers/api/routers/memory.py:2866-2872`),
 so `unidentified` alone does not keep the placeholder name out; the sender's
 channel and value stay in `metadata` as `source_channel` and `source_value`
 (`src/butlers/identity.py:1208-1210`). A core migration therefore adds four
@@ -80,8 +80,12 @@ plain columns, `merged_into UUID NULL`, `deleted BOOLEAN NOT NULL`,
 `unidentified BOOLEAN NOT NULL` and `placeholder_name BOOLEAN NOT NULL`, and a
 `BEFORE INSERT OR UPDATE` trigger keeps them equal to the JSONB keys, with
 `placeholder_name` true while `canonical_name` still equals the
-`Unknown (<source_channel> <source_value>)` form. A contract test proves
-parity. Existing readers keep reading the JSONB keys; moving them is out of
+`Unknown (<source_channel> <source_value>)` form. [Observed] Other routes hide an entity
+from active surfaces through `tombstone`, `archived`, `archived_at` and `listed`
+(`roster/relationship/api/router.py:1161-1174,5755`, `roster/relationship/tools/contacts.py:336`),
+and readers treat any present `merged_into` as a tombstone, so `deleted` is also true for any
+of those and for a `merged_into` that is not a UUID, whose column stays NULL.
+A contract test proves parity. Existing readers keep reading the JSONB keys; moving them is out of
 scope. The manifest publishes `merged_into` and filters entities on `deleted
 = false AND unidentified = false AND placeholder_name = false`, with the three
 flags in the replica identity and in the column list (D2 rule 2; no view

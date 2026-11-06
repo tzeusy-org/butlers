@@ -108,7 +108,7 @@ Guarded DDL checks whether a table, schema, index, or column exists before opera
 ### Where It Appears In The Repo
 
 - `docs/data_and_storage/migration-patterns.md`
-- `src/butlers/migrations.py`
+- `src/butlers/migrations/__init__.py`
 - `alembic/versions/core/`
 - `src/butlers/modules/*/migrations/`
 - `roster/*/migrations/`

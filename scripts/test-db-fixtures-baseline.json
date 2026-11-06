@@ -183,6 +183,10 @@
     "create_table": 1,
     "fixtures": 0
   },
+  "tests/migrations/test_public_projection_source.py": {
+    "create_table": 3,
+    "fixtures": 0
+  },
   "tests/migrations/test_qa_repo_org_rename_migration.py": {
     "create_table": 1,
     "fixtures": 0

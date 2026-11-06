@@ -1952,6 +1952,9 @@ async def store_fact(
                 else:
                     _inverse_predicate = _registry_row.get("inverse_of") or None
                 if _inverse_predicate is not None:
+                    await entity_graph_edges.lock_mirrored_edge_subjects(
+                        conn, entity_id, object_entity_id
+                    )
                     _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
                         conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
                     )

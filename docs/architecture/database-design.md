@@ -97,7 +97,7 @@ Connection parameters are resolved from environment variables: `DATABASE_URL` (l
 
 ## Migration Strategy
 
-Migrations are managed by Alembic, run programmatically at startup (no CLI shelling). The migration runner (`src/butlers/migrations.py`) supports three chain types:
+Migrations are managed by Alembic, run programmatically at startup (no CLI shelling). The migration runner (`src/butlers/migrations/__init__.py`) supports three chain types:
 
 ### Core Chain
 
