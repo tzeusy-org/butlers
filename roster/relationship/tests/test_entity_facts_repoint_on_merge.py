@@ -10,8 +10,8 @@ contact_merge() must re-point ALL active triples in relationship.entity_facts:
   → object = target entity_id::text. These are relational predicates ('knows', 'family-of')
   where the merged-away entity appears as the object.
 
-entity_merge re-points memory.facts but cannot reach relationship.entity_facts
-(different column layout: subject/object vs entity_id/object_entity_id).
+The merge authority then tombstones the source in the same transaction
+(bu-dhloi1.40, see test_contact_merge_atomicity.py).
 
 Test scope (subject-side):
   (a) Source triples with no conflict → re-pointed to target subject (several at once).
@@ -21,7 +21,7 @@ Test scope (subject-side):
   (d) Idempotency: a second re-point pass finds no active source-subject triples
       and changes nothing.
   (e) A database error in the re-point propagates (the single merge transaction
-      rolls back) and the post-commit entity_merge is skipped.
+      rolls back) and the merge authority is never reached.
   (f) Source entity_id is NULL → entity_facts blocks (subject and object side)
       are skipped entirely.
 
@@ -128,10 +128,10 @@ async def _second_repoint_pass(pool, src_entity: uuid.UUID, tgt_entity: uuid.UUI
 
 
 def _patch_entity_merge():
-    # entity_merge is imported inside the function body so we must patch it
+    # The authority is imported inside the function body so we must patch it
     # at the source module where it is defined.
     return patch(
-        "butlers.modules.memory.tools.entities.entity_merge",
+        "butlers.tools.relationship.entity_merge.merge_entity_pair_in_transaction",
         new_callable=AsyncMock,
     )
 
@@ -162,8 +162,7 @@ class TestEntityFactsRepointOnMerge:
         winning_src = await _fact(rel_pool, src, "has-phone", "+15559999", conf=0.95)
         losing_tgt = await _fact(rel_pool, tgt, "has-phone", "+15559999", conf=0.5)
 
-        with _patch_entity_merge():
-            result = await contact_merge(rel_pool, src_contact, tgt_contact)
+        result = await contact_merge(rel_pool, src_contact, tgt_contact)
 
         assert result["id"] == tgt_contact
         facts = await _facts(rel_pool)
@@ -186,7 +185,7 @@ class TestEntityFactsRepointOnMerge:
     ):
         """(e) A DB error during the entity_facts re-point is no longer swallowed after a
         partial commit (bu-p2bjsf): it propagates out of the single merge transaction
-        (rolling it back) and the post-commit entity_merge never runs."""
+        (rolling it back) and the merge authority is never reached."""
         src_contact, tgt_contact, src, _tgt = await _merge_pair(rel_pool)
         fact_id = await _fact(rel_pool, src, "has-email", "a@eg.com")
         monkeypatch.setattr(
@@ -241,8 +240,7 @@ class TestObjectSideEntityFactsRepointOnMerge:
         # (j) a literal whose text happens to equal the source id is not an entity edge.
         literal = await _fact(rel_pool, noter, "has-note", src_obj, kind="literal")
 
-        with _patch_entity_merge():
-            result = await contact_merge(rel_pool, src_contact, tgt_contact)
+        result = await contact_merge(rel_pool, src_contact, tgt_contact)
 
         assert result["id"] == tgt_contact
         facts = await _facts(rel_pool)

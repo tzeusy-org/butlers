@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.roster_imports import roster_module
+
 pytestmark = pytest.mark.unit
 
 _CONTACTS_PATH = Path(__file__).parent.parent.parent / "roster/relationship/tools/contacts.py"
@@ -149,7 +151,7 @@ async def test_contact_create_and_update_entity_sync():
 
 
 async def test_contact_merge_and_entity_merge_validation():
-    """contact_merge calls entity_merge when both have entity_ids; entity_merge validates."""
+    """contact_merge runs the merge authority on its own connection; entity_merge validates."""
     src = _make_contact_row(contact_id=CONTACT_UUID, entity_id=ENTITY_UUID)
     tgt = _make_contact_row(contact_id=CONTACT_UUID2, entity_id=ENTITY_UUID2)
     pool = AsyncMock()
@@ -172,24 +174,20 @@ async def test_contact_merge_and_entity_merge_validation():
     pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    memory_pool = AsyncMock()
     with (
         patch(
-            "butlers.modules.memory.tools.entities.entity_merge",
-            AsyncMock(return_value={"entity_id": str(ENTITY_UUID2)}),
-        ) as mock_entity_merge,
+            "butlers.tools.relationship.entity_merge.merge_entity_pair_in_transaction",
+            AsyncMock(return_value="merge"),
+        ) as authority,
+        patch("butlers.tools.relationship.entity_merge.settle_entity_merge", AsyncMock()) as settle,
     ):
-        await contact_merge(
-            pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2, memory_pool=memory_pool
+        # The canonical module: its authority import is relative to its package.
+        canonical = roster_module("relationship", "tools/contacts")
+        await canonical.contact_merge(pool, source_id=CONTACT_UUID, target_id=CONTACT_UUID2)
+        authority.assert_awaited_once_with(
+            mock_conn, source_entity_id=ENTITY_UUID, target_entity_id=ENTITY_UUID2
         )
-        # chronicler_pool=None because contact_merge was called without a
-        # chronicler pool — the no-op path (episode repointing silently skipped).
-        mock_entity_merge.assert_awaited_once_with(
-            memory_pool,
-            str(ENTITY_UUID),
-            str(ENTITY_UUID2),
-            chronicler_pool=None,
-        )
+        settle.assert_awaited_once_with(pool, "merge")
 
     # entity_merge validation: same ID raises
     with pytest.raises(ValueError, match="different"):

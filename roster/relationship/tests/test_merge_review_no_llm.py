@@ -91,6 +91,8 @@ _ROUTER_MODEL_FREE_SYMBOLS = (
 _TOOL_MERGE_SYMBOLS: tuple[tuple[Path, str], ...] = (
     # Shared audited transaction used by the HTTP and reconciliation paths.
     (_ENTITY_MERGE_SERVICE, "merge_entity_pair"),
+    (_ENTITY_MERGE_SERVICE, "merge_entity_pair_in_transaction"),
+    (_ENTITY_MERGE_SERVICE, "settle_entity_merge"),
     (_WHATSAPP_RECONCILIATION, "build_whatsapp_reconciliation_plan"),
     (_WHATSAPP_RECONCILIATION, "apply_whatsapp_reconciliation"),
     (_WHATSAPP_RECONCILIATION, "validate_empty_shell_locked"),

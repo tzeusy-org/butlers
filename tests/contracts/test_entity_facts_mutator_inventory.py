@@ -67,7 +67,7 @@ _INVENTORY: dict[tuple[str, str], str] = {
     ("src/butlers/owner_bootstrap.py", "_seed_owner_telegram_handle"): (
         "owner bootstrap: insert-only unknown default, no sibling"
     ),
-    ("roster/relationship/tools/entity_merge.py", "merge_entity_pair"): (
+    ("roster/relationship/tools/entity_merge.py", "merge_entity_pair_in_transaction"): (
         "entity merge: lock+plan, repoint intact, collision refused"
     ),
     ("roster/relationship/tools/entity_merge.py", "_move_candidate_reports"): (
