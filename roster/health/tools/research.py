@@ -10,6 +10,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.health._helpers import _row_to_dict
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,8 @@ async def research_update(
 
     # Fetch existing research fact by ID
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata FROM facts"
+        "SELECT id, subject, content, metadata, content_authority,"
+        " taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'research' AND scope = 'health'"
         " AND validity = 'active'",
         res_uuid,
@@ -185,19 +187,20 @@ async def research_update(
     embedding_engine = _get_embedding_engine()
     now = datetime.now(UTC)
 
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=subject,
-            predicate="research",
-            content=content,
-            embedding_engine=embedding_engine,
-            permanence="stable",
-            scope="health",
-            valid_at=None,  # property fact — supersedes the previous
-            metadata=new_meta,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=subject,
+                predicate="research",
+                content=content,
+                embedding_engine=embedding_engine,
+                permanence="stable",
+                scope="health",
+                valid_at=None,  # property fact — supersedes the previous
+                metadata=new_meta,
+            )
+        )["id"]
 
     cond_id = new_meta.get("condition_id")
     cond_out = uuid.UUID(cond_id) if cond_id else None

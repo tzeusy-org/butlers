@@ -25,7 +25,11 @@ if TYPE_CHECKING:
 
 from butlers.core import entity_graph_edges
 from butlers.core.chronicler_visibility import local_fact_visibility_condition
-from butlers.core.goal_lineage import refuse_owner_authority_under_exposure, taint_stamp
+from butlers.core.goal_lineage import (
+    carried_source,
+    refuse_owner_authority_under_exposure,
+    taint_stamp,
+)
 from butlers.core.tool_call_capture import (
     get_current_runtime_butler_name,
     get_current_runtime_session_id,
@@ -33,6 +37,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import (
+    MIXED,
     ContentAuthority,
     is_fact_held,
     is_owner_class,
@@ -1090,8 +1095,17 @@ async def _stamp_authority(
     """
     if content_authority is not None:
         refuse_owner_authority_under_exposure(content_authority)
-        return ContentAuthority(validate_authority(content_authority), authority_entity_id)
-    return await resolve_content_authority(pool, routing_context)
+        authority = ContentAuthority(validate_authority(content_authority), authority_entity_id)
+    else:
+        authority = await resolve_content_authority(pool, routing_context)
+    source = carried_source()
+    if (
+        source is not None
+        and is_owner_class(authority.authority)
+        and not is_owner_class(source.content_authority)
+    ):
+        return ContentAuthority(MIXED)  # Owner edit of text the owner did not write.
+    return authority
 
 
 async def store_episode(

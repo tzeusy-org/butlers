@@ -161,16 +161,38 @@ value that no accounted record holds fails, unless the field is named here.
 | `relationship_lookup` | `untrusted` | the entity header and candidates: `public.entities` has no stamp and connectors write it. `account_unstamped` keeps its report unclean |
 | `note_search` | `untrusted` | not audited; its reader does not account |
 
+The read side is only half of it: a read reports a row clean when its pointer is
+null and its authority is the owner's, which holds only if no writer puts other
+text there unstamped. `tests/contracts/test_stamped_store_writers.py` scans the
+source for every SQL write to these stores and gives each a disposition: stamps,
+no text (checked: assigns no `content`, `metadata`, `subject` or `predicate`), no
+model-reachable caller (from reading the callers, not checked), or conversation
+routing. A new statement, a new copying function, or a new presentable writer
+fails there until it is audited.
+
+- **Text updates under exposure.** `meal_update`, `measurement_update`,
+  `symptom_update` and `bulk_update_transactions` set the pointer with
+  `goal_lineage.taint_update`. The text is now that writer's, so a later exposed
+  writer takes the pointer; an unexposed edit leaves it in place.
+- **Mutators under exposure.** `memory_mark_harmful` drops its `reason` (which
+  would otherwise reach rule content through anti-pattern inversion), and a
+  correction forget keeps its reason only in `memory_events`. Both stamp the row
+  if it has no pointer. `mark_helpful` and `confirm` change counters and carry no
+  text, so they stay unstamped.
+- **Copied rows.** A successor that keeps a stored row's text or metadata
+  (`gift_update_status`, `loan_settle`, `task_complete`, `condition_update`,
+  `medication_update`, `medication_log_dose`, `research_update`) writes inside
+  `goal_lineage.carrying_forward`. An unexposed writer keeps the source's pointer,
+  and an owner-class writer over non-owner text stores `mixed`, not `owner`.
+
 Three limits go with these verdicts:
 
-- **Mutators under exposure.** An exposed call must not put text into an owner
-  row and leave it clean. `memory_mark_harmful` drops its `reason` (which would
-  otherwise reach rule content through anti-pattern inversion), and a correction
-  forget keeps its reason only in `memory_events`. Both stamp the row if it has
-  no pointer. `mark_helpful` and `confirm` change counters and carry no text, so
-  they stay unstamped.
-- **One pointer per row.** A row names its first exposed writer only; a later
-  exposed mutator's counters are not separately labelled.
+- **One pointer per row.** A row names one writer: the first for a counter or
+  flag, the latest for text. A partly merged row (`bulk_update_transactions`, a
+  metadata edit) keeps an earlier writer's fields under the later writer's label.
+- **The scan reads literals.** It sees SQL strings and f-strings. A table name
+  built by concatenation, or dynamic SQL outside the memory module, is not seen.
+  Fields read through a helper are not seen by the copy check either.
 - **Pre-partition laundering.** A fact or rule that was laundered to `owner`
   before the partition reads as clean until the authority demotion has run
   (`docs/operations/memory-authority-demotion.md`). The declaration is dark, so
