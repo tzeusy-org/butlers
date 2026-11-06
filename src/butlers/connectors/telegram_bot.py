@@ -108,10 +108,18 @@ _DESCRIPTOR = connector_descriptor("telegram_bot")
 
 logger = logging.getLogger(__name__)
 
-#: A retraction outcome that says nothing about the card, so it is not receipted.
+#: Retraction outcomes that say nothing about the card, so they are not receipted.
 _RETRACTION_PROVIDER_UNAVAILABLE = "provider_unavailable"
-#: One outage answer may concern that message alone; two in a row mean Telegram is down.
+_RETRACTION_PROVIDER_5XX = "provider_5xx"
+_RETRACTION_TOKEN_REJECTED = "token_rejected"
+_RETRACTION_NO_VERDICT = frozenset(
+    {_RETRACTION_PROVIDER_UNAVAILABLE, _RETRACTION_PROVIDER_5XX, _RETRACTION_TOKEN_REJECTED}
+)
+#: One such answer may concern that message alone; two in a row need an explanation.
 _RETRACTION_OUTAGES_TO_STOP_DRAIN = 2
+#: Drains spent on a refused token, with no answer from Telegram between them, before the sweep
+#: stops attempting cards. It then only asks ``getMe`` each drain, and resumes when that passes.
+_RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP = 15
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
@@ -453,6 +461,7 @@ class TelegramBotConnector:
         self._semaphore = asyncio.Semaphore(config.max_inflight)
         self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
         self._owner_delivery_drain_lock = asyncio.Lock()
+        self._owner_delivery_token_rejected_drains = 0
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -1469,9 +1478,10 @@ class TelegramBotConnector:
         reported as ``retracted=false``; the ledger lists it again after a cooldown, up to a
         bound, and its buttons stay harmless because their tokens are already stale. An outage
         says nothing about the card, so it gets no receipt and consumes none of the bound. One
-        such answer may be about that message alone, so the drain moves on; two in a row with
-        no real answer between them stop it until the next sweep. One drain at a time: a tap
-        and the sweep must not attempt the same card at once.
+        such answer may be about that message alone, so the drain moves on. Two in a row stop
+        it until the next sweep, unless both were 5xx and Telegram still answers ``getMe``:
+        then those messages are the problem, and the cards behind them still get their turn.
+        One drain at a time: a tap and the sweep must not attempt the same card at once.
         """
         async with self._owner_delivery_drain_lock:
             return await self._drain_owner_delivery_retractions_locked()
@@ -1482,6 +1492,11 @@ class TelegramBotConnector:
             return 0
         if not self._config.internal_api_url or not connector_token:
             return 0
+        if self._owner_delivery_token_rejected_drains >= _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP:
+            if not await self._telegram_answers():
+                return 0
+            self._owner_delivery_token_rejected_drains = 0
+            logger.warning("Owner-delivery retraction sweep resumed: Telegram accepts the token")
         base = f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/retractions"
         headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token}
         try:
@@ -1497,19 +1512,31 @@ class TelegramBotConnector:
             return 0
         items = payload.get("data") if isinstance(payload, dict) else None
         retracted = 0
-        outages_in_a_row = 0
+        outages: list[str] = []
+        token_rejected = False
+        telegram_answered = False
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
                 continue
             ok, reason = await self._retract_owner_card(item)
-            if reason == _RETRACTION_PROVIDER_UNAVAILABLE:
-                outages_in_a_row += 1
-                if outages_in_a_row >= _RETRACTION_OUTAGES_TO_STOP_DRAIN:
-                    return retracted
+            if reason in _RETRACTION_NO_VERDICT:
+                token_rejected = token_rejected or reason == _RETRACTION_TOKEN_REJECTED
+                outages.append(reason)
+                if len(outages) < _RETRACTION_OUTAGES_TO_STOP_DRAIN:
+                    continue
+                # Only a 5xx can concern one message. A rate limit is for the whole bot, and
+                # ``getMe`` would pass under one, so it must not keep this drain going.
+                if set(outages) != {_RETRACTION_PROVIDER_5XX}:
+                    break
+                if not await self._telegram_answers():
+                    break
+                telegram_answered = True
+                outages.clear()
                 continue
             # A card with no usable message id never reached Telegram, so it is no answer.
             if ok or reason == "provider_error":
-                outages_in_a_row = 0
+                outages.clear()
+                telegram_answered = True
             retracted += int(ok)
             if not ok:
                 logger.warning(
@@ -1529,7 +1556,37 @@ class TelegramBotConnector:
                     )
             except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
                 logger.warning("Owner-delivery retraction receipt failed")
+        # Pausing stops every retraction, so the token itself must be what Telegram refused.
+        if token_rejected and not telegram_answered:
+            telegram_answered = await self._telegram_answers()
+        self._note_owner_delivery_token_answer(rejected=token_rejected, answered=telegram_answered)
         return retracted
+
+    def _note_owner_delivery_token_answer(self, *, rejected: bool, answered: bool) -> None:
+        """Count drains Telegram spent refusing the token, and pause once it looks settled."""
+        if answered:
+            self._owner_delivery_token_rejected_drains = 0
+        elif rejected:
+            self._owner_delivery_token_rejected_drains += 1
+            if (
+                self._owner_delivery_token_rejected_drains
+                == _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP
+            ):
+                logger.error(
+                    "Owner-delivery retraction sweep paused: Telegram rejected the bot token "
+                    "on %d drains with no answer between them. Stale cards stay listed, and the "
+                    "sweep resumes once Telegram accepts the token; a wrong one needs fixing "
+                    "and a restart of this connector.",
+                    _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP,
+                )
+
+    async def _telegram_answers(self) -> bool:
+        """Whether Telegram serves this bot at all, whatever it said about one message."""
+        try:
+            response = await self._http_client.get(f"{self._telegram_api_base}/getMe")
+        except Exception:  # noqa: BLE001 -- treated as down; the error's text carries the token
+            return False
+        return response.status_code == 200
 
     async def _retract_owner_card(self, item: dict[str, Any]) -> tuple[bool, str | None]:
         chat_id = item.get("route_ref")
@@ -1568,6 +1625,10 @@ class TelegramBotConnector:
                 item.get("presentation_id"),
                 status,
             )
+            if status in (401, 404):
+                return False, _RETRACTION_TOKEN_REJECTED
+            if status >= 500:
+                return False, _RETRACTION_PROVIDER_5XX
             if telegram_outage_status(status):
                 return False, _RETRACTION_PROVIDER_UNAVAILABLE
             return False, "provider_error"
