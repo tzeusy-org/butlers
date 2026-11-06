@@ -1921,6 +1921,17 @@ async def store_fact(
                     # fact already exists; no new guidance is needed).
                     return {"id": existing_idem_id, "supersedes_id": None}
 
+            # Lock order: entities before facts, as merge, rebind, forget and delete take
+            # them. A supersede that took its fact first would then wait on the entity for
+            # the insert's foreign key, in a cycle with any of them. FOR KEY SHARE is that
+            # foreign key's own lock, so writers never wait on each other here.
+            if fact_valid_at is None and entity_id is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = ANY($1::uuid[]) "
+                    "ORDER BY id FOR KEY SHARE",
+                    sorted({entity_id, object_entity_id} - {None}, key=str),
+                )
+
             # Mirrored writes reserve both closure pairs before taking fact-row
             # locks. Reciprocal writers must share one lock order, not first lock
             # their respective forward pair and then wait on each other's inverse.

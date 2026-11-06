@@ -19,6 +19,8 @@ from fastapi import HTTPException
 from butlers import entity_rebind
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers import memory as memory_router
+from butlers.modules.memory import storage as memory_storage
+from butlers.modules.memory.storage import store_fact
 from butlers.modules.memory.tools import entities as memory_entities
 from butlers.roster_imports import roster_module
 
@@ -372,3 +374,127 @@ async def test_a_forget_or_delete_waits_for_a_rebind_and_retires_what_it_moved(
 
     row = await rel_pool.fetchrow("SELECT entity_id, validity FROM facts WHERE id = $1", fact)
     assert (row["entity_id"], row["validity"]) == (forgotten, "retracted")
+
+
+def _fake_engine() -> MagicMock:
+    engine = MagicMock()
+    engine.embed.return_value = [0.0] * 384
+    engine.model_name = "test-model"
+    return engine
+
+
+async def _store(
+    pool: asyncpg.Pool, subject: uuid.UUID, content: str, obj: uuid.UUID | None = None
+) -> uuid.UUID:
+    result = await store_fact(
+        pool,
+        subject="opaque-subject",
+        predicate="note",
+        content=content,
+        embedding_engine=_fake_engine(),
+        entity_id=subject,
+        object_entity_id=obj,
+    )
+    return result["id"]
+
+
+def _forget_or_delete(pool: asyncpg.Pool, entity: uuid.UUID, route: str):
+    if route == "forget":
+        return _forget_route()(entity, db=_dashboard_db(pool))
+    return memory_router.delete_entity(str(entity), retire_facts=True, db=_dashboard_db(pool))
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("route", "edge"),
+    [("forget", False), ("forget", True), ("delete", False)],
+    ids=["forget", "forget_edge_object", "delete"],
+)
+async def test_a_supersede_in_flight_finishes_before_a_forget_or_delete(
+    rel_pool, route, edge
+) -> None:
+    """The writer got there first: its new fact is retired too, and neither side fails."""
+    removed = await _entity(rel_pool, "Removed")
+    subject = await _entity(rel_pool, "Other") if edge else removed
+    obj = removed if edge else None
+    old = await _store(rel_pool, subject, "old", obj)
+
+    superseded = asyncio.Event()
+    resume = asyncio.Event()
+    real_insert = memory_storage._insert_fact_record
+
+    async def pausing_insert(*args, **kwargs):
+        superseded.set()
+        await resume.wait()
+        return await real_insert(*args, **kwargs)
+
+    with (
+        patch.object(memory_storage, "_insert_fact_record", pausing_insert),
+        patch.object(memory_router, "_ENTITY_DELETE_DEADLINE_S", 3.0),
+    ):
+        writer = asyncio.create_task(_store(rel_pool, subject, "new", obj))
+        await asyncio.wait_for(superseded.wait(), timeout=10)
+        task = asyncio.create_task(_forget_or_delete(rel_pool, removed, route))
+        await _settled_or_lock_waiting(rel_pool, task)
+        resume.set()
+        new, result = await asyncio.wait_for(
+            asyncio.gather(writer, task, return_exceptions=True), timeout=20
+        )
+
+    assert not isinstance(new, BaseException), repr(new)
+    assert not isinstance(result, BaseException), repr(result)
+    validity = "SELECT validity FROM facts WHERE id = $1"
+    assert await rel_pool.fetchval(validity, old) == "superseded"
+    assert await rel_pool.fetchval(validity, new) == "retracted"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_supersede_waits_for_a_forget_that_holds_the_entity(rel_pool) -> None:
+    """The forget got there first, before retracting: the writer must not take the fact."""
+    forgotten = await _entity(rel_pool, "Forgotten")
+    old = await _store(rel_pool, forgotten, "old")
+
+    locked = asyncio.Event()
+    resume = asyncio.Event()
+    real_retract = memory_entities._retract_facts_on_conn
+
+    async def pausing_retract(conn, entity_id):
+        locked.set()
+        await resume.wait()
+        return await real_retract(conn, entity_id)
+
+    with patch.object(memory_entities, "_retract_facts_on_conn", pausing_retract):
+        forget = asyncio.create_task(_forget_route()(forgotten, db=_dashboard_db(rel_pool)))
+        await asyncio.wait_for(locked.wait(), timeout=10)
+        writer = asyncio.create_task(_store(rel_pool, forgotten, "new"))
+        await _settled_or_lock_waiting(rel_pool, writer)
+        resume.set()
+        result, new = await asyncio.wait_for(
+            asyncio.gather(forget, writer, return_exceptions=True), timeout=20
+        )
+
+    assert not isinstance(result, BaseException), repr(result)
+    assert not isinstance(new, BaseException), repr(new)
+    assert await rel_pool.fetchval("SELECT validity FROM facts WHERE id = $1", old) == "retracted"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_two_deletes_on_a_pool_of_two_both_complete(db) -> None:
+    """Each delete holds a connection across its fan-out, and deployed pools have two."""
+    pool = await db("core", "memory", "relationship", min_size=2, max_size=2)
+    first = await _entity(pool, "First")
+    second = await _entity(pool, "Second")
+    await _memory_fact(pool, first)
+    await _memory_fact(pool, second)
+
+    with patch.object(memory_router, "_ENTITY_DELETE_DEADLINE_S", 2.0):
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                _forget_or_delete(pool, first, "delete"),
+                _forget_or_delete(pool, second, "delete"),
+                return_exceptions=True,
+            ),
+            timeout=20,
+        )
+
+    assert results == [None, None]

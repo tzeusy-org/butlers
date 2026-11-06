@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from pathlib import Path
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -17,6 +19,7 @@ import pytest
 
 from butlers.db import register_jsonb_codec
 from butlers.entity_rebind import process_pending_entity_rebinds
+from butlers.modules.memory.storage import store_fact
 
 pytestmark = [
     pytest.mark.integration,
@@ -24,6 +27,11 @@ pytestmark = [
     pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available"),
 ]
 
+_MEMORY_BUTLERS = [
+    toml.parent.name
+    for toml in (Path(__file__).parents[2] / "roster").glob("*/butler.toml")
+    if "[modules.memory]" in toml.read_text()
+]
 _CHAINS = ("core", "memory", "relationship", "approvals", "chronicler")
 _SCHEMAS = {
     "memory": "relationship",
@@ -159,3 +167,46 @@ async def test_a_late_rebind_runs_under_each_schemas_bootstrap_role(
         ("active", None, 1)
     ]
     assert await owner.fetchval(read_reference) == survivor
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_memory_supersede_takes_the_entity_lock_under_its_runtime_role(
+    rebind_pools,
+) -> None:
+    owner, runtime_pools = rebind_pools
+    entity = await _entity(owner)
+    engine = MagicMock()
+    engine.embed.return_value = [0.0] * 384
+    engine.model_name = "test-model"
+
+    async def store(content: str) -> dict:
+        return await store_fact(
+            runtime_pools["relationship"],
+            "opaque-subject",
+            "note",
+            content,
+            engine,
+            entity_id=entity,
+        )
+
+    old = await store("old")
+    new = await store("new")
+
+    assert new["supersedes_id"] == old["id"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_every_memory_butler_role_may_take_the_entity_lock(rebind_pools) -> None:
+    """``store_fact`` takes ``FOR KEY SHARE``, which needs UPDATE, on each of these roles."""
+    owner, _ = rebind_pools
+    assert "relationship" in _MEMORY_BUTLERS
+
+    refused = [
+        name
+        for name in _MEMORY_BUTLERS
+        if not await owner.fetchval(
+            "SELECT has_table_privilege($1, 'public.entities', 'UPDATE')", f"butler_{name}_rw"
+        )
+    ]
+
+    assert refused == []

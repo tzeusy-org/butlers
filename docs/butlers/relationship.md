@@ -84,7 +84,10 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   row `FOR UPDATE` until their marker commits, so a merge or rebind either finishes first and has
   its references retired too, or waits and refuses. The memory delete retires facts across pools
   before its marker, so a crash can leave retired facts on an unmarked entity, which a retry
-  completes; Google/Steam hard deletes keep their all-version cascade.
+  completes; Google/Steam hard deletes keep their all-version cascade. The route runs one delete
+  at a time per process, because each holds a pool connection while its fan-out takes others.
+  A memory `store_fact` property write takes its entities `FOR KEY SHARE`, in ascending id order,
+  before its first fact lock, so a supersede racing a forget or delete waits instead of deadlocking.
 - **Lock order.** Every `entity_facts` write locks `public.entities` rows before fact rows,
   each set in ascending id order. Both merges take their entities `FOR UPDATE` first; the central
   writer (and the contact value edit that calls it) takes the subject and any entity object

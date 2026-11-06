@@ -97,6 +97,9 @@ _EPISODE_DOSSIER_COLUMNS = (
 
 
 _ENTITY_DELETE_DEADLINE_S = 30.0
+# A delete holds a connection while its fan-out takes others from the same per-process
+# pools, so at the deployed maximum of 2 concurrent deletes would starve each other.
+_ENTITY_DELETE_GATE = asyncio.Lock()
 
 
 def _memory_pool_names(db: DatabaseManager) -> list[str]:
@@ -2743,7 +2746,7 @@ async def delete_entity(
     # or rebind in flight finishes before the facts are counted, and a later one waits
     # for the marker and refuses it. A crash leaves retired facts on an unmarked entity,
     # which a retry completes.
-    async with pool.acquire() as conn, conn.transaction():
+    async with _ENTITY_DELETE_GATE, pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             "SELECT id, roles FROM public.entities WHERE id = $1 FOR UPDATE",
             eid,
