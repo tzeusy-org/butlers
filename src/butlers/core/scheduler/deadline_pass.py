@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -12,6 +13,7 @@ import asyncpg
 
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import allowance_deferral
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.scheduler.prompt import _prepend_seasonal_context
 from butlers.core.scheduler.rows import (
     _DISPATCH_MODE_JOB,
@@ -173,7 +175,8 @@ async def _tick_deadline_pass(
                         butler=stagger_key or "unknown", task_name=name, outcome="deferred"
                     )
                 continue
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.exception("Failed to dispatch deadline job: %s", name)
                 if metrics is not None:
                     metrics.record_task_dispatched(
@@ -237,7 +240,8 @@ async def _tick_deadline_pass(
                     outcome="success",
                 )
             logger.info("Dispatched deadline task: %s (days_remaining=%d)", name, days_remaining)
-        except Exception:
+        except (Exception, asyncio.CancelledError) as exc:
+            raise_if_task_cancelled(exc)
             logger.exception("Failed to dispatch deadline task: %s", name)
             if metrics is not None:
                 metrics.record_task_dispatched(
