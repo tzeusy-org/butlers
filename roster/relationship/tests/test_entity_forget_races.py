@@ -16,6 +16,7 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
+from butlers import entity_rebind
 from butlers.api.router_discovery import discover_butler_routers
 from butlers.api.routers import memory as memory_router
 from butlers.modules.memory.tools import entities as memory_entities
@@ -254,3 +255,120 @@ async def test_a_memory_delete_that_cannot_finish_writes_no_marker_and_can_be_re
 
     assert await rel_pool.fetchval(marker, deleted) is not None
     assert await rel_pool.fetchval("SELECT validity FROM facts WHERE id = $1", fact) == "retracted"
+
+
+async def _pending_rebind(pool: asyncpg.Pool, source: uuid.UUID, target: uuid.UUID) -> uuid.UUID:
+    rebind_id = uuid.uuid4()
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema
+        ) VALUES ($1, $2, $3, 'relationship')
+        """,
+        rebind_id,
+        source,
+        target,
+    )
+    return rebind_id
+
+
+async def _forget_or_delete_paused_after_retiring(
+    pool: asyncpg.Pool, entity: uuid.UUID, route: str
+):
+    """Start the route, wait until it has retired facts; returns (task, resume, patcher)."""
+    if route == "delete":
+        pausing = _PausingPool(pool)
+        task = asyncio.create_task(
+            memory_router.delete_entity(str(entity), retire_facts=True, db=_dashboard_db(pausing))
+        )
+        await asyncio.wait_for(pausing.retired.wait(), timeout=10)
+        return task, pausing.resume, None
+
+    retracted = asyncio.Event()
+    resume = asyncio.Event()
+    real_retract = memory_entities._retract_facts_on_conn
+
+    async def pausing_retract(conn, entity_id):
+        await real_retract(conn, entity_id)
+        retracted.set()
+        await resume.wait()
+
+    patcher = patch.object(memory_entities, "_retract_facts_on_conn", pausing_retract)
+    patcher.start()
+    task = asyncio.create_task(_forget_route()(entity, db=_dashboard_db(pool)))
+    await asyncio.wait_for(retracted.wait(), timeout=10)
+    return task, resume, patcher
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("route", ["forget", "delete"])
+async def test_a_rebind_cannot_slip_into_a_forget_or_delete_in_flight(rel_pool, route) -> None:
+    """The route has retired facts and not written its marker: the rebind must wait, then refuse."""
+    forgotten = await _entity(rel_pool, "Forgotten")
+    source = await _entity(rel_pool, "Source")
+    await _memory_fact(rel_pool, forgotten)  # The delete pauses only after retiring something.
+    fact = await _memory_fact(rel_pool, source)
+    rebind_id = await _pending_rebind(rel_pool, source, forgotten)
+
+    task, resume, patcher = await _forget_or_delete_paused_after_retiring(
+        rel_pool, forgotten, route
+    )
+    try:
+        rebind = asyncio.create_task(
+            entity_rebind.process_pending_entity_rebinds(rel_pool, target_schema="relationship")
+        )
+        await _settled_or_lock_waiting(rel_pool, rebind)
+        resume.set()
+        await asyncio.wait_for(asyncio.gather(task, rebind), timeout=20)
+    finally:
+        if patcher is not None:
+            patcher.stop()
+
+    row = await rel_pool.fetchrow("SELECT entity_id, validity FROM facts WHERE id = $1", fact)
+    assert (row["entity_id"], row["validity"]) == (source, "active")
+    receipt = await rel_pool.fetchrow(
+        "SELECT status, error_class FROM public.entity_rebind_log WHERE rebind_id = $1", rebind_id
+    )
+    assert (receipt["status"], receipt["error_class"]) == ("failed", "EntityRebindTargetForgotten")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("route", ["forget", "delete"])
+async def test_a_forget_or_delete_waits_for_a_rebind_and_retires_what_it_moved(
+    rel_pool, route
+) -> None:
+    """The other order: what the rebind moved must not outlive the forget or delete."""
+    forgotten = await _entity(rel_pool, "Forgotten")
+    source = await _entity(rel_pool, "Source")
+    fact = await _memory_fact(rel_pool, source)
+    await _pending_rebind(rel_pool, source, forgotten)
+
+    moved = asyncio.Event()
+    resume = asyncio.Event()
+    real_repoint = entity_rebind._repoint_facts
+
+    async def pausing_repoint(conn, from_entity, to_entity):
+        count = await real_repoint(conn, from_entity, to_entity)
+        moved.set()
+        await resume.wait()
+        return count
+
+    with patch.object(entity_rebind, "_repoint_facts", pausing_repoint):
+        rebind = asyncio.create_task(
+            entity_rebind.process_pending_entity_rebinds(rel_pool, target_schema="relationship")
+        )
+        await asyncio.wait_for(moved.wait(), timeout=10)
+        if route == "forget":
+            task = asyncio.create_task(_forget_route()(forgotten, db=_dashboard_db(rel_pool)))
+        else:
+            task = asyncio.create_task(
+                memory_router.delete_entity(
+                    str(forgotten), retire_facts=True, db=_dashboard_db(rel_pool)
+                )
+            )
+        await _settled_or_lock_waiting(rel_pool, task)
+        resume.set()
+        await asyncio.wait_for(asyncio.gather(rebind, task), timeout=20)
+
+    row = await rel_pool.fetchrow("SELECT entity_id, validity FROM facts WHERE id = $1", fact)
+    assert (row["entity_id"], row["validity"]) == (forgotten, "retracted")
