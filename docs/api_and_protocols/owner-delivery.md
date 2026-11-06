@@ -194,6 +194,13 @@ and the HTTP status or error type:
   alone. Two in a row, with no real Telegram answer between them, end the drain until the next
   sweep. However long the outage lasts, it consumes none of the bound and the cards retract on
   recovery.
+- Two 5xx in a row get one more check: if Telegram still answers `getMe`, those messages are the
+  problem, and the drain carries on to the cards behind them. They still write no receipt, so an
+  outage of edits alone spares the bound, but a card that only ever answers 5xx is never given up.
+  A 429 or no response always ends the drain, because neither can concern one message.
+- A rejected bot token (HTTP 401 or 404, with `getMe` failing too) on 15 drains in a row stops this
+  connector's sweep and logs one error. The token is fixed for the life of the process,
+  so fixing it means a restart, and the cards are still listed for the sweep after that.
 
 A card given up after 5 failed attempts leaves the listing and keeps its state and receipts. Its
 buttons stay harmless because its tokens are stale. The give-up is signalled once, by a warning
