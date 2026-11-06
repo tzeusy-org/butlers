@@ -25,6 +25,13 @@ aliases its survivor, so owner law compares both on the survivor, while the call
 keeps the id it named: a merge tool must keep naming its source, and a grant on
 the source must not reach what the survivor already held.
 
+The call and the terms resolve in separate statements, so a merge can commit
+between them. A match-only kind therefore compares the raw ids beside the
+survivors on both sides: a term holds a call it would have held before any
+aliasing, however the chain moved between the reads. The rest of a merge is
+ordered by those reads, so a call on an id still live when it was read, against a
+term on the survivor that id then merged into, is released as the raw ids are.
+
 The seam is a trusted constructor input, like ``Domains``. Nothing constructs
 the broker until the M6 switch.
 """
@@ -92,7 +99,8 @@ class Resolution:
     args: dict[str, Any]
     # The declared params whose every value resolved to a fixed point.
     resolved: frozenset[str]
-    # What owner law compares: canonical for every resolved param.
+    # What owner law compares: canonical for every resolved param, and a match-only
+    # kind's raw ids beside its survivors.
     matched: dict[str, Any]
 
 
@@ -118,9 +126,10 @@ async def resolve_args(
         if values is None or any(value not in canonical for value in values):
             continue
         mapped = [canonical[value] for value in values]
-        matched[name] = mapped[0] if type(args[name]) is str else mapped
-        if declared[name] not in _MATCH_ONLY:
-            pinned[name] = matched[name]
+        if declared[name] in _MATCH_ONLY:
+            matched[name] = [*mapped, *values]
+        else:
+            matched[name] = pinned[name] = mapped[0] if type(args[name]) is str else mapped
         resolved.add(name)
     return Resolution(pinned, frozenset(resolved), matched)
 
@@ -134,7 +143,8 @@ async def canonical_policy(
     """The policy with every term's narrowing on a resolved param in canonical ids.
 
     A narrowing with an id that does not resolve is dropped from its term, which
-    then holds every call on its selector (a narrowing only ever releases).
+    then holds every call on its selector (a narrowing only ever releases). A
+    match-only kind's narrowing keeps its own ids beside their survivors.
     """
     declared = dict(capability.alias_resolvers)
     wanted: dict[str, set[str]] = {}
@@ -158,7 +168,8 @@ async def canonical_policy(
             canonical = answers.get(declared[name], {})
             if all(item in canonical for item in ids):
                 mapped = frozenset(canonical_resource(canonical[item]) for item in ids)
-                narrowed.append((name, frozenset(m for m in mapped if m is not None)))
+                kept = ids if declared[name] in _MATCH_ONLY else frozenset()
+                narrowed.append((name, kept | frozenset(m for m in mapped if m is not None)))
         return replace(term, resources=tuple(narrowed))
 
     return replace(policy, terms=tuple(canonical_term(term) for term in policy.terms))

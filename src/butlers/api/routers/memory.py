@@ -79,6 +79,7 @@ from butlers.modules.memory.storage import (
     endorse_rule,
     get_links,
 )
+from butlers.modules.memory.tools.entities import SYSTEM_METADATA_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -2578,10 +2579,7 @@ async def update_entity(
         # Filter out system-managed keys to prevent unauthorized state manipulation.
         # deleted_at/merged_into are managed by delete_entity/merge_entity endpoints.
         # unidentified is managed by the promote_entity endpoint.
-        _SYSTEM_METADATA_KEYS = {"deleted_at", "merged_into", "unidentified"}
-        allowed_metadata = {
-            k: v for k, v in body.metadata.items() if k not in _SYSTEM_METADATA_KEYS
-        }
+        allowed_metadata = {k: v for k, v in body.metadata.items() if k not in SYSTEM_METADATA_KEYS}
         if allowed_metadata:
             # Merge patch into existing metadata (JSONB || operator).
             # Pass the dict directly — the asyncpg JSONB codec handles encoding.

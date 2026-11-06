@@ -392,6 +392,19 @@ after the park is matched there. The residual window is a merge that commits aft
 the check and before the domain runs: a handler that follows `merged_into` itself
 would then reach the survivor.
 
+The call and the terms resolve in separate statements, so a merge can commit
+between them. This kind therefore compares raw ids beside survivors on both sides,
+at the call and at the fence, so a term holds any call the raw ids would have held,
+however the chain moved between the reads. A call on an id still live when read,
+against a term on the survivor it merges into before the term's read, is released,
+as raw comparison would release it: that call was read before the merge.
+
+Only a merge writes `merged_into`. `entity_create` and `entity_update`, the shared
+writers behind `memory_entity_create`, `memory_entity_update` and relationship
+`entity_update`, drop `deleted_at`, `merged_into` and `unidentified` from caller
+metadata (`SYSTEM_METADATA_KEYS`, which the dashboard's entity update also applies).
+`entity_update` merges in the `UPDATE`, so it keeps what a concurrent merge committed.
+
 Contact ids do not narrow. `contact_merge` deletes the source's
 `contact_entity_map` row and records no survivor, so there is nothing to resolve,
 and `contact_id` to `entity_id` crosses params, which a per-param narrowing cannot

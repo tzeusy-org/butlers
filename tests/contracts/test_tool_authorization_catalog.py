@@ -708,6 +708,17 @@ def test_no_person_identifier_is_declared_alias_free() -> None:
     }
 
 
+def test_relationship_entity_tools_narrow_like_their_memory_twins() -> None:
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    resolvers = {
+        entry.canonical_name: dict(entry.alias_resolvers or {})
+        for entry in TOOL_PRESENTATION_INVENTORY
+    }
+    for name in ("entity_get", "entity_neighbors", "entity_update"):
+        assert resolvers[name] == resolvers[f"memory_{name}"] == {"entity_id": "entity"}
+
+
 def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
     """REQ-capability-authorization-002/-018: each resource param carries an explicit mark."""
     from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY

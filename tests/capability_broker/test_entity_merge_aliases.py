@@ -11,16 +11,21 @@ the real ``merge_entity_pair`` against a migrated database.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import asyncpg
 import pytest
+from fastmcp import FastMCP
 
 from butlers.capability_broker.contracts import BrokerRefused, Capability, Catalog, Reason
 from butlers.core.owner_policy import declared_resource_params
 from butlers.core.tool_catalog import RecipientParameters
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+from butlers.modules.memory import MemoryModule, MemoryModuleConfig
+from butlers.roster_imports import roster_module
 from butlers.tools.relationship.entity_merge import merge_entity_pair
 from tests.capability_broker.helpers import capability
 from tests.capability_broker.test_broker_ledger import (
@@ -243,6 +248,178 @@ async def test_the_approval_fence_sees_a_merge_after_the_park(broker_db_url):
         )
         assert held.reason is Reason.POLICY
         assert all(call[1] != approved for call in w.forwarder.calls)
+
+
+class _MergesBetweenReads:
+    """The real resolver, with a real merge committing between the call's read and the term's."""
+
+    def __init__(self, resolver, url, source: UUID, target: UUID):
+        self._resolver, self._url, self._merge = resolver, url, (source, target)
+        self._reads = 0
+
+    async def resolve(self, domain, kind, values):
+        self._reads += 1
+        if self._reads == 3:  # The call's read is an answer and its fixed-point check.
+            await _merge(self._url, *self._merge)
+        return await self._resolver.resolve(domain, kind, values)
+
+
+def _merge_between_reads(w, url, source: UUID, target: UUID) -> None:
+    w.broker.aliases = _MergesBetweenReads(w.broker.aliases, url, source, target)
+    # A merge past the deadline would hold the call by failing closed, proving nothing.
+    w.broker.alias_timeout = 30
+
+
+async def test_a_merge_between_the_reads_cannot_release_the_term_on_the_call(broker_db_url):
+    """The call reads its own id, then the term reads the survivor: the same raw id still holds."""
+    async with _world(broker_db_url) as w:
+        source, survivor = await _person(w), await _person(w)
+        await _never(w, EPISODES, PARAM, [source])
+        _merge_between_reads(w, broker_db_url, source, survivor)
+        held = await _refused(_episodes_call(w, source))
+        assert held.reason is Reason.POLICY
+        assert await _survivor_of(w, source) == str(survivor)
+
+
+async def test_a_chain_growing_between_the_reads_cannot_release_it_either(broker_db_url):
+    """The call reads the middle of the chain and the term its new end; only raw ids still meet."""
+    async with _world(broker_db_url) as w:
+        first, middle, last = await _person(w), await _person(w), await _person(w)
+        await _merge(broker_db_url, first, middle)
+        await _never(w, EPISODES, PARAM, [first])
+        _merge_between_reads(w, broker_db_url, middle, last)
+        held = await _refused(_episodes_call(w, first))
+        assert held.reason is Reason.POLICY
+        assert await _survivor_of(w, middle) == str(last)
+
+
+async def test_a_merge_between_the_reads_still_releases_other_people(broker_db_url):
+    async with _world(broker_db_url) as w:
+        source, survivor, other = await _person(w), await _person(w), await _person(w)
+        await _never(w, EPISODES, PARAM, [source])
+        _merge_between_reads(w, broker_db_url, source, survivor)
+        spelled = str(other).upper()
+        assert (await _episodes_call(w, spelled)).status == "returned"
+        assert w.forwarder.calls[-1][1] == {PARAM: spelled}
+
+
+async def test_a_merge_between_the_reads_at_the_approval_fence_holds_the_call(broker_db_url):
+    async with _world(broker_db_url) as w:
+        source, survivor = await _person(w), await _person(w)
+        goal = await w.goal(_grant(NOTES))
+        _, token = await w.invocation(goal, _grant(NOTES))
+        await _law(w, "capability", NOTES.identity, "always_ask")
+        approved = {"entity_ids": [str(source)]}
+        parked = await w.broker.call(goal, token, NOTES.identity, approved)
+        assert parked.status == "parked"
+        await _never(w, NOTES, "entity_ids", [source])
+        _merge_between_reads(w, broker_db_url, source, survivor)
+        held = await _refused(
+            w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, approved)
+        )
+        assert held.reason is Reason.POLICY
+        assert await _survivor_of(w, source) == str(survivor)
+        assert all(call[1] != approved for call in w.forwarder.calls)
+
+
+async def _survivor_of(w, entity: UUID) -> str | None:
+    return await w.owner.fetchval(
+        "SELECT metadata ->> 'merged_into' FROM public.entities WHERE id = $1", entity
+    )
+
+
+async def _memory_tool(pool, name: str):
+    module = MemoryModule()
+    mcp = FastMCP("merge-tombstone")
+    await module.register_tools(
+        mcp, MemoryModuleConfig(), SimpleNamespace(pool=pool, schema="public"), "memory"
+    )
+    return (await mcp.get_tool(name)).fn
+
+
+async def _relationship_entity_update(pool):
+    relationship = roster_module("relationship", "modules/__init__")
+    module = relationship.RelationshipModule()
+    mcp = FastMCP("merge-tombstone")
+    config = relationship.RelationshipModuleConfig(groups=["entity_write"])
+    await module.register_tools(
+        mcp, config, SimpleNamespace(pool=pool, schema="relationship"), "relationship"
+    )
+    return (await mcp.get_tool("entity_update")).fn
+
+
+@pytest.mark.parametrize("tool", ["memory_entity_update", "relationship_entity_update"])
+@pytest.mark.parametrize("forged", [None, "other"])
+async def test_a_tool_cannot_unmerge_a_tombstone_and_release_its_term(broker_db_url, tool, forged):
+    """Both tools reach one writer; the survivor stays held, the caller's other keys land."""
+    async with _world(broker_db_url) as w:
+        source, survivor, other = await _person(w), await _person(w), await _person(w)
+        await _never(w, EPISODES, PARAM, [source])
+        await _merge(broker_db_url, source, survivor)
+        update = (
+            await _memory_tool(w.owner, tool)
+            if tool == "memory_entity_update"
+            else await _relationship_entity_update(w.owner)
+        )
+        result = await update(
+            str(source),
+            metadata={
+                "merged_into": str(other) if forged else None,
+                "deleted_at": "2026-11-06T00:00:00Z",
+                "unidentified": True,
+                "note": "kept",
+            },
+        )
+        assert result["metadata"]["note"] == "kept"
+        assert result["metadata"]["merged_into"] == str(survivor)
+        assert not {"deleted_at", "unidentified"} & set(result["metadata"])
+        held = await _refused(_episodes_call(w, survivor))
+        assert held.reason is Reason.POLICY
+
+
+async def test_a_metadata_write_does_not_lose_a_merge_it_raced(broker_db_url):
+    """The writer waits on the merge's row lock, then must keep what the merge committed."""
+    async with _world(broker_db_url) as w:
+        source, survivor = await _person(w), await _person(w)
+        update = await _memory_tool(w.owner, "memory_entity_update")
+        async with w.owner.acquire() as merging, merging.transaction():
+            await merging.execute(
+                "UPDATE public.entities SET metadata = metadata || $2::jsonb WHERE id = $1",
+                source,
+                {"merged_into": str(survivor)},
+            )
+            write = asyncio.create_task(update(str(source), metadata={"note": "kept"}))
+            for _ in range(1000):
+                if await w.owner.fetchval(
+                    "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                    "AND datname = current_database()"
+                ):
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("the metadata write never waited on the merge's row lock")
+        result = await write
+        assert result["metadata"] == {"merged_into": str(survivor), "note": "kept"}
+
+
+async def test_a_created_entity_cannot_be_born_a_tombstone(broker_db_url):
+    async with _world(broker_db_url) as w:
+        survivor = await _person(w)
+        create = await _memory_tool(w.owner, "memory_entity_create")
+        created = await create(
+            f"Forged {uuid4()}",
+            "person",
+            metadata={
+                "merged_into": str(survivor),
+                "deleted_at": "2026-11-06T00:00:00Z",
+                "unidentified": True,
+                "note": "kept",
+            },
+        )
+        metadata = await w.owner.fetchval(
+            "SELECT metadata FROM public.entities WHERE id = $1", UUID(created["entity_id"])
+        )
+        assert metadata == {"note": "kept"}
 
 
 async def test_a_contact_merge_leaves_no_survivor_pointer_to_resolve(broker_db_url):

@@ -188,12 +188,7 @@ class TestEntityUpdate:
         assert await entity_update(mock_pool, ENTITY_STR) is None
 
     async def test_updates_and_returns_serialized(self, mock_pool: AsyncMock) -> None:
-        mock_pool.fetchrow = AsyncMock(
-            side_effect=[
-                {"id": ENTITY_UUID, "metadata": {}},
-                _entity_row(name="New Name"),
-            ]
-        )
+        mock_pool.fetchrow = AsyncMock(return_value=_entity_row(name="New Name"))
         result = await entity_update(mock_pool, ENTITY_STR, canonical_name="New Name")
         assert result is not None
         assert result["canonical_name"] == "New Name"
