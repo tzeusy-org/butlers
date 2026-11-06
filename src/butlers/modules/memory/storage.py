@@ -37,11 +37,11 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.modules.memory import knowledge_gaps
 from butlers.modules.memory.content_authority import (
-    MIXED,
     ContentAuthority,
     is_fact_held,
     is_owner_class,
     resolve_content_authority,
+    successor_authority,
     validate_authority,
 )
 
@@ -1099,13 +1099,9 @@ async def _stamp_authority(
     else:
         authority = await resolve_content_authority(pool, routing_context)
     source = carried_source()
-    if (
-        source is not None
-        and is_owner_class(authority.authority)
-        and not is_owner_class(source.content_authority)
-    ):
-        return ContentAuthority(MIXED)  # Owner edit of text the owner did not write.
-    return authority
+    if source is None:
+        return authority
+    return successor_authority(authority, source.content_authority, source.authority_entity_id)
 
 
 async def store_episode(

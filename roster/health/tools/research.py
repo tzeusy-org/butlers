@@ -150,7 +150,7 @@ async def research_update(
     # Fetch existing research fact by ID
     row = await pool.fetchrow(
         "SELECT id, subject, content, metadata, content_authority,"
-        " taint_goal_id, taint_invocation_id FROM facts"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'research' AND scope = 'health'"
         " AND validity = 'active'",
         res_uuid,

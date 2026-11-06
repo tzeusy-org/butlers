@@ -683,6 +683,14 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   receipt when repeated or concurrent. `GET /api/memory/facts?held=true` SHALL list
   held facts. The dashboard Confirm action SHALL record its actor (`owner`) in
   `memory_events`; the MCP `memory_confirm` tool records `session`.
+- A fact that keeps a stored fact's text or metadata (a successor) SHALL take its
+  authority from its writer and its source, not from its writer alone. An owner-class
+  writer over an owner-class source SHALL keep the writer's class. An owner-class or
+  `system` writer over a `third_party` or `mixed` source SHALL store `mixed` and keep the
+  source's `authority_entity_id`. An owner-class writer over a `system` source SHALL store
+  `system`, and over a NULL source SHALL store NULL: unknown lineage is not guessed. A
+  `system` writer over a `system`, NULL or owner-class source SHALL store `system`. A
+  successor SHALL NOT inherit `endorsed_at`.
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
 ID: REQ-module-memory-013
@@ -711,6 +719,14 @@ Scope: v1-mandatory
 - **WHEN** consolidation derives one rule from one owner episode and one
   third-party episode
 - **THEN** the rule SHALL have `content_authority = 'mixed'` and SHALL be held
+
+#### Scenario: A successor keeps its source's non-owner class
+
+- **WHEN** an owner session edits a fact it copies forward
+- **THEN** a successor of an owner-class source SHALL be owner-class, and of a
+  `third_party` or `mixed` source SHALL be `mixed`, held, and name the same sender
+- **AND** a successor of a `system` source SHALL be `system` and of a NULL source SHALL
+  be NULL, and neither SHALL be held
 
 #### Scenario: A forged owner anchor in content is not authority
 

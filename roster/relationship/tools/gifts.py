@@ -209,7 +209,7 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
 
     row = await pool.fetchrow(
         "SELECT id, subject, content, metadata, entity_id, content_authority,"
-        " taint_goal_id, taint_invocation_id FROM facts"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND scope = 'relationship'",
         gift_id,
     )

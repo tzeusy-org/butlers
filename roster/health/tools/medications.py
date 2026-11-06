@@ -180,7 +180,7 @@ async def medication_update(
     # Fetch the existing medication fact by ID.
     row = await pool.fetchrow(
         "SELECT id, subject, metadata, content_authority,"
-        " taint_goal_id, taint_invocation_id FROM facts"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
         med_uuid,
     )
@@ -357,7 +357,7 @@ async def medication_log_dose(
     # Validate medication fact exists
     med_row = await pool.fetchrow(
         "SELECT id, metadata, content_authority,"
-        " taint_goal_id, taint_invocation_id FROM facts"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
         med_uuid,
     )

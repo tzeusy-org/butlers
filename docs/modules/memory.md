@@ -75,7 +75,26 @@ partition (`owner`, `owner_device`), a `system` partition and a non-owner
 partition (`third_party`, `mixed` and unstamped NULL), each with its own runtime
 session, request ID and episode set; see [Consolidation](#consolidation). It gives each derived
 fact and rule the weakest authority among its evidence episodes (differing or
-unknown authority yields `mixed`). Steering memory is gated on that stamp:
+unknown authority yields `mixed`).
+
+A tool that edits a fact by writing a successor keeps the old text or metadata, so the
+successor's authority depends on its source as well as its writer. This applies to
+`gift_update_status`, `loan_settle`, `task_complete`, `condition_update`,
+`medication_update`, `medication_log_dose` and `research_update`, and to any session:
+
+| Writer | Source | Stored | What the owner sees |
+| --- | --- | --- | --- |
+| owner-class | owner-class | the writer's class | a normal fact |
+| owner-class or `system` | `third_party`, `mixed` | `mixed`, same sender | "partly reported by" the sender, held, with a Vouch action |
+| owner-class | `system` | `system` | unlabelled, not held, not a Profile Fact |
+| owner-class | NULL | NULL | "source unverified", not held, not a Profile Fact |
+| `system` | owner-class, `system`, NULL | `system` | unlabelled, not held, not a Profile Fact |
+
+A vouch does not carry: a vouched fact's successor has no `endorsed_at`, so it is held
+again after the next edit. Passing an already superseded fact's id can now fail, because a
+non-owner successor cannot supersede a current owner-authored fact.
+
+Steering memory is gated on that stamp:
 
 - **Rules** from non-owner authority are *held*: stored, but absent from recall,
   Active Rules, and `public.memory_catalog` until the owner endorses them with

@@ -48,6 +48,7 @@ class CarriedSource:
     goal_id: uuid.UUID | None
     invocation_id: uuid.UUID | None
     content_authority: str | None
+    authority_entity_id: uuid.UUID | None
 
 
 _carried: contextvars.ContextVar[CarriedSource | None] = contextvars.ContextVar(
@@ -235,12 +236,15 @@ def carrying_forward(source: Mapping[str, Any]) -> Iterator[None]:
     """Facts written in this block keep text copied from the ``source`` row.
 
     A successor must not launder its source: an unexposed writer keeps the source's
-    writer pointer, and an owner-class writer cannot make non-owner text owner-class.
-    ``source`` must have selected both stamp columns and ``content_authority``.
+    writer pointer, and its authority follows ``content_authority.successor_authority``.
+    ``source`` must have selected both stamp columns and both authority columns.
     """
     token = _carried.set(
         CarriedSource(
-            source["taint_goal_id"], source["taint_invocation_id"], source["content_authority"]
+            source["taint_goal_id"],
+            source["taint_invocation_id"],
+            source["content_authority"],
+            source["authority_entity_id"],
         )
     )
     try:

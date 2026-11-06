@@ -221,7 +221,7 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
             "SELECT id, subject, content, metadata, entity_id, content_authority,"
-            " taint_goal_id, taint_invocation_id FROM facts"
+            " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
             " WHERE id = $1 AND scope = 'relationship' AND validity = 'active' FOR UPDATE",
             loan_id,
         )

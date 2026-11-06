@@ -14,6 +14,7 @@ import json
 import shutil
 import uuid
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from types import ModuleType, SimpleNamespace
@@ -29,10 +30,17 @@ from butlers.core.stamp_account import (
     account_scope,
     account_unstamped,
 )
+from butlers.core.tool_call_capture import (
+    clear_runtime_session_routing_context,
+    reset_current_runtime_session_id,
+    set_current_runtime_session_id,
+    set_runtime_session_routing_context,
+)
 from butlers.core.tool_catalog import STAMP_COMPLETE_READS
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
 from butlers.core_tools._conversation_recall import register_conversation_recall_tool
 from butlers.modules.memory import storage
+from butlers.modules.memory.content_authority import HELD_FACT_SQL
 from butlers.modules.memory.search import resolve_catalog_read_policy
 from butlers.modules.memory.tools.reading import memory_get, memory_recall, memory_search
 from butlers.tools.finance.facts import bulk_update_transactions
@@ -594,6 +602,7 @@ async def test_an_exposed_text_update_of_an_owner_row_takes_the_pointer(
 
 
 _ENTITY = uuid.uuid4()
+_SENDER = uuid.uuid4()
 
 
 def _advance_gift(pool, fact_id):
@@ -657,13 +666,20 @@ _COPIES = [
 ]
 
 
+async def _seed_entities(pool) -> None:
+    for entity, roles in ((_ENTITY, "{owner}"), (_SENDER, "{}")):
+        await pool.execute(
+            "INSERT INTO public.entities (id, canonical_name, entity_type, roles) "
+            "VALUES ($1, $2, 'person', $3::text[]) ON CONFLICT DO NOTHING",
+            entity,
+            str(entity),
+            roles,
+        )
+
+
 async def _seed_copy_source(pool, seed, **authority) -> dict:
     subject, predicate, scope, metadata = seed
-    await pool.execute(
-        "INSERT INTO public.entities (id, canonical_name, entity_type, roles) "
-        "VALUES ($1, 'Copy Source', 'person', '{owner}') ON CONFLICT DO NOTHING",
-        _ENTITY,
-    )
+    await _seed_entities(pool)
     return await storage.store_fact(
         pool,
         subject,
@@ -674,6 +690,36 @@ async def _seed_copy_source(pool, seed, **authority) -> dict:
         metadata=metadata,
         **authority,
     )
+
+
+async def _seed_authority(pool, seed, authority: str | None) -> dict:
+    """A source of this authority, naming a sender where a third party is in it."""
+    if authority is None:  # Legacy: no writer stamps NULL, so it starts as a system row.
+        fact = await _seed_copy_source(pool, seed, content_authority="system")
+        await pool.execute("UPDATE facts SET content_authority = NULL WHERE id = $1", fact["id"])
+        return fact
+    sender = _SENDER if authority in ("third_party", "mixed") else None
+    return await _seed_copy_source(
+        pool, seed, content_authority=authority, authority_entity_id=sender
+    )
+
+
+@contextmanager
+def _writing_as(writer: str) -> Iterator[None]:
+    if writer == "owner":
+        with lineage_scope(_owner_lineage()):
+            yield
+    elif writer == "routed_owner":  # An ordinary owner session: no broker, the live path.
+        session_id = str(uuid.uuid4())
+        set_runtime_session_routing_context(session_id, {"source_entity_id": str(_ENTITY)})
+        token = set_current_runtime_session_id(session_id)
+        try:
+            yield
+        finally:
+            reset_current_runtime_session_id(token)
+            clear_runtime_session_routing_context(session_id)
+    else:  # No routing context: a scheduled session or a dashboard write.
+        yield
 
 
 def _owner_lineage() -> VerifiedLineage:
@@ -696,15 +742,79 @@ async def test_an_unexposed_successor_keeps_its_sources_writer(
     assert _row_account(successor).writers == {(writer.goal_id, writer.invocation_id)}
 
 
+#: (writer, source authority, stored authority, sender kept). Docs: REQ-module-memory-013.
+_SUCCESSOR_RULE = [
+    ("owner", "owner", "owner", False),
+    ("owner", "owner_device", "owner", False),
+    ("owner", "third_party", "mixed", True),
+    ("owner", "mixed", "mixed", True),
+    ("owner", "system", "system", False),
+    ("owner", None, None, False),
+    ("system", "third_party", "mixed", True),
+    ("system", "mixed", "mixed", True),
+    ("system", "system", "system", False),
+    ("system", None, "system", False),
+    ("system", "owner", "system", False),
+    ("routed_owner", "owner", "owner", False),
+    ("routed_owner", "owner_device", "owner", False),
+    ("routed_owner", "third_party", "mixed", True),
+    ("routed_owner", "mixed", "mixed", True),
+    ("routed_owner", "system", "system", False),
+    ("routed_owner", None, None, False),
+]
+
+
+@pytest.mark.parametrize(("writer", "source_authority", "stored", "sender"), _SUCCESSOR_RULE)
 @pytest.mark.parametrize(("copy", "module", "seed"), _COPIES)
 @_db
-async def test_an_owner_successor_of_non_owner_text_is_not_owner_class(
-    stores, monkeypatch, copy, module: ModuleType, seed
+async def test_a_successor_follows_the_authority_rule_on_every_copying_tool(
+    stores, monkeypatch, copy, module: ModuleType, seed, writer, source_authority, stored, sender
 ):
     monkeypatch.setattr(module, "_get_embedding_engine", _engine)
-    source = await _seed_copy_source(stores, seed, content_authority="third_party")
-    with lineage_scope(_owner_lineage()):
+    source = await _seed_authority(stores, seed, source_authority)
+    with _writing_as(writer):
         result = await copy(stores, source["id"])
     successor = await _stored(stores, result["id"])
-    assert successor["content_authority"] == "mixed"
-    assert _row_account(successor).owner_untainted is False
+    assert successor["content_authority"] == stored
+    assert successor["authority_entity_id"] == (
+        _SENDER if sender else successor["authority_entity_id"]
+    )
+    clean = stored in ("owner", "owner_device")
+    assert _row_account(successor).owner_untainted is clean
+    held = await stores.fetchval(f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", result["id"])
+    assert bool(held) is (stored == "mixed")
+
+
+@pytest.mark.parametrize("authority", [None, "system"])
+@_db
+async def test_an_unknown_or_system_successor_reads_unclean_through_each_stamped_read(
+    stores, monkeypatch, authority
+):
+    """A NULL or system successor is neither owner data nor a held stranger's claim."""
+    monkeypatch.setattr(tasks, "_get_embedding_engine", _engine)
+    seed = (f"contact:{_ENTITY}:task:a", "contact_task", "relationship", {})
+    source = await _seed_authority(stores, seed, authority)
+    with _writing_as("routed_owner"):
+        result = await task_complete(stores, source["id"])
+    assert (await _stored(stores, result["id"]))["content_authority"] == authority
+
+    with account_scope() as got:
+        await memory_get(stores, "fact", str(result["id"]), read_policy=_POLICY)
+    assert (got.opened, got.owner_untainted) == (True, False)
+    for read in (memory_search, memory_recall):
+        with account_scope() as found:
+            output = await read(stores, _engine(), "source text", read_policy=_POLICY)
+        assert any(str(result["id"]) == str(item["id"]) for item in output), read
+        assert (found.opened, found.owner_untainted) == (True, False), read
+
+    await stores.execute(
+        "UPDATE facts SET subject = $2, predicate = 'contact_note' WHERE id = $1",
+        result["id"],
+        f"contact:{_ENTITY}",
+    )
+    with account_scope() as noted:
+        assert await note_list(stores, _ENTITY)
+    assert (noted.opened, noted.owner_untainted) == (True, False)
+    assert not await stores.fetchval(
+        f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", result["id"]
+    )

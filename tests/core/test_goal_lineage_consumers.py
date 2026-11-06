@@ -21,11 +21,132 @@ from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_lineage import (
     ExposedOwnerAuthorityError,
     VerifiedLineage,
+    carrying_forward,
     lineage_scope,
+    taint_insert,
     taint_stamp,
+    taint_update,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _writer(*, exposed: bool) -> VerifiedLineage:
+    return VerifiedLineage(
+        goal_id=uuid.uuid4(),
+        invocation_id=uuid.uuid4(),
+        depth=0,
+        origin="owner",
+        exposed=exposed,
+        capability="meal_update",
+        args_digest="digest",
+        call_id=uuid.uuid4(),
+    )
+
+
+def _source(authority: str | None = "owner", *, stamped: bool = False) -> dict[str, Any]:
+    goal, invocation = (uuid.uuid4(), uuid.uuid4()) if stamped else (None, None)
+    return {
+        "taint_goal_id": goal,
+        "taint_invocation_id": invocation,
+        "content_authority": authority,
+        "authority_entity_id": None,
+    }
+
+
+def test_taint_update_names_the_columns_only_under_exposure() -> None:
+    assert taint_update(6).assignments == ""
+    assert taint_update(6).values == ()
+    with lineage_scope(_writer(exposed=False)):
+        assert taint_update(6).assignments == ""
+    writer = _writer(exposed=True)
+    with lineage_scope(writer):
+        update = taint_update(6)
+    assert update.assignments == ", taint_goal_id = $6, taint_invocation_id = $7"
+    assert update.values == (writer.goal_id, writer.invocation_id)
+
+
+def test_carrying_forward_keeps_the_source_writer_unless_the_call_is_exposed() -> None:
+    source = _source(stamped=True)
+    pointer = (source["taint_goal_id"], source["taint_invocation_id"])
+    with carrying_forward(source):
+        assert taint_stamp() == pointer  # No lineage at all: a daemon or session write.
+        assert taint_insert(4).values == pointer
+        with lineage_scope(_writer(exposed=False)):
+            assert taint_stamp() == pointer
+        writer = _writer(exposed=True)
+        with lineage_scope(writer):
+            assert taint_stamp() == (writer.goal_id, writer.invocation_id)
+    assert taint_stamp() == (None, None)
+
+
+def test_carrying_forward_ends_when_its_block_raises() -> None:
+    with pytest.raises(RuntimeError), carrying_forward(_source(stamped=True)):
+        raise RuntimeError
+    assert taint_stamp() == (None, None)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["taint_goal_id", "taint_invocation_id", "content_authority", "authority_entity_id"],
+)
+def test_carrying_forward_refuses_a_source_that_did_not_select_its_stamp(missing: str) -> None:
+    source = _source()
+    del source[missing]
+    with pytest.raises(KeyError), carrying_forward(source):
+        pass
+
+
+@pytest.mark.parametrize(
+    ("source", "written", "stored"),
+    [
+        ("owner", "owner", "owner"),
+        ("owner_device", "owner", "owner"),
+        ("owner", "owner_device", "owner_device"),
+        ("third_party", "owner", "mixed"),
+        ("mixed", "owner", "mixed"),
+        ("system", "owner", "system"),
+        (None, "owner", None),
+        ("third_party", "owner_device", "mixed"),
+        ("system", "owner_device", "system"),
+        (None, "owner_device", None),
+        ("third_party", "system", "mixed"),
+        ("mixed", "system", "mixed"),
+        ("system", "system", "system"),
+        (None, "system", "system"),
+        ("owner", "system", "system"),
+        ("third_party", "third_party", "third_party"),
+        ("owner", "third_party", "third_party"),
+        (None, "third_party", "third_party"),
+    ],
+)
+async def test_a_successor_keeps_its_sources_non_owner_class(
+    source: str | None, written: str, stored: str | None
+) -> None:
+    from butlers.modules.memory.storage import _stamp_authority
+
+    with carrying_forward(_source(source)):
+        authority = await _stamp_authority(MagicMock(), written, None)
+    assert authority.authority == stored
+
+
+async def test_stamp_authority_weakens_a_derived_owner_authority_too() -> None:
+    from butlers.modules.memory import storage
+    from butlers.modules.memory.content_authority import ContentAuthority
+
+    derived = ContentAuthority("owner", uuid.uuid4())
+    sender = uuid.uuid4()
+    with patch.object(storage, "resolve_content_authority", AsyncMock(return_value=derived)):
+        assert (await storage._stamp_authority(MagicMock(), None, None)) == derived
+        with carrying_forward(_source("owner")):
+            assert (await storage._stamp_authority(MagicMock(), None, None)) == derived
+        with carrying_forward({**_source("third_party"), "authority_entity_id": sender}):
+            kept = await storage._stamp_authority(MagicMock(), None, None)
+        with carrying_forward(_source("system")):
+            system = await storage._stamp_authority(MagicMock(), None, None)
+    assert (kept.authority, kept.entity_id) == ("mixed", sender)  # The sender stays named.
+    assert (system.authority, system.entity_id) == ("system", None)  # Not the owner's id.
+
 
 _HA_ARGS = {
     "domain": "lock",

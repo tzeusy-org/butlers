@@ -76,7 +76,7 @@ _DASHBOARD_CHANNEL = "dashboard"
 class ContentAuthority:
     """A stamped authority plus the sender entity it was derived from."""
 
-    authority: str
+    authority: str | None
     entity_id: uuid.UUID | None = None
 
 
@@ -208,6 +208,31 @@ async def resolve_content_authority(
         return ContentAuthority(SYSTEM)
     owner_entity_id = await fetch_owner_entity_id(pool)
     return classify_routing_context(routing_context, owner_entity_id)
+
+
+def successor_authority(
+    writer: ContentAuthority,
+    source_authority: str | None,
+    source_entity_id: uuid.UUID | None,
+) -> ContentAuthority:
+    """The authority of a row that keeps a stored row's text, written by ``writer``.
+
+    A successor keeps its source's non-owner class, and ``mixed`` applies only where a
+    third party is in the lineage. An owner edit of a ``system`` row stays ``system`` and of
+    a legacy NULL row stays NULL, since neither is a stranger's claim and neither may be held
+    (REQ-module-memory-013). Every result but owner over owner reads as unclean (RFC 0038 D6).
+
+    This is not ``combine_authorities``, where ``owner`` with ``system`` or unknown evidence
+    is ``mixed``: consolidation restates its evidence in new words, so it cannot say whose a
+    claim is. A successor has one source, whose class is known and is kept.
+    """
+    if not (is_owner_class(writer.authority) or writer.authority == SYSTEM):
+        return writer
+    if source_authority in (THIRD_PARTY, MIXED):
+        return ContentAuthority(MIXED, source_entity_id)
+    if writer.authority == SYSTEM or is_owner_class(source_authority):
+        return writer
+    return ContentAuthority(source_authority)
 
 
 def combine_authorities(authorities: Iterable[str | None]) -> str:

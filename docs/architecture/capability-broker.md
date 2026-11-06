@@ -168,7 +168,7 @@ source for every SQL write to these stores and gives each a disposition: stamps,
 no text (checked: assigns no `content`, `metadata`, `subject` or `predicate`), no
 model-reachable caller (from reading the callers, not checked), or conversation
 routing. A new statement, a new copying function, or a new presentable writer
-fails there until it is audited.
+fails there until it is audited, within the limits of what the scan reads (below).
 
 - **Text updates under exposure.** `meal_update`, `measurement_update`,
   `symptom_update` and `bulk_update_transactions` set the pointer with
@@ -182,17 +182,24 @@ fails there until it is audited.
 - **Copied rows.** A successor that keeps a stored row's text or metadata
   (`gift_update_status`, `loan_settle`, `task_complete`, `condition_update`,
   `medication_update`, `medication_log_dose`, `research_update`) writes inside
-  `goal_lineage.carrying_forward`. An unexposed writer keeps the source's pointer,
-  and an owner-class writer over non-owner text stores `mixed`, not `owner`.
+  `goal_lineage.carrying_forward`. An unexposed writer keeps the source's pointer.
+  The authority rule is live, not dark, because it applies to any session; see
+  REQ-module-memory-013 and [Content authority](../modules/memory.md#content-authority).
 
 Three limits go with these verdicts:
 
 - **One pointer per row.** A row names one writer: the first for a counter or
   flag, the latest for text. A partly merged row (`bulk_update_transactions`, a
   metadata edit) keeps an earlier writer's fields under the later writer's label.
-- **The scan reads literals.** It sees SQL strings and f-strings. A table name
-  built by concatenation, or dynamic SQL outside the memory module, is not seen.
-  Fields read through a helper are not seen by the copy check either.
+  A copy under a second exposed writer keeps the first writer's text, such as
+  `loan_settle`'s verbatim description, under the second writer's label alone: the row
+  stays exposed, but the first writer's principals are not in its label.
+- **The scan reads literals.** It sees `UPDATE`, `INSERT INTO` and `MERGE INTO` on a
+  table named plainly, by schema, with `ONLY`, quoted, or by an f-string field, and any
+  field it cannot resolve to a module constant needs a disposition. It sees every
+  statement in a string. Two things stay uncaught: SQL built with `+`, and a copier that
+  reads the row through a helper instead of a literal in the function. Every current
+  `store_*` caller was read by hand for the second, and a future one is not guarded.
 - **Pre-partition laundering.** A fact or rule that was laundered to `owner`
   before the partition reads as clean until the authority demotion has run
   (`docs/operations/memory-authority-demotion.md`). The declaration is dark, so
