@@ -50,6 +50,7 @@ class CandidateNameUnavailable(Exception):
 
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
+_SYNC_METADATA_KEYS = ("duplicate_candidate", "profile", "sources")
 # A loss greater than half the active links is suspect; equality is accepted.
 # Empty full lists are always refused, independently of this limit.
 DEFAULT_MAX_SHRINK_FRACTION = 0.5
@@ -73,6 +74,17 @@ def _parse_jsonb(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _owned_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """The top-level metadata keys a sync writes, as a patch for ``metadata || $n``.
+
+    Patching only these keeps any other key as the row holds it at the UPDATE: a
+    merge's ``merged_into``, or an ``unidentified`` that a promote removed after the
+    sync's read. ``profile`` and ``sources`` are still whole sub-documents from that
+    read, so a concurrent write to the same sub-document can be lost.
+    """
+    return {key: metadata[key] for key in _SYNC_METADATA_KEYS if key in metadata}
 
 
 def _deep_set(d: dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -386,11 +398,12 @@ class ContactBackfillWriter:
         self._stamp_provenance(metadata, contact)
 
         db = executor or self._pool
-        # Pass the full merged dict directly: the pool's registered JSONB codec encodes it
+        # Pass the dict directly: the pool's registered JSONB codec encodes it
         # (json.dumps once). Wrapping in json.dumps here would double-encode.
         await db.execute(
-            "UPDATE public.entities SET metadata = $1, updated_at = now() WHERE id = $2",
-            metadata,
+            "UPDATE public.entities SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, "
+            "updated_at = now() WHERE id = $2",
+            _owned_metadata(metadata),
             entity_id,
         )
 
@@ -613,8 +626,11 @@ class ContactBackfillWriter:
         self._stamp_provenance(existing_meta, contact)
 
         # Pass the dict directly: the registered JSONB codec encodes it once.
-        set_clauses: list[str] = ["metadata = metadata || $2::jsonb", "updated_at = now()"]
-        params: list[Any] = [local_id, existing_meta]
+        set_clauses: list[str] = [
+            "metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb",
+            "updated_at = now()",
+        ]
+        params: list[Any] = [local_id, _owned_metadata(existing_meta)]
         idx = 3
 
         if "canonical_name" in updates:

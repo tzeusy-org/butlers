@@ -1621,11 +1621,6 @@ async def promote_entity(
                 if row is None:
                     raise HTTPException(status_code=404, detail="Entity not found")
 
-                # Merge metadata: remove the 'unidentified' key and 'duplicate_candidate' key.
-                existing_meta: dict = dict(row["metadata"]) if row["metadata"] else {}
-                existing_meta.pop("unidentified", None)
-                existing_meta.pop("duplicate_candidate", None)
-
                 if body.roles is not None:
                     new_roles = body.roles
                 else:
@@ -1637,7 +1632,10 @@ async def promote_entity(
                     SET canonical_name = $2,
                         entity_type    = $3,
                         roles          = $4,
-                        metadata       = $5,
+                        -- Removed in place: the batch lock above is FOR KEY SHARE, so a
+                        -- plain metadata UPDATE can commit after the read.
+                        metadata       = COALESCE(metadata, '{}'::jsonb)
+                                         - ARRAY['unidentified', 'duplicate_candidate'],
                         updated_at     = now()
                     WHERE id = $1
                     RETURNING id, canonical_name, entity_type, aliases, roles, metadata,
@@ -1647,7 +1645,6 @@ async def promote_entity(
                     body.canonical_name,
                     body.entity_type,
                     new_roles,
-                    existing_meta,
                 )
                 entity_id = updated["id"]
                 result_row = updated
