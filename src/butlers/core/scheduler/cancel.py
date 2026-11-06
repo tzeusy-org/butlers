@@ -13,6 +13,11 @@ def raise_if_task_cancelled(exc: BaseException) -> None:
     ``asyncio.timeout``. That is a failure of the job, and the caller handles it as one.
     ``Task.cancelling()`` counts only the ``.cancel()`` calls made on this task.
     """
-    task = asyncio.current_task()
-    if isinstance(exc, asyncio.CancelledError) and task is not None and task.cancelling() > 0:
+    if isinstance(exc, asyncio.CancelledError) and task_cancel_requested():
         raise exc
+
+
+def task_cancel_requested() -> bool:
+    """Whether someone called ``.cancel()`` on the running task."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0

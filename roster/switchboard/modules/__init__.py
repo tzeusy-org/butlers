@@ -37,6 +37,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from butlers.core.dashboard_links import dashboard_base_url
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.credential_store import resolve_owner_telegram_recipient
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta
 from butlers.tools.switchboard.runtime_attention.outbox import RuntimeAttentionOutbox
@@ -161,7 +162,8 @@ class SwitchboardModule(Module):
         while True:
             try:
                 await worker.run_once()
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.exception("Runtime-attention delivery worker pass failed")
             try:
                 await asyncio.sleep(_RUNTIME_ATTENTION_POLL_INTERVAL_SECONDS)

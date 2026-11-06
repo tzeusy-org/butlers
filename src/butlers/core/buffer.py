@@ -44,6 +44,7 @@ from typing import Any
 
 from butlers.config import BufferConfig
 from butlers.core.metrics import ButlerMetrics
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 
 logger = logging.getLogger(__name__)
 
@@ -494,9 +495,10 @@ class DurableBuffer:
 
                 await self._process_fn(ref)
 
-            except asyncio.CancelledError:
-                raise
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                # This message's own stray cancel is its failure. Ending the worker for it would
+                # leave one less for every later message until a restart.
+                raise_if_task_cancelled(exc)
                 logger.exception(
                     "Buffer worker %d: processing failed for request_id=%s",
                     worker_id,
