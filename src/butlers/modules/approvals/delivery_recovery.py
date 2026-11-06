@@ -184,36 +184,66 @@ class ApprovalDeliveryRepository:
         return float(remaining) if remaining is not None else None
 
     async def cancel_ineligible_presentations(self) -> int:
-        """Cancel only presentation recovery; never transition a domain action."""
+        """Cancel only presentation recovery; never transition a domain action.
+
+        Each statement updates several rows outside the action lock that serializes every
+        other multi-row writer of them, so it skips locked rows rather than wait: holding one
+        row while waiting on another could deadlock an owner's decision. The next tick takes
+        anything skipped.
+        """
         direct = await self._pool.execute(
             """
+            WITH doomed AS (
+                SELECT p.id,
+                       CASE
+                           WHEN pa.expires_at IS NOT NULL
+                                AND pa.expires_at <= clock_timestamp() THEN 'action_expired'
+                           WHEN pa.status IN ('approved', 'executed') THEN 'action_approved'
+                           WHEN pa.status = 'rejected' THEN 'action_rejected'
+                           WHEN pa.status = 'cancelled' THEN 'action_cancelled'
+                           WHEN pa.status = 'expired' THEN 'action_expired'
+                           ELSE 'action_abandoned'
+                       END AS reason_code
+                  FROM approval_delivery_presentations AS p
+                  JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+                  JOIN pending_actions AS pa ON pa.id = i.action_id
+                 WHERE p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
+                   AND (
+                       pa.status <> 'pending'
+                       OR (pa.expires_at IS NOT NULL AND pa.expires_at <= clock_timestamp())
+                   )
+                 FOR UPDATE OF p SKIP LOCKED
+            )
             UPDATE approval_delivery_presentations AS p
                SET state = 'cancelled',
-                   last_reason_code = CASE
-                       WHEN pa.expires_at IS NOT NULL
-                            AND pa.expires_at <= clock_timestamp() THEN 'action_expired'
-                       WHEN pa.status IN ('approved', 'executed') THEN 'action_approved'
-                       WHEN pa.status = 'rejected' THEN 'action_rejected'
-                       WHEN pa.status = 'cancelled' THEN 'action_cancelled'
-                       WHEN pa.status = 'expired' THEN 'action_expired'
-                       ELSE 'action_abandoned'
-                   END,
+                   last_reason_code = doomed.reason_code,
                    next_attempt_at = NULL,
                    claim_token = NULL,
                    claim_expires_at = NULL,
                    updated_at = clock_timestamp()
-              FROM approval_delivery_intents AS i
-              JOIN pending_actions AS pa ON pa.id = i.action_id
-             WHERE p.intent_id = i.id
-               AND p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
-               AND (
-                   pa.status <> 'pending'
-                   OR (pa.expires_at IS NOT NULL AND pa.expires_at <= clock_timestamp())
-               )
+              FROM doomed
+             WHERE p.id = doomed.id
             """
         )
         cohort = await self._pool.execute(
             """
+            WITH doomed AS (
+                SELECT p.id
+                  FROM approval_delivery_presentations AS p
+                 WHERE p.cohort_id IS NOT NULL
+                   AND p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM approval_delivery_cohort_members AS m
+                         JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+                         JOIN pending_actions AS pa ON pa.id = i.action_id
+                        WHERE m.cohort_id = p.cohort_id
+                          AND m.eligible
+                          AND pa.status = 'pending'
+                          AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                   )
+                 FOR UPDATE OF p SKIP LOCKED
+            )
             UPDATE approval_delivery_presentations AS p
                SET state = 'cancelled',
                    last_reason_code = 'cohort_empty',
@@ -221,18 +251,8 @@ class ApprovalDeliveryRepository:
                    claim_token = NULL,
                    claim_expires_at = NULL,
                    updated_at = clock_timestamp()
-             WHERE p.cohort_id IS NOT NULL
-               AND p.state IN ('ready', 'claimed', 'handoff_started', 'retry_wait')
-               AND NOT EXISTS (
-                   SELECT 1
-                     FROM approval_delivery_cohort_members AS m
-                     JOIN approval_delivery_intents AS i ON i.id = m.intent_id
-                     JOIN pending_actions AS pa ON pa.id = i.action_id
-                    WHERE m.cohort_id = p.cohort_id
-                      AND m.eligible
-                      AND pa.status = 'pending'
-                      AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
-               )
+              FROM doomed
+             WHERE p.id = doomed.id
             """
         )
         return _updated_rows(direct) + _updated_rows(cohort)
