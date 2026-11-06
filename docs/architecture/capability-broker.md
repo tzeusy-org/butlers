@@ -93,9 +93,11 @@ Stored labels resolve through the writer pointer (lead decision on
 bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
 Unstamped legacy records keep their content-authority behaviour (original
 authority preserved, or unknown). Domains report the stamp account over the
-wire ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)); until the catalog
-admits a `stamped` descriptor, every model-reachable read is `untrusted` and
-the report changes no label.
+wire ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)). The catalog admits a
+`stamped` descriptor only for an audited read
+([Stamp completeness](#stamp-completeness-d6-bu-dhloi133)); every other
+model-reachable read over these stores stays `untrusted`, and its report
+changes no label.
 
 ### Stamp accounts (D6, bu-dhloi1.28)
 
@@ -137,10 +139,45 @@ or a proxied result) being taken for this one.
 
 A report shows which rows the readers saw. It cannot show that a tool returned
 nothing else: one tool may also read a store whose reader does not account.
-That completeness is a per-tool audit. The catalog check still refuses every
-`stamped` descriptor (`validate_authorization_catalog`), and the broker reads
-a receipt's account only for a `stamped` capability. So precision arrives one
-audited tool at a time.
+That completeness is a per-tool audit, and the broker reads a receipt's account
+only for a `stamped` capability. So precision arrives one audited tool at a
+time.
+
+### Stamp completeness (D6, bu-dhloi1.33)
+
+`validate_authorization_catalog` refuses a `stamped` descriptor unless it is in
+`tool_catalog.STAMP_COMPLETE_READS`, is a read of known provenance, and declares
+no store outside its audit. `tests/contracts/test_stamp_complete_tools.py` runs
+each tool below against a real database and walks its whole output: a returned
+value that no accounted record holds fails, unless the field is named here.
+
+| Tool | Verdict | Fields not from an accounted record |
+| --- | --- | --- |
+| `memory_search`, `memory_recall` | `stamped` | none: one table per type, scores added to the accounted row |
+| `memory_get` | `stamped` | none; it also returns retracted and forgotten rows |
+| `note_list` | `stamped` | `contact_id`, the caller's argument |
+| `conversation_thread_read` | `stamped` | `conversation_id`, the caller's argument |
+| `conversation_recall` | `stamped` | `butler_name` (server-held routing identity), `deep_link` (derived from it), `snippet` (`ts_headline` over the accounted row's content) |
+| `relationship_lookup` | `untrusted` | the entity header and candidates: `public.entities` has no stamp and connectors write it. `account_unstamped` keeps its report unclean |
+| `note_search` | `untrusted` | not audited; its reader does not account |
+
+Three limits go with these verdicts:
+
+- **Mutators under exposure.** An exposed call must not put text into an owner
+  row and leave it clean. `memory_mark_harmful` drops its `reason` (which would
+  otherwise reach rule content through anti-pattern inversion), and a correction
+  forget keeps its reason only in `memory_events`. Both stamp the row if it has
+  no pointer. `mark_helpful` and `confirm` change counters and carry no text, so
+  they stay unstamped.
+- **One pointer per row.** A row names its first exposed writer only; a later
+  exposed mutator's counters are not separately labelled.
+- **Pre-partition laundering.** A fact or rule that was laundered to `owner`
+  before the partition reads as clean until the authority demotion has run
+  (`docs/operations/memory-authority-demotion.md`). The declaration is dark, so
+  the demotion's receipts are a precondition of the switch release, not of this
+  catalog entry.
+
+Categories stay all six on these tools: their free text can hold anything.
 
 A capability's categories are its descriptor's required `categories` field
 (bu-dhloi1.27), a sorted subset of the six; D4 `output_sensitivity` is not

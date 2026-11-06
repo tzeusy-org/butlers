@@ -2985,6 +2985,23 @@ async def _forget_plain(
     return found
 
 
+async def _stamp_exposed_mutation(conn: Any, table: str, memory_id: uuid.UUID) -> None:
+    """Mark a row an exposed call changed; an earlier writer keeps its pointer (D6).
+
+    The two columns are one pointer, so they only ever move together. Keeping the
+    first writer keeps the label of the row's content; the mutation itself stores
+    only counters and timestamps, never the exposed caller's text.
+    """
+    goal_id, invocation_id = taint_stamp()
+    await conn.execute(
+        f"UPDATE {table} SET taint_goal_id = $2, taint_invocation_id = $3 "
+        "WHERE id = $1 AND taint_goal_id IS NULL AND taint_invocation_id IS NULL",
+        memory_id,
+        goal_id,
+        invocation_id,
+    )
+
+
 async def _forget_with_correction_provenance(
     pool: Pool,
     memory_type: str,
@@ -3006,6 +3023,10 @@ async def _forget_with_correction_provenance(
     provenance_patch: dict = {"correction_id": correction_id}
     if correction_reason is not None:
         provenance_patch["correction_reason"] = correction_reason
+    # D6: an exposed caller's text stays out of the row (memory_events keeps it).
+    exposed = taint_stamp()[0] is not None
+    if exposed:
+        provenance_patch = {}
 
     now = datetime.now(UTC)
     table = _memory_relation(memory_type, memory_schema)
@@ -3045,6 +3066,8 @@ async def _forget_with_correction_provenance(
             found = result.endswith("1")
 
             if found:
+                if exposed:
+                    await _stamp_exposed_mutation(conn, table, memory_id)
                 # Insert correction-driven retraction event for audit linkage.
                 event_payload = {
                     "memory_id": str(memory_id),
@@ -3693,7 +3716,10 @@ async def mark_harmful(
             if isinstance(metadata, str):
                 metadata = json.loads(metadata)
 
-            if reason:
+            # D6: an exposed caller's text never joins a stored rule, whose content
+            # the anti-pattern inversion builds from these reasons.
+            exposed = taint_stamp()[0] is not None
+            if reason and not exposed:
                 reasons = metadata.get("harmful_reasons", [])
                 reasons.append(reason)
                 metadata["harmful_reasons"] = reasons
@@ -3712,6 +3738,8 @@ async def mark_harmful(
                 metadata,
                 rule_id,
             )
+            if exposed:
+                await _stamp_exposed_mutation(conn, "rules", rule_id)
 
             row["effectiveness_score"] = effectiveness
             row["maturity"] = new_maturity

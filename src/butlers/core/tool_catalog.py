@@ -539,6 +539,43 @@ def _authorization_problems(descriptor: ToolDescriptor) -> list[str]:
     return problems
 
 
+_MEMORY_STORES = frozenset({"episodes", "facts", "rules", "runtime_config", "{DYNAMIC}"})
+#: RFC 0038 D6 reads audited as stamp-complete (bu-dhloi1.33), with the stores each
+#: audit covered: every record they return reaches ``stamp_account.account_records``
+#: and nothing else reaches their output. ``tests/contracts/test_stamp_complete_tools.py``
+#: pins each one. ``relationship_lookup`` is not here: its entity header and candidates
+#: come from ``public.entities``, which has no stamp, so it stays ``untrusted``.
+STAMP_COMPLETE_READS: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
+    {
+        ("memory", "memory_search"): _MEMORY_STORES,
+        ("memory", "memory_recall"): _MEMORY_STORES,
+        ("memory", "memory_get"): _MEMORY_STORES,
+        ("relationship", "note_list"): frozenset({"facts"}),
+        ("core", "conversation_recall"): frozenset(
+            {"public.dashboard_conversations", "public.dashboard_messages"}
+        ),
+        ("core", "conversation_thread_read"): frozenset(
+            {"public.dashboard_conversations", "public.dashboard_messages"}
+        ),
+    }
+)
+
+
+def _validate_stamp_complete(descriptor: ToolDescriptor) -> None:
+    """A stamped read must be an audited one, over exactly the stores its audit covered."""
+    name = descriptor.canonical_name
+    audited = STAMP_COMPLETE_READS.get((descriptor.module_name, name))
+    if audited is None:
+        raise ToolCatalogError(f"stamped output has no audited stamp producer: {name}")
+    if descriptor.effect_class != "read" or descriptor.unknown_output_source:
+        raise ToolCatalogError(f"stamped output of {name} must be a read of known provenance")
+    unaudited = set(descriptor.read_stores) - audited
+    if unaudited:
+        raise ToolCatalogError(
+            f"stamped read {name} covers unaudited stores: {', '.join(sorted(unaudited))}"
+        )
+
+
 def validate_authorization_catalog(
     catalog: ToolCatalog, *, store_writers: Mapping[str, StoreWriters]
 ) -> None:
@@ -582,7 +619,7 @@ def validate_authorization_catalog(
             if descriptor.unknown_output_source:
                 raise ToolCatalogError(f"trusted read {name} has unknown output provenance")
         if descriptor.output_trust == "stamped":
-            raise ToolCatalogError(f"stamped output has no implemented stamp producer: {name}")
+            _validate_stamp_complete(descriptor)
 
 
 async def build_tool_catalog(
