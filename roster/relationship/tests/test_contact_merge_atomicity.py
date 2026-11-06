@@ -113,14 +113,21 @@ async def test_a_failed_entity_merge_rolls_the_whole_contact_merge_back(rel_pool
     ("tombstoned", "error"),
     [("target", TargetEntityTombstonedError), ("source", SourceEntityTombstonedError)],
 )
-async def test_a_refused_entity_merge_refuses_the_contact_merge(rel_pool, tombstoned, error):
+@pytest.mark.parametrize("marker", ["merged_into", "tombstone", "deleted_at"])
+async def test_a_refused_entity_merge_refuses_the_contact_merge(
+    rel_pool, tombstoned, error, marker
+):
     """The merge authority's own refusal, with no fault injected."""
     source_entity, target_entity, fact, source, target = await _pair(rel_pool)
     other = await _entity(rel_pool, "Elsewhere")
     await rel_pool.execute(
         "UPDATE public.entities SET metadata = metadata || $2::jsonb WHERE id = $1",
         source_entity if tombstoned == "source" else target_entity,
-        {"merged_into": str(other)},
+        {
+            "merged_into": {"merged_into": str(other)},
+            "tombstone": {"tombstone": True},
+            "deleted_at": {"deleted_at": "2026-11-06T00:00:00Z"},
+        }[marker],
     )
     with pytest.raises(error):
         await contacts_mod.contact_merge(rel_pool, source, target)

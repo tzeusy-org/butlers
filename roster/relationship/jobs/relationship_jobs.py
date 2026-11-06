@@ -3115,6 +3115,8 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 SELECT id, canonical_name, entity_type, roles
                   FROM public.entities
                  WHERE (metadata->>'merged_into') IS NULL
+                   AND (metadata->>'tombstone') IS DISTINCT FROM 'true'
+                   AND (metadata->>'deleted_at') IS NULL
                    AND TRIM(canonical_name) != ''
                  ORDER BY created_at ASC, id ASC
                 """

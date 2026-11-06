@@ -330,6 +330,31 @@ async def test_entity_dedup_tombstoned_entity_excluded(
     assert result["errors"] == 0
 
 
+@pytest.mark.parametrize(
+    "marker",
+    [{"tombstone": True}, {"tombstone": "true"}, {"deleted_at": "2026-11-06T00:00:00Z"}],
+    ids=["forget_entity", "tombstone_text", "soft_deleted"],
+)
+async def test_entity_dedup_never_proposes_a_forgotten_or_deleted_entity(
+    rel_pool: asyncpg.Pool, mock_propose_insight, marker
+):
+    """The oldest of a name group is the target, and the merge would always refuse that one."""
+    forgotten = await _make_entity(rel_pool, name="Chloe Dupont")
+    await rel_pool.execute(
+        "UPDATE public.entities SET metadata = metadata || $2::jsonb WHERE id = $1",
+        forgotten,
+        marker,
+    )
+    older_live = await _make_entity(rel_pool, name="Chloe Dupont")
+    newer_live = await _make_entity(rel_pool, name="Chloe Dupont")
+
+    result = await run_entity_dedup_curation(rel_pool)
+
+    assert result["entities_scanned"] == 2
+    assert result["pairs_surfaced"] == 1
+    assert await _count_pending_for_pair(rel_pool, newer_live, older_live) == 1
+
+
 async def test_entity_dedup_both_tombstoned_excluded(rel_pool: asyncpg.Pool, mock_propose_insight):
     """When both entities in a potential pair are tombstoned, no pair is surfaced."""
     dummy = uuid.uuid4()
