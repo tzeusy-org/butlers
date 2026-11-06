@@ -787,8 +787,11 @@ class TestEntityRebindReceipts:
                 "references_rebound": 0,
                 "status": "pending",
                 "error_class": None,
+                "merged_into": None,
+                "forgotten": False,
             }
         )
+        conn.fetchval = AsyncMock(return_value=None)
         transaction = AsyncMock()
         transaction.__aenter__ = AsyncMock(return_value=None)
         transaction.__aexit__ = AsyncMock(return_value=False)

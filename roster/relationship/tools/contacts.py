@@ -915,7 +915,7 @@ async def contact_merge(
     # recovers a failure).
     if merge is not None:
         try:
-            await settle_entity_merge(pool, merge)
+            settled = await settle_entity_merge(pool, merge)
         except Exception:
             logger.exception(
                 "contact_merge: settling the committed entity merge failed "
@@ -923,6 +923,15 @@ async def contact_merge(
                 src_entity_id,
                 tgt_entity_id,
             )
+        else:
+            if settled.failed_schemas:
+                logger.warning(
+                    "contact_merge: entity rebind failed for schemas %s "
+                    "(source=%s target=%s); that daemon retries its failed receipt",
+                    ", ".join(settled.failed_schemas),
+                    src_entity_id,
+                    tgt_entity_id,
+                )
 
     # Fetch the updated target
     updated_row = await pool.fetchrow(_CONTACT_MERGE_SELECT, target_id)

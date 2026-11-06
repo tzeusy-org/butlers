@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import shutil
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -18,7 +19,11 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
-from butlers.entity_rebind import rebind_entity_references, run_entity_rebind_listener
+from butlers.entity_rebind import (
+    process_pending_entity_rebinds,
+    rebind_entity_references,
+    run_entity_rebind_listener,
+)
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.relationship.entity_merge import (
@@ -874,6 +879,52 @@ _FORGOTTEN_MARKERS = {
 }
 
 
+async def _receipt_with_fact(
+    pool, name: str, *, status: str = "pending", age: str = "0 seconds"
+) -> tuple[UUID, UUID, UUID]:
+    """(rebind id, target entity, local fact on the source) for a seeded receipt."""
+    source_id = await _insert_entity(pool, f"{name} source")
+    target_id = await _insert_entity(pool, f"{name} target")
+    fact_id = await pool.fetchval(
+        """
+        INSERT INTO facts (subject, entity_id, predicate, content)
+        VALUES ('opaque-subject', $1, 'note', 'opaque') RETURNING id
+        """,
+        source_id,
+    )
+    rebind_id = uuid4()
+    failed = status == "failed"
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema, status,
+            references_rebound, error_class, completed_at, updated_at
+        ) VALUES (
+            $1, $2, $3, 'relationship', $4, $5, $6,
+            CASE WHEN $7::boolean THEN now() END, now() - $8::text::interval
+        )
+        """,
+        rebind_id,
+        source_id,
+        target_id,
+        status,
+        2 if failed else 0,
+        "RuntimeError" if failed else None,
+        failed,
+        age,
+    )
+    return rebind_id, target_id, fact_id
+
+
+async def _receipt_state(pool, rebind_id: UUID) -> tuple:
+    row = await pool.fetchrow(
+        "SELECT status, error_class, references_rebound FROM public.entity_rebind_log "
+        "WHERE rebind_id = $1 AND target_schema = 'relationship'",
+        rebind_id,
+    )
+    return row["status"], row["error_class"], row["references_rebound"]
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
@@ -905,6 +956,276 @@ async def test_a_forgotten_entity_cannot_be_merged_on_either_side(
     assert not await pool.fetchval(
         "SELECT count(*) FROM public.entity_rebind_log WHERE source_entity_id = $1", source
     )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_an_idle_listener_settles_a_receipt_whose_event_it_missed(merge_pool) -> None:
+    """No event and no reconnect: the idle sweep alone settles the receipt (bu-dhloi1.52)."""
+    pool = merge_pool
+    ready = asyncio.Event()
+    listener = asyncio.create_task(
+        run_entity_rebind_listener(
+            pool,
+            target_schema="relationship",
+            health_poll_interval_s=0.01,
+            pending_sweep_interval_s=0.02,
+            ready_event=ready,
+        )
+    )
+    try:
+        await asyncio.wait_for(ready.wait(), timeout=2)
+        rebind_id, target_id, fact_id = await _receipt_with_fact(pool, "Missed")
+        for _ in range(100):
+            if (await _receipt_state(pool, rebind_id))[0] == "active":
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("an idle listener did not settle the receipt it missed")
+    finally:
+        listener.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await listener
+
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_a_failed_receipt_is_retried_once_its_backoff_has_passed(merge_pool) -> None:
+    pool = merge_pool
+    rebind_id, target_id, fact_id = await _receipt_with_fact(
+        pool, "Retried", status="failed", age="1 day"
+    )
+
+    await process_pending_entity_rebinds(pool, target_schema="relationship")
+
+    # The count already reported is kept, and the retry adds to it.
+    assert await _receipt_state(pool, rebind_id) == ("active", None, 3)
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_a_failing_retry_stays_failed_and_restarts_its_backoff(merge_pool) -> None:
+    pool = merge_pool
+    rebind_id, _target_id, fact_id = await _receipt_with_fact(
+        pool, "Still failing", status="failed", age="1 day"
+    )
+    source_id = await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id)
+
+    with patch("butlers.entity_rebind._repoint_facts", AsyncMock(side_effect=ValueError("no"))):
+        await process_pending_entity_rebinds(pool, target_schema="relationship")
+
+    assert await _receipt_state(pool, rebind_id) == ("failed", "ValueError", 2)
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == source_id
+    # Just retried, so the next sweep leaves it alone.
+    with patch("butlers.entity_rebind._repoint_facts", AsyncMock()) as repoint:
+        await process_pending_entity_rebinds(pool, target_schema="relationship")
+    repoint.assert_not_awaited()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_a_recently_failed_receipt_waits_for_its_backoff(merge_pool) -> None:
+    pool = merge_pool
+    rebind_id, _target_id, fact_id = await _receipt_with_fact(pool, "Recent", status="failed")
+    source_id = await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id)
+
+    assert await process_pending_entity_rebinds(pool, target_schema="relationship") == []
+
+    assert await _receipt_state(pool, rebind_id) == ("failed", "RuntimeError", 2)
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == source_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_a_live_event_does_not_reopen_a_failed_receipt(merge_pool) -> None:
+    """An event names a receipt directly, so it would skip the backoff; only a sweep retries."""
+    pool = merge_pool
+    rebind_id, target_id, fact_id = await _receipt_with_fact(
+        pool, "Live event", status="failed", age="1 day"
+    )
+    source_id = await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id)
+
+    receipt = await rebind_entity_references(
+        pool,
+        rebind_id=rebind_id,
+        source_entity_id=source_id,
+        target_entity_id=target_id,
+        target_schema="relationship",
+    )
+
+    assert receipt.status == "failed"
+    assert await _receipt_state(pool, rebind_id) == ("failed", "RuntimeError", 2)
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == source_id
+
+
+async def _merge_on(pool, entity: UUID, *, hops: int = 1) -> UUID:
+    """Tombstone ``entity`` through a chain of later merges; return the last survivor."""
+    for hop in range(hops):
+        survivor = await _insert_entity(pool, f"Later survivor {hop} {uuid4()}")
+        await pool.execute(
+            "UPDATE public.entities SET metadata = metadata || jsonb_build_object("
+            "'merged_into', $2::text) WHERE id = $1",
+            entity,
+            str(survivor),
+        )
+        entity = survivor
+    return entity
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize(
+    ("status", "age", "hops"),
+    [("failed", "1 day", 1), ("failed", "1 day", 2), ("pending", "0 seconds", 1)],
+)
+async def test_a_late_rebind_moves_references_to_the_survivor(
+    merge_pool, status, age, hops
+) -> None:
+    """A merged into B, then B into C: A's references must end on C, not the tombstoned B."""
+    pool = merge_pool
+    rebind_id, target_id, fact_id = await _receipt_with_fact(
+        pool, f"Chain {status} {hops}", status=status, age=age
+    )
+    survivor = await _merge_on(pool, target_id, hops=hops)
+
+    await process_pending_entity_rebinds(pool, target_schema="relationship")
+
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == survivor
+    assert (await _receipt_state(pool, rebind_id))[0] == "active"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_a_rebind_waits_for_a_merge_of_its_survivor_still_in_flight(merge_pool) -> None:
+    """The survivor is read under a lock, so an uncommitted B into C cannot be missed."""
+    pool = merge_pool
+    rebind_id, target_id, fact_id = await _receipt_with_fact(pool, "In flight")
+    survivor = await _insert_entity(pool, "In-flight survivor")
+
+    async with pool.acquire() as merge_conn, merge_conn.transaction():
+        await merge_conn.execute(
+            "SELECT 1 FROM public.entities WHERE id = $1 FOR UPDATE", target_id
+        )
+        replay = asyncio.create_task(
+            process_pending_entity_rebinds(pool, target_schema="relationship")
+        )
+        for _ in range(200):
+            if await pool.fetchval(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+            ):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("the rebind did not wait on the merge's entity lock")
+        await merge_conn.execute(
+            "UPDATE public.entities SET metadata = metadata || jsonb_build_object("
+            "'merged_into', $2::text) WHERE id = $1",
+            target_id,
+            str(survivor),
+        )
+
+    await asyncio.wait_for(replay, timeout=5)
+
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == survivor
+    assert (await _receipt_state(pool, rebind_id))[0] == "active"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize(
+    "forgotten",
+    ['{"tombstone": "true"}', '{"deleted_at": "2026-11-06T00:00:00Z"}'],
+    ids=["forget_entity", "memory_entity_delete"],
+)
+@pytest.mark.parametrize("hops", [0, 1])
+async def test_a_late_rebind_onto_a_forgotten_entity_moves_nothing(
+    merge_pool, forgotten, hops
+) -> None:
+    """Forgetting retracts what is on the entity; references arriving later must not revive it."""
+    pool = merge_pool
+    rebind_id, target_id, fact_id = await _receipt_with_fact(
+        pool, f"Forgotten {forgotten} {hops}", status="failed", age="1 day"
+    )
+    source_id = await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id)
+    survivor = await _merge_on(pool, target_id, hops=hops)
+    await pool.execute(
+        "UPDATE public.entities SET metadata = metadata || $2::text::jsonb WHERE id = $1",
+        survivor,
+        forgotten,
+    )
+
+    await process_pending_entity_rebinds(pool, target_schema="relationship")
+
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == source_id
+    assert await _receipt_state(pool, rebind_id) == ("failed", "EntityRebindTargetForgotten", 2)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize("break_chain", ["loop", "dangling"])
+async def test_a_broken_merge_chain_fails_the_receipt_and_moves_nothing(
+    merge_pool, break_chain
+) -> None:
+    """The walk ends, and the failure lands on the receipt rather than aborting its transaction."""
+    pool = merge_pool
+    rebind_id, target_id, fact_id = await _receipt_with_fact(pool, f"Broken {break_chain}")
+    source_id = await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id)
+    points_at = target_id if break_chain == "loop" else uuid4()
+    await pool.execute(
+        "UPDATE public.entities SET metadata = metadata || jsonb_build_object("
+        "'merged_into', $2::text) WHERE id = $1",
+        target_id,
+        str(points_at),
+    )
+
+    await process_pending_entity_rebinds(pool, target_schema="relationship")
+
+    assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == source_id
+    assert (await _receipt_state(pool, rebind_id))[:2] == ("failed", "EntityRebindChainBroken")
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize(("status", "age"), [("pending", "0 seconds"), ("failed", "1 day")])
+async def test_a_rebind_failure_logs_its_receipt_and_no_error_text(
+    merge_pool, caplog, status, age
+) -> None:
+    """A driver's message can carry key values from ``facts``, on the first failure or a retry."""
+    pool = merge_pool
+    rebind_id, _target_id, _fact_id = await _receipt_with_fact(
+        pool, f"Quiet {status}", status=status, age=age
+    )
+
+    async def _repoint_facts(*_args: object) -> int:
+        raise ValueError("DETAIL: Key (content)=(owner-private-value) already exists.")
+
+    with (
+        caplog.at_level(logging.ERROR, logger="butlers.entity_rebind"),
+        patch("butlers.entity_rebind._repoint_facts", _repoint_facts),
+    ):
+        await process_pending_entity_rebinds(pool, target_schema="relationship")
+
+    records = [r for r in caplog.records if r.name == "butlers.entity_rebind"]
+    assert len(records) == 1
+    assert str(rebind_id) in records[0].getMessage()
+    assert "ValueError" in records[0].getMessage()
+    assert "_repoint_facts" in records[0].getMessage()
+    assert records[0].exc_info is None
+    assert "owner-private-value" not in caplog.text
 
 
 @pytest.mark.asyncio

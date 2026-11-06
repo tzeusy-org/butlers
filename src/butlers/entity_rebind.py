@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -21,6 +22,25 @@ from butlers.entity_fact_repoint import repoint_facts_on_conn
 logger = logging.getLogger(__name__)
 
 ENTITY_REBOUND_EVENT_TYPE = "entity.rebound.v1"
+
+_FAILED_RETRY_BACKOFF_S = 900.0
+
+_ENTITY_MERGED_INTO_SQL = "SELECT metadata->>'merged_into' FROM public.entities WHERE id = $1"
+_ENTITY_LOCK_SQL = """
+    SELECT metadata->>'merged_into' AS merged_into,
+           metadata->>'tombstone' = 'true' OR metadata->>'deleted_at' IS NOT NULL AS forgotten
+    FROM public.entities
+    WHERE id = $1
+    FOR KEY SHARE
+"""
+
+
+class EntityRebindTargetForgotten(Exception):
+    """The entity a receipt's references would move onto has been forgotten."""
+
+
+class EntityRebindChainBroken(Exception):
+    """A receipt target's ``merged_into`` chain loops or reaches no entity."""
 
 
 @dataclass(frozen=True)
@@ -133,6 +153,40 @@ async def _repoint_catalog(conn: Any, source: UUID, target: UUID, target_schema:
     return _rowcount(tag)
 
 
+async def _resolve_survivor(conn: Any, target: UUID) -> UUID:
+    """Follow ``merged_into`` from a receipt's target to the entity its references belong on.
+
+    A later merge of the target settles its own receipts with nothing to move
+    while this one is unsettled, so nothing else ever moves these references.
+    Only the apparent survivor is locked, and re-read under the lock: a merge
+    holds both its rows ``FOR UPDATE``, so one in flight is waited for and then
+    followed, and one starting later waits until this rebind commits, when its
+    own receipt finds the moved references.
+
+    Raises:
+        EntityRebindTargetForgotten: The survivor was forgotten. Moving references
+            onto it would revive data that forgetting retracted.
+        EntityRebindChainBroken: The chain loops or reaches no entity.
+    """
+    current = target
+    seen = {current}
+    while True:
+        next_id = await conn.fetchval(_ENTITY_MERGED_INTO_SQL, current)
+        if next_id is None:
+            row = await conn.fetchrow(_ENTITY_LOCK_SQL, current)
+            if row is None:
+                raise EntityRebindChainBroken
+            next_id = row["merged_into"]
+            if next_id is None:
+                if row["forgotten"]:
+                    raise EntityRebindTargetForgotten
+                return current
+        current = UUID(next_id)
+        if current in seen:
+            raise EntityRebindChainBroken
+        seen.add(current)
+
+
 def _receipt_from_row(row: Any) -> EntityRebindReceipt:
     return EntityRebindReceipt(
         rebind_id=row["rebind_id"],
@@ -166,7 +220,7 @@ async def _write_receipt(
           AND source_entity_id = $2
           AND target_entity_id = $3
           AND target_schema = $4
-          AND status = 'pending'
+          AND status IN ('pending', 'failed')
         RETURNING rebind_id, target_schema, references_rebound, status, error_class
         """,
         rebind_id,
@@ -189,6 +243,7 @@ async def _rebind_entity_references_on_conn(
     source_entity_id: UUID,
     target_entity_id: UUID,
     target_schema: str,
+    retry_failed: bool = False,
 ) -> EntityRebindReceipt:
     async with conn.transaction():
         # This row lock is the claim. A concurrent startup replay or live event
@@ -212,35 +267,54 @@ async def _rebind_entity_references_on_conn(
             or row["target_entity_id"] != target_entity_id
         ):
             raise RuntimeError("entity rebind receipt identity mismatch")
-        if row["status"] != "pending":
+        if row["status"] != "pending" and not (retry_failed and row["status"] == "failed"):
             return _receipt_from_row(row)
 
+        # A failed attempt committed the steps before its failure, and the steps
+        # are idempotent, so a retry adds to the count already reported.
         total = int(row["references_rebound"])
         tables_seen = 0
+        step = _resolve_survivor.__name__
         try:
+            # The savepoint keeps the transaction usable if resolution fails; its
+            # lock on the survivor outlives it, until the receipt commits.
+            async with conn.transaction():
+                survivor = await _resolve_survivor(conn, target_entity_id)
+
             for operation in (_repoint_facts, _repoint_calendar, _repoint_episodes):
+                step = operation.__name__
                 count, table_exists = await _run_optional_table_step(
                     conn,
                     lambda step_conn, operation=operation: operation(
-                        step_conn, source_entity_id, target_entity_id
+                        step_conn, source_entity_id, survivor
                     ),
                 )
                 total += count
                 tables_seen += int(table_exists)
 
+            step = _repoint_catalog.__name__
             catalog_count, catalog_exists = await _run_optional_table_step(
                 conn,
                 lambda step_conn: _repoint_catalog(
                     step_conn,
                     source_entity_id,
-                    target_entity_id,
+                    survivor,
                     target_schema,
                 ),
             )
             total += catalog_count
             tables_seen += int(catalog_exists)
         except Exception as exc:
-            logger.exception("Entity rebind failed for schema %s", target_schema)
+            # Only identifiers: a driver's message carries the server's DETAIL, which
+            # can hold key values from ``facts``, and a lasting failure repeats here.
+            logger.error(
+                "Entity rebind failed: rebind_id=%s schema=%s step=%s error_class=%s sqlstate=%s",
+                rebind_id,
+                target_schema,
+                step,
+                type(exc).__name__,
+                getattr(exc, "sqlstate", None),
+            )
             return await _write_receipt(
                 conn,
                 rebind_id=rebind_id,
@@ -287,7 +361,7 @@ async def rebind_entity_references(
 async def process_pending_entity_rebinds(
     pool: Any, *, target_schema: str
 ) -> list[EntityRebindReceipt]:
-    """Replay this schema's pending receipts during daemon startup."""
+    """Replay this schema's unsettled receipts during daemon startup."""
     async with pool.acquire() as conn:
         return await _process_pending_entity_rebinds_on_conn(
             conn,
@@ -298,15 +372,23 @@ async def process_pending_entity_rebinds(
 async def _process_pending_entity_rebinds_on_conn(
     conn: Any, *, target_schema: str
 ) -> list[EntityRebindReceipt]:
-    """Replay pending receipts on an already-retained schema connection."""
+    """Replay pending receipts, and failed ones past their backoff, on a retained connection.
+
+    A failure with a lasting cause stays ``failed``, and logs again, once per backoff.
+    """
     rows = await conn.fetch(
         """
-        SELECT rebind_id, source_entity_id, target_entity_id
+        SELECT rebind_id, source_entity_id, target_entity_id, status
         FROM public.entity_rebind_log
-        WHERE target_schema = $1 AND status = 'pending'
+        WHERE target_schema = $1
+          AND (
+            status = 'pending'
+            OR (status = 'failed' AND updated_at <= now() - make_interval(secs => $2))
+          )
         ORDER BY created_at, rebind_id
         """,
         target_schema,
+        _FAILED_RETRY_BACKOFF_S,
     )
     return [
         await _rebind_entity_references_on_conn(
@@ -315,6 +397,7 @@ async def _process_pending_entity_rebinds_on_conn(
             source_entity_id=row["source_entity_id"],
             target_entity_id=row["target_entity_id"],
             target_schema=target_schema,
+            retry_failed=row["status"] == "failed",
         )
         for row in rows
     ]
@@ -326,6 +409,7 @@ async def run_entity_rebind_listener(
     target_schema: str,
     health_poll_interval_s: float = 5.0,
     reconnect_delay_s: float = 1.0,
+    pending_sweep_interval_s: float = 60.0,
     ready_event: asyncio.Event | None = None,
 ) -> None:
     """React to live ``entity.rebound.v1`` events for one local schema.
@@ -333,7 +417,9 @@ async def run_entity_rebind_listener(
     LISTEN is connection-scoped, so each attempt retains one pool connection.
     Registration precedes the recovery drain: events committed during replay
     are queued, closing the drain-before-LISTEN loss window. A failed retained
-    connection is reacquired and replayed before live processing resumes.
+    connection is reacquired and replayed before live processing resumes. While
+    idle, the ledger is swept every ``pending_sweep_interval_s``, so a missed event
+    or a failed receipt does not wait for the next restart.
     """
     from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 
@@ -365,6 +451,7 @@ async def run_entity_rebind_listener(
                     if ready_event is not None and not ready_event.is_set():
                         ready_event.set()
                     first_attempt = False
+                    last_sweep = time.monotonic()
 
                     while True:
                         try:
@@ -376,6 +463,12 @@ async def run_entity_rebind_listener(
                                 raise RuntimeError(
                                     "entity rebind listener connection closed"
                                 ) from exc
+                            if time.monotonic() - last_sweep >= pending_sweep_interval_s:
+                                await _process_pending_entity_rebinds_on_conn(
+                                    conn,
+                                    target_schema=target_schema,
+                                )
+                                last_sweep = time.monotonic()
                             continue
 
                         row = await conn.fetchrow(

@@ -241,8 +241,9 @@ receipt. A running daemon SHALL react to the fleet event immediately. Pending
 receipts SHALL be replayed on daemon startup; fleet-event delivery is a
 freshness path, not the recovery authority. The daemon SHALL establish its
 fleet-event listener before startup replay and SHALL re-establish the listener
-and replay pending receipts after a retained-listener connection failure.
-PostgreSQL SHALL restrict cohort creation to Relationship and receipt
+and replay pending receipts after a retained-listener connection failure. While
+idle, it SHALL periodically sweep for pending receipts, and SHALL retry a failed
+receipt after a backoff. PostgreSQL SHALL restrict cohort creation to Relationship and receipt
 settlement to the runtime role bound to the receipt's target schema.
 
 #### Scenario: A merge opens an honest receipt cohort
@@ -266,6 +267,38 @@ settlement to the runtime role bound to the receipt's target schema.
 - **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
 - **AND** an event committed during startup replay MUST NOT be lost
 - **AND** a listener connection failure MUST trigger listener re-establishment and pending replay
+
+#### Scenario: A running daemon recovers a missed event
+
+- **WHEN** a running memory-bearing daemon's schema has a pending receipt and it received no event
+- **THEN** its idle sweep MUST process the receipt without a restart or a reconnect
+
+#### Scenario: A failed receipt is retried
+
+- **WHEN** a schema's receipt is `failed` and its backoff has passed
+- **THEN** that schema's daemon MUST retry it without a restart
+- **AND** a successful retry MUST settle the receipt with the references counted across all attempts
+- **AND** a failing retry MUST leave it `failed`, name the latest error class, and restart the backoff
+- **AND** a live event for that receipt MUST NOT retry it
+
+#### Scenario: A late rebind follows later merges of its target
+
+- **WHEN** a pending or failed receipt from A to B is processed after B was merged into C
+- **THEN** A's references in that schema MUST move to the entity at the end of B's `merged_into` chain
+- **AND** a merge of that entity still in flight MUST be waited for and followed
+- **AND** the receipt MUST keep its original source and target
+
+#### Scenario: A late rebind onto a forgotten entity moves nothing
+
+- **WHEN** the entity at the end of a receipt target's `merged_into` chain has been forgotten
+- **THEN** no reference MUST move onto it
+- **AND** the receipt MUST stay `failed` and name `EntityRebindTargetForgotten`
+
+#### Scenario: A rebind failure log carries no data values
+
+- **WHEN** a rebind attempt fails, first or on a retry
+- **THEN** the log MUST name the rebind id, schema, step, and error class
+- **AND** it MUST NOT include the exception's message or traceback
 
 ---
 
