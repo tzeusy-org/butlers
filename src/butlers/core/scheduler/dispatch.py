@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ import asyncpg
 from opentelemetry import trace
 
 from butlers.core.metrics import ButlerMetrics
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.scheduler.chain_pass import _tick_event_chain_pass
 from butlers.core.scheduler.claim import (
     _butler_dispatch_gated,
@@ -413,9 +415,10 @@ async def tick(
                         outcome="success",
                     )
                 logger.info("Dispatched scheduled task: %s", name)
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.exception("Failed to dispatch scheduled task: %s", name)
-                result_json = _result_to_jsonb({"error": str(exc)})
+                result_json = _result_to_jsonb({"error": str(exc) or repr(exc)})
                 if metrics is not None:
                     metrics.record_task_dispatched(
                         butler=stagger_key or "unknown",

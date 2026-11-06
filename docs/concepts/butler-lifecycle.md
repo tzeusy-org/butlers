@@ -87,7 +87,8 @@ The liveness reporter starts periodic health pings and the daemon begins accepti
 After startup completes, the butler enters its idle running state. It is:
 
 - Listening for MCP connections on its configured port
-- Running the scheduler loop (checking for due tasks every tick interval)
+- Running the scheduler loop (checking for due tasks every tick interval; a failed tick is logged
+  and the next one runs, and only a cancel of the loop itself ends it)
 - Maintaining heartbeats with the Switchboard (non-switchboard butlers)
 - Ready to accept `trigger` or `route.execute` calls
 

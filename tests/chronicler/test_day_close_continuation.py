@@ -408,15 +408,21 @@ async def test_real_scheduler_tail_reaches_shared_canonical_owner(tmp_path, monk
         )
         return 1
 
+    tail_reached = asyncio.Event()
+
     async def stop(*args):
-        raise asyncio.CancelledError
+        tail_reached.set()
+        await asyncio.Event().wait()
 
     monkeypatch.setattr("butlers.chronicler.jobs.run_rollup_daily", rollup)
     monkeypatch.setattr("butlers.daemon._tick", tick)
     monkeypatch.setattr("butlers.background._sweep_domain_event_reactions", stop)
     # Only the loop interval is cold configuration; no new scheduling policy.
     daemon.config.scheduler.tick_interval_seconds = 0
-    await daemon._scheduler_loop()
+    loop = asyncio.create_task(daemon._scheduler_loop())
+    await asyncio.wait_for(tail_reached.wait(), timeout=5)
+    loop.cancel()
+    await loop
     assert daemon.spawner.trigger.await_count == 1
     assert (
         daemon.spawner.trigger.call_args.kwargs["trigger_source"]

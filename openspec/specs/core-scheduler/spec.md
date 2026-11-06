@@ -147,6 +147,19 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** the error is captured in `last_result` as `{"error": "..."}` and the remaining due tasks continue dispatching
 - **AND** the failed task's `next_run_at` is still advanced to the next cron occurrence
 
+#### Scenario: A CancelledError with no cancel of the running task is a dispatch failure
+- **WHEN** a cron or deadline dispatch raises `asyncio.CancelledError` and `Task.cancelling()` is zero for the task running `tick()`
+- **THEN** it is handled as that dispatch's failure and the remaining due tasks continue dispatching
+
+#### Scenario: A real cancel of the running task propagates
+- **WHEN** the task running `tick()` is itself cancelled during a dispatch
+- **THEN** `CancelledError` propagates out of `tick()` and no later due task is dispatched
+
+#### Scenario: Only its own cancel ends the scheduler loop
+- **WHEN** a tick or the work after it ends with `CancelledError` and the scheduler loop's task was not cancelled
+- **THEN** the loop logs an error and runs its next tick
+- **AND** when the loop's own task is cancelled it lets an in-progress tick finish, then ends
+
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called
 - **THEN** all enabled `task_type='deadline'` tasks are evaluated for threshold crossing
