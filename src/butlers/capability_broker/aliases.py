@@ -20,6 +20,11 @@ A term id that does not resolve drops that term's narrowing on the param, so
 the term holds every call on its selector. An omitted param is never resolved
 (the domain's default is not visible here), so a narrowed term selects it.
 
+The ``entity`` kind (bu-dhloi1.34) matches but never rewrites. A merged-away id
+aliases its survivor, so owner law compares both on the survivor, while the call
+keeps the id it named: a merge tool must keep naming its source, and a grant on
+the source must not reach what the survivor already held.
+
 The seam is a trusted constructor input, like ``Domains``. Nothing constructs
 the broker until the M6 switch.
 """
@@ -27,6 +32,7 @@ the broker until the M6 switch.
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -34,6 +40,9 @@ from typing import Any, Protocol
 from butlers.core.owner_policy import Policy, Term, canonical_resource
 
 from .contracts import Capability
+
+# Kinds owner law matches on the canonical id without changing the dispatched call.
+_MATCH_ONLY = frozenset({"entity"})
 
 
 class AliasResolver(Protocol):
@@ -79,9 +88,12 @@ def _values(value: Any) -> list[str] | None:
 class Resolution:
     """A call's arguments with every resolvable alias replaced by its canonical id."""
 
+    # What the call runs with: canonical, except for a match-only kind.
     args: dict[str, Any]
     # The declared params whose every value resolved to a fixed point.
     resolved: frozenset[str]
+    # What owner law compares: canonical for every resolved param.
+    matched: dict[str, Any]
 
 
 async def resolve_args(
@@ -100,15 +112,17 @@ async def resolve_args(
         kind: await _canonical(resolver, capability.domain, kind, values, deadline)
         for kind, values in wanted.items()
     }
-    pinned, resolved = dict(args), set()
+    pinned, matched, resolved = dict(args), dict(args), set()
     for name, values in present.items():
         canonical = answers.get(declared[name], {})
         if values is None or any(value not in canonical for value in values):
             continue
         mapped = [canonical[value] for value in values]
-        pinned[name] = mapped[0] if type(args[name]) is str else mapped
+        matched[name] = mapped[0] if type(args[name]) is str else mapped
+        if declared[name] not in _MATCH_ONLY:
+            pinned[name] = matched[name]
         resolved.add(name)
-    return Resolution(pinned, frozenset(resolved))
+    return Resolution(pinned, frozenset(resolved), matched)
 
 
 async def canonical_policy(
@@ -188,3 +202,58 @@ class CalendarAliases:
             elif trimmed in known:
                 resolved[value] = trimmed
         return resolved
+
+
+class EntityAliases:
+    """An entity id's live identity: the end of its ``merged_into`` chain.
+
+    Every merge records its survivor on ``public.entities``, and one statement
+    walks each chain, so one snapshot answers. An id with no row, a chain that
+    breaks or cycles, and a value that is not a UUID get no answer. A deleted
+    entity keeps its own id: deletion makes it an alias of nothing.
+    """
+
+    KIND = "entity"
+
+    def __init__(self, pool: Any):
+        self._pool = pool
+
+    async def resolve(self, domain: str, kind: str, values: Collection[str]) -> Mapping[str, str]:
+        if kind != self.KIND:
+            return {}
+        parsed: dict[str, uuid.UUID] = {}
+        for value in values:
+            try:
+                parsed[value] = uuid.UUID(value.strip())
+            except ValueError:
+                continue
+        rows = await self._pool.fetch(
+            """
+            WITH RECURSIVE walk AS (
+                SELECT e.id AS origin, e.id, e.metadata ->> 'merged_into' AS next,
+                       ARRAY[e.id] AS visited
+                FROM public.entities e
+                WHERE e.id = ANY($1::uuid[])
+                UNION ALL
+                SELECT walk.origin, s.id, s.metadata ->> 'merged_into', walk.visited || s.id
+                FROM walk
+                JOIN public.entities s ON s.id::text = walk.next
+                WHERE NOT s.id = ANY(walk.visited)
+            )
+            SELECT origin, id FROM walk WHERE next IS NULL
+            """,
+            list(set(parsed.values())),
+        )
+        survivors = {row["origin"]: str(row["id"]) for row in rows}
+        return {value: survivors[item] for value, item in parsed.items() if item in survivors}
+
+
+class AliasesByKind:
+    """The broker's one seam over each kind's resolver; an unknown kind has no answer."""
+
+    def __init__(self, *resolvers: Any):
+        self._resolvers = {resolver.KIND: resolver for resolver in resolvers}
+
+    async def resolve(self, domain: str, kind: str, values: Collection[str]) -> Mapping[str, str]:
+        resolver = self._resolvers.get(kind)
+        return {} if resolver is None else await resolver.resolve(domain, kind, values)

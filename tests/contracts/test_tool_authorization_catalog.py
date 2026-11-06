@@ -674,6 +674,40 @@ def test_every_calendar_id_param_declares_the_calendar_alias_resolver() -> None:
     assert calendar_params and declared == calendar_params
 
 
+def test_no_person_identifier_is_declared_alias_free() -> None:
+    """bu-dhloi1.34: a merge makes every entity or contact id an alias of a survivor.
+
+    An entity id narrows only through the broker's merge-aware resolver. A merged-away
+    contact leaves no survivor pointer to resolve, so a contact id cannot narrow.
+    """
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    for entry in TOOL_PRESENTATION_INVENTORY:
+        resolvers = dict(entry.alias_resolvers or {})
+        for param in entry.alias_free_params or ():
+            assert "entity" not in param and "contact" not in param, entry.canonical_name
+        for param, kind in resolvers.items():
+            assert (kind == "entity") == ("entity" in param), entry.canonical_name
+            assert "contact" not in param, entry.canonical_name
+    declared = {
+        param
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, kind in (entry.alias_resolvers or {}).items()
+        if kind == "entity"
+    }
+    assert declared == {
+        "counterparty_entity_id",
+        "entity_id",
+        "entity_ids",
+        "from_entity_id",
+        "object_entity_id",
+        "participant_entity_id",
+        "source_entity_id",
+        "target_entity_id",
+        "to_entity_id",
+    }
+
+
 def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
     """REQ-capability-authorization-002/-018: each resource param carries an explicit mark."""
     from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY

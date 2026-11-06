@@ -38,8 +38,9 @@ AUTHORIZATION_FIELDS = (
 
 #: The closed alias kinds a domain may resolve for the broker before owner law
 #: (``capability_broker.aliases``). A param declared with one may narrow an
-#: owner term: the broker matches and dispatches its canonical identifier.
-ALIAS_KINDS = frozenset({"calendar"})
+#: owner term: the broker matches on its canonical identifier and, except for
+#: ``entity``, dispatches that identifier too.
+ALIAS_KINDS = frozenset({"calendar", "entity"})
 
 
 class OwnerNotifyBranch(StrEnum):
@@ -127,7 +128,7 @@ class ToolMetadata(Protocol):
     # of the six. Required: undeclared (None) is ungrantable.
     categories: tuple[str, ...] | None = None
     # Aliasable resource_params the domain resolves for the broker, by closed
-    # kind (ALIAS_KINDS): the broker matches and dispatches the canonical id,
+    # kind (ALIAS_KINDS): the broker matches on the canonical id,
     # so these can narrow an owner term too.
     alias_resolvers: Mapping[str, str] | None = field(default_factory=lambda: MappingProxyType({}))
 
@@ -204,7 +205,7 @@ class ToolPresentation:
     # of the six. Required: undeclared (None) is ungrantable.
     categories: tuple[str, ...] | None = None
     # Aliasable resource_params the domain resolves for the broker, by closed
-    # kind (ALIAS_KINDS): the broker matches and dispatches the canonical id,
+    # kind (ALIAS_KINDS): the broker matches on the canonical id,
     # so these can narrow an owner term too.
     alias_resolvers: Mapping[str, str] | None = field(default_factory=lambda: MappingProxyType({}))
 
@@ -288,7 +289,7 @@ class ToolDescriptor:
     # of the six. Required: undeclared (None) is ungrantable.
     categories: tuple[str, ...] | None = None
     # Aliasable resource_params the domain resolves for the broker, by closed
-    # kind (ALIAS_KINDS): the broker matches and dispatches the canonical id,
+    # kind (ALIAS_KINDS): the broker matches on the canonical id,
     # so these can narrow an owner term too.
     alias_resolvers: Mapping[str, str] | None = field(default_factory=lambda: MappingProxyType({}))
 

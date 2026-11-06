@@ -184,7 +184,7 @@ async def test_the_calendar_id_narrows_from_the_real_inventory_once_resolved():
         p for p in TOOL_PRESENTATION_INVENTORY if p.canonical_name == "calendar_create_event"
     )
     assert "calendar_id" not in create.alias_free_params  # "primary" is an alias
-    assert dict(create.alias_resolvers) == {"calendar_id": "calendar"}
+    assert dict(create.alias_resolvers) == {"calendar_id": "calendar", "entity_ids": "entity"}
     capability = Capability(
         "calendar",
         create.canonical_name,
@@ -212,6 +212,26 @@ async def test_the_calendar_id_narrows_from_the_real_inventory_once_resolved():
         await OwnerPolicyWriter(Refusing()).create(
             uuid4(), "capability", capability.identity, "never", **receipt_request
         )
+
+
+async def test_a_contact_id_narrowing_is_refused_from_the_real_inventory():
+    """bu-dhloi1.34: a merged-away contact id leaves no survivor pointer to resolve."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    tools = [p for p in TOOL_PRESENTATION_INVENTORY if "contact_id" in (p.resource_params or ())]
+    assert tools
+    for tool in tools:
+        with pytest.raises(NarrowingUnsupported):
+            await OwnerPolicyWriter(connection=None).create(
+                uuid4(),
+                "capability",
+                f"relationship__{tool.canonical_name}",
+                "never",
+                resources={"contact_id": [str(uuid4())]},
+                resource_params=tuple(tool.resource_params or ()),
+                alias_free_params=tuple(tool.alias_free_params or ())
+                + tuple(dict(tool.alias_resolvers or {})),
+            )
 
 
 def test_a_term_on_a_param_no_longer_alias_free_selects_every_call():
