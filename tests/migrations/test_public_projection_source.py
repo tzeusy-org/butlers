@@ -88,35 +88,45 @@ CREATE PUBLICATION butlers_public_v1 FOR
     TABLE public.projection_barrier
 """
 
-_SUBSCRIBER_DDL = """
-CREATE SCHEMA general; CREATE SCHEMA relationship; CREATE SCHEMA health;
-CREATE TABLE public.entities (
-    id UUID PRIMARY KEY, canonical_name TEXT, entity_type TEXT, aliases TEXT[], roles TEXT[],
-    merged_into UUID, deleted BOOLEAN, unidentified BOOLEAN, placeholder_name BOOLEAN
-);
-CREATE TABLE general.facts (
-    id UUID PRIMARY KEY, subject TEXT, predicate TEXT, sensitivity TEXT, validity TEXT
-);
-CREATE TABLE relationship.facts (LIKE general.facts INCLUDING ALL);
-CREATE TABLE health.facts (LIKE general.facts INCLUDING ALL);
-CREATE TABLE relationship.entity_facts (
-    id UUID PRIMARY KEY, subject UUID, predicate TEXT, object TEXT, validity TEXT
-);
-CREATE TABLE public.entity_graph_edges (
-    id UUID PRIMARY KEY, subject_entity_id UUID, predicate TEXT, object_entity_id UUID,
-    sensitivity TEXT, created_at TIMESTAMPTZ, publish_key TEXT
-);
-CREATE TABLE public.entity_graph_withheld_counts (
-    entity_id UUID, source_key TEXT, withheld INTEGER, PRIMARY KEY (entity_id, source_key)
-);
-CREATE TABLE public.projection_barrier (id UUID PRIMARY KEY);
-"""
+_FACT_TABLE = "id UUID PRIMARY KEY, subject TEXT, predicate TEXT, sensitivity TEXT, validity TEXT"
+_SUBSCRIBER_TABLES = {
+    "public.entities": (
+        "id UUID PRIMARY KEY, canonical_name TEXT, entity_type TEXT, aliases TEXT[], roles TEXT[], "
+        "merged_into UUID, deleted BOOLEAN, unidentified BOOLEAN, placeholder_name BOOLEAN"
+    ),
+    "general.facts": _FACT_TABLE,
+    "relationship.facts": _FACT_TABLE,
+    "health.facts": _FACT_TABLE,
+    "relationship.entity_facts": (
+        "id UUID PRIMARY KEY, subject UUID, predicate TEXT, object TEXT, validity TEXT"
+    ),
+    "public.entity_graph_edges": (
+        "id UUID PRIMARY KEY, subject_entity_id UUID, predicate TEXT, object_entity_id UUID, "
+        "sensitivity TEXT, created_at TIMESTAMPTZ, publish_key TEXT"
+    ),
+    "public.entity_graph_withheld_counts": (
+        "entity_id UUID, source_key TEXT, withheld INTEGER, PRIMARY KEY (entity_id, source_key)"
+    ),
+    "public.projection_barrier": "id UUID PRIMARY KEY",
+}
+_SUBSCRIBER_DDL = (
+    "CREATE SCHEMA general; CREATE SCHEMA relationship; CREATE SCHEMA health; "
+    + " ".join(
+        f"CREATE TABLE {table} ({columns});" for table, columns in _SUBSCRIBER_TABLES.items()
+    )
+)
 
 # Parity with the source expressions, written independently of the migration's SQL.
 _ENTITY_PARITY = """
 SELECT id FROM public.entities
-WHERE merged_into IS DISTINCT FROM (metadata ->> 'merged_into')::uuid
-   OR deleted IS DISTINCT FROM (metadata ->> 'deleted_at' IS NOT NULL)
+WHERE merged_into::text IS DISTINCT FROM CASE
+        WHEN metadata ->> 'merged_into' ~ '^[0-9a-fA-F-]{36}$'
+        THEN lower(metadata ->> 'merged_into') END
+   OR deleted IS DISTINCT FROM (
+        metadata ->> 'deleted_at' IS NOT NULL
+        OR metadata ->> 'tombstone' IS NOT DISTINCT FROM 'true'
+        OR (metadata ->> 'merged_into' IS NOT NULL
+            AND metadata ->> 'merged_into' !~ '^[0-9a-fA-F-]{36}$'))
    OR unidentified IS DISTINCT FROM COALESCE(metadata ->> 'unidentified' = 'true', false)
    OR placeholder_name IS DISTINCT FROM COALESCE(
         canonical_name = 'Unknown (' || (metadata ->> 'source_channel') || ' '
@@ -394,6 +404,10 @@ def test_helper_refuses_an_unsafe_identifier() -> None:
         ("Plain {u}", {}, (None, False, False, False)),
         ("Deleted {u}", {"deleted_at": "2026-11-06"}, (None, True, False, False)),
         ("Null delete {u}", {"deleted_at": None}, (None, False, False, False)),
+        ("Forgotten {u}", {"tombstone": True}, (None, True, False, False)),
+        ("Not forgotten {u}", {"tombstone": False}, (None, False, False, False)),
+        ("Bad pointer {u}", {"merged_into": "not-a-uuid"}, (None, True, False, False)),
+        ("False pointer {u}", {"merged_into": False}, (None, True, False, False)),
         ("Unidentified {u}", {"unidentified": True}, (None, False, True, False)),
         ("Text false {u}", {"unidentified": "false"}, (None, False, False, False)),
         (
@@ -467,6 +481,21 @@ async def test_a_soft_deleted_entity_leaves_the_projection(projection: Projectio
             )
             await projection.caught_up()
             assert not await _projected(subscriber, "public.entities", row_id)
+
+
+async def test_a_forgotten_entity_leaves_the_projection(projection: Projection) -> None:
+    async with projection.source() as source, projection.subscriber() as subscriber:
+        row_id = await _entity(source)
+        await projection.caught_up()
+        assert await _projected(subscriber, "public.entities", row_id)
+        # The dashboard forget route's statement, roster/relationship/api/router.py.
+        await source.execute(
+            "UPDATE public.entities SET metadata = "
+            "jsonb_set(COALESCE(metadata, '{}'), '{tombstone}', 'true') WHERE id = $1",
+            row_id,
+        )
+        await projection.caught_up()
+        assert not await _projected(subscriber, "public.entities", row_id)
 
 
 async def test_a_promoted_sender_stays_out_until_renamed(projection: Projection) -> None:

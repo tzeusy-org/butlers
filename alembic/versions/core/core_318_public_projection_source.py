@@ -9,9 +9,10 @@ filter needs is kept on the primary as source-owned materializations:
 
 * ``public.entities`` gains ``merged_into``, ``deleted``, ``unidentified`` and
   ``placeholder_name``, which a ``BEFORE`` trigger keeps equal to their ``metadata`` keys and
-  ``canonical_name`` (REQ-public-mcp-projection-007). A ``merged_into`` that is not a UUID fails
-  the write rather than letting the column and the metadata disagree; the only writer stores
-  ``str(uuid)``.
+  ``canonical_name`` (REQ-public-mcp-projection-007). ``deleted`` also covers the forget route's
+  ``tombstone`` key. Readers treat any present ``merged_into`` as a tombstone, so a value that is
+  not a UUID leaves the pointer NULL and sets ``deleted``, which withholds the row without failing
+  a write or the backfill.
 * ``public.entity_graph_edges`` gains ``publish_key``, kept by a ``BEFORE`` trigger, because
   ``predicate`` is NULL on a withheld stub and cannot enter a replica identity
   (REQ-public-mcp-projection-013). The trigger name sorts after the Chronicler identity guard, so
@@ -49,14 +50,22 @@ _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_318:project
 _COUNTS = "public.entity_graph_withheld_counts"
 _ENTITY_FILTER_COLUMNS = ("deleted", "unidentified", "placeholder_name")
 _EDGE_FILTER_COLUMNS = ("sensitivity", "publish_key")
+_UUID = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 
 def _merged_into(row: str) -> str:
-    return f"({row}metadata ->> 'merged_into')::uuid"
+    return (
+        f"CASE WHEN ({row}metadata ->> 'merged_into') ~ '{_UUID}' "
+        f"THEN ({row}metadata ->> 'merged_into')::uuid END"
+    )
 
 
 def _deleted(row: str) -> str:
-    return f"({row}metadata ->> 'deleted_at') IS NOT NULL"
+    return (
+        f"(({row}metadata ->> 'deleted_at') IS NOT NULL "
+        f"OR COALESCE(({row}metadata ->> 'tombstone') = 'true', false) "
+        f"OR COALESCE(({row}metadata ->> 'merged_into') !~ '{_UUID}', false))"
+    )
 
 
 def _unidentified(row: str) -> str:
