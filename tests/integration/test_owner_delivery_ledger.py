@@ -1047,14 +1047,45 @@ async def _given_up_on_the_metrics(ledger_pool: asyncpg.Pool) -> int:
     return response.json()["data"]["owner_delivery_retractions_given_up"]
 
 
+@pytest.fixture
+def given_up_counter(monkeypatch: pytest.MonkeyPatch):
+    """Read the real counter by its name through a real OTel provider."""
+    from opentelemetry import metrics
+    from opentelemetry.metrics import _internal as metrics_internal
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.util._once import Once
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    monkeypatch.setattr(metrics_internal, "_METER_PROVIDER_SET_ONCE", Once())
+    monkeypatch.setattr(metrics_internal, "_METER_PROVIDER", None)
+    metrics.set_meter_provider(provider)
+
+    def value() -> int:
+        data = reader.get_metrics_data()
+        return sum(
+            point.value
+            for resource in (data.resource_metrics if data is not None else [])
+            for scope in resource.scope_metrics
+            for metric in scope.metrics
+            if metric.name == "butlers.owner_delivery.retraction.given_up"
+            for point in metric.data.data_points
+        )
+
+    try:
+        yield value
+    finally:
+        provider.shutdown()
+
+
 async def test_giving_up_on_a_card_signals_once_and_shows_on_the_metrics(
-    ledger_pool, caplog: pytest.LogCaptureFixture
+    ledger_pool, given_up_counter, caplog: pytest.LogCaptureFixture
 ) -> None:
     card = await _stale_telegram_card(ledger_pool)
     other = await _stale_telegram_card(ledger_pool)
     await _fail_retraction(ledger_pool, other)
     headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN}
-    before = owner_delivery_router.retractions_given_up_total._value.get()
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app(ledger_pool)), base_url="http://dashboard-api:41200"
@@ -1071,18 +1102,18 @@ async def test_giving_up_on_a_card_signals_once_and_shows_on_the_metrics(
         for _ in range(od.RETRACTION_MAX_FAILED_ATTEMPTS - 1):
             await report(False)
         assert await _given_up_on_the_metrics(ledger_pool) == 0
-        assert owner_delivery_router.retractions_given_up_total._value.get() == before
+        assert given_up_counter() == 0
         assert "given up" not in caplog.text
 
         with caplog.at_level(logging.WARNING):
             await report(False)
         assert str(card) in caplog.text and "given up" in caplog.text
         assert await _given_up_on_the_metrics(ledger_pool) == 1
-        assert owner_delivery_router.retractions_given_up_total._value.get() == before + 1
+        assert given_up_counter() == 1
 
         # A late report past the bound must not signal the same card twice.
         await report(False)
-        assert owner_delivery_router.retractions_given_up_total._value.get() == before + 1
+        assert given_up_counter() == 1
 
         # A tap retracts through the same report, and the card stops counting.
         await report(True)

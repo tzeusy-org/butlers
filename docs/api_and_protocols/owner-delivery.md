@@ -157,12 +157,14 @@ and the HTTP status or error type:
 - A refusal of the one message (HTTP 400 or 403), or a card with no usable provider id, is a
   failed attempt. It is receipted as `retract_failed`, and the drain moves to the next card.
 - An outage (HTTP 401, 404, 429 or 5xx, or no response at all) says nothing about the card. It
-  writes no receipt and ends the drain, so the next sweep probes the same card. However long the
-  outage lasts, it consumes none of the bound and the cards retract on recovery.
+  writes no receipt, and the drain moves on because one such answer may concern that message
+  alone. Two in a row, with no real Telegram answer between them, end the drain until the next
+  sweep. However long the outage lasts, it consumes none of the bound and the cards retract on
+  recovery.
 
 A card given up after 5 failed attempts leaves the listing and keeps its state and receipts. Its
 buttons stay harmless because its tokens are stale. The give-up is signalled once, by a warning
-in the dashboard API log and by the `owner_delivery_retractions_given_up_total` counter.
+in the dashboard API log and by the `butlers.owner_delivery.retraction.given_up` OTel counter.
 `GET /api/approvals/metrics` reports how many such cards exist now as
 `owner_delivery_retractions_given_up`.
 

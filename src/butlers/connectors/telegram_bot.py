@@ -110,6 +110,8 @@ logger = logging.getLogger(__name__)
 
 #: A retraction outcome that says nothing about the card, so it is not receipted.
 _RETRACTION_PROVIDER_UNAVAILABLE = "provider_unavailable"
+#: One outage answer may concern that message alone; two in a row mean Telegram is down.
+_RETRACTION_OUTAGES_TO_STOP_DRAIN = 2
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
@@ -1445,6 +1447,7 @@ class TelegramBotConnector:
             return
         config = self._config
         if not config.owner_delivery_sweep_enabled:
+            logger.info("Owner-delivery retraction sweep disabled for this connector")
             return
         if not config.internal_api_url or not config.approval_callback_connector_token:
             return
@@ -1465,9 +1468,10 @@ class TelegramBotConnector:
         A card whose provider message id is unknown, or whose edit Telegram refuses, is
         reported as ``retracted=false``; the ledger lists it again after a cooldown, up to a
         bound, and its buttons stay harmless because their tokens are already stale. An outage
-        says nothing about the card: it stops the drain with no receipt, so the next sweep
-        probes the same card and a long outage consumes none of the bound. One drain at a
-        time: a tap and the sweep must not attempt the same card at once.
+        says nothing about the card, so it gets no receipt and consumes none of the bound. One
+        such answer may be about that message alone, so the drain moves on; two in a row with
+        no real answer between them stop it until the next sweep. One drain at a time: a tap
+        and the sweep must not attempt the same card at once.
         """
         async with self._owner_delivery_drain_lock:
             return await self._drain_owner_delivery_retractions_locked()
@@ -1493,12 +1497,19 @@ class TelegramBotConnector:
             return 0
         items = payload.get("data") if isinstance(payload, dict) else None
         retracted = 0
+        outages_in_a_row = 0
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
                 continue
             ok, reason = await self._retract_owner_card(item)
             if reason == _RETRACTION_PROVIDER_UNAVAILABLE:
-                return retracted
+                outages_in_a_row += 1
+                if outages_in_a_row >= _RETRACTION_OUTAGES_TO_STOP_DRAIN:
+                    return retracted
+                continue
+            # A card with no usable message id never reached Telegram, so it is no answer.
+            if ok or reason == "provider_error":
+                outages_in_a_row = 0
             retracted += int(ok)
             if not ok:
                 logger.warning(
@@ -1567,7 +1578,13 @@ class TelegramBotConnector:
                 type(exc).__name__,
             )
             return False, _RETRACTION_PROVIDER_UNAVAILABLE
-        except Exception:  # noqa: BLE001 -- receipted as a failed retraction
+        except Exception as exc:  # noqa: BLE001 -- receipted as a failed retraction
+            # The type only: an HTTP error's text can carry the bot-token URL.
+            logger.warning(
+                "Owner-delivery retraction failed unexpectedly for %s (%s)",
+                item.get("presentation_id"),
+                type(exc).__name__,
+            )
             return False, "provider_error"
         return True, None
 

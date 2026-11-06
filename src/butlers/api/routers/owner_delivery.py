@@ -24,6 +24,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
+from opentelemetry import metrics
 from pydantic import BaseModel, Field
 
 from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
@@ -37,16 +38,22 @@ from butlers.api.routers.approvals import (
     deny_owning_action,
 )
 from butlers.core import owner_delivery
-from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
 
-retractions_given_up_total = get_or_create_counter(
-    "owner_delivery_retractions_given_up_total",
-    "Stale owner cards that ran out of retraction attempts and still show their buttons.",
-)
-
 router = APIRouter(prefix="/api/owner-delivery", tags=["owner-delivery"])
+
+
+def _record_retraction_given_up() -> None:
+    """Add one to ``butlers.owner_delivery.retraction.given_up`` on the ``butlers`` OTel meter.
+
+    Resolved per call, like ``butlers.audit.log.appended``, so it binds to whichever meter
+    provider is installed when the card is given up.
+    """
+    metrics.get_meter("butlers").create_counter(
+        "butlers.owner_delivery.retraction.given_up",
+        description="Stale owner cards that ran out of retraction attempts and show buttons.",
+    ).add(1)
 
 
 class OwnerDeliveryActionRequest(BaseModel):
@@ -215,7 +222,7 @@ async def report_owner_delivery_retraction(
                     conn, parsed, retracted=request.retracted, reason=request.reason
                 )
             if given_up:
-                retractions_given_up_total.inc()
+                _record_retraction_given_up()
                 logger.warning(
                     "Owner-delivery retraction given up for %s after %d failed attempts; "
                     "its buttons still show but are harmless",
