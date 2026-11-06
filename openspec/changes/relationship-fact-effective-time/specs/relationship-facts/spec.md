@@ -394,8 +394,6 @@ relationship butler's schema role.
 - owner-handle bootstrap in `src/butlers/owner_bootstrap.py`;
 - subject/object collision, cardinality, and repoint updates in
   `roster/relationship/tools/entity_merge.py::merge_entity_pair`;
-- legacy subject/object repoint updates in
-  `roster/relationship/tools/contacts.py::contact_merge`;
 - contact delete, verify, value update, and entity-forget mutations in
   `roster/relationship/api/router.py`;
 - hard-delete FK cascades from Google and Steam companion-entity deletion; and
@@ -429,11 +427,9 @@ relationship butler's schema role.
   merge transaction. A collision in the projected final occurrence key that involves any
   temporal-bearing row SHALL fail `temporal_occurrence_collision` before any entity, contact, fact,
   evidence, or projection write.
-- Legacy `contact_merge` SHALL preflight before its first contact/entity/fact write. If an affected
-  row is temporal-bearing, multiple occurrences share an SPO, or the projected merge collides, it
-  SHALL fail `temporal_mutator_unsupported`; its current best-effort/swallowed direct updates SHALL
-  run only for the proven all-unknown/default singleton set until replaced by the compatible merge
-  service.
+- `contact_merge` SHALL move linked-entity facts only through the compatible merge service, called
+  in its own transaction before its first contact write, and SHALL have no direct fact write of its
+  own. The merge service's occurrence rules and refusals therefore apply to it unchanged.
 - Entity forget SHALL intentionally retract every matched occurrence without altering its packet and
   SHALL remove every corresponding projection in the same transaction. Explicit Google/Steam
   companion-entity hard delete SHALL retain its destructive all-version FK cascade and SHALL remove
@@ -589,12 +585,15 @@ Scope: v1-mandatory
 - **AND** any final occurrence-key collision involving a temporal-bearing row MUST fail before any
   entity, contact, fact, evidence, or projection write
 
-#### Scenario: Legacy contact merge is fenced before partial mutation
+#### Scenario: Contact merge inherits the merge service's occurrence rules
 
-- **WHEN** `contact_merge` would touch a temporal-bearing row, an SPO with multiple occurrences, or a
-  projected occurrence collision
-- **THEN** it MUST fail `temporal_mutator_unsupported` before its first contact/entity/fact write
-- **AND** its best-effort direct repoint blocks MUST NOT swallow a temporal-safety failure
+- **WHEN** `contact_merge` merges two contacts whose linked entities differ
+- **THEN** every non-colliding occurrence MUST move with its packet, evidence and graph projection
+  intact
+- **AND** unknown-default rows sharing the same projected final occurrence key MAY keep the legacy
+  same-key dedup
+- **AND** a final occurrence-key collision involving a temporal-bearing row MUST fail
+  `temporal_occurrence_collision` before any contact, entity, fact, evidence, or projection write
 
 #### Scenario: Ambiguous contact lifecycle selector writes nothing
 

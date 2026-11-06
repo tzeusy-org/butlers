@@ -37,7 +37,6 @@ import pytest
 
 from butlers.roster_imports import roster_module
 from butlers.tools.relationship.fact_temporal import (
-    MUTATOR_UNSUPPORTED,
     PACKET_COLUMNS,
     TemporalError,
 )
@@ -206,16 +205,16 @@ class TestContactsMergeNoStrandedTriples:
 
         await contact_merge(rel_pool, source_id=source_contact, target_id=target_contact)
 
-        # contact_merge wrote a merged audit row for the underlying entities.
-        review = await rel_pool.fetchrow(
+        # contact_merge wrote exactly one merged audit row for the underlying entities.
+        reviews = await rel_pool.fetch(
             """
-            SELECT shared_facts, outcome FROM relationship.merge_reviews
-            WHERE entity_a = $1 AND entity_b = $2 AND outcome = 'merged'
-            """,
-            source_entity,
-            target_entity,
+            SELECT entity_a, entity_b, shared_facts FROM relationship.merge_reviews
+            WHERE outcome = 'merged'
+            """
         )
-        assert review is not None, "contact_merge must write a merged merge_reviews row"
+        assert len(reviews) == 1, "contact_merge must write one merged merge_reviews row"
+        review = reviews[0]
+        assert (review["entity_a"], review["entity_b"]) == (target_entity, source_entity)
         # The shared has-email evidence (one row per entity) is captured pre-merge.
         import json as _json
 
@@ -321,34 +320,84 @@ class TestEffectiveTimeMutatorFences:
             )
         assert await _merge_state(rel_pool) == state
 
-    async def test_legacy_contact_merge_is_fenced_before_its_first_write(self, rel_pool):
+    async def test_contact_merge_moves_a_temporal_occurrence_with_its_packet(self, rel_pool):
         from butlers.tools.relationship.contacts import contact_merge
 
         await simulate_temporal_cutover(rel_pool)
         target_entity = await _insert_entity(rel_pool, name="Carol (canonical)", roles=[])
         source_entity = await _insert_entity(rel_pool, name="Carol (duplicate)", roles=[])
-        await _add_temporal_fact(rel_pool, source_entity, "carol@example.test", uuid.uuid4())
-        contacts = []
-        for name, entity in (("Carol", target_entity), ("Carol dup", source_entity)):
-            contact = await rel_pool.fetchval(
-                "INSERT INTO contacts (name, entity_id) VALUES ($1, $2) RETURNING id", name, entity
+        # Same triple, different occurrences: both stay active after the merge.
+        await _add_channel_fact(rel_pool, target_entity, "has-email", "carol@example.test")
+        moved_id = await _add_temporal_fact(
+            rel_pool, source_entity, "carol@example.test", uuid.uuid4()
+        )
+        before = await rel_pool.fetchrow(
+            f"SELECT {PACKET_COLUMNS} FROM relationship.entity_facts WHERE id = $1", moved_id
+        )
+        target_contact, source_contact = await self._linked_contacts(
+            rel_pool, target_entity, source_entity
+        )
+
+        await contact_merge(rel_pool, source_id=source_contact, target_id=target_contact)
+
+        moved = await rel_pool.fetchrow(
+            f"SELECT subject, validity, {PACKET_COLUMNS} FROM relationship.entity_facts "
+            "WHERE id = $1",
+            moved_id,
+        )
+        assert (moved["subject"], moved["validity"]) == (target_entity, "active")
+        assert {k: moved[k] for k in before.keys()} == dict(before)
+        assert (
+            await rel_pool.fetchval(
+                "SELECT count(*) FROM relationship.entity_facts "
+                "WHERE subject = $1 AND object = 'carol@example.test' AND validity = 'active'",
+                target_entity,
             )
-            await rel_pool.execute(
-                "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
-                contact,
-                entity,
-            )
-            await rel_pool.execute(
-                "INSERT INTO tasks (contact_id, title) VALUES ($1, 'child row')", contact
-            )
-            contacts.append(contact)
+            == 2
+        )
+
+    @pytest.mark.parametrize("side", ["subject", "object"])
+    async def test_contact_merge_refuses_a_temporal_collision_before_any_write(
+        self, rel_pool, side
+    ):
+        """A colliding temporal occurrence refuses the merge, contacts included."""
+        contact_merge = roster_module("relationship", "tools/contacts").contact_merge
+        collision = roster_module("relationship", "tools/entity_merge")
+
+        await simulate_temporal_cutover(rel_pool)
+        target_entity = await _insert_entity(rel_pool, name="Dee", roles=[])
+        source_entity = await _insert_entity(rel_pool, name="Dee dup", roles=[])
+        await rel_pool.execute(
+            'UPDATE public.entities SET metadata = \'{"profile": {"city": "Oslo"}}\' WHERE id = $1',
+            source_entity,
+        )
+        if side == "subject":
+            await _add_channel_fact(rel_pool, target_entity, "has-email", "dee@example.test")
+            await _add_temporal_fact(rel_pool, source_entity, "dee@example.test", None)
+        else:
+            other = await _insert_entity(rel_pool, name="Dee's friend", roles=[])
+            for entity, effective_from in ((target_entity, None), (source_entity, "2021-01-01Z")):
+                await rel_pool.execute(
+                    """
+                    INSERT INTO relationship.entity_facts
+                        (subject, predicate, object, object_kind, src,
+                         effective_from, effective_from_precision)
+                    VALUES ($1, 'knows', $2, 'entity', 'test', $3::text::timestamptz,
+                            CASE WHEN $3::text IS NULL THEN NULL ELSE 'year' END)
+                    """,
+                    other,
+                    str(entity),
+                    effective_from,
+                )
+        target_contact, source_contact = await self._linked_contacts(
+            rel_pool, target_entity, source_entity
+        )
         state = await _merge_state(rel_pool)
         tasks = await rel_pool.fetch("SELECT id, contact_id FROM tasks ORDER BY id")
 
-        with pytest.raises(TemporalError) as caught:
-            await contact_merge(rel_pool, source_id=contacts[1], target_id=contacts[0])
+        with pytest.raises(collision.TemporalOccurrenceCollisionError):
+            await contact_merge(rel_pool, source_id=source_contact, target_id=target_contact)
 
-        assert caught.value.code == MUTATOR_UNSUPPORTED
         assert await _merge_state(rel_pool) == state
         assert await rel_pool.fetch("SELECT id, contact_id FROM tasks ORDER BY id") == tasks
 
@@ -563,88 +612,6 @@ class TestEffectiveTimeMutatorFences:
             contacts.append(contact)
         return contacts[0], contacts[1]
 
-    @pytest.mark.parametrize("side", ["subject", "object"])
-    async def test_contact_merge_refuses_a_row_turned_temporal_after_its_preflight(
-        self, rel_pool, monkeypatch, side
-    ):
-        """A row that gains effective time between the unlocked preflight and the
-        locked re-check refuses the whole merge: no contact, entity or fact write,
-        and the merge authority is never reached."""
-        from butlers.tools.relationship import contacts as contacts_mod
-
-        entity_merge_mod = roster_module("relationship", "tools/entity_merge")
-
-        await simulate_temporal_cutover(rel_pool)
-        target_entity = await _insert_entity(rel_pool, name="Erin", roles=[])
-        source_entity = await _insert_entity(rel_pool, name="Erin dup", roles=[])
-        await rel_pool.execute(
-            'UPDATE public.entities SET metadata = \'{"profile": {"city": "Oslo"}}\' WHERE id = $1',
-            source_entity,
-        )
-        if side == "subject":
-            await _add_channel_fact(rel_pool, source_entity, "has-email", "erin@example.test")
-            raced = await rel_pool.fetchval(
-                "SELECT id FROM relationship.entity_facts WHERE subject = $1", source_entity
-            )
-        else:
-            other = await _insert_entity(rel_pool, name="Frank", roles=[])
-            raced = await rel_pool.fetchval(
-                """
-                INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src)
-                VALUES ($1, 'knows', $2, 'entity', 'test')
-                RETURNING id
-                """,
-                other,
-                str(source_entity),
-            )
-        target_contact, source_contact = await self._linked_contacts(
-            rel_pool, target_entity, source_entity
-        )
-
-        real_fence = contacts_mod._fence_legacy_fact_repoint
-        calls = []
-        injected = {}
-
-        async def racing_fence(conn, source_id, target_id):
-            calls.append(conn)
-            await real_fence(conn, source_id, target_id)
-            if len(calls) == 1:
-                # Another session commits an effective-time packet onto an
-                # affected row after the unlocked preflight passed.
-                await rel_pool.execute(
-                    "UPDATE relationship.entity_facts SET effective_period_id = $2, "
-                    "effective_from = '2021-01-01Z', effective_from_precision = 'year' "
-                    "WHERE id = $1",
-                    raced,
-                    uuid.uuid4(),
-                )
-                injected["state"] = await _merge_state(rel_pool)
-                injected["tasks"] = await rel_pool.fetch(
-                    "SELECT id, contact_id FROM tasks ORDER BY id"
-                )
-
-        memory_merges = []
-
-        async def spy_entity_merge(*args, **kwargs):
-            memory_merges.append(args)
-
-        monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", racing_fence)
-        monkeypatch.setattr(entity_merge_mod, "merge_entity_pair_in_transaction", spy_entity_merge)
-
-        with pytest.raises(TemporalError) as caught:
-            await contacts_mod.contact_merge(
-                rel_pool, source_id=source_contact, target_id=target_contact
-            )
-
-        assert caught.value.code == MUTATOR_UNSUPPORTED
-        assert len(calls) == 2  # the preflight, then the re-check under locks
-        assert await _merge_state(rel_pool) == injected["state"]
-        assert (
-            await rel_pool.fetch("SELECT id, contact_id FROM tasks ORDER BY id")
-            == injected["tasks"]
-        )
-        assert memory_merges == []
-
     async def test_contact_merge_locks_affected_rows_against_a_concurrent_correction(
         self, rel_pool, monkeypatch
     ):
@@ -686,14 +653,13 @@ class TestEffectiveTimeMutatorFences:
                 effective_from_precision="year",
             )
 
-        real_fence = contacts_mod._fence_legacy_fact_repoint
+        real_child_write = contacts_mod._execute_if_present
         corrections = []
 
-        async def fence_then_race(conn, source_id, target_id):
-            await real_fence(conn, source_id, target_id)
-            if isinstance(conn, asyncpg.Connection) and not corrections:
-                # The merge now holds its row locks: start both corrections and
-                # wait until they are blocked on them.
+        async def race_after_authority(conn, query, *args):
+            if not corrections:
+                # The merge authority has run and the merge holds its row locks:
+                # start both corrections and wait until they are blocked on them.
                 corrections.append(
                     asyncio.create_task(correct(target_entity, "gale@work.test", kept_id))
                 )
@@ -711,8 +677,9 @@ class TestEffectiveTimeMutatorFences:
                 else:
                     raise AssertionError("corrections did not block on the merge locks")
                 assert not any(task.done() for task in corrections)
+            await real_child_write(conn, query, *args)
 
-        monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", fence_then_race)
+        monkeypatch.setattr(contacts_mod, "_execute_if_present", race_after_authority)
         # The in-transaction merge authority runs for real: the writer takes its
         # entity rows before any fact row (bu-ab0zys), the same order the merge
         # uses, so the correction can no longer deadlock against it.
@@ -751,7 +718,7 @@ class TestEffectiveTimeMutatorFences:
             )
             == 1
         )
-        # The unstubbed post-commit entity merge ran and tombstoned the source.
+        # The unstubbed entity merge tombstoned the source.
         assert await rel_pool.fetchval(
             "SELECT metadata->>'merged_into' FROM public.entities WHERE id = $1", source_entity
         ) == str(target_entity)

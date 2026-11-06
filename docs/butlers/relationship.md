@@ -66,15 +66,16 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   the [effective-time cutover notes](../operations/relationship-effective-time-cutover.md).
 - **Mutator fences.** Entity merge locks and plans every affected fact first, repoints rows with
   their packets and evidence intact, and refuses `temporal_occurrence_collision` before any write
-  rather than collapse an occurrence that carries effective time. Legacy `contact_merge`,
-  hash-addressed contact routes, SPO retraction and `prefers-channel` refuse
-  (`temporal_mutator_unsupported` / `temporal_occurrence_ambiguous`) whenever they would have to
-  choose between occurrences or drop a packet. `contact_merge` does every write in one transaction
-  that locks both entity rows and every affected fact, re-runs its fence under those locks, runs
-  the entity merge authority, and commits whole or writes nothing. Its facts therefore never move
-  without the source's `merged_into`, and a refused entity merge refuses the contact merge. Only
-  the rebind settlement and an audit row run after commit, and the rebind ledger recovers a missed
-  settlement. Two contacts of one entity collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
+  rather than collapse an occurrence that carries effective time. An exact collision between
+  unknown defaults keeps the target's row, whatever the confidence of either. Hash-addressed
+  contact routes, SPO retraction and `prefers-channel` refuse (`temporal_mutator_unsupported` /
+  `temporal_occurrence_ambiguous`) whenever they would have to choose between occurrences or drop a
+  packet. `contact_merge` does every write in one transaction that starts with the entity merge
+  authority, the only writer of the entities' facts. It therefore has the authority's locks,
+  refusals, graph edge repair and audit row, its facts never move without the source's
+  `merged_into`, and a refused entity merge refuses the contact merge. Only the rebind settlement
+  runs after commit, and the rebind ledger recovers a missed settlement. Two contacts of one entity
+  collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
   `contact_fact_changed` (409) if the row was retracted or re-valued meanwhile. Entity forget
   retracts every occurrence as-is and removes their graph edges; Google/Steam hard deletes keep
   their all-version cascade.

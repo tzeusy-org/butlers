@@ -4,43 +4,32 @@ Covers bu-9z7nd (subject-side) and bu-igcxb (object-side) on the real core,
 memory and relationship chains: facts are seeded rows and every assertion reads
 the resulting row state.
 
-contact_merge() must re-point ALL active triples in relationship.entity_facts:
+contact_merge() moves ALL active triples in relationship.entity_facts through the
+merge authority, in its own transaction (bu-dhloi1.51):
 - SUBJECT side (bu-9z7nd): rows where subject = source entity_id → subject = target entity_id.
 - OBJECT side (bu-igcxb): rows where object = source entity_id::text AND object_kind = 'entity'
   → object = target entity_id::text. These are relational predicates ('knows', 'family-of')
   where the merged-away entity appears as the object.
 
-The merge authority then tombstones the source in the same transaction
-(bu-dhloi1.40, see test_contact_merge_atomicity.py).
-
 Test scope (subject-side):
   (a) Source triples with no conflict → re-pointed to target subject (several at once).
-  (b) Source triple conflicts with target (target wins) → source superseded.
-  (c) Source triple conflicts with target (source wins) → conflict superseded,
-      source re-pointed.
-  (d) Idempotency: a second re-point pass finds no active source-subject triples
-      and changes nothing.
-  (e) A database error in the re-point propagates (the single merge transaction
-      rolls back) and the merge authority is never reached.
-  (f) Source entity_id is NULL → entity_facts blocks (subject and object side)
-      are skipped entirely.
+  (b) Source triple conflicts with target → the target row stays, whichever has the
+      higher confidence, and the source row is superseded.
+  (f) Source entity_id is NULL → the merge authority is skipped entirely.
 
 Test scope (object-side, bu-igcxb):
   (g) Basic object-side re-point: row with object = src entity → object = tgt entity.
-  (h) Object-side conflict (target wins) → source object-row superseded.
-  (i) Object-side conflict (source wins) → conflict superseded, source re-pointed.
+  (h) Object-side conflict → the target row stays, whichever has the higher
+      confidence, and the source object-row is superseded.
   (j) object_kind='literal' rows are NOT re-pointed (only 'entity' rows are touched).
-  (l) Idempotency: a second object-side pass finds no source rows → no-op.
 """
 
 from __future__ import annotations
 
 import shutil
-import sys
 import uuid
 from unittest.mock import AsyncMock, patch
 
-import asyncpg
 import pytest
 
 from butlers.testing.fake_pool import fake_pool
@@ -52,8 +41,6 @@ _db_backed = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
 ]
-
-_contacts = sys.modules[contact_merge.__module__]
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +109,6 @@ async def _facts(pool) -> dict[uuid.UUID, tuple]:
     return {r["id"]: (r["subject"], r["object"], r["validity"]) for r in rows}
 
 
-async def _second_repoint_pass(pool, src_entity: uuid.UUID, tgt_entity: uuid.UUID) -> None:
-    async with pool.acquire() as conn, conn.transaction():
-        await _contacts._repoint_entity_facts(conn, src_entity, tgt_entity)
-
-
 def _patch_entity_merge():
     # The authority is imported inside the function body so we must patch it
     # at the source module where it is defined.
@@ -147,7 +129,7 @@ class TestEntityFactsRepointOnMerge:
     pytestmark = _db_backed
 
     async def test_subject_side_repoints_and_resolves_conflicts(self, rel_pool):
-        """(a)-(d): plain triples move, SPO collisions keep the higher conf, rerun is a no-op."""
+        """(a)-(b): plain triples move, an SPO collision keeps the target row."""
         src_contact, tgt_contact, src, tgt = await _merge_pair(rel_pool)
         # (a) several source triples with no target counterpart.
         plain = [
@@ -155,12 +137,11 @@ class TestEntityFactsRepointOnMerge:
             await _fact(rel_pool, src, "has-phone", "+15550001"),
             await _fact(rel_pool, src, "has-telegram", "12345"),
         ]
-        # (b) target has the same triple with higher confidence: target wins.
-        losing_src = await _fact(rel_pool, src, "has-email", "both@eg.com", conf=0.5)
-        winning_tgt = await _fact(rel_pool, tgt, "has-email", "both@eg.com", conf=0.9)
-        # (c) source has the same triple with higher confidence: source wins.
-        winning_src = await _fact(rel_pool, src, "has-phone", "+15559999", conf=0.95)
-        losing_tgt = await _fact(rel_pool, tgt, "has-phone", "+15559999", conf=0.5)
+        # (b) the target row stays at either confidence.
+        lower_src = await _fact(rel_pool, src, "has-email", "both@eg.com", conf=0.5)
+        higher_tgt = await _fact(rel_pool, tgt, "has-email", "both@eg.com", conf=0.9)
+        higher_src = await _fact(rel_pool, src, "has-phone", "+15559999", conf=0.95)
+        lower_tgt = await _fact(rel_pool, tgt, "has-phone", "+15559999", conf=0.5)
 
         result = await contact_merge(rel_pool, src_contact, tgt_contact)
 
@@ -169,46 +150,12 @@ class TestEntityFactsRepointOnMerge:
         for fact_id in plain:
             assert facts[fact_id][0] == tgt
             assert facts[fact_id][2] == "active"
-        assert facts[losing_src] == (src, "both@eg.com", "superseded")
-        assert facts[winning_tgt] == (tgt, "both@eg.com", "active")
-        assert facts[losing_tgt] == (tgt, "+15559999", "superseded")
-        assert facts[winning_src] == (tgt, "+15559999", "active")
+        assert facts[lower_src] == (src, "both@eg.com", "superseded")
+        assert facts[higher_tgt] == (tgt, "both@eg.com", "active")
+        assert facts[higher_src] == (src, "+15559999", "superseded")
+        assert facts[lower_tgt] == (tgt, "+15559999", "active")
         active_on_source = [f for f in facts.values() if f[0] == src and f[2] == "active"]
         assert active_on_source == []
-
-        # (d) A second pass has nothing left to move.
-        await _second_repoint_pass(rel_pool, src, tgt)
-        assert await _facts(rel_pool) == facts
-
-    async def test_entity_facts_error_propagates_and_skips_entity_merge(
-        self, rel_pool, monkeypatch
-    ):
-        """(e) A DB error during the entity_facts re-point is no longer swallowed after a
-        partial commit (bu-p2bjsf): it propagates out of the single merge transaction
-        (rolling it back) and the merge authority is never reached."""
-        src_contact, tgt_contact, src, _tgt = await _merge_pair(rel_pool)
-        fact_id = await _fact(rel_pool, src, "has-email", "a@eg.com")
-        monkeypatch.setattr(
-            _contacts,
-            "_repoint_entity_facts",
-            AsyncMock(side_effect=asyncpg.UndefinedTableError("relation does not exist")),
-        )
-
-        with (
-            _patch_entity_merge() as mock_em,
-            pytest.raises(asyncpg.UndefinedTableError),
-        ):
-            await contact_merge(rel_pool, src_contact, tgt_contact)
-
-        mock_em.assert_not_awaited()
-        # The whole merge rolled back: the source bridge row and its fact are intact.
-        assert (
-            await rel_pool.fetchval(
-                "SELECT entity_id FROM contact_entity_map WHERE contact_id = $1", src_contact
-            )
-            == src
-        )
-        assert (await _facts(rel_pool))[fact_id] == (src, "a@eg.com", "active")
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +169,7 @@ class TestObjectSideEntityFactsRepointOnMerge:
     pytestmark = _db_backed
 
     async def test_object_side_repoints_and_resolves_conflicts(self, rel_pool):
-        """(g)-(j), (l): entity objects move, collisions keep the higher conf, literals stay."""
+        """(g)-(j): entity objects move, a collision keeps the target row, literals stay."""
         src_contact, tgt_contact, src, tgt = await _merge_pair(rel_pool)
         src_obj, tgt_obj = str(src), str(tgt)
         knower = await _entity(rel_pool, "Bob")
@@ -231,12 +178,11 @@ class TestObjectSideEntityFactsRepointOnMerge:
         noter = await _entity(rel_pool, "Erin")
         # (g) no conflict.
         plain = await _fact(rel_pool, knower, "knows", src_obj, kind="entity")
-        # (h) target wins.
-        losing_src = await _fact(rel_pool, relative, "family-of", src_obj, kind="entity", conf=0.4)
-        winning_tgt = await _fact(rel_pool, relative, "family-of", tgt_obj, kind="entity", conf=0.9)
-        # (i) source wins.
-        winning_src = await _fact(rel_pool, friend, "knows", src_obj, kind="entity", conf=0.95)
-        losing_tgt = await _fact(rel_pool, friend, "knows", tgt_obj, kind="entity", conf=0.3)
+        # (h) the target row stays at either confidence.
+        lower_src = await _fact(rel_pool, relative, "family-of", src_obj, kind="entity", conf=0.4)
+        higher_tgt = await _fact(rel_pool, relative, "family-of", tgt_obj, kind="entity", conf=0.9)
+        higher_src = await _fact(rel_pool, friend, "knows", src_obj, kind="entity", conf=0.95)
+        lower_tgt = await _fact(rel_pool, friend, "knows", tgt_obj, kind="entity", conf=0.3)
         # (j) a literal whose text happens to equal the source id is not an entity edge.
         literal = await _fact(rel_pool, noter, "has-note", src_obj, kind="literal")
 
@@ -245,15 +191,11 @@ class TestObjectSideEntityFactsRepointOnMerge:
         assert result["id"] == tgt_contact
         facts = await _facts(rel_pool)
         assert facts[plain] == (knower, tgt_obj, "active")
-        assert facts[losing_src] == (relative, src_obj, "superseded")
-        assert facts[winning_tgt] == (relative, tgt_obj, "active")
-        assert facts[losing_tgt] == (friend, tgt_obj, "superseded")
-        assert facts[winning_src] == (friend, tgt_obj, "active")
+        assert facts[lower_src] == (relative, src_obj, "superseded")
+        assert facts[higher_tgt] == (relative, tgt_obj, "active")
+        assert facts[higher_src] == (friend, src_obj, "superseded")
+        assert facts[lower_tgt] == (friend, tgt_obj, "active")
         assert facts[literal] == (noter, src_obj, "active")
-
-        # (l) A second pass has nothing left to move.
-        await _second_repoint_pass(rel_pool, src, tgt)
-        assert await _facts(rel_pool) == facts
 
 
 @pytest.mark.unit

@@ -74,9 +74,6 @@ _INVENTORY: dict[tuple[str, str], str] = {
         "entity merge: candidate reports repointed under the locked merge plan; complete "
         "occurrence/packet/report retained, candidates do not become active identities"
     ),
-    ("roster/relationship/tools/contacts.py", "_repoint_entity_facts"): (
-        "legacy contact merge: fence re-run under locks, one all-or-nothing transaction"
-    ),
     (_ROUTER, "delete_entity_contact"): "hash selector: one occurrence or 409, exact-id retract",
     (_ROUTER, "update_entity_contact"): (
         "hash selector; entity then row locked before retract, temporal value edit refused"

@@ -156,6 +156,54 @@ async def test_a_committed_contact_merge_has_tombstoned_its_source(rel_pool):
     )
 
 
+async def test_a_contact_merge_carries_projected_graph_edges_with_its_facts(rel_pool):
+    """Edges follow their moved facts, and a superseded fact loses its edge (bu-dhloi1.51)."""
+    source_entity, target_entity, _fact_id, source, target = await _pair(rel_pool)
+    other, third = await _entity(rel_pool, "Other"), await _entity(rel_pool, "Third")
+
+    async def knows(subject: uuid.UUID, obj: uuid.UUID) -> uuid.UUID:
+        fact = await rel_pool.fetchval(
+            "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
+            "VALUES ($1, 'knows', $2, 'entity', 'test') RETURNING id",
+            subject,
+            str(obj),
+        )
+        await rel_pool.execute(
+            "INSERT INTO public.entity_graph_edges (source_schema, source_table, source_id, "
+            "subject_entity_id, predicate, object_entity_id) "
+            "VALUES ('relationship', 'entity_facts', $1, $2, 'knows', $3)",
+            fact,
+            subject,
+            obj,
+        )
+        return fact
+
+    moved_subject = await knows(source_entity, other)
+    moved_object = await knows(other, source_entity)
+    loser = await knows(source_entity, third)
+    winner = await knows(target_entity, third)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    edges = {
+        row["source_id"]: (row["subject_entity_id"], row["object_entity_id"])
+        for row in await rel_pool.fetch(
+            "SELECT source_id, subject_entity_id, object_entity_id FROM public.entity_graph_edges"
+        )
+    }
+    assert edges == {
+        moved_subject: (target_entity, other),
+        moved_object: (other, target_entity),
+        winner: (target_entity, third),
+    }
+    assert (
+        await rel_pool.fetchval(
+            "SELECT validity FROM relationship.entity_facts WHERE id = $1", loser
+        )
+        == "superseded"
+    )
+
+
 async def test_a_settling_failure_after_commit_keeps_the_merge(rel_pool, monkeypatch, caplog):
     """After commit the identity is durable; the rebind ledger recovers the rest."""
     source_entity, target_entity, fact, source, target = await _pair(rel_pool)
@@ -180,13 +228,14 @@ async def test_a_settling_failure_after_commit_keeps_the_merge(rel_pool, monkeyp
 
 
 async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, monkeypatch):
-    """Both take slots before facts, so a shared fact and a shared slot cannot invert.
+    """Two merges sharing a fact and a slot finish, each with the right result.
 
-    ``contact_merge(A->B)`` holds its facts while ``merge_entity_pair(C->D)`` holds its
-    slots, then each goes for what the other holds: a fact on C naming A, and an
-    identity slot with a candidate on both A and C. Each hook waits for the other so
-    the old order always meets. In the right order the entity merge queues on the slot
-    instead, so the contact merge's hook stops waiting and lets it through.
+    Both run the authority's one lock order, so no reordering inside the authority can
+    invert them. ``test_a_contact_merge_takes_no_lock_before_the_authority`` pins what
+    keeps it that way. Here ``contact_merge(A->B)`` holds its facts while
+    ``merge_entity_pair(C->D)`` goes for an identity slot with a candidate on both A
+    and C, with a fact on C naming A. The entity merge queues, so the contact merge's
+    hook stops waiting and lets it through.
     """
     a, b = await _entity(rel_pool, "A"), await _entity(rel_pool, "B")
     c, d = await _entity(rel_pool, "C"), await _entity(rel_pool, "D")
@@ -208,15 +257,16 @@ async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, mon
         )
 
     contact_merge_locked, entity_merge_locked = asyncio.Event(), asyncio.Event()
-    real_merge_rows = contacts_mod._lock_merge_rows
+    real_plan_facts = entity_merge_mod._lock_and_plan_facts
     real_candidates = entity_merge_mod._lock_candidate_reports
 
-    async def merge_rows_then_wait(conn, *entities):
-        await real_merge_rows(conn, *entities)
-        contact_merge_locked.set()
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(2):
-                await entity_merge_locked.wait()
+    async def plan_facts_then_wait(conn, merged, survivor):
+        await real_plan_facts(conn, merged, survivor)
+        if merged == a:
+            contact_merge_locked.set()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(2):
+                    await entity_merge_locked.wait()
 
     async def wait_then_candidates(conn, merged, survivor):
         if merged == c:
@@ -225,7 +275,7 @@ async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, mon
         if merged == c:
             entity_merge_locked.set()
 
-    monkeypatch.setattr(contacts_mod, "_lock_merge_rows", merge_rows_then_wait)
+    monkeypatch.setattr(entity_merge_mod, "_lock_and_plan_facts", plan_facts_then_wait)
     monkeypatch.setattr(entity_merge_mod, "_lock_candidate_reports", wait_then_candidates)
 
     results = await asyncio.gather(
@@ -245,6 +295,28 @@ async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, mon
         "SELECT subject, object FROM relationship.entity_facts WHERE id = $1", linking_fact
     )
     assert (moved["subject"], moved["object"]) == (d, str(b))
+
+
+async def test_a_contact_merge_takes_no_lock_before_the_authority(rel_pool, monkeypatch):
+    """Its transaction holds no row lock or write when the authority starts (bu-dhloi1.51).
+
+    Any of those would be a lock outside the authority's one order, which is how the
+    deadlock bu-dhloi1.50 fixed could return. A row lock or write assigns the transaction
+    an id, so an unassigned id proves there was neither.
+    """
+    _source_entity, _target_entity, _fact_id, source, target = await _pair(rel_pool)
+    real_authority = entity_merge_mod.merge_entity_pair_in_transaction
+    xids = []
+
+    async def authority(conn, **kwargs):
+        xids.append(await conn.fetchval("SELECT pg_current_xact_id_if_assigned()::text"))
+        return await real_authority(conn, **kwargs)
+
+    monkeypatch.setattr(entity_merge_mod, "merge_entity_pair_in_transaction", authority)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert xids == [None]
 
 
 async def test_two_contacts_of_one_entity_merge_without_touching_its_facts(rel_pool):
