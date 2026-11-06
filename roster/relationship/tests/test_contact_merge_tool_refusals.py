@@ -3,26 +3,25 @@ messages that name the contacts and the next step, as ``memory_entity_merge`` do
 
 from __future__ import annotations
 
-import importlib
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import FastMCP
 
-from butlers.modules._roster_relationship import (
-    RelationshipModule,
-    RelationshipModuleConfig,
-)
+from butlers.roster_imports import roster_module
+
+relationship = roster_module("relationship", "modules")
+contacts = roster_module("relationship", "tools/contacts")
+entity_merge = roster_module("relationship", "tools/entity_merge")
 
 
 async def _tool(monkeypatch, error: Exception):
-    contacts = importlib.import_module("butlers.tools.relationship.contacts")
     monkeypatch.setattr(contacts, "contact_merge", AsyncMock(side_effect=error))
-    mod = RelationshipModule()
+    mod = relationship.RelationshipModule()
     mod._db = MagicMock()
     mcp = FastMCP("test-relationship")
-    cfg = RelationshipModuleConfig(groups=["contacts_extended"])
+    cfg = relationship.RelationshipModuleConfig(groups=["contacts_extended"])
     await mod.register_tools(mcp, cfg, db=mod._db, butler_name="relationship")
     return await mcp.get_tool("contact_merge")
 
@@ -39,7 +38,6 @@ async def _tool(monkeypatch, error: Exception):
     ],
 )
 async def test_refusal_names_the_contact_and_next_step(monkeypatch, classification, names, hint):
-    entity_merge = importlib.import_module("butlers.tools.relationship.entity_merge")
     tool = await _tool(monkeypatch, entity_merge.EntityMergeError(classification))
     source, target = uuid.uuid4(), uuid.uuid4()
 
