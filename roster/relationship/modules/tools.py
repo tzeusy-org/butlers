@@ -429,7 +429,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         records (notes, interactions, reminders, etc.) are re-pointed to
         the target.
         """
-        from butlers.tools.relationship.entity_merge import EntityMergeError
+        from butlers.roster_imports import roster_module
+
+        EntityMergeError = roster_module("relationship", "tools/entity_merge").EntityMergeError
 
         try:
             return await _contacts.contact_merge(module._get_pool(), source_id, target_id)
