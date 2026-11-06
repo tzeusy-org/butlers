@@ -360,11 +360,13 @@ async def present(
     return Presentation(row["id"], subject_id, generation, surface, state, tokens)
 
 
-#: Lock order, everywhere: the authority row (``pending_actions``, held by the caller),
-#: then the subject row, then any RFC 0023 delivery row of that action, and only then the
-#: subject's presentation or token rows. Every path that touches both stores (decisions,
-#: handoff start and result) takes the authority row first, so they queue instead of
-#: deadlocking (``tests/core/test_owner_delivery_lock_order.py`` and the PG races in
+#: Lock order: the subject row, then any RFC 0023 delivery row of that action, and only
+#: then the subject's presentation or token rows; a path that also needs the authority
+#: row (``pending_actions``) takes it before all of them. Every path that touches both
+#: stores takes the subject before an RFC 0023 row, so they queue instead of deadlocking.
+#: The one writer that skips the authority row is ``complete_handoff``: the executor holds
+#: that row across the tool call, and a handoff result must not wait for it
+#: (``tests/core/test_owner_delivery_lock_order.py`` and the PG races in
 #: ``tests/integration/test_owner_delivery_ledger.py``).
 LOCK_ORDER: Final = ("authority", "subject", "rfc0023", "presentation|token")
 

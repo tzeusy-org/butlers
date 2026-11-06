@@ -38,14 +38,21 @@ on `current_schema()`, and a statement-level `BEFORE TRUNCATE` trigger on each o
 ledger tables refuses truncation (`42501`) for every role, owner included (the core_287 /
 core_293 precedent).
 
-Lock order, for every writer: the authority row (`pending_actions`), then the subject, then
-the action's RFC 0023 delivery rows, then the subject's presentations and tokens
-(`owner_delivery.LOCK_ORDER`). Every path that touches both stores takes the action row first:
-decisions (`transition_pending_action` closes the subject before locking RFC 0023 rows), and
-the handoff marker and result (`mark_handoff_started`, `complete_handoff`), which lock the
-card's action and subject before its RFC 0023 presentation. A writer that starts from a
-presentation or token reads its `subject_id` unlocked, locks the subject, then the child. So
-a handoff result, a send settlement and a token decision on one card queue, never deadlock.
+Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the action's RFC 0023 delivery
+rows, then the subject's presentations and tokens. A path that also needs the authority row
+(`pending_actions`) takes it before all of them. Every path that touches both stores takes the
+subject before an RFC 0023 row:
+
+- decisions: `transition_pending_action` holds the action and closes the subject before it
+  locks RFC 0023 rows;
+- the handoff marker: `mark_handoff_started` locks the action, then the subject;
+- the handoff result: `complete_handoff` locks a bridged card's subject only. It never takes
+  the action row, because the executor holds that row across the tool call and a result must
+  not stall the sequential worker behind it.
+
+A writer that starts from a presentation or token reads its `subject_id` unlocked, locks the
+subject, then the child. So a handoff result, a send settlement and a token decision on one
+card queue, never deadlock.
 
 ## Tokens
 

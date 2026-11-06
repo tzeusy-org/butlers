@@ -98,13 +98,22 @@ async def _owner(ledger_pool: asyncpg.Pool) -> uuid.UUID:
     return owner
 
 
-async def _park(ledger_pool: asyncpg.Pool, ordinal: int = 0) -> uuid.UUID:
+async def _park(ledger_pool: asyncpg.Pool, ordinal: int = 0, *, card: bool = False) -> uuid.UUID:
+    """Park one action. ``card=True`` uses a tool whose card shows the exact call.
+
+    Approve and Reject are offered only on such a card; every other card is Open only
+    and carries no token at all, whichever path renders it.
+    """
     now = datetime.now(UTC) + timedelta(microseconds=ordinal)
     admission = await park_pending_action(
         ledger_pool,
         action_id=uuid.uuid4(),
-        tool_name="relationship_assert_fact",
-        tool_args={"ordinal": ordinal},
+        tool_name="telegram_send_message" if card else "relationship_assert_fact",
+        tool_args=(
+            {"chat_id": "synthetic", "text": f"Synthetic {ordinal}"}
+            if card
+            else {"ordinal": ordinal}
+        ),
         agent_summary="Synthetic owner-delivery fixture",
         requested_at=now,
         expires_at=now + timedelta(hours=72),
@@ -478,13 +487,14 @@ async def _deliver(ledger_pool: asyncpg.Pool, result: HandoffResult) -> _Runtime
 
 
 async def test_worker_sends_canonical_tokens_only_when_enabled(ledger_pool) -> None:
-    await _park(ledger_pool)
+    await _park(ledger_pool, card=True)
     runtime = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="77"))
-    assert all(t.startswith("apr1:") for t in _card_tokens(runtime.envelopes[0]))
+    legacy = _card_tokens(runtime.envelopes[0])
+    assert len(legacy) == 2 and all(t.startswith("apr1:") for t in legacy)
     assert await ledger_pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
 
     await _enable(ledger_pool)
-    action_id = await _park(ledger_pool, ordinal=1)
+    action_id = await _park(ledger_pool, ordinal=1, card=True)
     runtime = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
 
     tokens = _card_tokens(runtime.envelopes[0])
@@ -580,7 +590,8 @@ def _app(ledger_pool: asyncpg.Pool) -> FastAPI:
     app.dependency_overrides[get_db] = lambda: db_manager(
         {"relationship": ledger_pool}, modules={"relationship": ["approvals"]}
     )
-    app.dependency_overrides[approvals_router.get_mcp_manager] = MagicMock
+    # A lambda: FastAPI reads the MagicMock class's (*args, **kw) as required query params.
+    app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: MagicMock()
     return app
 
 
@@ -826,6 +837,52 @@ async def test_a_schema_without_the_ledger_is_simply_off(db) -> None:
         assert await owner_presentation_for(conn, uuid.uuid4(), 1) is None
 
 
+async def test_worker_still_delivers_legacy_cards_on_a_schema_without_the_ledger(db) -> None:
+    """No ledger reads as off: the card is handed off, not retried under a preflight reason."""
+    approvals_only = await db("approvals")
+    now = datetime.now(UTC)
+    action_id, intent_id = uuid.uuid4(), uuid.uuid4()
+    schema = await approvals_only.fetchval("SELECT current_schema()")
+    action_key = f"approval:{schema}:{action_id}"
+    await approvals_only.execute(
+        "INSERT INTO pending_actions (id, tool_name, tool_args, agent_summary, status, "
+        "requested_at, expires_at, why, evidence, blast_radius, reversibility) "
+        "VALUES ($1, 'telegram_send_message', $2, 'Synthetic', 'pending', $3, $4, "
+        "'Synthetic reason', '[]'::jsonb, 'contact', 'compensable')",
+        action_id,
+        {"chat_id": "synthetic", "text": "Synthetic"},
+        now,
+        now + timedelta(days=3),
+    )
+    await approvals_only.execute(
+        "INSERT INTO approval_delivery_intents "
+        "(id, action_id, action_key, owning_schema, origin_butler, admission_mode) "
+        "VALUES ($1, $2, $3, $4, 'relationship', 'single')",
+        intent_id,
+        action_id,
+        action_key,
+        schema,
+    )
+    await approvals_only.execute(
+        "INSERT INTO approval_delivery_presentations (intent_id, subject_key, subject_kind, "
+        "presentation_mode, presentation_generation, presentation_key, state, not_before, "
+        "next_attempt_at) VALUES ($1, $2, 'action', 'single', 1, $2 || ':p:1', 'ready', $3, $3)",
+        intent_id,
+        action_key,
+        now,
+    )
+
+    runtime = await _deliver(approvals_only, HandoffResult("confirmed", provider_reference="83"))
+
+    tokens = _card_tokens(runtime.envelopes[0])
+    assert len(tokens) == 2 and all(t.startswith("apr1:") for t in tokens)
+    row = await approvals_only.fetchrow(
+        "SELECT state, last_reason_code FROM approval_delivery_presentations WHERE intent_id = $1",
+        intent_id,
+    )
+    assert dict(row) == {"state": "delivered", "last_reason_code": None}
+
+
 async def test_handoff_result_and_token_reject_on_one_card_never_deadlock(ledger_pool) -> None:
     """complete_handoff takes the owner subject first, as decisions do (LOCK_ORDER).
 
@@ -835,7 +892,7 @@ async def test_handoff_result_and_token_reject_on_one_card_never_deadlock(ledger
     subject, a cycle PostgreSQL aborts as a deadlock.
     """
     await _enable(ledger_pool)
-    action_id = await _park(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
     runtime = _HeldHandoff(HandoffResult("confirmed", provider_reference="81"))
     worker = ApprovalDeliveryWorker(
         ApprovalDeliveryRepository(ledger_pool), ApprovalDeliveryRenderer(), runtime
@@ -920,7 +977,10 @@ async def test_minted_tokens_stay_redeemable_after_the_flag_is_turned_off(ledger
 @pytest.fixture
 async def role_pools(db, fresh_db) -> tuple[asyncpg.Pool, asyncpg.Pool]:
     """``(owner, runtime)`` pools on a general-schema database; runtime is the butler role."""
-    url = fresh_db("core", "approvals", schemas={"core": "general", "approvals": "general"})
+    # fresh_db migrates through asyncio.run, so it cannot run on this fixture's event loop.
+    url = await asyncio.to_thread(
+        fresh_db, "core", "approvals", schemas={"core": "general", "approvals": "general"}
+    )
     owner = await db.open(url, schema="general")
     await owner.execute(
         "UPDATE public.approvals_policy SET quiet_start_hour = NULL, "
