@@ -218,6 +218,12 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **AND** the source tombstone MUST retain its other roles and MUST no longer hold owner
 - **AND** the owner singleton constraint MUST remain enabled without a committed ownerless state
 
+#### Scenario: A forgotten entity cannot be merged
+
+- **WHEN** the source or target of a merge carries `metadata.tombstone = true` or `metadata.deleted_at`
+- **THEN** the merge MUST be refused as tombstoned under the entity locks
+- **AND** both entities MUST be unchanged and no rebind receipt MUST exist
+
 #### Scenario: Downstream merge failure restores the original owner
 
 - **WHEN** a merge fails after owner roles and references have moved inside its transaction

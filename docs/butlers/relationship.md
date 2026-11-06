@@ -77,8 +77,8 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   runs after commit, and the rebind ledger recovers a missed settlement. Two contacts of one entity
   collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
   `contact_fact_changed` (409) if the row was retracted or re-valued meanwhile. Entity forget
-  retracts every occurrence as-is and removes their graph edges; Google/Steam hard deletes keep
-  their all-version cascade.
+  retracts every occurrence as-is and removes their graph edges, and a forgotten or deleted entity
+  cannot then be merged on either side; Google/Steam hard deletes keep their all-version cascade.
 - **Lock order.** Every `entity_facts` write locks `public.entities` rows before fact rows,
   each set in ascending id order. Both merges take their entities `FOR UPDATE` first; the central
   writer (and the contact value edit that calls it) takes the subject and any entity object

@@ -246,6 +246,16 @@ def _audit_order(
     return order
 
 
+def _is_forgotten(metadata: dict[str, Any]) -> bool:
+    """Whether forget or delete has marked this entity, as its readers test it.
+
+    Stripping the marker from the metadata copy would not be enough: a forgotten
+    source would still hand its name, aliases, roles and any sibling-schema
+    references to a live entity, and a forgotten target would hide what it received.
+    """
+    return metadata.get("tombstone") in (True, "true") or metadata.get("deleted_at") is not None
+
+
 async def merge_entity_pair_in_transaction(
     conn: asyncpg.Connection,
     *,
@@ -287,14 +297,14 @@ async def merge_entity_pair_in_transaction(
     if source is None:
         raise SourceEntityNotFoundError
     source_metadata: dict[str, Any] = source["metadata"] or {}
-    if "merged_into" in source_metadata:
+    if "merged_into" in source_metadata or _is_forgotten(source_metadata):
         raise SourceEntityTombstonedError
 
     target = lock_map.get(target_entity_id)
     if target is None:
         raise TargetEntityNotFoundError
     target_metadata: dict[str, Any] = target["metadata"] or {}
-    if "merged_into" in target_metadata:
+    if "merged_into" in target_metadata or _is_forgotten(target_metadata):
         raise TargetEntityTombstonedError
 
     locked_pair = LockedEntityPair(source=source, target=target)
