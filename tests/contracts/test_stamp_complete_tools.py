@@ -10,6 +10,7 @@ from a store with no stamp, so it stays ``untrusted`` and always accounts unclea
 
 from __future__ import annotations
 
+import ast
 import json
 import shutil
 import uuid
@@ -17,6 +18,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -53,7 +55,7 @@ from butlers.tools.health.research import research_update
 from butlers.tools.relationship import gifts, loans, tasks
 from butlers.tools.relationship.gifts import gift_update_status
 from butlers.tools.relationship.loans import loan_settle
-from butlers.tools.relationship.notes import note_list
+from butlers.tools.relationship.notes import note_list, note_search
 from butlers.tools.relationship.relationship_lookup import relationship_lookup
 from butlers.tools.relationship.tasks import task_complete
 
@@ -235,12 +237,47 @@ def test_exactly_the_audited_reads_declare_stamped_output():
     assert ("relationship", "relationship_lookup") not in stamped
 
 
+def _named_by_contract(test_name: str) -> set[str]:
+    """Names and strings in a test's body and parameters, excluding docstring and binding."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    test = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == test_name
+    )
+    body = test.body[1:] if ast.get_docstring(test) else test.body
+    parameters = [
+        decorator
+        for decorator in test.decorator_list
+        if not (
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Name)
+            and decorator.func.id == "_covers"
+        )
+    ]
+    named: set[str] = set()
+    for root in [*body, *parameters]:
+        for node in ast.walk(root):
+            if isinstance(node, ast.Name):
+                named.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                named.add(node.attr)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                named.add(node.value)
+    return named
+
+
 @pytest.mark.unit
 def test_every_audited_read_is_bound_to_a_database_contract():
     assert set(_COVERED) == set(STAMP_COMPLETE_READS)
-    for name in _COVERED.values():
+    for (_, tool), name in _COVERED.items():
         assert globals()[name].pytestmark, name
         assert any(mark.name == "integration" for mark in globals()[name].pytestmark), name
+        assert tool in _named_by_contract(name), (tool, name)
+    # The control: a binding to another tool's contract is caught.
+    assert "note_list" not in _named_by_contract(
+        "test_memory_get_returns_only_its_accounted_record"
+    )
 
 
 @pytest.mark.unit
@@ -282,10 +319,11 @@ async def _seed_memory(pool, word: str) -> tuple[list[uuid.UUID], VerifiedLineag
     return [owner_fact["id"], rule, episode, tainted["id"]], exposed
 
 
-async def _memory_columns(pool) -> set[str]:
+async def _memory_columns(pool, table: str) -> set[str]:
     rows = await pool.fetch(
         "SELECT column_name FROM information_schema.columns WHERE table_schema = 'relationship' "
-        "AND table_name IN ('episodes', 'facts', 'rules')"
+        "AND table_name = $1",
+        table,
     )
     return {row["column_name"] for row in rows}
 
@@ -299,13 +337,18 @@ async def test_memory_reads_return_only_accounted_records(stores, accounted, rea
         output = await read(stores, _engine(), "lighthouse", read_policy=_POLICY)
     assert any("exposed" in item["content"] for item in output)
     assert _uncovered(output, accounted) == set()
-    columns = await _memory_columns(stores) | _MEMORY_SCORES
-    assert {key for item in output for key in item} <= columns
+    # Each row's keys are its own table's, or a value joined under another table's column name
+    # would pass here and pass _unfaithful, which compares only the columns they share.
+    rules, facts = await _memory_columns(stores, "rules"), await _memory_columns(stores, "facts")
+    assert rules - facts
     assert account.writers == {(exposed.goal_id, exposed.invocation_id)}
     assert account.owner_untainted is True
     for memory_type, table in (("fact", "facts"), ("rule", "rules"), ("episode", "episodes")):
         rows = [record for record in accounted if record["memory_type"] == memory_type]
         assert await _unfaithful(stores, table, rows) == set()
+        columns = await _memory_columns(stores, table) | _MEMORY_SCORES
+        returned = [item for item in output if item["memory_type"] == memory_type]
+        assert {key for item in returned for key in item} <= columns
 
 
 @_covers(("memory", "memory_get"))
@@ -316,7 +359,7 @@ async def test_memory_get_returns_only_its_accounted_record(stores, accounted):
         output = await memory_get(stores, "fact", str(owner_fact), read_policy=_POLICY)
     assert _uncovered(output, accounted) == set()
     assert (clean.owner_untainted, clean.writers) == (True, set())
-    assert set(output) <= await _memory_columns(stores)
+    assert set(output) <= await _memory_columns(stores, "facts")
     assert await _unfaithful(stores, "facts", accounted) == set()
     with account_scope() as stamped:
         await memory_get(stores, "fact", str(tainted), read_policy=_POLICY)
@@ -435,6 +478,58 @@ async def test_conversation_thread_read_returns_only_its_accounted_records(store
     assert all(set(item) == _THREAD_MESSAGE_KEYS for item in output["messages"])
     assert await _unfaithful(stores, "public.dashboard_messages", accounted) == set()
     assert (account.owner_untainted, account.writers) == (True, {writer})
+
+
+@_db
+async def test_note_search_accounts_its_notes_and_is_unclean_for_the_joined_name(stores, accounted):
+    """The audit's failure is contact_name alone: the notes and their pointers are accounted."""
+    contact, engine, exposed = uuid.uuid4(), _engine(), _exposed()
+    entity = await stores.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ('Joined Name', 'person', '{}') RETURNING id"
+    )
+    await stores.execute(
+        "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)", contact, entity
+    )
+    subject = f"contact:{contact}"
+    note = {"permanence": "stable", "scope": "relationship"}
+    await storage.store_fact(
+        stores,
+        subject,
+        "contact_note",
+        "owner lighthouse",
+        engine,
+        valid_at=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+        content_authority="owner",
+        **note,
+    )
+    with lineage_scope(exposed):
+        await storage.store_fact(
+            stores,
+            subject,
+            "contact_note",
+            "exposed lighthouse",
+            engine,
+            valid_at=datetime.fromisoformat("2026-01-02T00:00:00+00:00"),
+            **note,
+        )
+    for scope in ({}, {"contact_id": contact}):
+        accounted.clear()
+        with account_scope() as account:
+            output = await note_search(stores, "lighthouse", **scope)
+        assert {item["content"] for item in output} == {"owner lighthouse", "exposed lighthouse"}
+        assert all(set(item) == _NOTE_KEYS | {"contact_name"} for item in output)
+        pointer = next(item for item in output if item["content"] == "exposed lighthouse")
+        assert pointer["taint_goal_id"] == str(exposed.goal_id)
+        assert pointer["taint_invocation_id"] == str(exposed.invocation_id)
+        assert _uncovered(output, accounted, exempt=_ECHOED_NOTE) == {"contact_name"}
+        assert await _unfaithful(stores, "facts", accounted) == set()
+        assert account.opened is True
+        assert account.owner_untainted is False
+        assert account.writers == {(exposed.goal_id, exposed.invocation_id)}
+    with account_scope() as miss:
+        assert await note_search(stores, "no such note") == []
+    assert (miss.opened, miss.owner_untainted) == (True, True)
 
 
 @_db

@@ -159,7 +159,7 @@ value that no accounted record holds fails, unless the field is named here.
 | `conversation_thread_read` | `stamped` | `conversation_id`, the caller's argument |
 | `conversation_recall` | `stamped` | `butler_name` (server-held routing identity), `deep_link` (derived from it), `snippet` (`ts_headline` over the accounted row's content) |
 | `relationship_lookup` | `untrusted` | the entity header and candidates: `public.entities` has no stamp and connectors write it. `account_unstamped` keeps its report unclean |
-| `note_search` | `untrusted` | not audited; its reader does not account |
+| `note_search` | `untrusted` | `contact_name`, from `public.entities`, which has no stamp; it accounts its notes and reports unclean whenever it returns one |
 
 The read side is only half of it: a read reports a row clean when its pointer is
 null and its authority is the owner's, which holds only if no writer puts other
@@ -196,9 +196,10 @@ Three limits go with these verdicts:
   stays exposed, but the first writer's principals are not in its label.
 - **The scan reads literals.** It sees `UPDATE`, `INSERT INTO` and `MERGE INTO` on a
   table named plainly, by schema, with `ONLY`, quoted, or by an f-string field, and any
-  field it cannot resolve to a module constant needs a disposition. It sees every
-  statement in a string. Two things stay uncaught: SQL built with `+`, and a copier that
-  reads the row through a helper instead of a literal in the function. Every current
+  field it cannot resolve to a module constant needs a disposition, as does a `+`
+  concatenation with one. It sees every statement in a string. Two things stay uncaught:
+  SQL built by `.format`, `%` or `join`, and a copier that reads the row through a helper
+  instead of a literal in the function. Every current
   `store_*` caller was read by hand for the second, and a future one is not guarded.
 - **Pre-partition laundering.** A fact or rule that was laundered to `owner`
   before the partition reads as clean until the authority demotion has run

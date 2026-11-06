@@ -544,8 +544,8 @@ _MEMORY_STORES = frozenset({"episodes", "facts", "rules", "runtime_config", "{DY
 #: RFC 0038 D6 reads audited as stamp-complete (bu-dhloi1.33), with the stores each
 #: audit covered: every record they return reaches ``stamp_account.account_records``
 #: and nothing else reaches their output. ``tests/contracts/test_stamp_complete_tools.py``
-#: pins each one. ``relationship_lookup`` is not here: its entity header and candidates
-#: come from ``public.entities``, which has no stamp, so it stays ``untrusted``.
+#: pins each one. ``relationship_lookup`` and ``note_search`` are not here: entity names come
+#: from ``public.entities``, which has no stamp, so they stay ``untrusted``.
 STAMP_COMPLETE_READS: Mapping[tuple[str, str], frozenset[str]] = MappingProxyType(
     {
         ("memory", "memory_search"): _MEMORY_STORES,
