@@ -54,6 +54,14 @@ A writer that starts from a presentation or token reads its `subject_id` unlocke
 subject, then the child. So a handoff result, a send settlement and a token decision on one
 card queue, never deadlock.
 
+Three kinds of path stay out of that chain. `defer_pending_action` takes the action, then the
+RFC 0023 rows, and never the subject (its already-expired branch is a decision and does).
+`claim_next`, `heartbeat`, `record_prestart_retry` and `cancel_ineligible_presentations` wait
+only on the RFC 0023 presentation, so they cannot hold one lock while waiting on another.
+`cancel_goal_effects` decides its actions in id order, whatever order it is handed them.
+`tests/integration/test_owner_delivery_lock_order.py` forces these interleavings for single-card
+paths. It does not force cohort cards, which take several actions in id order.
+
 ## Tokens
 
 `od1:` + base64url of 32 random bytes (47 bytes, inside Telegram's 64-byte callback limit).
