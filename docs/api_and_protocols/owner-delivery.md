@@ -31,12 +31,42 @@ through `transition_pending_action` in the same transaction as the token redempt
 Subject states: `pending → delivered/unknown → acknowledged → decided/cancelled/expired`.
 `decided_surface` is set only on `decided`; an acknowledged subject that later expires or is
 cancelled clears it.
-Row security is ENABLE (not FORCE), as in core_303: the table owner (dashboard, migrations,
-backups) bypasses it and a butler role sees only rows whose `owning_schema` is its own. RLS is
-not the only fence: the triggers above apply to every role, every runtime query also filters
-on `current_schema()`, and a statement-level `BEFORE TRUNCATE` trigger on each of the five
-ledger tables refuses truncation (`42501`) for every role, owner included (the core_287 /
-core_293 precedent).
+Row security is ENABLE (not FORCE), as in core_303: the table owner (the migration login, see
+below) bypasses it and a butler role sees only rows whose `owning_schema` is its own. RLS is
+not the only fence: the triggers above apply to every role, the listing and lookup queries
+also filter on `current_schema()`, and a statement-level `BEFORE TRUNCATE` trigger on each of
+the five ledger tables refuses truncation (`42501`) for every role, owner included (the
+core_287 / core_293 precedent).
+
+Which role runs what matters here. A butler daemon's pool is `butler_<schema>_rw` under row
+security. The dashboard API's pools log in as `POSTGRES_USER` and never `SET ROLE`
+(`init_db_manager`). Row security therefore does not apply to the API only if that login owns
+these tables. That is inferred from the shared migration login, not yet observed on a deployed
+ledger, so it has to be checked at rollout.
+
+- Daemon only: worker delivery and the handoff (`prepare_owner_delivery`, `mark_handoff_started`,
+  `complete_handoff`).
+- API only: `redeem`, `pending_retractions`, `record_retraction` and the dashboard card.
+- Both: closing a subject (`close_for_authority`, through `transition_pending_action`). The
+  daemon's approval paths call it, and so does the API, including its expiry sweep.
+- No production path: acknowledgement. The API passes only approve or reject, and
+  `/api/owner-delivery/actions` refuses an ack token as `action_unsupported`.
+
+In the API the schema fence is code: `_locate` and the retraction queries filter on
+`current_schema()`, the retraction report checks ownership before calling `record_retraction`,
+and `redeem` refuses a subject from another schema. Most functions that take a subject or
+presentation id address rows by that id alone, so a new caller on an owner pool must make the
+same ownership check first:
+
+| Function | Today's callers and why the id is already this schema's |
+| --- | --- |
+| `record_retraction` | API; the route's ownership check runs first in the same transaction |
+| `present` | Daemon, under row security, and the API dashboard card; both with a subject just opened for the locked action in `current_schema()` |
+| `append_receipt` | The ledger functions listed here, after they resolve the subject, and the bridge's `prepare_telegram_presentation`; also `bridge_existing`, below |
+| `_retraction_targets` | `redeem`, after its schema check, and `close_for_authority`, whose update filters on `current_schema()` |
+| `begin_send`, `lock_subject_of` | Daemon, under row security; the id comes from `owner_presentation_for`, which filters on `current_schema()` |
+| `record_send` | Daemon, under row security; same source of id |
+| `delivery_inputs`, `record_holding_reason`, `bridge_existing` | No production caller yet; a first caller must supply the check |
 
 Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the action's RFC 0023 delivery
 rows, then the subject's presentations and tokens. A path that also needs the authority row
