@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import shutil
 import uuid
+from typing import Any
 
 import asyncpg
 import pytest
@@ -331,7 +332,7 @@ async def test_a_failed_local_rebind_is_named_in_the_contact_merge_log(
     assert any(str(target_entity) in m for m in warnings), warnings
 
 
-async def _held_before_authority(conn) -> dict[str, object]:
+async def _held_before_authority(conn) -> dict[str, Any]:
     """What this transaction holds when the authority starts."""
     return {
         "xid": await conn.fetchval("SELECT pg_current_xact_id_if_assigned()::text"),
