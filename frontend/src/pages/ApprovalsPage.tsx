@@ -50,6 +50,7 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import type { DisplayedApprovalCall, OwnerDeliveryCard } from "@/api/types";
+import { useDocumentVisible } from "@/hooks/use-document-visible";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -591,6 +592,7 @@ function RailItem({
 
 function Dossier({
   actionId,
+  implicitSelection,
   verifiedDetail,
   reviewSource,
   allowAbandon,
@@ -609,6 +611,8 @@ function Dossier({
   onHeadingFocused,
 }: {
   actionId: string;
+  /** The page picked this row because it ranks first; the owner didn't open it. */
+  implicitSelection: boolean;
   /** Deep link: below the md band the dossier leads the stacked workspace, above the rail. */
   phoneFirst: boolean;
   /** Deep link entry: move focus to the dossier heading once the detail has rendered. */
@@ -646,16 +650,21 @@ function Dossier({
   const [showDefer, setShowDefer] = useState(false);
   const [denyReason, setDenyReason] = useState("");
 
+  // This GET mints card tokens and records a delivery, so a hidden tab must not
+  // fire it for a row the owner never opened (bu-dhloi1.95).
+  const documentVisible = useDocumentVisible();
+  const waitingToBeSeen = implicitSelection && !documentVisible;
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey: reviewSource === undefined ? Q.detail(actionId) : [...Q.detail(actionId), "review-source", reviewSource],
     queryFn: () => reviewSource === undefined ? getApprovalDetail(actionId) : getApprovalDetail(actionId, reviewSource),
-    enabled: !!actionId && !verifiedDetail,
+    enabled: !!actionId && !verifiedDetail && !waitingToBeSeen,
     refetchOnMount: reviewSource !== undefined ? "always" : true,
     retry: reviewSource !== undefined ? false : undefined,
   });
 
   const shownDetail = verifiedDetail ?? data?.data;
-  const dossierLoading = !verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching));
+  const dossierLoading = !verifiedDetail &&
+    (isLoading || (waitingToBeSeen && !data) || (reviewSource !== undefined && isFetching));
   const dossierUnavailable = (!verifiedDetail && !!error) || !shownDetail;
   const canApproveShownCall = !dossierLoading && !dossierUnavailable &&
     shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls;
@@ -2406,6 +2415,7 @@ export default function ApprovalsPage() {
           <Dossier
             key={dossierSelected}
             actionId={dossierSelected}
+            implicitSelection={routeId === undefined}
             verifiedDetail={reviewSource === undefined ? verifiedStalledRouteDetail : undefined}
             reviewSource={reviewSource}
             allowAbandon={activeLane !== "stalled"}

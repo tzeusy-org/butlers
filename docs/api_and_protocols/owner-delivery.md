@@ -155,6 +155,10 @@ retried on another route. With no tokens (rollout off, or a read that failed clo
 the displayed-call routes, whose decision still closes the subject. So do the one-tap Deny
 rows on summary surfaces, which never load a dossier.
 
+With no `:id` in the URL, `/approvals` selects the top-ranked row itself. That selection makes
+no GET while the tab is hidden and loads once the tab is visible, so a new approval can't count
+as delivered in a tab nobody is looking at. A dossier opened by id loads regardless.
+
 The Telegram connector handles `od1:` taps before `apr1:` (primary owner channel only),
 posts the token to `/actions`, edits the tapped card, then drains `/retractions`. It also
 drains on a timer (`CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S`, default 60 seconds, polling and
