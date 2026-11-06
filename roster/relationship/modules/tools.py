@@ -13,6 +13,41 @@ from decimal import Decimal
 from typing import Any
 
 
+def _merge_refusal_message(classification: str, source_id: uuid.UUID, target_id: uuid.UUID) -> str:
+    """Say what a refused ``contact_merge`` means and what to do next.
+
+    The merge authority's classifications are identifier-blind by design, so the text
+    names the contacts the model passed in, never the entities behind them.
+    """
+    refusals = {
+        "same_entity": (
+            f"Source contact {source_id} and target contact {target_id} are the same person."
+        ),
+        "source_missing": (
+            f"Source contact {source_id} has no live linked entity. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        ),
+        "target_missing": (
+            f"Target contact {target_id} has no live linked entity. "
+            "Use contact_search(query=<name>) to find the correct contact ID."
+        ),
+        "source_tombstoned": (
+            f"Source contact {source_id} was already merged into another contact. "
+            "Use contact_search(query=<name>) to find the surviving contact."
+        ),
+        "target_tombstoned": (
+            f"Target contact {target_id} was already merged into another contact. "
+            "Use contact_search(query=<name>) to find the surviving contact."
+        ),
+        "temporal_occurrence_collision": (
+            f"Contacts {source_id} and {target_id} hold dated records that would collide "
+            "after the merge. Resolve the duplicate dated records first, then retry."
+        ),
+    }
+    detail = refusals.get(classification, f"The merge authority refused it ({classification}).")
+    return f"contact_merge refused; nothing was merged. {detail}"
+
+
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
     """Register all relationship MCP tools as closures over *module*."""
 
@@ -394,7 +429,14 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         records (notes, interactions, reminders, etc.) are re-pointed to
         the target.
         """
-        return await _contacts.contact_merge(module._get_pool(), source_id, target_id)
+        from butlers.tools.relationship.entity_merge import EntityMergeError
+
+        try:
+            return await _contacts.contact_merge(module._get_pool(), source_id, target_id)
+        except EntityMergeError as exc:
+            raise ValueError(
+                _merge_refusal_message(exc.classification, source_id, target_id)
+            ) from exc
 
     # =================================================================
     # Date tools (group: social)
