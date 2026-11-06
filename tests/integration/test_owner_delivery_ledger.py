@@ -1674,7 +1674,11 @@ async def test_delivery_inputs_reads_the_subject_and_its_current_presentations(
         ledger_pool, await _park(ledger_pool), "telegram", "dashboard", sent=False
     )
 
-    async with ledger_pool.acquire() as conn:
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        # Telegram's row is physically first; an index scan would sort them with no ORDER BY.
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        await conn.execute("SET LOCAL enable_bitmapscan = off")
+        await conn.execute("SET LOCAL enable_indexonlyscan = off")
         inputs = await od.delivery_inputs(conn, subject.id)
 
     assert inputs == od.DeliveryInputs(
