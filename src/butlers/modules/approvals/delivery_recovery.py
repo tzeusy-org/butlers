@@ -579,9 +579,14 @@ class ApprovalDeliveryRepository:
         self._validate_result(result)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
-                # A token decision holds the action, then the owner subject, then this
-                # presentation: settle in that order too, never presentation-first.
-                await self._lock_action_then_owner_subject(connection, claim)
+                # A decision holds the owner subject, then this presentation: take the
+                # subject first too. Never the action row: the executor holds it across
+                # the tool call, which would stall this sequential worker.
+                owner_presentation = await owner_presentation_for(
+                    connection, claim.presentation_id, claim.presentation_generation
+                )
+                if owner_presentation is not None:
+                    await od.lock_subject_of(connection, owner_presentation)
                 current = await connection.fetchrow(
                     """
                     SELECT attempt_count
@@ -772,8 +777,8 @@ class ApprovalDeliveryRepository:
     async def _lock_action_then_owner_subject(connection: Any, claim: DeliveryClaim) -> None:
         """Take a single card's action row, then its owner-delivery subject (LOCK_ORDER).
 
-        Both stores are touched by the handoff marker and result and by every decision;
-        all of them lock ``pending_actions`` first, so they queue instead of deadlocking.
+        The handoff marker already locks the action on main, so it keeps the decision
+        order. The handoff result must not: see ``complete_handoff``.
         A cohort card has no direct action and no owner-delivery presentation.
         """
         action_id = await connection.fetchval(

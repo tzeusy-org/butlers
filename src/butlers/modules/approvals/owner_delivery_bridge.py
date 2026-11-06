@@ -295,11 +295,12 @@ async def _bridge_presentation_row(
         "INSERT INTO public.owner_delivery_presentations "
         "(id, subject_id, owning_schema, generation, surface, route_ref, retry_key, "
         " provider_ref, state, legacy_ref) "
-        "VALUES ($1, $2, current_schema(), 1, 'telegram', $3, $2::text || ':telegram:1', "
-        " $4, $5, $6) ON CONFLICT (subject_id, surface, generation) DO NOTHING RETURNING id",
+        "VALUES ($1, $2, current_schema(), 1, 'telegram', $3, $4, "
+        " $5, $6, $7) ON CONFLICT (subject_id, surface, generation) DO NOTHING RETURNING id",
         uuid.uuid4(),
         subject.id,
         route_ref,
+        f"{subject.id}:telegram:1",
         provider_ref,
         state,
         legacy,

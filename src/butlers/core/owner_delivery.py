@@ -163,7 +163,12 @@ Decide = Callable[[Any, str], Awaitable[dict[str, Any]]]
 
 
 async def rollout_enabled(conn: Any) -> bool:
-    """Whether the canonical owner-delivery path is switched on (default off)."""
+    """Whether the canonical owner-delivery path is switched on (default off).
+
+    A schema migrated without the core ledger (core_317) is simply off.
+    """
+    if await conn.fetchval("SELECT to_regclass('public.owner_delivery_rollout')") is None:
+        return False
     value = await conn.fetchval("SELECT enabled FROM public.owner_delivery_rollout WHERE singleton")
     return value is True
 
@@ -270,7 +275,7 @@ async def present(
     row = await conn.fetchrow(
         "INSERT INTO public.owner_delivery_presentations "
         "(id, subject_id, owning_schema, generation, surface, route_ref, retry_key, legacy_ref) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $2::text || ':' || $5 || ':' || $4::text, $7) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
         "ON CONFLICT (subject_id, surface, generation) DO NOTHING RETURNING *",
         uuid4(),
         subject_id,
@@ -278,6 +283,7 @@ async def present(
         generation,
         surface,
         route_ref,
+        f"{subject_id}:{surface}:{generation}",
         legacy_ref,
     )
     if row is None:
