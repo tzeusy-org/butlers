@@ -61,8 +61,9 @@ _CONNECTOR_TOKEN = "test-only-callback-connector-token"
 _DASHBOARD_API_KEY = "test-only-dashboard-api-key"
 
 
-@pytest.fixture
-async def pool(db) -> asyncpg.Pool:
+@pytest.fixture(name="pool")
+async def ledger_pool(db) -> asyncpg.Pool:
+    """A kit-migrated core+approvals database with the delivery seams opened."""
     pool = await db("core", "approvals", max_size=8)
     await clear_audit_log_for_test(pool)
     await pool.execute(

@@ -160,7 +160,12 @@ async def prepare_telegram_presentation(
 async def owner_presentation_for(
     conn: Any, rfc_presentation_id: Any, rfc_generation: int
 ) -> uuid.UUID | None:
-    """The owner-delivery presentation an RFC 0023 claim bridged to, if any."""
+    """The owner-delivery presentation an RFC 0023 claim bridged to, if any.
+
+    A schema migrated without the core ledger (core_317) has nothing bridged.
+    """
+    if await conn.fetchval("SELECT to_regclass('public.owner_delivery_source_map')") is None:
+        return None
     value = await conn.fetchval(
         "SELECT presentation_id FROM public.owner_delivery_source_map "
         "WHERE owning_schema = current_schema() AND source_store = 'rfc0023_presentation' "

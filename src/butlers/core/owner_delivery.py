@@ -180,7 +180,7 @@ async def append_receipt(
     await conn.execute(
         "INSERT INTO public.owner_delivery_receipts "
         "(subject_id, owning_schema, presentation_id, kind, generation, detail) "
-        "SELECT id, owning_schema, $2, $3, $4, $5::jsonb "
+        "SELECT id, owning_schema, $2, $3, $4, ($5::text)::jsonb "
         "FROM public.owner_delivery_subjects WHERE id = $1",
         subject_id,
         presentation_id,
@@ -613,7 +613,7 @@ async def redeem(
         assert decide is not None
         result = await decide(conn, action)
     await conn.execute(
-        "UPDATE public.owner_delivery_tokens SET consumed_at = $2, outcome = $3::jsonb "
+        "UPDATE public.owner_delivery_tokens SET consumed_at = $2, outcome = ($3::text)::jsonb "
         "WHERE verifier = $1",
         verifier,
         moment,
@@ -811,7 +811,7 @@ async def record_holding_reason(conn: Any, subject_id: UUID, receipt: dict[str, 
     ):
         raise OwnerDeliveryRefused("holding_reason_invalid")
     await conn.execute(
-        "UPDATE public.owner_delivery_subjects SET holding_reason = $2::jsonb "
+        "UPDATE public.owner_delivery_subjects SET holding_reason = ($2::text)::jsonb "
         "WHERE id = $1 AND state NOT IN ('decided', 'cancelled', 'expired')",
         subject_id,
         json.dumps(receipt),
