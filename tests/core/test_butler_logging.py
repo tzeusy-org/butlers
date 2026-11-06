@@ -290,3 +290,112 @@ def test_db_handler_emit_does_not_raise_on_logger_failure() -> None:
     set_butler_context("general")
     # Should not raise.
     handler.emit(_log_record(msg="bad"))
+
+
+# ---------------------------------------------------------------------------
+# Loop ownership and shutdown drain (bu-rvgzmf.7, bu-rvgzmf.12)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingPool:
+    """A pool that records the loop each acquire runs on and can hold writes open.
+
+    An asyncpg connection belongs to the loop that opened it; using it from any
+    other loop corrupts its protocol state ('got result for unknown protocol
+    state'). Writes fail once ``close()`` has begun, as asyncpg's do.
+    """
+
+    def __init__(self, gate: asyncio.Event | None = None) -> None:
+        self.acquire_loops: list[asyncio.AbstractEventLoop] = []
+        self.writes: list[str] = []
+        self.gate = gate
+        self.closed = False
+
+    def acquire(self) -> _RecordingPool:
+        return self
+
+    async def __aenter__(self) -> _RecordingPool:
+        self.acquire_loops.append(asyncio.get_running_loop())
+        if self.gate is not None:
+            await self.gate.wait()
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def execute(self, _sql: str, _level: str, msg: str, *_args: object) -> None:
+        if self.closed:
+            raise RuntimeError("pool is closed")
+        self.writes.append(msg)
+
+
+async def test_a_line_logged_on_another_loop_is_written_on_the_pools_loop() -> None:
+    # A worker thread that inherits the butler context (asyncio.to_thread copies
+    # contextvars) and runs its own loop must not drive the pool from that loop.
+    owner = asyncio.get_running_loop()
+    pool = _RecordingPool()
+    bl = ButlerLogger(pool=pool, schema="general")
+
+    async def log_on_a_foreign_loop() -> None:
+        bl.log_nowait("INFO", "from a worker loop")
+        await asyncio.sleep(0)
+
+    await asyncio.to_thread(asyncio.run, log_on_a_foreign_loop())
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert pool.acquire_loops == [owner]
+    assert pool.writes == ["from a worker loop"]
+
+
+async def test_shutdown_lets_in_flight_log_writes_finish_before_the_pool_closes() -> None:
+    from types import SimpleNamespace
+
+    from butlers.lifecycle import _shutdown_chronicler_dependents
+
+    pool = _RecordingPool(gate=asyncio.Event())
+    handler = ButlerDBLogHandler(
+        butler_logger=ButlerLogger(pool=pool, schema="general"), butler_name="general"
+    )
+    closed_with: list[list[str]] = []
+
+    class _Db:
+        async def close(self) -> None:
+            pool.closed = True
+            closed_with.append(list(pool.writes))
+
+    daemon = SimpleNamespace(
+        _active_modules=[],
+        _modules=[],
+        blob_store=None,
+        _db_log_handler=handler,
+        _shared_credentials_db=None,
+        db=_Db(),
+    )
+    before = set(asyncio.all_tasks())
+    set_butler_context("general")
+    handler.emit(_log_record(msg="in flight at shutdown"))
+
+    shutdown = asyncio.create_task(_shutdown_chronicler_dependents(daemon))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert closed_with == [], "pool closed under an in-flight log write"
+
+    pool.gate.set()
+    await asyncio.wait_for(shutdown, 5)
+
+    assert closed_with == [["in flight at shutdown"]]
+    assert daemon._db_log_handler is None
+    leaked = {t for t in asyncio.all_tasks() - before if not t.done()} - {asyncio.current_task()}
+    assert not leaked
+
+
+async def test_a_closed_logger_drops_new_lines_instead_of_racing_the_pool() -> None:
+    pool = _RecordingPool()
+    bl = ButlerLogger(pool=pool, schema="general")
+
+    await bl.aclose()
+    bl.log_nowait("INFO", "after close")
+    await asyncio.sleep(0)
+
+    assert pool.acquire_loops == []

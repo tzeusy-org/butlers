@@ -1023,15 +1023,17 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
         await daemon.blob_store.close()
         daemon.blob_store = None
 
-    # 6c. Detach the butler DB log handler before tearing down the pool so
-    # in-flight fire-and-forget writes can finish and no new writes are
-    # scheduled against a closing pool.
+    # 6c. Detach the butler DB log handler, then wait for its in-flight
+    # fire-and-forget writes, before tearing down the pool: a write still
+    # running when the pool closes fails mid-protocol and outlives shutdown
+    # (bu-rvgzmf.7).
     if daemon._db_log_handler is not None:
+        handler, daemon._db_log_handler = daemon._db_log_handler, None
         try:
-            logging.getLogger().removeHandler(daemon._db_log_handler)
+            logging.getLogger().removeHandler(handler)
+            await handler.aclose()
         except Exception:
             logger.exception("Error while detaching DB log handler")
-        daemon._db_log_handler = None
 
     # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:
