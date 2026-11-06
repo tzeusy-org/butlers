@@ -2206,6 +2206,134 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
     });
   }
 
+  // The detail GET mints card tokens and records a delivery, so it must mean the
+  // owner can see this page (bu-dhloi1.95).
+  describe("in a hidden tab", () => {
+    function setVisibility(state: DocumentVisibilityState) {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+
+    function dossierText() {
+      return container.querySelector('[data-testid="approval-dossier-pane"]')?.textContent ?? "";
+    }
+
+    const expiringSoon = () => ({
+      ...makeSummary("urgent"),
+      expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    });
+
+    afterEach(() => {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    });
+
+    it("a new top-ranked approval fetches no dossier until the tab is visible", async () => {
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt("/approvals");
+      await flushUntil(() => dossierText().includes("Send Email"));
+      expect(getApprovalDetail).toHaveBeenCalledTimes(1);
+
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(
+        makeApiResponse([makeSummary("a1"), expiringSoon()]) as AnyMock,
+      );
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+        await flush();
+      });
+
+      expect(container.querySelector('[data-approval-id="urgent"]')).not.toBeNull();
+      expect(getApprovalDetail).not.toHaveBeenCalledWith("urgent");
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
+      await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("urgent");
+      expect(getApprovalDetail).toHaveBeenCalledTimes(2);
+    });
+
+    it("a page opened hidden selects the top row and loads it once shown", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt("/approvals");
+      await flushUntil(() => container.querySelector('[data-approval-id="a1"]') !== null);
+      await act(async () => {
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
+      await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+      expect(container.textContent).not.toContain("Select a pending approval to review.");
+    });
+
+    it.each([
+      ["the top row", "/approvals"],
+      ["a row named in the URL", "/approvals/a1"],
+    ])("%s already shown isn't fetched again until the tab is visible", async (_name, path) => {
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt(path);
+      await flushUntil(() => dossierText().includes("Send Email"));
+      vi.mocked(getApprovalDetail).mockClear();
+
+      setVisibility("hidden");
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("Send Email");
+
+      setVisibility("visible");
+      await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    });
+
+    it("a link opened in a background tab loads when shown", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt("/approvals/a1");
+      await flushUntil(() => container.querySelector('[data-approval-id="a1"]') !== null);
+      await act(async () => {
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
+      await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    });
+
+    it("the stalled link check waits for the tab too", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+      renderAt("/approvals/a1?state=stalled");
+      await act(async () => {
+        await flush(10);
+      });
+
+      expect(getApprovalsFlat).toHaveBeenCalled();
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+
+      setVisibility("visible");
+      await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    });
+  });
+
   it("selects the approval named in the URL, not the first-arrived item", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([

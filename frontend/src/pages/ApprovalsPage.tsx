@@ -50,6 +50,7 @@ import {
   updateApprovalsPolicy,
 } from "@/api/index.ts";
 import type { DisplayedApprovalCall, OwnerDeliveryCard } from "@/api/types";
+import { useDocumentVisible } from "@/hooks/use-document-visible";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
@@ -646,16 +647,20 @@ function Dossier({
   const [showDefer, setShowDefer] = useState(false);
   const [denyReason, setDenyReason] = useState("");
 
+  // This GET mints card tokens and records a delivery, so it waits until the
+  // owner can see the tab, however this row came to be selected (bu-dhloi1.95).
+  const documentVisible = useDocumentVisible();
   const { data, isLoading, isFetching, error } = useQuery({
     queryKey: reviewSource === undefined ? Q.detail(actionId) : [...Q.detail(actionId), "review-source", reviewSource],
     queryFn: () => reviewSource === undefined ? getApprovalDetail(actionId) : getApprovalDetail(actionId, reviewSource),
-    enabled: !!actionId && !verifiedDetail,
+    enabled: !!actionId && !verifiedDetail && documentVisible,
     refetchOnMount: reviewSource !== undefined ? "always" : true,
     retry: reviewSource !== undefined ? false : undefined,
   });
 
   const shownDetail = verifiedDetail ?? data?.data;
-  const dossierLoading = !verifiedDetail && (isLoading || (reviewSource !== undefined && isFetching));
+  const dossierLoading = !verifiedDetail &&
+    (isLoading || (!documentVisible && !data) || (reviewSource !== undefined && isFetching));
   const dossierUnavailable = (!verifiedDetail && !!error) || !shownDetail;
   const canApproveShownCall = !dossierLoading && !dossierUnavailable &&
     shownDetail?.id === actionId && shownDetail.status === "pending" && allowPendingDecisionControls;
@@ -1912,6 +1917,7 @@ export default function ApprovalsPage() {
     isFetchedAfterMount &&
     routeId !== undefined &&
     !stalledRouteIsListed;
+  const documentVisible = useDocumentVisible();
   const {
     data: stalledRouteVerification,
     isSuccess: isStalledRouteVerificationSuccess,
@@ -1921,7 +1927,8 @@ export default function ApprovalsPage() {
   } = useQuery({
     queryKey: [...Q.stalledRouteVerification(routeId ?? "", dataUpdatedAt), reviewSource],
     queryFn: () => reviewSource === undefined ? getApprovalDetail(routeId ?? "") : getApprovalDetail(routeId ?? "", reviewSource),
-    enabled: shouldVerifyStalledRoute,
+    // The same GET as the dossier's, so it waits for a visible tab too.
+    enabled: shouldVerifyStalledRoute && documentVisible,
     // A direct stalled URL is an authorization boundary, not a prefetch hint:
     // never inherit data from the ordinary dossier key and always make a new
     // request when this verifier mounts. The rail-generation key above also
