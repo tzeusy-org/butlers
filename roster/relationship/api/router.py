@@ -6046,7 +6046,7 @@ async def merge_entities(
 
     **Error codes:**
     - ``403`` — owner entity not registered (Amendment 12a).
-    - ``404`` — either entity does not exist or is already tombstoned.
+    - ``404`` — either entity does not exist, is already tombstoned, or was forgotten or deleted.
     - ``422`` — ``entityA == entityB`` (same entity) or validation failure.
     """
     from butlers.tools.relationship.entity_merge import (

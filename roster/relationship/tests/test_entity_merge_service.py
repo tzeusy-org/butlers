@@ -866,6 +866,47 @@ async def test_live_fleet_event_invokes_local_rebind_handler(merge_pool) -> None
     assert await pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact_id) == target_id
 
 
+_FORGOTTEN_MARKERS = {
+    # Exactly what forget_entity writes, a JSON boolean, and the text form readers also honour.
+    "forget_entity": "jsonb_set(metadata, '{tombstone}', 'true')",
+    "tombstone_text": "metadata || jsonb_build_object('tombstone', 'true')",
+    "memory_delete": "metadata || jsonb_build_object('deleted_at', '2026-11-06T00:00:00Z')",
+}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+@pytest.mark.parametrize("marker", list(_FORGOTTEN_MARKERS))
+@pytest.mark.parametrize(
+    ("forgotten_side", "expected_error"),
+    [("source", SourceEntityTombstonedError), ("target", TargetEntityTombstonedError)],
+)
+async def test_a_forgotten_entity_cannot_be_merged_on_either_side(
+    merge_pool, marker, forgotten_side, expected_error
+) -> None:
+    """A merge would give a live entity a forgotten name, or hide a live entity's data."""
+    pool = merge_pool
+    source = await _insert_entity(pool, f"Merge source {uuid4()}")
+    target = await _insert_entity(pool, f"Merge target {uuid4()}")
+    forgotten = source if forgotten_side == "source" else target
+    await pool.execute(
+        f"UPDATE public.entities SET metadata = {_FORGOTTEN_MARKERS[marker]} WHERE id = $1",
+        forgotten,
+    )
+    state_sql = "SELECT id, canonical_name, aliases, roles, metadata FROM public.entities"
+    state_sql += " WHERE id = ANY($1::uuid[]) ORDER BY id"
+    before = [dict(row) for row in await pool.fetch(state_sql, [source, target])]
+
+    with pytest.raises(expected_error):
+        await merge_entity_pair(pool, source_entity_id=source, target_entity_id=target)
+
+    assert [dict(row) for row in await pool.fetch(state_sql, [source, target])] == before
+    assert not await pool.fetchval(
+        "SELECT count(*) FROM public.entity_rebind_log WHERE source_entity_id = $1", source
+    )
+
+
 @pytest.mark.asyncio
 async def test_listener_queues_events_that_arrive_during_startup_drain() -> None:
     """LISTEN precedes replay so an event at the startup boundary cannot be lost."""
