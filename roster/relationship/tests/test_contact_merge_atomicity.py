@@ -8,6 +8,8 @@ following its facts. These tests run on a real migrated database.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import shutil
 import uuid
 
@@ -175,6 +177,74 @@ async def test_a_settling_failure_after_commit_keeps_the_merge(rel_pool, monkeyp
         "SELECT count(*) FROM public.entity_rebind_log WHERE source_entity_id = $1", source_entity
     )
     assert "settling" in caplog.text
+
+
+async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, monkeypatch):
+    """Both take slots before facts, so a shared fact and a shared slot cannot invert.
+
+    ``contact_merge(A->B)`` holds its facts while ``merge_entity_pair(C->D)`` holds its
+    slots, then each goes for what the other holds: a fact on C naming A, and an
+    identity slot with a candidate on both A and C. Each hook waits for the other so
+    the old order always meets. In the right order the entity merge queues on the slot
+    instead, so the contact merge's hook stops waiting and lets it through.
+    """
+    a, b = await _entity(rel_pool, "A"), await _entity(rel_pool, "B")
+    c, d = await _entity(rel_pool, "C"), await _entity(rel_pool, "D")
+    source, target = await _contact(rel_pool, a), await _contact(rel_pool, b)
+    linking_fact = await rel_pool.fetchval(
+        "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
+        "VALUES ($1, 'knows', $2, 'entity', 'test') RETURNING id",
+        c,
+        str(a),
+    )
+    shared_address = f"{uuid.uuid4().hex}@slot.test"
+    for subject in (a, c):
+        await rel_pool.execute(
+            "INSERT INTO relationship.entity_facts "
+            "(subject, predicate, object, object_kind, src, validity) "
+            "VALUES ($1, 'has-email', $2, 'literal', 'test', 'candidate')",
+            subject,
+            shared_address,
+        )
+
+    contact_merge_locked, entity_merge_locked = asyncio.Event(), asyncio.Event()
+    real_merge_rows = contacts_mod._lock_merge_rows
+    real_candidates = entity_merge_mod._lock_candidate_reports
+
+    async def merge_rows_then_wait(conn, *entities):
+        await real_merge_rows(conn, *entities)
+        contact_merge_locked.set()
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(2):
+                await entity_merge_locked.wait()
+
+    async def wait_then_candidates(conn, merged, survivor):
+        if merged == c:
+            await contact_merge_locked.wait()
+        await real_candidates(conn, merged, survivor)
+        if merged == c:
+            entity_merge_locked.set()
+
+    monkeypatch.setattr(contacts_mod, "_lock_merge_rows", merge_rows_then_wait)
+    monkeypatch.setattr(entity_merge_mod, "_lock_candidate_reports", wait_then_candidates)
+
+    results = await asyncio.gather(
+        contacts_mod.contact_merge(rel_pool, source, target),
+        entity_merge_mod.merge_entity_pair(rel_pool, source_entity_id=c, target_entity_id=d),
+        return_exceptions=True,
+    )
+
+    assert [r for r in results if isinstance(r, BaseException)] == []
+    survivors = await rel_pool.fetch(
+        "SELECT id, metadata ->> 'merged_into' AS merged_into FROM public.entities "
+        "WHERE id = ANY($1::uuid[])",
+        [a, c],
+    )
+    assert {row["id"]: row["merged_into"] for row in survivors} == {a: str(b), c: str(d)}
+    moved = await rel_pool.fetchrow(
+        "SELECT subject, object FROM relationship.entity_facts WHERE id = $1", linking_fact
+    )
+    assert (moved["subject"], moved["object"]) == (d, str(b))
 
 
 async def test_two_contacts_of_one_entity_merge_without_touching_its_facts(rel_pool):
