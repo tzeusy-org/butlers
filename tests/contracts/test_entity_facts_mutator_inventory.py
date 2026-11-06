@@ -70,6 +70,10 @@ _INVENTORY: dict[tuple[str, str], str] = {
     ("roster/relationship/tools/entity_merge.py", "merge_entity_pair_in_transaction"): (
         "entity merge: lock+plan, repoint intact, collision refused"
     ),
+    ("roster/relationship/tools/entity_merge.py", "_collapse_same_key"): (
+        "entity merge: supersedes one row of a same-key unknown-default pair under the locked "
+        "plan, verified row kept, evidence carried; proof in test_merge_same_key_survivor.py"
+    ),
     ("roster/relationship/tools/entity_merge.py", "_move_candidate_reports"): (
         "entity merge: candidate reports repointed under the locked merge plan; complete "
         "occurrence/packet/report retained, candidates do not become active identities"

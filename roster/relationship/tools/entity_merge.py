@@ -37,6 +37,8 @@ from butlers.fleet_events import publish_fleet_event
 from butlers.tools.relationship.fact_temporal import OCCURRENCE_COLLISION, temporal_bearing_sql
 from butlers.tools.relationship.merge_review import compute_merge_evidence, write_merge_review
 
+from .fact_evidence import carry_evidence_forward
+
 
 class EntityMergeError(RuntimeError):
     """Stable, identifier-blind entity merge failure."""
@@ -135,6 +137,31 @@ MEMORY_BEARING_SCHEMAS = (
 
 #: SQL predicate over aliases ``src``/``tgt``: both rows are unknown defaults.
 _BOTH_UNKNOWN_DEFAULT = f"NOT {temporal_bearing_sql('src')} AND NOT {temporal_bearing_sql('tgt')}"
+
+
+async def _collapse_same_key(conn: asyncpg.Connection, collisions: Sequence[Any]) -> list[Any]:
+    """Keep one row of each same-key pair, with both rows' evidence.
+
+    A verified row beats an unverified one, or the owner would see their own fact
+    as unconfirmed; otherwise the target row stays. ``verified`` covers owner-class
+    and confirmed rows (``ck_ef_verified_authority``). Returns the superseded ids.
+    """
+    superseded: list[Any] = []
+    for collision in collisions:
+        winner, loser = (
+            (collision["source_fact"], collision["target_fact"])
+            if collision["source_wins"]
+            else (collision["target_fact"], collision["source_fact"])
+        )
+        row = await conn.fetchrow(
+            "UPDATE relationship.entity_facts SET validity = 'superseded', updated_at = now() "
+            "WHERE id = $1 AND validity = 'active' RETURNING id",
+            loser,
+        )
+        if row is not None:
+            superseded.append(row)
+        await carry_evidence_forward(conn, from_fact_id=loser, to_fact_id=winner)
+    return superseded
 
 
 async def _lock_and_plan_facts(
@@ -371,32 +398,32 @@ async def merge_entity_pair_in_transaction(
         target_entity_id,
     )
 
-    # Exact subject-side collisions preserve the target row and supersede
-    # the source row before the remaining active rows are moved. Only
-    # unknown default occurrences collapse (see _lock_and_plan_facts).
-    superseded_ids = await conn.fetch(
-        f"""
-        UPDATE relationship.entity_facts AS src
-        SET validity = 'superseded',
-            updated_at = now()
-        WHERE src.subject = $1
-          AND src.validity = 'active'
-          AND EXISTS (
-              SELECT 1 FROM relationship.entity_facts tgt
-              WHERE tgt.subject = $2
-                AND tgt.predicate = src.predicate
-                AND tgt.object = src.object
-                AND tgt.validity = 'active'
-                AND {_BOTH_UNKNOWN_DEFAULT}
-          )
-        RETURNING id
-        """,
-        source_entity_id,
-        target_entity_id,
+    # Exact subject-side collisions collapse before the remaining active rows move.
+    # Only unknown default occurrences collapse (see _lock_and_plan_facts).
+    superseded_ids = await _collapse_same_key(
+        conn,
+        await conn.fetch(
+            f"""
+            SELECT src.id AS source_fact, tgt.id AS target_fact,
+                   src.verified AND NOT tgt.verified AS source_wins
+            FROM relationship.entity_facts src
+            JOIN relationship.entity_facts tgt
+              ON tgt.subject = $2
+             AND tgt.predicate = src.predicate
+             AND tgt.object = src.object
+             AND tgt.validity = 'active'
+            WHERE src.subject = $1
+              AND src.validity = 'active'
+              AND {_BOTH_UNKNOWN_DEFAULT}
+            """,
+            source_entity_id,
+            target_entity_id,
+        ),
     )
 
     # Resolve all active rows for registry-declared single-cardinality
-    # predicates. Higher confidence wins; ties keep the target row. A
+    # predicates. A verified row wins, then higher confidence; ties keep the
+    # target row. The objects differ, so no evidence crosses. A
     # predicate with any temporal-bearing row is left for period-aware
     # policy (bu-4ss0u): its occurrences are repointed, never collapsed.
     superseded_ids += await conn.fetch(
@@ -407,6 +434,7 @@ async def merge_entity_pair_in_transaction(
                 row_number() OVER (
                     PARTITION BY ef.predicate
                     ORDER BY
+                        ef.verified DESC,
                         ef.conf DESC,
                         (ef.subject = $2) DESC,
                         ef.id
@@ -453,27 +481,27 @@ async def merge_entity_pair_in_transaction(
 
     source_text = str(source_entity_id)
     target_text = str(target_entity_id)
-    superseded_ids += await conn.fetch(
-        f"""
-        UPDATE relationship.entity_facts AS src
-        SET validity = 'superseded',
-            updated_at = now()
-        WHERE src.object_kind = 'entity'
-          AND src.object = $1
-          AND src.validity = 'active'
-          AND EXISTS (
-              SELECT 1 FROM relationship.entity_facts tgt
-              WHERE tgt.subject = src.subject
-                AND tgt.predicate = src.predicate
-                AND tgt.object = $2
-                AND tgt.object_kind = 'entity'
-                AND tgt.validity = 'active'
-                AND {_BOTH_UNKNOWN_DEFAULT}
-          )
-        RETURNING id
-        """,
-        source_text,
-        target_text,
+    superseded_ids += await _collapse_same_key(
+        conn,
+        await conn.fetch(
+            f"""
+            SELECT src.id AS source_fact, tgt.id AS target_fact,
+                   src.verified AND NOT tgt.verified AS source_wins
+            FROM relationship.entity_facts src
+            JOIN relationship.entity_facts tgt
+              ON tgt.subject = src.subject
+             AND tgt.predicate = src.predicate
+             AND tgt.object = $2
+             AND tgt.object_kind = 'entity'
+             AND tgt.validity = 'active'
+            WHERE src.object_kind = 'entity'
+              AND src.object = $1
+              AND src.validity = 'active'
+              AND {_BOTH_UNKNOWN_DEFAULT}
+            """,
+            source_text,
+            target_text,
+        ),
     )
 
     object_rewired_ids = await conn.fetch(

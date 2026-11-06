@@ -504,6 +504,24 @@ been rebound.
 - **THEN** that absence MUST be classified separately from a failed write
 - **AND** it MUST NOT be counted as a successful rebind
 
+#### Scenario: A verified row survives a same-key merge collapse
+
+- **WHEN** a merge collapses two unknown-default rows with the same final key and only the source row is `verified`
+- **THEN** the source row MUST stay active on the survivor and the target row MUST be superseded
+- **AND** in every other case the target row MUST stay active and the source row MUST be superseded
+
+#### Scenario: A same-key merge collapse keeps both rows' evidence
+
+- **WHEN** a merge collapses two rows with the same final key
+- **THEN** the surviving row MUST receive the evidence of the superseded row
+- **AND** the superseded row MUST keep the evidence it was written with
+
+#### Scenario: A verified value survives a single-cardinality merge
+
+- **WHEN** a merge resolves different active values of a single-cardinality predicate with no effective time
+- **THEN** a `verified` row MUST beat an unverified one, whatever their confidence
+- **AND** evidence MUST NOT move between them, because they are different claims
+
 ### Requirement: Approved fact writes execute under server-recorded provenance
 
 When the owner carve-out or the confidence gate parks a fact write, the

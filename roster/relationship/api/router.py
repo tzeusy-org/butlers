@@ -6036,10 +6036,10 @@ async def merge_entities(
     Steps 3–7 execute inside a **single transaction** (atomicity guarantee): a
     partial merge can never leave rows stranded on the tombstoned source.
 
-    **Conflict handling:** rewiring a subject row may collide with an existing active triple
-    at (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index.
-    Such conflicting source rows are retracted (``validity='superseded'``) instead of
-    being moved, to preserve the target's existing fact.
+    **Conflict handling:** rewiring a row may collide with an existing active triple at
+    (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index. The
+    source row survives only if it alone is verified; otherwise the target row does. The
+    other row is superseded and its evidence is carried to the survivor.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.

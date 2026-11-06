@@ -572,7 +572,7 @@ OP POST /api/relationship/entities/{entity_id}/gifts 838ce9088933
 OP POST /api/relationship/entities/{entity_id}/identity-facts/{fact_id}/{decision} 86e328a85bb6
 OP POST /api/relationship/entities/{entity_id}/info 3dc72ecf9f5c
 OP POST /api/relationship/entities/{entity_id}/interactions 5ae290b88e6a
-OP POST /api/relationship/entities/{entity_id}/merge 2b15e3c26fba
+OP POST /api/relationship/entities/{entity_id}/merge a26ba88b0b0f
 OP POST /api/relationship/entities/{entity_id}/notes 900904cea409
 OP POST /api/relationship/entities/{entity_id}/view-mark f765a11827ff
 OP POST /api/relationship/groups/{group_id}/labels/{label_id} 5e1e5a010579
