@@ -32,6 +32,7 @@ from butlers.core.approval_delivery_worker import (
     DeliveryClaim,
     HandoffResult,
 )
+from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.delivery_recovery import (
@@ -993,6 +994,7 @@ async def role_pools(db, fresh_db) -> tuple[asyncpg.Pool, asyncpg.Pool]:
         )
 
     async def as_butler(connection: asyncpg.Connection) -> None:
+        await register_jsonb_codec(connection)  # as every real butler pool does
         await connection.execute("SET ROLE butler_general_rw")
 
     runtime = await asyncpg.create_pool(
