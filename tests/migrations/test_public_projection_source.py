@@ -833,8 +833,8 @@ async def test_a_butler_role_writes_stubs_without_holding_the_counts_table(
 ) -> None:
     """An edge writer with no privilege on the counts table still keeps them, through the definer.
 
-    Bootstrap's default grants reach the table today, but ``chronicler_memory_owner`` deletes edges
-    without them, and the invariant must not rest on what a bootstrap replay grants.
+    Butler roles read the table and never write it, and ``chronicler_memory_owner`` deletes edges
+    holding nothing on it, so the invariant must not rest on what a bootstrap replay grants.
     """
     async with projection.source() as source:
         person = await _entity(source)
@@ -842,6 +842,15 @@ async def test_a_butler_role_writes_stubs_without_holding_the_counts_table(
         tx = source.transaction()
         await tx.start()
         try:
+            await source.execute(f'SET LOCAL ROLE "{role}"')
+            await source.fetchval("SELECT count(*) FROM public.entity_graph_withheld_counts")
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                async with source.transaction():
+                    await source.execute(
+                        "INSERT INTO public.entity_graph_withheld_counts VALUES ($1, 'x', 1)",
+                        person,
+                    )
+            await source.execute("RESET ROLE")
             await source.execute(f'REVOKE ALL ON public.entity_graph_withheld_counts FROM "{role}"')
             await source.execute(f'SET LOCAL ROLE "{role}"')
             with pytest.raises(asyncpg.InsufficientPrivilegeError):

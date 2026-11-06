@@ -19,12 +19,12 @@ filter needs is kept on the primary as source-owned materializations:
 * ``public.entity_graph_withheld_counts`` holds each entity's stubs per
   ``<source_schema>.<source_table>``, kept by an ``AFTER`` trigger. That function is
   SECURITY DEFINER because edge writers include roles without table privileges here, such as the
-  definer role ``chronicler_memory_owner``. Bootstrap's default privileges still give butler roles
-  DML on the table, as on every ``public`` table (``scripts/init-db.sql``); no code uses it, and
-  the parity test would catch a stray write. RLS is not used to narrow that, because it would stop
-  the replication role's initial COPY. A count that reaches zero is deleted, so the table holds
-  only entities with something withheld. Its primary key covers its ``source_key`` filter, so it
-  keeps ``REPLICA IDENTITY DEFAULT``.
+  definer role ``chronicler_memory_owner``. Butler roles get SELECT only; a bootstrap replay can
+  re-grant them DML, as on every ``public`` table (``scripts/init-db.sql``). No code writes the
+  table directly, and the parity test would catch a stray write. RLS is not used as a fence, so
+  the replication role's initial copy needs no policy. A count that reaches zero is deleted, so the
+  table holds only entities with something withheld. Its primary key covers its ``source_key``
+  filter, so it keeps ``REPLICA IDENTITY DEFAULT``.
 
 Nothing here creates a publication: bead ``bu-y66o00.4`` does, from the manifest. Without one a
 replica identity only affects WAL at ``wal_level=logical``.
@@ -160,6 +160,24 @@ def _install_withheld_counts() -> None:
             withheld INTEGER NOT NULL CHECK (withheld >= 0),
             PRIMARY KEY (entity_id, source_key)
         )
+        """
+    )
+    op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_COUNTS} FROM PUBLIC")
+    op.execute(
+        f"""
+        DO $$
+        DECLARE role_name TEXT;
+        BEGIN
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'connector_writer') THEN
+                EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE {_COUNTS} FROM connector_writer';
+            END IF;
+            FOR role_name IN SELECT rolname FROM pg_roles
+                WHERE rolname LIKE 'butler\\_%\\_rw' ESCAPE '\\'
+            LOOP
+                EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE {_COUNTS} FROM %I', role_name);
+                EXECUTE format('GRANT SELECT ON TABLE {_COUNTS} TO %I', role_name);
+            END LOOP;
+        END $$
         """
     )
     op.execute(
