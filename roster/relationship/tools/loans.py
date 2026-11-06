@@ -224,7 +224,8 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
         # that moved the loan during this wait leaves the insert to take the new entity.
         await conn.execute(
             "SELECT id FROM public.entities WHERE id = "
-            "(SELECT entity_id FROM facts WHERE id = $1) FOR KEY SHARE",
+            "(SELECT entity_id FROM facts WHERE id = $1 AND scope = 'relationship') "
+            "FOR KEY SHARE",
             loan_id,
         )
         row = await conn.fetchrow(
