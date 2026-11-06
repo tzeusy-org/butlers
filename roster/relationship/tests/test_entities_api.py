@@ -1116,13 +1116,14 @@ class TestForgetEntity:
 
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock(return_value="UPDATE 0")
+        mock_conn.fetchrow = AsyncMock(return_value=entity_row)
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, entity_row])
+        mock_pool.fetchrow = AsyncMock(side_effect=[owner_row])
         mock_pool.acquire = MagicMock(return_value=AsyncCtx(mock_conn))
         return _wire_app(mock_pool), mock_pool
 

@@ -5690,17 +5690,18 @@ async def forget_entity(
     if (err := await _assert_owner_role(pool)) is not None:
         return err
 
-    row = await pool.fetchrow(
-        """
-        SELECT id FROM public.entities WHERE id = $1
-        """,
-        entity_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. A merge or rebind in flight
+            # finishes first, so what it moved is retracted below; a later one waits
+            # for the tombstone and refuses it.
+            row = await conn.fetchrow(
+                "SELECT id FROM public.entities WHERE id = $1 FOR UPDATE",
+                entity_id,
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail="Entity not found")
+
             # Retract every active occurrence where this entity is subject or
             # object -- deliberately all of them, each keeping its effective
             # packet -- and drop their graph projections in the same transaction.

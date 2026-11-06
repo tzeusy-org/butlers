@@ -96,6 +96,9 @@ _EPISODE_DOSSIER_COLUMNS = (
 )
 
 
+_ENTITY_DELETE_DEADLINE_S = 30.0
+
+
 def _memory_pool_names(db: DatabaseManager) -> list[str]:
     """Return butler names to probe for memory tables."""
     return sorted(db.butler_names)
@@ -2636,35 +2639,10 @@ async def update_entity(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/entities/{entity_id}", status_code=204)
-async def delete_entity(
-    entity_id: str,
-    retire_facts: bool = Query(False, description="Retire all active facts before deleting"),
-    *,
-    db: Db,
+async def _retire_entity_facts_for_delete(
+    db: DatabaseManager, eid: _uuid.UUID, *, retire_facts: bool
 ) -> None:
-    """Soft-delete an entity by setting metadata.deleted_at.
-
-    Owner entities cannot be deleted (returns 403).  When active or fading facts
-    exist, returns 409 with the count unless ``retire_facts=true`` is passed, in
-    which case all active/fading facts are retired (validity → 'retracted') first.
-    """
-    import uuid as _uuid
-    from datetime import datetime
-
-    pool = _any_pool(db)
-    eid = _uuid.UUID(entity_id)
-
-    row = await pool.fetchrow(
-        "SELECT id, roles FROM public.entities WHERE id = $1",
-        eid,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
-    roles = list(row["roles"]) if row["roles"] else []
-    if "owner" in roles:
-        raise HTTPException(status_code=403, detail="Cannot delete owner entity")
+    """Refuse a delete that would orphan live facts, or retire them when asked to."""
 
     # Check active/fading facts referencing this entity across all memory pools.
     # 'fading' facts are still live (not yet superseded/expired/retracted) and
@@ -2740,15 +2718,63 @@ async def delete_entity(
                 ),
             )
 
-    deleted_at = datetime.now(UTC).isoformat()
-    await pool.execute(
-        "UPDATE public.entities"
-        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
-        " updated_at = now()"
-        " WHERE id = $1",
-        eid,
-        {"deleted_at": deleted_at},
-    )
+
+@router.delete("/entities/{entity_id}", status_code=204)
+async def delete_entity(
+    entity_id: str,
+    retire_facts: bool = Query(False, description="Retire all active facts before deleting"),
+    *,
+    db: Db,
+) -> None:
+    """Soft-delete an entity by setting metadata.deleted_at.
+
+    Owner entities cannot be deleted (returns 403).  When active or fading facts
+    exist, returns 409 with the count unless ``retire_facts=true`` is passed, in
+    which case all active/fading facts are retired (validity → 'retracted') first.
+    """
+    import uuid as _uuid
+    from datetime import datetime
+
+    pool = cast(asyncpg.Pool, _any_pool(db))
+    eid = _uuid.UUID(entity_id)
+
+    # Facts live behind per-butler pools, so retirement cannot share this transaction.
+    # Holding the entity lock across it, with the marker written last, means a merge
+    # or rebind in flight finishes before the facts are counted, and a later one waits
+    # for the marker and refuses it. A crash leaves retired facts on an unmarked entity,
+    # which a retry completes.
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT id, roles FROM public.entities WHERE id = $1 FOR UPDATE",
+            eid,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        roles = list(row["roles"]) if row["roles"] else []
+        if "owner" in roles:
+            raise HTTPException(status_code=403, detail="Cannot delete owner entity")
+
+        # A writer holding a fact while it waits on this lock is a cycle across two
+        # connections, which Postgres cannot detect. Only this deadline can end it.
+        try:
+            async with asyncio.timeout(_ENTITY_DELETE_DEADLINE_S):
+                await _retire_entity_facts_for_delete(db, eid, retire_facts=retire_facts)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Entity deletion incomplete: fact retirement timed out; retry the delete.",
+            ) from exc
+
+        deleted_at = datetime.now(UTC).isoformat()
+        await conn.execute(
+            "UPDATE public.entities"
+            " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
+            " updated_at = now()"
+            " WHERE id = $1",
+            eid,
+            {"deleted_at": deleted_at},
+        )
     # public.contacts retired (bu-jnaa3): no contact rows to unlink.
 
 
