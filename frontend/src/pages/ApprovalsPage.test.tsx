@@ -2274,9 +2274,12 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
       expect(container.textContent).not.toContain("Select a pending approval to review.");
     });
 
-    it("a card already shown isn't fetched again until the tab is visible", async () => {
+    it.each([
+      ["the top row", "/approvals"],
+      ["a row named in the URL", "/approvals/a1"],
+    ])("%s already shown isn't fetched again until the tab is visible", async (_name, path) => {
       vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
-      renderAt("/approvals");
+      renderAt(path);
       await flushUntil(() => dossierText().includes("Send Email"));
       vi.mocked(getApprovalDetail).mockClear();
 
@@ -2295,11 +2298,37 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
       expect(getApprovalDetail).toHaveBeenCalledWith("a1");
     });
 
-    it("an approval named in the URL still loads", async () => {
+    it("a link opened in a background tab loads when shown", async () => {
       setVisibility("hidden");
       vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
       renderAt("/approvals/a1");
+      await flushUntil(() => container.querySelector('[data-approval-id="a1"]') !== null);
+      await act(async () => {
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
       await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    });
+
+    it("the stalled link check waits for the tab too", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+      renderAt("/approvals/a1?state=stalled");
+      await act(async () => {
+        await flush(10);
+      });
+
+      expect(getApprovalsFlat).toHaveBeenCalled();
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+
+      setVisibility("visible");
+      await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
 
       expect(getApprovalDetail).toHaveBeenCalledWith("a1");
     });

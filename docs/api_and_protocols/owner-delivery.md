@@ -155,9 +155,10 @@ retried on another route. With no tokens (rollout off, or a read that failed clo
 the displayed-call routes, whose decision still closes the subject. So do the one-tap Deny
 rows on summary surfaces, which never load a dossier.
 
-With no `:id` in the URL, `/approvals` selects the top-ranked row itself. That selection makes
-no GET while the tab is hidden and loads once the tab is visible, so a new approval can't count
-as delivered in a tab nobody is looking at. A dossier opened by id loads regardless.
+The dashboard makes no such GET while its tab is hidden, whether the row is the page's own
+top-ranked selection or one named in the URL. It loads once the tab is visible, so nothing counts
+as delivered in a tab nobody is looking at; a link opened in a background tab loads when shown.
+Other API clients can still call the GET: the server can't tell whether a tab is visible.
 
 The Telegram connector handles `od1:` taps before `apr1:` (primary owner channel only),
 posts the token to `/actions`, edits the tapped card, then drains `/retractions`. It also
