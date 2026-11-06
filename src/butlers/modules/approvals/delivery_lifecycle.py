@@ -354,8 +354,8 @@ async def transition_pending_action(
         # Every path that leaves pending (token, legacy callback, dashboard, expiry,
         # cancellation) resolves the owner-delivery subject in this transaction, so
         # no presented token can authorize anything afterwards. No subject: no-op.
-        # It runs before the RFC 0023 rows are locked: the owner-delivery LOCK_ORDER is
-        # action, subject, then RFC 0023 delivery rows, the order the handoff takes too.
+        # It runs before the RFC 0023 rows are locked: the owner-delivery LOCK_ORDER puts
+        # the action and subject before every other row, as the handoff does too.
         await close_for_authority(
             connection,
             kind="approval",
