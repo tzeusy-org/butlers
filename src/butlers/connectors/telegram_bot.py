@@ -117,8 +117,8 @@ _RETRACTION_NO_VERDICT = frozenset(
 )
 #: One such answer may concern that message alone; two in a row need an explanation.
 _RETRACTION_OUTAGES_TO_STOP_DRAIN = 2
-#: Drains in a row that Telegram refused the token before the sweep stops trying. The token
-#: is fixed for the life of the process, so only a restart can change the answer.
+#: Drains spent on a refused token, with no answer from Telegram between them, before the sweep
+#: stops attempting cards. It then only asks ``getMe`` each drain, and resumes when that passes.
 _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP = 15
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
@@ -1493,7 +1493,10 @@ class TelegramBotConnector:
         if not self._config.internal_api_url or not connector_token:
             return 0
         if self._owner_delivery_token_rejected_drains >= _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP:
-            return 0
+            if not await self._telegram_answers():
+                return 0
+            self._owner_delivery_token_rejected_drains = 0
+            logger.warning("Owner-delivery retraction sweep resumed: Telegram accepts the token")
         base = f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/retractions"
         headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token}
         try:
@@ -1527,6 +1530,7 @@ class TelegramBotConnector:
                     break
                 if not await self._telegram_answers():
                     break
+                telegram_answered = True
                 outages.clear()
                 continue
             # A card with no usable message id never reached Telegram, so it is no answer.
@@ -1552,14 +1556,14 @@ class TelegramBotConnector:
                     )
             except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
                 logger.warning("Owner-delivery retraction receipt failed")
-        # Stopping lasts until a restart, so the token itself must be what Telegram refused.
+        # Pausing stops every retraction, so the token itself must be what Telegram refused.
         if token_rejected and not telegram_answered:
             telegram_answered = await self._telegram_answers()
         self._note_owner_delivery_token_answer(rejected=token_rejected, answered=telegram_answered)
         return retracted
 
     def _note_owner_delivery_token_answer(self, *, rejected: bool, answered: bool) -> None:
-        """Count drains Telegram spent refusing the token, and stop retrying once it is settled."""
+        """Count drains Telegram spent refusing the token, and pause once it looks settled."""
         if answered:
             self._owner_delivery_token_rejected_drains = 0
         elif rejected:
@@ -1569,9 +1573,10 @@ class TelegramBotConnector:
                 == _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP
             ):
                 logger.error(
-                    "Owner-delivery retraction sweep stopped: Telegram rejected the bot token "
-                    "on %d drains in a row. Stale cards stay listed; fix the token and restart "
-                    "this connector to retract them.",
+                    "Owner-delivery retraction sweep paused: Telegram rejected the bot token "
+                    "on %d drains with no answer between them. Stale cards stay listed, and the "
+                    "sweep resumes once Telegram accepts the token; a wrong one needs fixing "
+                    "and a restart of this connector.",
                     _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP,
                 )
 

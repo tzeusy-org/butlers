@@ -406,7 +406,7 @@ _TOKEN_DRAINS = telegram_bot._RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP
 
 
 @pytest.mark.parametrize("status", [401, 404])
-async def test_a_rejected_token_stops_the_sweep_and_says_so_once(
+async def test_a_rejected_token_pauses_the_sweep_and_says_so_once(
     status, caplog: pytest.LogCaptureFixture
 ) -> None:
     connector = _connector()
@@ -425,11 +425,69 @@ async def test_a_rejected_token_stops_the_sweep_and_says_so_once(
 
     assert seen["listings"] == _TOKEN_DRAINS
     assert seen["edits"] == 2 * _TOKEN_DRAINS
+    assert seen["probes"] == _TOKEN_DRAINS + 3
     assert seen["receipts"] == []
     errors = [record for record in caplog.records if record.levelno == logging.ERROR]
     assert len(errors) == 1
     assert "restart" in errors[0].getMessage()
     assert "test-token" not in caplog.text
+
+
+async def test_a_paused_sweep_resumes_by_itself_once_telegram_accepts_the_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector = _connector()
+    _failing_provider(connector, 401)
+    for _ in range(_TOKEN_DRAINS):
+        await connector._drain_owner_delivery_retractions()
+
+    receipts = _provider(connector)
+    with caplog.at_level(logging.WARNING):
+        assert await connector._drain_owner_delivery_retractions() == 1
+        assert await connector._drain_owner_delivery_retractions() == 1
+
+    assert receipts == [{"retracted": True, "reason": None}] * 2
+    assert caplog.text.count("sweep resumed") == 1
+    assert "test-token" not in caplog.text
+
+    # A full bound again, not one more refusal, before it pauses a second time.
+    seen = _failing_provider(connector, 401)
+    for _ in range(_TOKEN_DRAINS):
+        await connector._drain_owner_delivery_retractions()
+    assert seen["listings"] == _TOKEN_DRAINS
+    await connector._drain_owner_delivery_retractions()
+    assert seen["listings"] == _TOKEN_DRAINS
+
+
+async def test_a_resume_with_nothing_to_retract_is_still_a_resume(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector = _connector()
+    _failing_provider(connector, 401)
+    for _ in range(_TOKEN_DRAINS):
+        await connector._drain_owner_delivery_retractions()
+
+    _per_card_provider(connector, [])
+    with caplog.at_level(logging.WARNING):
+        await connector._drain_owner_delivery_retractions()
+        await connector._drain_owner_delivery_retractions()
+
+    assert caplog.text.count("sweep resumed") == 1
+
+
+async def test_a_passing_health_check_clears_the_rejected_token_count() -> None:
+    connector = _connector()
+    _failing_provider(connector, 401)
+    for _ in range(_TOKEN_DRAINS - 1):
+        await connector._drain_owner_delivery_retractions()
+
+    _per_card_provider(connector, [_OUTAGE, _OUTAGE])
+    await connector._drain_owner_delivery_retractions()
+
+    seen = _failing_provider(connector, 401)
+    await connector._drain_owner_delivery_retractions()
+    await connector._drain_owner_delivery_retractions()
+    assert seen["listings"] == 2
 
 
 async def test_a_real_telegram_answer_clears_the_rejected_token_count() -> None:
