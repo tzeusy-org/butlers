@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 
-from butlers.entity_rebind import _write_receipt
+from butlers.entity_rebind import _process_pending_entity_rebinds_on_conn
 from butlers.testing.migration import load_migration
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
@@ -123,39 +123,47 @@ async def test_entity_rebind_log_install_is_concurrent_replay_safe(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_runtime_role_can_settle_a_retried_failed_receipt(db) -> None:
-    """The retry's own write, under the role that runs it in production (bu-dhloi1.52)."""
-    async with _pre_core_243(db) as pool:
-        await _run(pool, "upgrade")
-        source = await pool.fetchval(_ENTITY_INSERT)
-        target = await pool.fetchval(_ENTITY_INSERT)
-        rebind = await pool.fetchval("SELECT gen_random_uuid()")
-        await pool.execute(
-            """
-            INSERT INTO public.entity_rebind_log (
-                rebind_id, source_entity_id, target_entity_id, target_schema,
-                status, error_class, completed_at
-            ) VALUES ($1, $2, $3, 'general', 'failed', 'RuntimeError', now())
-            """,
-            rebind,
+async def test_a_whole_retry_runs_under_a_non_relationship_runtime_role(db) -> None:
+    """Sweep, survivor lock, moves and receipt under the role production uses (bu-dhloi1.52)."""
+    pool = await db("core", "memory", schemas={"core": "general", "memory": "general"})
+    source = await pool.fetchval(_ENTITY_INSERT)
+    target = await pool.fetchval(_ENTITY_INSERT)
+    survivor = await pool.fetchval(_ENTITY_INSERT)
+    await pool.execute(
+        "UPDATE public.entities SET metadata = metadata || jsonb_build_object("
+        "'merged_into', $2::text) WHERE id = $1",
+        target,
+        str(survivor),
+    )
+    rebind = await pool.fetchval("SELECT gen_random_uuid()")
+    await pool.execute(
+        """
+        INSERT INTO public.entity_rebind_log (
+            rebind_id, source_entity_id, target_entity_id, target_schema,
+            status, error_class, completed_at, updated_at
+        ) VALUES ($1, $2, $3, 'general', 'failed', 'RuntimeError', now(),
+                  now() - interval '1 day')
+        """,
+        rebind,
+        source,
+        target,
+    )
+
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL search_path TO general, public")
+        fact = await conn.fetchval(
+            "INSERT INTO facts (subject, entity_id, predicate, content) "
+            "VALUES ('opaque-subject', $1, 'note', 'opaque') RETURNING id",
             source,
-            target,
         )
+        await conn.execute("SET LOCAL ROLE butler_general_rw")
+        receipts = await _process_pending_entity_rebinds_on_conn(conn, target_schema="general")
+        moved = await conn.fetchval("SELECT entity_id FROM facts WHERE id = $1", fact)
 
-        async with pool.acquire() as conn, conn.transaction():
-            await conn.execute("SET LOCAL ROLE butler_general_rw")
-            receipt = await _write_receipt(
-                conn,
-                rebind_id=rebind,
-                source=source,
-                target=target,
-                target_schema="general",
-                references_rebound=1,
-                status="active",
-                error_class=None,
-            )
-
-        assert (receipt.status, receipt.error_class) == ("active", None)
+    assert [(r.status, r.error_class, r.references_rebound) for r in receipts] == [
+        ("active", None, 1)
+    ]
+    assert moved == survivor
 
 
 @pytest.mark.asyncio(loop_scope="session")

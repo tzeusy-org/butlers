@@ -649,8 +649,10 @@ async def settle_entity_merge(pool: asyncpg.Pool, merge: EntityMergeResult) -> E
                 }
                 break
 
-    # The ledger is the recovery authority. Live daemons react to this event;
-    # startup replay remains the durable recovery path for missed delivery.
+    # The ledger is the recovery authority. Live daemons react to this event; for
+    # missed delivery or a failed attempt, each daemon's startup replay and idle
+    # sweep settle pending receipts and retry failed ones. Only Relationship's own
+    # receipt has an outcome yet: every other schema's is still pending here.
     await publish_fleet_event(
         pool,
         ENTITY_REBOUND_EVENT_TYPE,

@@ -927,7 +927,7 @@ async def contact_merge(
             if settled.failed_schemas:
                 logger.warning(
                     "contact_merge: entity rebind failed for schemas %s "
-                    "(source=%s target=%s); each daemon retries its failed receipt",
+                    "(source=%s target=%s); that daemon retries its failed receipt",
                     ", ".join(settled.failed_schemas),
                     src_entity_id,
                     tgt_entity_id,

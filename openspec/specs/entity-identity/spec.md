@@ -281,6 +281,25 @@ settlement to the runtime role bound to the receipt's target schema.
 - **AND** a failing retry MUST leave it `failed`, name the latest error class, and restart the backoff
 - **AND** a live event for that receipt MUST NOT retry it
 
+#### Scenario: A late rebind follows later merges of its target
+
+- **WHEN** a pending or failed receipt from A to B is processed after B was merged into C
+- **THEN** A's references in that schema MUST move to the entity at the end of B's `merged_into` chain
+- **AND** a merge of that entity still in flight MUST be waited for and followed
+- **AND** the receipt MUST keep its original source and target
+
+#### Scenario: A late rebind onto a forgotten entity moves nothing
+
+- **WHEN** the entity at the end of a receipt target's `merged_into` chain has been forgotten
+- **THEN** no reference MUST move onto it
+- **AND** the receipt MUST stay `failed` and name `EntityRebindTargetForgotten`
+
+#### Scenario: A rebind failure log carries no data values
+
+- **WHEN** a rebind attempt fails, first or on a retry
+- **THEN** the log MUST name the rebind id, schema, step, and error class
+- **AND** it MUST NOT include the exception's message or traceback
+
 ---
 
 ### Requirement: Calendar event entity junction table

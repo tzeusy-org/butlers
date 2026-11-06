@@ -25,6 +25,23 @@ ENTITY_REBOUND_EVENT_TYPE = "entity.rebound.v1"
 
 _FAILED_RETRY_BACKOFF_S = 900.0
 
+_ENTITY_MERGED_INTO_SQL = "SELECT metadata->>'merged_into' FROM public.entities WHERE id = $1"
+_ENTITY_LOCK_SQL = """
+    SELECT metadata->>'merged_into' AS merged_into,
+           metadata->>'tombstone' = 'true' OR metadata ? 'deleted_at' AS forgotten
+    FROM public.entities
+    WHERE id = $1
+    FOR KEY SHARE
+"""
+
+
+class EntityRebindTargetForgotten(Exception):
+    """The entity a receipt's references would move onto has been forgotten."""
+
+
+class EntityRebindChainBroken(Exception):
+    """A receipt target's ``merged_into`` chain loops or reaches no entity."""
+
 
 @dataclass(frozen=True)
 class EntityRebindReceipt:
@@ -136,6 +153,40 @@ async def _repoint_catalog(conn: Any, source: UUID, target: UUID, target_schema:
     return _rowcount(tag)
 
 
+async def _resolve_survivor(conn: Any, target: UUID) -> UUID:
+    """Follow ``merged_into`` from a receipt's target to the entity its references belong on.
+
+    A later merge of the target settles its own receipts with nothing to move
+    while this one is unsettled, so nothing else ever moves these references.
+    Only the apparent survivor is locked, and re-read under the lock: a merge
+    holds both its rows ``FOR UPDATE``, so one in flight is waited for and then
+    followed, and one starting later waits until this rebind commits, when its
+    own receipt finds the moved references.
+
+    Raises:
+        EntityRebindTargetForgotten: The survivor was forgotten. Moving references
+            onto it would revive data that forgetting retracted.
+        EntityRebindChainBroken: The chain loops or reaches no entity.
+    """
+    current = target
+    seen = {current}
+    while True:
+        next_id = await conn.fetchval(_ENTITY_MERGED_INTO_SQL, current)
+        if next_id is None:
+            row = await conn.fetchrow(_ENTITY_LOCK_SQL, current)
+            if row is None:
+                raise EntityRebindChainBroken
+            next_id = row["merged_into"]
+            if next_id is None:
+                if row["forgotten"]:
+                    raise EntityRebindTargetForgotten
+                return current
+        current = UUID(next_id)
+        if current in seen:
+            raise EntityRebindChainBroken
+        seen.add(current)
+
+
 def _receipt_from_row(row: Any) -> EntityRebindReceipt:
     return EntityRebindReceipt(
         rebind_id=row["rebind_id"],
@@ -223,30 +274,47 @@ async def _rebind_entity_references_on_conn(
         # are idempotent, so a retry adds to the count already reported.
         total = int(row["references_rebound"])
         tables_seen = 0
+        step = _resolve_survivor.__name__
         try:
+            # The savepoint keeps the transaction usable if resolution fails; its
+            # lock on the survivor outlives it, until the receipt commits.
+            async with conn.transaction():
+                survivor = await _resolve_survivor(conn, target_entity_id)
+
             for operation in (_repoint_facts, _repoint_calendar, _repoint_episodes):
+                step = operation.__name__
                 count, table_exists = await _run_optional_table_step(
                     conn,
                     lambda step_conn, operation=operation: operation(
-                        step_conn, source_entity_id, target_entity_id
+                        step_conn, source_entity_id, survivor
                     ),
                 )
                 total += count
                 tables_seen += int(table_exists)
 
+            step = _repoint_catalog.__name__
             catalog_count, catalog_exists = await _run_optional_table_step(
                 conn,
                 lambda step_conn: _repoint_catalog(
                     step_conn,
                     source_entity_id,
-                    target_entity_id,
+                    survivor,
                     target_schema,
                 ),
             )
             total += catalog_count
             tables_seen += int(catalog_exists)
         except Exception as exc:
-            logger.exception("Entity rebind failed for schema %s", target_schema)
+            # Only identifiers: a driver's message carries the server's DETAIL, which
+            # can hold key values from ``facts``, and a lasting failure repeats here.
+            logger.error(
+                "Entity rebind failed: rebind_id=%s schema=%s step=%s error_class=%s sqlstate=%s",
+                rebind_id,
+                target_schema,
+                step,
+                type(exc).__name__,
+                getattr(exc, "sqlstate", None),
+            )
             return await _write_receipt(
                 conn,
                 rebind_id=rebind_id,
