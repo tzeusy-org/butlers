@@ -390,6 +390,23 @@ def test_helper_refuses_an_existing_index_of_another_shape(helper_connection: ob
     assert _identity(helper_connection, "helper_subject") == ("d", None)
 
 
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "CREATE INDEX {index} ON helper_subject (id, kind)",
+        "CREATE UNIQUE INDEX {index} ON helper_subject (id, kind) WHERE kind <> ''",
+    ],
+)
+def test_helper_refuses_a_non_unique_or_partial_index(
+    helper_connection: object, definition: str
+) -> None:
+    index = replica_identity_index_name("helper_subject")
+    helper_connection.execute(text(definition.format(index=index)))
+    with Operations.context(MigrationContext.configure(helper_connection)):
+        with pytest.raises(ValueError, match="does not match"):
+            ensure_replica_identity("helper_subject", ("id",), ("kind",))
+
+
 def test_helper_refuses_an_unsafe_identifier() -> None:
     with pytest.raises(ValueError, match="unsafe"):
         ensure_replica_identity("facts; DROP TABLE x", ("id",), ("kind",))
@@ -658,6 +675,23 @@ async def test_updates_and_deletes_succeed_on_every_published_filtered_table(
         await _assert_parity(source)
 
 
+async def test_the_counts_grants_and_definer_are_as_narrow_as_intended(
+    projection: Projection,
+) -> None:
+    async with projection.source() as source:
+        assert not await source.fetchval(
+            "SELECT has_table_privilege('connector_writer', "
+            "'public.entity_graph_withheld_counts', 'SELECT')"
+        )
+        function = await source.fetchrow(
+            "SELECT prosecdef, proconfig, proacl::text AS acl FROM pg_proc "
+            "WHERE oid = 'public.entity_graph_edges_sync_withheld_counts()'::regprocedure"
+        )
+        assert function["prosecdef"] is True
+        assert function["proconfig"] == ["search_path=pg_catalog, pg_temp"]
+        assert not any(entry.startswith("=") for entry in function["acl"].strip("{}").split(","))
+
+
 # -- REQ-public-mcp-projection-013: edges and withheld counts -------------------------------------
 
 
@@ -862,8 +896,8 @@ async def test_a_butler_role_writes_stubs_without_holding_the_counts_table(
 ) -> None:
     """An edge writer with no privilege on the counts table still keeps them, through the definer.
 
-    Butler roles read the table and never write it, and ``chronicler_memory_owner`` deletes edges
-    holding nothing on it, so the invariant must not rest on what a bootstrap replay grants.
+    Butler roles read the table and never write it, so the invariant must not rest on what a
+    bootstrap replay grants.
     """
     async with projection.source() as source:
         person = await _entity(source)

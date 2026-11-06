@@ -64,7 +64,7 @@ Individual butlers can have their own migration chains for butler-specific table
 
 ## Discovery and Resolution
 
-The `migrations.py` module (`src/butlers/migrations/__init__.py`) handles chain discovery:
+The `butlers.migrations` package (`src/butlers/migrations/__init__.py`) handles chain discovery:
 
 1. **`_discover_module_chains()`** -- Scans `src/butlers/modules/*/migrations/` for Python files.
 2. **`_discover_butler_chains()`** -- Scans `roster/*/migrations/` for Python files.

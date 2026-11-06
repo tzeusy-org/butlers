@@ -19,8 +19,7 @@ filter needs is kept on the primary as source-owned materializations:
   it reads the final row.
 * ``public.entity_graph_withheld_counts`` holds each entity's stubs per
   ``<source_schema>.<source_table>``, kept by an ``AFTER`` trigger. That function is
-  SECURITY DEFINER because edge writers include roles without table privileges here, such as the
-  definer role ``chronicler_memory_owner``. Butler roles get SELECT only; a bootstrap replay can
+  SECURITY DEFINER because butler roles write edges but hold only SELECT here; a bootstrap replay can
   re-grant them DML, as on every ``public`` table (``scripts/init-db.sql``). No code writes the
   table directly, and the parity test would catch a stray write. RLS is not used as a fence, so
   the replication role's initial copy needs no policy. A count that reaches zero is deleted, so the
