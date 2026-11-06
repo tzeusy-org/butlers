@@ -238,3 +238,49 @@ async def test_a_confirmed_single_value_beats_a_higher_confidence_unconfirmed_on
     assert await _validity(rel_pool, confirmed) == "active"
     assert await _validity(rel_pool, guessed) == "superseded"
     assert await _evidence(rel_pool, confirmed) == {"a"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_subject_side_prefers_the_confirmed_row_and_moves_only_its_edge(rel_pool) -> None:
+    source = await _entity(rel_pool, "Source")
+    target = await _entity(rel_pool, "Target")
+    other = await _entity(rel_pool, "Other")
+    src_fact = await _fact(
+        rel_pool,
+        source,
+        "knows",
+        str(other),
+        kind="entity",
+        trusted="legacy_verified",
+        evidence="from source",
+    )
+    tgt_fact = await _fact(
+        rel_pool, target, "knows", str(other), kind="entity", evidence="from target"
+    )
+    for fact, subject in ((src_fact, source), (tgt_fact, target)):
+        await rel_pool.execute(
+            """
+            INSERT INTO public.entity_graph_edges
+                (source_schema, source_table, source_id, subject_entity_id, predicate,
+                 object_entity_id)
+            VALUES ('relationship', 'entity_facts', $1, $2, 'knows', $3)
+            """,
+            fact,
+            subject,
+            other,
+        )
+
+    await merge_entity_pair(rel_pool, source_entity_id=source, target_entity_id=target)
+
+    row = await rel_pool.fetchrow(
+        "SELECT subject, validity FROM relationship.entity_facts WHERE id = $1", src_fact
+    )
+    assert (row["subject"], row["validity"]) == (target, "active")
+    assert await _validity(rel_pool, tgt_fact) == "superseded"
+    assert await _evidence(rel_pool, src_fact) == {"from source", "from target"}
+    edges = await rel_pool.fetch(
+        "SELECT source_id, subject_entity_id FROM public.entity_graph_edges "
+        "WHERE object_entity_id = $1",
+        other,
+    )
+    assert [(e["source_id"], e["subject_entity_id"]) for e in edges] == [(src_fact, target)]
