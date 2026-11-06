@@ -860,17 +860,21 @@ async def _execute_if_present(conn: asyncpg.Connection, query: str, *args: Any) 
 async def _lock_merge_rows(
     conn: asyncpg.Connection, source_entity_id: uuid.UUID, target_entity_id: uuid.UUID
 ) -> None:
-    """Lock both entity rows, then every affected active fact row, in id order.
+    """Lock both entity rows, their candidate slots and rows, then every active fact row.
 
-    Same order as ``entity_merge.merge_entity_pair``. The entity locks also block
+    Same order as ``entity_merge.merge_entity_pair_in_transaction``, which re-takes
+    all of these when it runs later in this transaction. The entity locks also block
     a concurrent fact INSERT/UPDATE naming either entity as subject (its FK takes
     KEY SHARE on the entity row); the fact locks hold every row this merge may
     rewrite, so the fence re-run on them sees exactly what will be written.
     """
+    from .entity_merge import _lock_candidate_reports
+
     await conn.execute(
         "SELECT 1 FROM public.entities WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
         [source_entity_id, target_entity_id],
     )
+    await _lock_candidate_reports(conn, source_entity_id, target_entity_id)
     await conn.execute(
         """
         SELECT 1 FROM relationship.entity_facts ef
