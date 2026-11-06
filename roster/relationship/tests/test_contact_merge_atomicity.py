@@ -23,6 +23,12 @@ entity_merge_mod = roster_module("relationship", "tools/entity_merge")
 SourceEntityTombstonedError = entity_merge_mod.SourceEntityTombstonedError
 TargetEntityTombstonedError = entity_merge_mod.TargetEntityTombstonedError
 
+# Contact columns a merge deliberately does not re-point.
+_NOT_REPOINTED = {
+    ("contact_entity_map", "contact_id"),  # the source's bridge row is deleted instead
+    ("priority_contacts", "contact_id"),  # not moved: flagged in bu-dhloi1.123's PR
+}
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -371,3 +377,68 @@ async def test_two_contacts_of_one_entity_merge_without_touching_its_facts(rel_p
     assert not await rel_pool.fetchval(
         "SELECT count(*) FROM contact_entity_map WHERE contact_id = $1", source
     )
+
+
+async def test_a_contacts_important_dates_follow_the_merge(rel_pool):
+    _source_entity, _target_entity, _fact_id, source, target = await _pair(rel_pool)
+    row = await rel_pool.fetchval(
+        "INSERT INTO important_dates (contact_id, label, month, day) "
+        "VALUES ($1, 'birthday', 3, 9) RETURNING id",
+        source,
+    )
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert (
+        await rel_pool.fetchval("SELECT contact_id FROM important_dates WHERE id = $1", row)
+        == target
+    )
+
+
+@pytest.mark.parametrize(
+    ("add_parent", "add_members", "read_members"),
+    [
+        (
+            "INSERT INTO groups (name) VALUES ($1) RETURNING id",
+            "INSERT INTO group_members (group_id, contact_id) VALUES ($1, $2), ($1, $3), ($4, $2)",
+            "SELECT group_id AS k, contact_id FROM group_members",
+        ),
+        (
+            "INSERT INTO labels (name) VALUES ($1) RETURNING id",
+            "INSERT INTO contact_labels (label_id, contact_id) VALUES ($1, $2), ($1, $3), ($4, $2)",
+            "SELECT label_id AS k, contact_id FROM contact_labels",
+        ),
+    ],
+    ids=["group_members", "contact_labels"],
+)
+async def test_two_contacts_sharing_a_group_or_label_can_merge(
+    rel_pool, add_parent, add_members, read_members
+):
+    """Each has a unique (key, contact_id), so a plain re-point refused the whole merge."""
+    _source_entity, _target_entity, _fact_id, source, target = await _pair(rel_pool)
+    shared = await rel_pool.fetchval(add_parent, f"shared {uuid.uuid4()}")
+    only_source = await rel_pool.fetchval(add_parent, f"source {uuid.uuid4()}")
+    await rel_pool.execute(add_members, shared, source, target, only_source)
+
+    await contacts_mod.contact_merge(rel_pool, source, target)
+
+    rows = await rel_pool.fetch(read_members)
+    assert {(row["k"], row["contact_id"]) for row in rows} == {
+        (shared, target),
+        (only_source, target),
+    }
+
+
+async def test_every_contact_child_table_exists_and_every_contact_column_is_accounted_for(rel_pool):
+    """A wrong name is skipped silently at runtime, so a merge would leave those rows behind."""
+    columns = await rel_pool.fetch(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND column_name IN ('contact_id', 'contact_a', 'contact_b')"
+    )
+    at_head = {
+        (row["table_name"], row["column_name"])
+        for row in columns
+        if "_bak_" not in row["table_name"] and "_dropbak_" not in row["table_name"]
+    }
+
+    assert set(contacts_mod._CONTACT_CHILD_TABLES) | _NOT_REPOINTED == at_head
