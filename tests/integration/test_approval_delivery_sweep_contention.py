@@ -1,7 +1,8 @@
 """The ineligible-presentation sweep never waits on a row, so it is in no lock cycle (bu-dhloi1.75).
 
 It runs outside the action or cohort lock that serializes every other multi-row writer of these
-rows, and it updates several rows in one statement. Skipping locked rows is what keeps it out of a cycle.
+rows, and it updates several rows in one statement. Skipping locked rows is what keeps it out of
+a cycle.
 """
 
 from __future__ import annotations
