@@ -551,13 +551,15 @@ async def test_every_path_racing_on_one_card_never_deadlocks(contended, attempt:
 
     results = await _finish(*(racer() for racer in racers))
 
-    # A defer that lands first stales the card's tokens, which is the other legal ending.
-    redeemed, action = results[1], (await _settled(contended, card))["action"]
+    # Redeem first: the defer finds the action decided. Defer first: the token is stale.
+    redeemed, deferred = results[1], results[2]
+    action = (await _settled(contended, card))["action"]
     if redeemed.outcome == "won":
-        assert action == "rejected"
+        assert action == "rejected" and deferred.changed is False
     else:
         assert (redeemed.outcome, redeemed.reason, action) == (
             "refused",
             "stale_generation",
             "pending",
         )
+        assert deferred.changed is True

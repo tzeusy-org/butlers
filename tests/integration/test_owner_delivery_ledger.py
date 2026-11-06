@@ -12,6 +12,7 @@ import asyncio
 import logging
 import shutil
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -2133,6 +2134,105 @@ async def test_a_defer_racing_a_started_handoff_retracts_that_card_once_its_resu
     second = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
     assert len(_card_tokens(second.envelopes[0])) == 2
     assert await _retractions(ledger_pool) == ["77"]
+
+
+async def _safe_retry_after_a_racing_defer(
+    pool: asyncpg.Pool, defer: Callable[[uuid.UUID], Awaitable[Any]], *, reclaimed: bool = False
+) -> ApprovalDeliveryRepository:
+    """Defer while a handoff is out, then have it come back retryable with its backoff over."""
+    action_id = await _park(pool, card=True)
+    repository = ApprovalDeliveryRepository(pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert await repository.mark_handoff_started(claim) is True
+
+    await defer(action_id)
+    if reclaimed:
+        await pool.execute(
+            "UPDATE approval_delivery_presentations SET claim_expires_at = clock_timestamp() "
+            "WHERE state = 'handoff_started'"
+        )
+        claim = await repository.claim_next()
+        assert claim is not None and claim.reconcile_only is True
+    assert await repository.complete_handoff(
+        claim, HandoffResult("safe_retry", reason_code="transport_unavailable")
+    )
+
+    await pool.execute(
+        "UPDATE approval_delivery_presentations SET next_attempt_at = clock_timestamp() "
+        "WHERE state = 'retry_wait'"
+    )
+    return repository
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["flag on", "flag off"])
+@pytest.mark.parametrize("reclaimed", [False, True], ids=["same claim", "reclaimed"])
+async def test_a_safe_retry_after_a_racing_defer_sends_nothing_before_the_due_time(
+    ledger_pool, enabled: bool, reclaimed: bool
+) -> None:
+    await _enable(ledger_pool, enabled)
+
+    async def defer(action_id: uuid.UUID) -> None:
+        await defer_pending_action(ledger_pool, action_id=action_id, hours=2, actor="owner")
+
+    repository = await _safe_retry_after_a_racing_defer(ledger_pool, defer, reclaimed=reclaimed)
+
+    assert await repository.claim_next() is None
+    assert await ledger_pool.fetch(
+        "SELECT presentation_generation, state, last_reason_code "
+        "FROM approval_delivery_presentations ORDER BY presentation_generation"
+    ) == [(1, "superseded", "defer_rescheduled"), (2, "ready", "defer_rescheduled")]
+
+
+async def test_a_safe_retry_after_a_racing_defer_leaves_the_successor_its_own_card(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+
+    async def defer(action_id: uuid.UUID) -> None:
+        await _defer_due_now(ledger_pool, action_id)
+
+    repository = await _safe_retry_after_a_racing_defer(ledger_pool, defer)
+
+    runtime = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+
+    tokens = _card_tokens(runtime.envelopes[0])
+    assert len(tokens) == 2 and all(token.startswith("od1:") for token in tokens)
+    assert await _telegram_cards(ledger_pool) == [
+        {"generation": 1, "state": "failed", "provider_ref": None},
+        {"generation": 2, "state": "sent", "provider_ref": "78"},
+    ]
+    assert await repository.claim_next() is None
+    assert await _retractions(ledger_pool) == []
+
+
+async def test_a_safe_retry_landing_after_the_successor_was_sent_sends_nothing_more(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    repository = ApprovalDeliveryRepository(ledger_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert await repository.mark_handoff_started(claim) is True
+    await _defer_due_now(ledger_pool, action_id)
+    await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+
+    assert await repository.complete_handoff(
+        claim, HandoffResult("safe_retry", reason_code="transport_unavailable")
+    )
+    await ledger_pool.execute(
+        "UPDATE approval_delivery_presentations SET next_attempt_at = clock_timestamp() "
+        "WHERE state = 'retry_wait'"
+    )
+
+    assert await repository.claim_next() is None
+    assert await _telegram_cards(ledger_pool) == [
+        {"generation": 1, "state": "failed", "provider_ref": None},
+        {"generation": 2, "state": "sent", "provider_ref": "78"},
+    ]
 
 
 async def test_a_refused_defer_leaves_the_subjects_generation_alone(ledger_pool) -> None:

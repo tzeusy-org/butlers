@@ -158,6 +158,9 @@ a new row with fresh tokens and its own provider message id. With the flag off i
 buttons instead. An action with no subject yet has nothing to move until
 the successor opens one. No receipt records the move itself; `approval_events` records the defer.
 
+A generation already handed off when the defer lands keeps its result as evidence, and a `safe_retry`
+result supersedes it instead of retrying, so the only further send is the successor at its due time.
+
 The dashboard dossier is a presentation too: for a pending action, `GET /api/approvals/{id}`
 from the owner's session returns `owner_delivery: {subject_id, generation, approve_token,
 reject_token}` (null while off, for connector reads and review sources, or on any failure).
