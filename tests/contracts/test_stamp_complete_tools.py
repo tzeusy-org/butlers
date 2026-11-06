@@ -923,14 +923,15 @@ async def test_a_legacy_or_system_successor_reads_unclean_through_each_stamped_r
     )
 
 
-_STALE_CONDITION = ("condition:stale", "condition", "health", {"name": "a", "status": "active"})
+_REFUSES_STALE = [p for p in _COPIES if p.id not in ("research_update", "loan_settle")]
+_SUBJECT_KEYED = [
+    p for p in _COPIES if p.id in ("condition_update", "medication_update", "task_complete")
+]
 
 
-async def _superseded_by_owner_row(pool, source_authority: str | None) -> tuple[dict, dict]:
-    """A stale condition row whose current successor the owner wrote."""
-    stale = await _seed_authority(pool, _STALE_CONDITION, source_authority)
-    subject, predicate, scope, metadata = _STALE_CONDITION
-    current = await storage.store_fact(
+async def _store_current(pool, seed) -> dict:
+    subject, predicate, scope, metadata = seed
+    return await storage.store_fact(
         pool,
         subject,
         predicate,
@@ -940,65 +941,85 @@ async def _superseded_by_owner_row(pool, source_authority: str | None) -> tuple[
         metadata=metadata,
         content_authority="owner",
     )
-    assert (await _stored(pool, stale["id"]))["validity"] == "superseded"
-    return stale, current
 
 
-@pytest.mark.parametrize(
-    ("writer", "stale_authority"),
-    [("routed_owner", "third_party"), ("routed_owner", None), ("system", None)],
-)
-@_db
-async def test_a_stale_id_cannot_put_a_mixed_successor_over_a_current_owner_fact(
-    stores, monkeypatch, writer, stale_authority
-):
-    monkeypatch.setattr(conditions, "_get_embedding_engine", _engine)
-    stale, current = await _superseded_by_owner_row(stores, stale_authority)
-    with _writing_as(writer), pytest.raises(ValueError, match="cannot supersede"):
-        await condition_update(stores, str(stale["id"]), notes="edited")
-    assert (await _stored(stores, current["id"]))["validity"] == "active"
-
-
-@pytest.mark.parametrize(
-    ("writer", "stale_authority"), [("routed_owner", "system"), ("system", "owner")]
-)
-@_db
-async def test_a_stale_id_replaces_a_current_owner_fact_with_an_unclean_system_successor(
-    stores, monkeypatch, writer, stale_authority
-):
-    """The recorded limit: the guard refuses only third_party and mixed, so this is not refused."""
-    monkeypatch.setattr(conditions, "_get_embedding_engine", _engine)
-    stale, current = await _superseded_by_owner_row(stores, stale_authority)
-    with _writing_as(writer):
-        result = await condition_update(stores, str(stale["id"]), notes="edited")
-    assert (await _stored(stores, current["id"]))["validity"] == "superseded"
-    successor = await _stored(stores, result["id"])
-    assert successor["content_authority"] == "system"
-    assert _row_account(successor).owner_untainted is False
-
-
-@pytest.mark.parametrize(("source", "stored"), [("owner", "owner"), ("third_party", "mixed")])
-@_db
-async def test_a_stale_gift_id_adds_a_second_active_row_and_is_never_refused(
-    stores, monkeypatch, source, stored
-):
-    """A gift is a temporal fact, so it skips supersession and the guard."""
-    monkeypatch.setattr(gifts, "_get_embedding_engine", _engine)
-    subject = f"entity:{_ENTITY}:gift:stale"
-    seed = (subject, "gift", "relationship", {"status": "idea"})
-    stale = await _seed_authority(stores, seed, source)
-    with _writing_as("routed_owner"):
-        current = await gift_update_status(stores, stale["id"], "purchased")
-        second = await gift_update_status(stores, stale["id"], "wrapped")
-    for result in (current, second):
-        row = await _stored(stores, result["id"])
-        assert (row["validity"], row["content_authority"]) == ("active", stored)
-    assert (
-        await stores.fetchval(
-            "SELECT count(*) FROM facts WHERE subject = $1 AND validity = 'active'", subject
-        )
-        == 2
+async def _live_rows(pool, seed) -> int:
+    return await pool.fetchval(
+        "SELECT count(*) FROM facts WHERE subject = $1 AND predicate = $2 AND validity = 'active'",
+        seed[0],
+        seed[1],
     )
+
+
+@pytest.mark.parametrize("source_authority", ["owner", "system", "third_party", None])
+@pytest.mark.parametrize(("copy", "module", "seed"), _REFUSES_STALE)
+@_db
+async def test_a_superseded_id_is_refused_and_the_current_fact_stays(
+    stores, monkeypatch, copy, module, seed, source_authority
+):
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    stale = await _seed_authority(stores, seed, source_authority)
+    current = await _store_current(stores, seed)
+    assert (await _stored(stores, stale["id"]))["validity"] == "superseded"
+    for writer in ("routed_owner", "system"):
+        with _writing_as(writer), pytest.raises(ValueError, match="not found"):
+            await copy(stores, stale["id"])
+    assert (await _stored(stores, current["id"]))["validity"] == "active"
+    assert await _live_rows(stores, seed) == 1
+
+
+@pytest.mark.parametrize(("copy", "module", "seed"), _REFUSES_STALE)
+@_db
+async def test_a_retracted_id_is_refused(stores, monkeypatch, copy, module, seed):
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    source = await _seed_authority(stores, seed, "system")
+    await stores.execute("UPDATE facts SET validity = 'retracted' WHERE id = $1", source["id"])
+    with pytest.raises(ValueError, match="not found"):
+        await copy(stores, source["id"])
+    assert await _live_rows(stores, seed) == 0
+
+
+@pytest.mark.parametrize(("copy", "module", "seed"), _SUBJECT_KEYED)
+@_db
+async def test_a_fact_superseded_after_the_read_is_refused(stores, monkeypatch, copy, module, seed):
+    """The read saw a current row; a newer fact landed before the store."""
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    source = await _seed_authority(stores, seed, "system")
+    real, landed = storage.store_fact, {}
+
+    async def racing(pool, *args, **kwargs):
+        monkeypatch.setattr(storage, "store_fact", real)
+        landed.update(await _store_current(pool, seed))
+        return await real(pool, *args, **kwargs)
+
+    monkeypatch.setattr(storage, "store_fact", racing)
+    with pytest.raises(storage.StaleSupersessionTargetError):
+        await copy(stores, source["id"])
+    assert (await _stored(stores, landed["id"]))["validity"] == "active"
+    assert await _live_rows(stores, seed) == 1
+
+
+@pytest.mark.parametrize(("copy", "module", "seed"), _SUBJECT_KEYED)
+@_db
+async def test_a_live_legacy_row_with_an_entity_id_is_still_editable(
+    stores, monkeypatch, copy, module, seed
+):
+    """A subject-only store cannot find this row, so naming it would refuse a live edit."""
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    source = await _seed_copy_source(stores, seed, content_authority="system", entity_id=_ENTITY)
+    result = await copy(stores, source["id"])
+    assert (await _stored(stores, result["id"]))["validity"] == "active"
+
+
+@pytest.mark.parametrize(("copy", "module", "seed"), _REFUSES_STALE)
+@_db
+async def test_a_fading_id_is_still_editable(stores, monkeypatch, copy, module, seed):
+    """A fading fact is still the live value, so it is not stale."""
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    source = await _seed_authority(stores, seed, "system")
+    await stores.execute("UPDATE facts SET validity = 'fading' WHERE id = $1", source["id"])
+    result = await copy(stores, source["id"])
+    assert (await _stored(stores, result["id"]))["validity"] == "active"
 
 
 @_db

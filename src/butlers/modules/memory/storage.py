@@ -13,7 +13,7 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 
 class StaleSupersessionTargetError(ValueError):
     """Raised when an optimistic supersession target is no longer current."""
+
+
+def subject_keyed_target(row: Mapping[str, Any]) -> uuid.UUID | None:
+    """The ``expected_supersedes_id`` for a copy of ``row`` stored under its subject alone.
+
+    Such a store looks for the current row by subject with no ``entity_id`` and no ``valid_at``.
+    A live legacy row with either set is never that row, so naming it would refuse a live edit.
+    """
+    return row["id"] if row["entity_id"] is None and row["valid_at"] is None else None
 
 
 # ---------------------------------------------------------------------------

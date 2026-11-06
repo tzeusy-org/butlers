@@ -97,15 +97,13 @@ of a legacy NULL row is held too. "Not held" in the rules below describes NULL a
 rows themselves, not a `mixed` successor. A vouch does not carry: a vouched fact's successor
 has no `endorsed_at`, so it is held again after the next edit.
 
-`condition_update`, `medication_update` and `task_complete` accept an already superseded
-fact's id. If a current owner-authored fact has replaced it, a `mixed` successor is refused
-("A non-owner-authored fact cannot supersede an owner-authored fact"). A `system` successor
-is not refused: it replaces the owner's current text with text built from the stale row, and
-reads as unclean.
-
-`gift_update_status` also accepts a superseded id, but it stores a temporal fact, which skips
-supersession and this guard. A stale gift id is never refused and replaces nothing: it adds a
-second active row beside the current one.
+The seven copying tools refuse a fact id that is no longer current, so a stale read cannot replace a
+newer fact or add a second live row. `research_update` and `loan_settle` accept only `active`
+rows, and the other five accept `active` or `fading`. `condition_update`, `medication_update`
+and `task_complete` also pass `expected_supersedes_id` to `store_fact`, which catches a row
+superseded after the read. A live legacy row with `entity_id` or `valid_at` set is not found
+by that subject-only store, so it is edited without that check, and it stays active beside
+its successor as it did before.
 
 Steering memory is gated on that stamp:
 

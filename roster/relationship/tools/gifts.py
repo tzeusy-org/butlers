@@ -201,7 +201,7 @@ async def gift_add_for_entity(
 
 
 async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str) -> dict[str, Any]:
-    """Update gift status, validating pipeline order."""
+    """Update gift status, validating pipeline order. A non-current id is refused."""
     if status not in _GIFT_STATUS_ORDER:
         raise ValueError(f"Invalid status '{status}'. Must be one of {_GIFT_STATUS_ORDER}")
 
@@ -210,7 +210,8 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     row = await pool.fetchrow(
         "SELECT id, subject, content, metadata, entity_id, content_authority,"
         " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
-        " WHERE id = $1 AND scope = 'relationship'",
+        " WHERE id = $1 AND scope = 'relationship'"
+        " AND validity IN ('active', 'fading')",
         gift_id,
     )
     if row is None:

@@ -168,7 +168,7 @@ async def medication_update(
     ``quantity_updated_at`` to now, which the insight-scan job (bu-dtmbn) uses
     as the anchor for counting doses consumed against the new supply.
     """
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import store_fact, subject_keyed_target
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
     allowed = {"name", "dosage", "frequency", "schedule", "active", "notes", "quantity"}
@@ -179,9 +179,10 @@ async def medication_update(
 
     # Fetch the existing medication fact by ID.
     row = await pool.fetchrow(
-        "SELECT id, subject, metadata, content_authority,"
+        "SELECT id, subject, metadata, entity_id, valid_at, content_authority,"
         " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
-        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
+        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'"
+        " AND validity IN ('active', 'fading')",
         med_uuid,
     )
     if row is None:
@@ -220,6 +221,7 @@ async def medication_update(
                 permanence="permanent",
                 scope="health",
                 valid_at=None,  # property fact — supersedes the previous
+                expected_supersedes_id=subject_keyed_target(row),
                 metadata=new_meta,
                 sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
             )
@@ -358,7 +360,8 @@ async def medication_log_dose(
     med_row = await pool.fetchrow(
         "SELECT id, metadata, content_authority,"
         " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
-        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
+        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'"
+        " AND validity IN ('active', 'fading')",
         med_uuid,
     )
     if med_row is None:
