@@ -13,6 +13,7 @@ import type {
   ApprovalActionsResponse,
   ApprovalActionParams,
   ApprovalApproveRequest,
+  OwnerDeliveryActionRequest,
   ApprovalDeferRequest,
   ApprovalDenyRequest,
   ApprovalDetail,
@@ -3716,6 +3717,17 @@ export function approveApproval(
       body: JSON.stringify(request ?? {}),
     },
   );
+}
+
+/** Decide one card through its single-use token; a refusal never falls back to another route. */
+export function redeemOwnerDeliveryAction(
+  request: OwnerDeliveryActionRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>("/owner-delivery/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 export function retryApproval(

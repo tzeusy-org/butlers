@@ -89,9 +89,9 @@ routes (`_is_approval_callback_route`).
 
 | Route | Who | Behaviour |
 | --- | --- | --- |
-| `POST /actions {token}` | connector (surface `telegram`, needs `X-Butlers-Decision-Actor: owner@telegram`) or owner browser session (surface `dashboard`) | Redeems through the normal approve/deny path (audit, dispatch). `200` with the action on a win or a replay (a replay dispatches nothing); `409 {"error":"owner_delivery_refused","reason":…}` otherwise. |
-| `GET /retractions` | connector only | This deployment's stale Telegram cards: `{presentation_id, route_ref, provider_ref}`. |
-| `POST /retractions/{presentation_id} {retracted, reason?}` | connector only | Receipts one retraction attempt. `retracted=false` keeps the card listed; it never claims success. A live card (open subject, current generation) is refused with `409 presentation_live`. |
+| `POST /actions {token}` | connector (surface `telegram`, needs `X-Butlers-Decision-Actor: owner@telegram`) or owner browser session (surface `dashboard`) | Redeems through the normal approve/deny path (audit, dispatch). `200` with the action on a win or a replay (a replay dispatches nothing); `409 {"error":"owner_delivery_refused","reason":…}` otherwise. The dashboard must echo the `displayed_call` it showed to approve (`409` if it differs, or if the call is open-only, before the token is touched) and may add a denial `reason`; the connector may not. |
+| `GET /retractions` | connector only | This deployment's stale Telegram cards: `{presentation_id, route_ref, provider_ref}`. A failed card returns after a 15-minute cooldown, and not at all after 5 failed attempts. |
+| `POST /retractions/{presentation_id} {retracted, reason?}` | connector only | Receipts one retraction attempt. `retracted=false` never claims success; the card stays eligible within the bound above. A live card (open subject, current generation) is refused with `409 presentation_live`. |
 
 ## Delivery path
 
@@ -108,11 +108,22 @@ The dashboard dossier is a presentation too: for a pending action, `GET /api/app
 from the owner's session returns `owner_delivery: {subject_id, generation, approve_token,
 reject_token}` (null while off, for connector reads and review sources, or on any failure).
 Every render is a delivery into the owner's authenticated response and carries its own
-tokens. Wiring the dashboard UI buttons to `POST /actions` is follow-up work; until then the
-dashboard keeps its displayed-call path, whose decision still closes the subject.
+tokens. The dossier's and the review dialog's Approve, and the dossier's Deny, post those tokens to
+`POST /actions` when the detail carries them; a refusal is shown and the dossier re-read, never
+retried on another route. With no tokens (rollout off, or a read that failed closed) they use
+the displayed-call routes, whose decision still closes the subject. So do the one-tap Deny
+rows on summary surfaces, which never load a dossier.
 
 The Telegram connector handles `od1:` taps before `apr1:` (primary owner channel only),
-posts the token to `/actions`, edits the tapped card, then drains `/retractions`.
+posts the token to `/actions`, edits the tapped card, then drains `/retractions`. It also
+drains on a timer (`CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S`, default 60 seconds, polling and
+webhook modes), so a card staled by a dashboard decision, expiry or cancellation is retracted
+with no tap. One drain runs at a time. Telegram's "message is not modified" counts as retracted,
+because the card already shows that end state; any other refusal is `provider_error` and is logged
+with the presentation id, as is a refused listing or receipt with its status. Every attempt is
+receipted: a card given up after 5
+failures keeps its state and receipts, and its buttons stay harmless because its tokens are
+stale.
 
 ## Later-owned inputs (not active here)
 
@@ -161,8 +172,11 @@ The rollout flag governs **minting only**:
 - tokens already minted stay redeemable after the flag is turned off, so live `od1` cards are
   not stranded. Their decisions still run through `transition_pending_action` with the same
   checks.
-- the retraction drain (`GET/POST /retractions`) runs regardless of the flag, so stale cards
-  from an enabled period are still retracted after a rollback.
+- the retraction drain and its timer (`GET/POST /retractions`) run regardless of the flag, so
+  stale cards from an enabled period are still retracted after a rollback. With no ledger rows
+  the listing is empty, so a deployment that never enabled the flag retracts nothing.
+- with the flag off the dossier carries no tokens, so the dashboard decides on its
+  displayed-call routes.
 
 To stop `od1` decisions entirely, the subject must close (decide, expire or cancel the
 action), which stales its tokens; turning the flag off is not a kill switch for live cards.

@@ -89,6 +89,7 @@ vi.mock("@/api/index.ts", () => ({
   retryUnroutableAttention: vi.fn(),
   getApprovalDetail: vi.fn(),
   approveApproval: vi.fn(),
+  redeemOwnerDeliveryAction: vi.fn(),
   denyApproval: vi.fn(),
   deferApproval: vi.fn(),
   retryApproval: vi.fn(),
@@ -121,6 +122,7 @@ vi.mock("@/api/index.ts", () => ({
 
 import {
   approveApproval,
+  redeemOwnerDeliveryAction,
   abandonApproval,
   confirmAutonomySuggestion,
   deferApproval,
@@ -1272,6 +1274,36 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
 
     expect(toast.warning).toHaveBeenCalled();
     expect(toast.success).not.toHaveBeenCalledWith("Approved & dispatched");
+  });
+
+  it("decides through the dossier's owner-delivery tokens when it has them", async () => {
+    const tokens = {
+      subject_id: "s1",
+      generation: 1,
+      approve_token: "od1:approve",
+      reject_token: "od1:reject",
+    };
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+    const detail = await makePendingDetail("a1");
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({ ...detail.data, owner_delivery: tokens }) as AnyMock,
+    );
+    vi.mocked(redeemOwnerDeliveryAction).mockReturnValue(
+      makeApiResponse({ id: "a1", status: "rejected" }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Deny") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Deny")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(redeemOwnerDeliveryAction).toHaveBeenCalledWith({ token: "od1:reject" });
+    expect(denyApproval).not.toHaveBeenCalled();
   });
 
   it("toasts success when approve actually dispatches (executed)", async () => {

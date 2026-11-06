@@ -26,11 +26,14 @@ Environment Variables (from docs/connectors/telegram_bot.md):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import math
 import os
 import random
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from threading import Thread
@@ -94,7 +97,11 @@ from butlers.db import db_params_from_env
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage import BlobStore
-from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
+from butlers.telegram_api import (
+    edit_telegram_message_text,
+    remove_telegram_inline_keyboard,
+    telegram_message_not_modified,
+)
 
 _DESCRIPTOR = connector_descriptor("telegram_bot")
 
@@ -304,6 +311,9 @@ class TelegramBotConnectorConfig:
     # It is intentionally never read from the environment.
     approval_callback_connector_token: str | None = None
 
+    # Seconds between sweeps that retract owner cards staled by any decision path.
+    owner_delivery_sweep_interval_s: float = 60.0
+
     # Owner voice-note transcription (bu-r0dsz; telegram-voice-transcription spec). Disabled by
     # default: enabling sends owner audio to the configured STT service.
     voice_transcription_enabled: bool = False
@@ -348,6 +358,12 @@ class TelegramBotConnectorConfig:
                 "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED is true"
             )
 
+        sweep_interval_s = float(os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", "60"))
+        if not (math.isfinite(sweep_interval_s) and sweep_interval_s > 0):
+            raise ValueError(
+                "CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S must be a positive number of seconds"
+            )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -369,6 +385,7 @@ class TelegramBotConnectorConfig:
                     "CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S", str(DEFAULT_MAX_DURATION_S)
                 )
             ),
+            owner_delivery_sweep_interval_s=sweep_interval_s,
         )
 
 
@@ -380,6 +397,15 @@ def _replay_message_metadata(update: dict[str, Any]) -> dict[str, Any]:
             spans = bot_message_spans(msg, _extract_normalized_text(msg) or "")
             return {"untrusted_spans": spans or None, "in_reply_to_ref": bot_in_reply_to_ref(msg)}
     return {}
+
+
+async def _tolerate_not_modified(edit: Awaitable[Any]) -> None:
+    """Await one end-state edit; Telegram's "message is not modified" means it already holds."""
+    try:
+        await edit
+    except httpx.HTTPStatusError as exc:
+        if not telegram_message_not_modified(exc.response):
+            raise
 
 
 class TelegramBotConnector:
@@ -412,6 +438,8 @@ class TelegramBotConnector:
         self._last_update_id: int | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
+        self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
+        self._owner_delivery_drain_lock = asyncio.Lock()
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -645,6 +673,7 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        self._start_owner_delivery_sweep()
 
         # Load checkpoint
         await self._load_checkpoint()
@@ -738,6 +767,7 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        self._start_owner_delivery_sweep()
 
         # Load ingestion policy rules before registering the webhook.
         await self._ingestion_policy.ensure_loaded()
@@ -763,6 +793,13 @@ class TelegramBotConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+
+        # Before the HTTP client closes: an in-flight drain still uses it.
+        if self._owner_delivery_sweep_task is not None:
+            self._owner_delivery_sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._owner_delivery_sweep_task
+            self._owner_delivery_sweep_task = None
 
         # Stop heartbeat
         if self._heartbeat is not None:
@@ -1386,13 +1423,41 @@ class TelegramBotConnector:
         except Exception:  # noqa: BLE001 -- stale UI is harmless
             logger.warning("Failed to remove a stale owner-delivery keyboard")
 
+    def _start_owner_delivery_sweep(self) -> None:
+        """Run the stale-card sweep: a card can go stale with no Telegram tap at all.
+
+        A dashboard decision, an expiry or a cancellation stales a card too. The listing is
+        not gated on the rollout flag, which governs minting only; without a ledger row it
+        is empty, and stale cards minted while the flag was on still get retracted.
+        """
+        if self._owner_delivery_sweep_task is not None:
+            return
+        config = self._config
+        if not config.internal_api_url or not config.approval_callback_connector_token:
+            return
+        self._owner_delivery_sweep_task = asyncio.create_task(self._owner_delivery_sweep_loop())
+
+    async def _owner_delivery_sweep_loop(self) -> None:
+        while True:
+            try:
+                await self._drain_owner_delivery_retractions()
+            except Exception as exc:  # noqa: BLE001 -- the next sweep retries
+                # The type only: an HTTP error's text can carry the bot-token URL.
+                logger.warning("Owner-delivery retraction sweep failed (%s)", type(exc).__name__)
+            await asyncio.sleep(self._config.owner_delivery_sweep_interval_s)
+
     async def _drain_owner_delivery_retractions(self) -> int:
         """Retract every stale owner card and receipt each attempt honestly.
 
         A card whose provider message id is unknown, or whose edit fails, is reported
-        as ``retracted=false``; it stays listed and its buttons stay harmless because
-        their tokens are already stale.
+        as ``retracted=false``; the ledger lists it again after a cooldown, up to a bound,
+        and its buttons stay harmless because their tokens are already stale. One drain at
+        a time: a tap and the sweep must not attempt the same card at once.
         """
+        async with self._owner_delivery_drain_lock:
+            return await self._drain_owner_delivery_retractions_locked()
+
+    async def _drain_owner_delivery_retractions_locked(self) -> int:
         connector_token = self._config.approval_callback_connector_token
         if not self._config.internal_api_url or not connector_token:
             return 0
@@ -1401,6 +1466,9 @@ class TelegramBotConnector:
         try:
             response = await self._http_client.get(base, headers=headers)
             if response.status_code != 200:
+                logger.warning(
+                    "Owner-delivery retraction listing refused (%s)", response.status_code
+                )
                 return 0
             payload = response.json()
         except Exception:  # noqa: BLE001
@@ -1413,12 +1481,22 @@ class TelegramBotConnector:
                 continue
             ok, reason = await self._retract_owner_card(item)
             retracted += int(ok)
+            if not ok:
+                logger.warning(
+                    "Owner-delivery retraction failed for %s (%s)", item["presentation_id"], reason
+                )
             try:
-                await self._http_client.post(
+                receipt = await self._http_client.post(
                     f"{base}/{item['presentation_id']}",
                     json={"retracted": ok, "reason": reason},
                     headers=headers,
                 )
+                if receipt.status_code != 200:
+                    logger.warning(
+                        "Owner-delivery retraction receipt refused for %s (%s)",
+                        item["presentation_id"],
+                        receipt.status_code,
+                    )
             except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
                 logger.warning("Owner-delivery retraction receipt failed")
         return retracted
@@ -1433,18 +1511,24 @@ class TelegramBotConnector:
         except ValueError:
             return False, "provider_ref_unusable"
         try:
-            await edit_telegram_message_text(
-                self._http_client,
-                self._telegram_api_base,
-                chat_id=chat_id,
-                message_id=message_id,
-                text=_OWNER_DELIVERY_RETRACTED_TEXT,
+            # Each edit sets an end state, so "message is not modified" means it holds: the
+            # text edit may already drop the keyboard, and a relisted card is already edited.
+            await _tolerate_not_modified(
+                edit_telegram_message_text(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=_OWNER_DELIVERY_RETRACTED_TEXT,
+                )
             )
-            await remove_telegram_inline_keyboard(
-                self._http_client,
-                self._telegram_api_base,
-                chat_id=chat_id,
-                message_id=message_id,
+            await _tolerate_not_modified(
+                remove_telegram_inline_keyboard(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
             )
         except Exception:  # noqa: BLE001 -- receipted as a failed retraction
             return False, "provider_error"

@@ -3691,8 +3691,23 @@ export interface ApprovalCallPreview {
   displayed_call: DisplayedApprovalCall;
 }
 
+/** One dashboard presentation of an owner-delivery subject; its tokens are single-use. */
+export interface OwnerDeliveryCard {
+  subject_id: string;
+  generation: number;
+  approve_token: string;
+  reject_token: string;
+}
+
+export interface OwnerDeliveryActionRequest {
+  token: string;
+  displayed_call?: DisplayedApprovalCall | null;
+  reason?: string | null;
+}
+
 export interface ApprovalDetail {
   call_preview?: ApprovalCallPreview | null;
+  owner_delivery?: OwnerDeliveryCard | null;
   id: string;
   title: string;
   butler: string;

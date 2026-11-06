@@ -45,6 +45,8 @@ ACTIONS: Final = frozenset({"approve", "reject", "ack"})
 DECISIONS: Final = frozenset({"approve", "reject"})
 SUBJECT_KINDS: Final = frozenset({"approval", "goal_answer", "pending_ask"})
 RESOLVED: Final = frozenset({"decided", "cancelled", "expired"})
+RETRACTION_MAX_FAILED_ATTEMPTS: Final = 5
+RETRACTION_RETRY_AFTER_S: Final = 900
 
 Surface = Literal["dashboard", "telegram"]
 Action = Literal["approve", "reject", "ack"]
@@ -719,20 +721,34 @@ async def pending_retractions(
     """This schema's live provider presentations whose actions are stale, oldest first.
 
     A presentation is stale once its subject resolved or moved past its generation, by
-    whichever path. The surface owner drains this and reports each attempt through
-    :func:`record_retraction`; a failed attempt stays listed for the next drain.
+    whichever path. The surface owner drains this on a timer and reports each attempt
+    through :func:`record_retraction`. Every failure is a receipt, so a card that can never
+    be retracted must not be retried forever: a failed card comes back only after
+    :data:`RETRACTION_RETRY_AFTER_S`, and not at all after
+    :data:`RETRACTION_MAX_FAILED_ATTEMPTS`. Its buttons stay harmless, its tokens being stale.
     """
     rows = await conn.fetch(
         "SELECT p.id, p.surface, p.route_ref, p.provider_ref "
         "FROM public.owner_delivery_presentations p "
         "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
+        "LEFT JOIN LATERAL ("
+        "  SELECT count(*) AS attempts, max(r.created_at) AS latest "
+        "  FROM public.owner_delivery_receipts r "
+        "  WHERE r.subject_id = p.subject_id AND r.presentation_id = p.id "
+        "  AND r.kind = 'retract_failed'"
+        ") failed ON true "
         "WHERE p.owning_schema = current_schema() AND p.surface = $1 "
         "AND p.state IN ('sent', 'unknown') "
         "AND (s.state IN ('decided', 'cancelled', 'expired') "
         "     OR p.generation < s.generation) "
+        "AND failed.attempts < $3 "
+        "AND (failed.latest IS NULL "
+        "     OR failed.latest <= clock_timestamp() - make_interval(secs => $4)) "
         "ORDER BY p.updated_at, p.id LIMIT $2",
         surface,
         limit,
+        RETRACTION_MAX_FAILED_ATTEMPTS,
+        float(RETRACTION_RETRY_AFTER_S),
     )
     return tuple(
         RetractTarget(row["id"], row["surface"], row["route_ref"], row["provider_ref"])
