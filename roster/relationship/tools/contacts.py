@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 
@@ -785,13 +785,13 @@ async def _fence_legacy_fact_repoint(
 ) -> None:
     """Refuse a legacy merge whose entity_facts re-pointing could lose an occurrence.
 
-    ``contact_merge``'s best-effort blocks below collapse SPO collisions by
-    confidence and swallow database errors, which is only safe for unknown
-    default-occurrence rows. Before any contact, entity or fact write, fail
-    ``temporal_mutator_unsupported`` if an affected row -- an active fact either
-    entity is the subject or entity-object of -- carries effective time, or if
-    one triple already has several active occurrences. The audited merge service
-    (``entity_merge.merge_entity_pair``) is the occurrence-preserving path.
+    ``contact_merge``'s re-pointing below collapses SPO collisions by confidence,
+    which is only safe for unknown default-occurrence rows. Before any contact,
+    entity or fact write, fail ``temporal_mutator_unsupported`` if an affected row
+    -- an active fact either entity is the subject or entity-object of -- carries
+    effective time, or if one triple already has several active occurrences. The
+    audited merge service (``entity_merge.merge_entity_pair``) is the
+    occurrence-preserving path.
     """
     source_text = str(source_entity_id)
     target_text = str(target_entity_id)
@@ -892,10 +892,9 @@ async def _repoint_entity_facts(
 ) -> None:
     """Re-point relationship.entity_facts from the source entity to the target.
 
-    Only reached for the fenced all-unknown-default singleton set. The memory
-    ``entity_merge`` cannot reach this table's column layout (subject/object vs
-    entity_id), so the relationship pool rewrites it here (bu-9z7nd, bu-igcxb).
-    An exact SPO collision keeps the higher-confidence row and supersedes the
+    Only reached for the fenced all-unknown-default singleton set, and always
+    followed in the same transaction by the merge authority, which tombstones the
+    source (bu-dhloi1.40). An exact SPO collision keeps the higher-confidence row and supersedes the
     other, mirroring the merge service's legacy dedup.
     """
     # Subject side.
@@ -976,8 +975,6 @@ async def contact_merge(
     pool: asyncpg.Pool,
     source_id: uuid.UUID,
     target_id: uuid.UUID,
-    memory_pool: asyncpg.Pool | None = None,
-    chronicler_pool: asyncpg.Pool | None = None,
 ) -> dict[str, Any]:
     """Merge source contact into target contact.
 
@@ -987,15 +984,17 @@ async def contact_merge(
     profile is reconciled with the source profile, and the source entity's
     ``relationship.entity_facts`` are re-pointed to the target entity.
 
-    Every relationship-schema write happens in ONE transaction that first locks
-    both entity rows and every affected fact row, then re-runs the effective-time
-    fence under those locks (bu-p2bjsf): the merge either commits whole or writes
-    nothing.
+    Every write happens in ONE transaction that first locks both entity rows and
+    every affected fact row, then re-runs the effective-time fence under those
+    locks (bu-p2bjsf): the merge either commits whole or writes nothing. When the
+    contacts have different linked entities, that transaction also tombstones the
+    source entity through the merge authority (bu-dhloi1.40), so facts never move
+    without a ``merged_into`` recording where they went. Two contacts of one entity
+    collapse without touching it.
 
-    After that commit, when both contacts have linked entities, the source
-    entity is merged into the target through the best-effort ``entity_merge``
-    compatibility call and a ``merge_reviews`` audit row is written.
-    ``chronicler_pool`` is accepted for wire compatibility with that call.
+    After that commit the merge's rebind receipt settles and a ``merge_reviews``
+    audit row is written. Both are best-effort: the identity is already durable,
+    and the rebind ledger recovers a missed settlement.
 
     Returns:
         The updated target contact dict.
@@ -1005,7 +1004,11 @@ async def contact_merge(
         TemporalError: ``temporal_mutator_unsupported`` -- raised before the
             first write -- when the linked entities' facts are not the plain
             unknown-default singleton set its legacy re-pointing can move.
+        EntityMergeError: the merge authority refused the entities (for example
+            one is already tombstoned). Nothing is written.
     """
+    from .entity_merge import merge_entity_pair_in_transaction, settle_entity_merge
+
     if source_id == target_id:
         raise ValueError("source_id and target_id must be different.")
 
@@ -1028,9 +1031,12 @@ async def contact_merge(
     src_profile = src_profile if isinstance(src_profile, dict) else {}
     entities = (
         (uuid.UUID(str(src_entity_id)), uuid.UUID(str(tgt_entity_id)))
-        if src_entity_id is not None and tgt_entity_id is not None
+        if src_entity_id is not None
+        and tgt_entity_id is not None
+        and str(src_entity_id) != str(tgt_entity_id)
         else None
     )
+    merge = None
 
     # (a) Unlocked fast refusal; the authoritative check re-runs under locks.
     if entities is not None:
@@ -1053,8 +1059,8 @@ async def contact_merge(
                 exc_info=True,
             )
 
-    # (c) One transaction for every relationship-schema write. A TemporalError or
-    # any database error rolls the whole merge back.
+    # (c) One transaction for every write. A TemporalError, a refused entity merge
+    # or any database error rolls the whole merge back.
     async with pool.acquire() as conn:
         async with conn.transaction():
             if entities is not None:
@@ -1096,23 +1102,24 @@ async def contact_merge(
 
             if entities is not None:
                 await _repoint_entity_facts(conn, *entities)
+                merge = await merge_entity_pair_in_transaction(
+                    cast(asyncpg.Connection, conn),
+                    source_entity_id=entities[0],
+                    target_entity_id=entities[1],
+                )
 
-    # (d) After commit: the memory entity merge (another schema, best-effort) and
-    # the merge_reviews audit row, written regardless of entry path.
-    if entities is not None:
-        from butlers.modules.memory.tools.entities import entity_merge
+    # (d) After commit: settle the rebind receipt (the ledger row committed above
+    # recovers a failure) and the merge_reviews audit row, written regardless of
+    # entry path.
+    if merge is not None and entities is not None:
         from butlers.tools.relationship.merge_review import write_merge_review
 
         try:
-            await entity_merge(
-                memory_pool or pool,
-                str(src_entity_id),
-                str(tgt_entity_id),
-                chronicler_pool=chronicler_pool,
-            )
+            await settle_entity_merge(pool, merge)
         except Exception:
             logger.exception(
-                "entity_merge failed for source=%s target=%s; continuing",
+                "contact_merge: settling the committed entity merge failed "
+                "(source=%s target=%s); the rebind ledger recovers it",
                 src_entity_id,
                 tgt_entity_id,
             )

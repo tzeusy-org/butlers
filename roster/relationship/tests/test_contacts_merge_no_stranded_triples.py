@@ -35,6 +35,7 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 
+from butlers.roster_imports import roster_module
 from butlers.tools.relationship.fact_temporal import (
     MUTATOR_UNSUPPORTED,
     PACKET_COLUMNS,
@@ -568,9 +569,10 @@ class TestEffectiveTimeMutatorFences:
     ):
         """A row that gains effective time between the unlocked preflight and the
         locked re-check refuses the whole merge: no contact, entity or fact write,
-        and the memory entity merge never runs."""
-        from butlers.modules.memory.tools import entities as memory_entities
+        and the merge authority is never reached."""
         from butlers.tools.relationship import contacts as contacts_mod
+
+        entity_merge_mod = roster_module("relationship", "tools/entity_merge")
 
         await simulate_temporal_cutover(rel_pool)
         target_entity = await _insert_entity(rel_pool, name="Erin", roles=[])
@@ -627,7 +629,7 @@ class TestEffectiveTimeMutatorFences:
             memory_merges.append(args)
 
         monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", racing_fence)
-        monkeypatch.setattr(memory_entities, "entity_merge", spy_entity_merge)
+        monkeypatch.setattr(entity_merge_mod, "merge_entity_pair_in_transaction", spy_entity_merge)
 
         with pytest.raises(TemporalError) as caught:
             await contacts_mod.contact_merge(
@@ -711,7 +713,7 @@ class TestEffectiveTimeMutatorFences:
                 assert not any(task.done() for task in corrections)
 
         monkeypatch.setattr(contacts_mod, "_fence_legacy_fact_repoint", fence_then_race)
-        # The post-commit merge_entity_pair runs for real: the writer takes its
+        # The in-transaction merge authority runs for real: the writer takes its
         # entity rows before any fact row (bu-ab0zys), the same order the merge
         # uses, so the correction can no longer deadlock against it.
 

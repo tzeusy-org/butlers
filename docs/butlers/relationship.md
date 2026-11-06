@@ -69,10 +69,12 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   rather than collapse an occurrence that carries effective time. Legacy `contact_merge`,
   hash-addressed contact routes, SPO retraction and `prefers-channel` refuse
   (`temporal_mutator_unsupported` / `temporal_occurrence_ambiguous`) whenever they would have to
-  choose between occurrences or drop a packet. `contact_merge` does every Relationship write in
-  one transaction that locks both entity rows and every affected fact, re-runs its fence under
-  those locks, and commits whole or writes nothing; the memory entity merge runs only after that
-  commit. A contact value edit re-locks its hash-selected row before retracting it and refuses
+  choose between occurrences or drop a packet. `contact_merge` does every write in one transaction
+  that locks both entity rows and every affected fact, re-runs its fence under those locks, runs
+  the entity merge authority, and commits whole or writes nothing. Its facts therefore never move
+  without the source's `merged_into`, and a refused entity merge refuses the contact merge. Only
+  the rebind settlement and an audit row run after commit, and the rebind ledger recovers a missed
+  settlement. Two contacts of one entity collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
   `contact_fact_changed` (409) if the row was retracted or re-valued meanwhile. Entity forget
   retracts every occurrence as-is and removes their graph edges; Google/Steam hard deletes keep
   their all-version cascade.
