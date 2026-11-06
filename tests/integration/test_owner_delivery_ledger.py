@@ -1102,9 +1102,11 @@ async def test_runtime_role_redeems_its_own_schemas_card(role_pools) -> None:
 
 # --- The switch gate (bu-dhloi1.49): every other path, as the role that really runs it. ---
 #
-# The worker, handoff, ack, close and retraction paths run in a butler daemon, whose pool is
-# butler_general_rw under row security. The routes run in the dashboard API, whose pool logs
-# in as the migration role with no SET ROLE, so it bypasses row security as the table owner.
+# Worker delivery and the handoff run only in a butler daemon, whose pool is butler_general_rw
+# under row security, so those tests show the deployed path. Close runs in the daemon and in the
+# dashboard API. Redeem and retraction run only in the API, whose pool logs in as the migration
+# role with no SET ROLE, and ack has no production path. The tests that run those under the butler
+# role are labelled counterfactual: they show the role could run them, not what is deployed.
 
 
 async def _enable_delivery(owner: asyncpg.Pool) -> None:
@@ -1169,6 +1171,11 @@ async def _assert_foreign_card_untouched(owner: asyncpg.Pool, card: _ForeignCard
         )
         == 0
     )
+    consumed = await owner.fetch(
+        "SELECT consumed_at FROM public.owner_delivery_tokens WHERE subject_id = $1",
+        card.subject_id,
+    )
+    assert [row["consumed_at"] for row in consumed] == [None]
 
 
 async def _receipt_kinds(owner: asyncpg.Pool, source_ref: uuid.UUID) -> set[str]:
@@ -1243,6 +1250,7 @@ async def test_runtime_role_worker_records_an_ambiguous_send_as_unknown(role_poo
 
 
 async def test_runtime_role_acks_then_closes_for_the_authority(role_pools) -> None:
+    """The close half is a deployed daemon path; ack is counterfactual, with no production path."""
     owner, runtime = role_pools
     for ordinal, target in enumerate((ActionStatus.EXPIRED, ActionStatus.CANCELLED)):
         action_id = await _park(runtime, ordinal=ordinal)
@@ -1266,6 +1274,7 @@ async def test_runtime_role_acks_then_closes_for_the_authority(role_pools) -> No
 
 
 async def test_runtime_role_lists_and_receipts_its_own_retraction(role_pools) -> None:
+    """Counterfactual: retraction runs only on the API's pool, never as the butler role."""
     owner, runtime = role_pools
     action_id = await _park(runtime)
     _, cards = await _present(runtime, action_id, "telegram")
@@ -1300,6 +1309,7 @@ async def test_runtime_role_lists_and_receipts_its_own_retraction(role_pools) ->
 
 
 async def test_runtime_role_cannot_reach_another_schemas_card_or_token(role_pools) -> None:
+    """Row security alone hides the foreign rows; retraction and redeem here are counterfactual."""
     owner, runtime = role_pools
     foreign = await _foreign_stale_card(owner)
     owner_entity = await owner.fetchval(
@@ -1339,7 +1349,11 @@ async def test_runtime_role_cannot_reach_another_schemas_card_or_token(role_pool
 async def test_routes_decide_and_retract_only_their_own_schema(
     role_pools, login: str, row_security: bool
 ) -> None:
-    """The real API pool has no row security to lean on: its predicates are the only fence."""
+    """With row security bypassed, the predicates are the only fence.
+
+    The ``dashboard`` case stands in for the API's login, which is inferred to own the ledger.
+    The ``butler`` case is counterfactual: the deployed API never runs as that role.
+    """
     owner, runtime = role_pools
     route_pool = owner if login == "dashboard" else runtime
     assert (
