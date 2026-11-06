@@ -67,7 +67,8 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
 - **Mutator fences.** Entity merge locks and plans every affected fact first, repoints rows with
   their packets and evidence intact, and refuses `temporal_occurrence_collision` before any write
   rather than collapse an occurrence that carries effective time. An exact collision between
-  unknown defaults keeps the target's row, whatever the confidence of either. Hash-addressed
+  unknown defaults keeps the source's row only if it alone is verified, and otherwise the target's,
+  whatever the confidence of either; the survivor receives the other row's evidence. Hash-addressed
   contact routes, SPO retraction and `prefers-channel` refuse (`temporal_mutator_unsupported` /
   `temporal_occurrence_ambiguous`) whenever they would have to choose between occurrences or drop a
   packet. `contact_merge` does every write in one transaction that starts with the entity merge

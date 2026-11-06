@@ -259,7 +259,7 @@ async def read_fact_evidence(
                carried_from, recorded_at
         FROM relationship.fact_evidence
         WHERE fact_id = $1
-        ORDER BY seq
+        ORDER BY seq, recorded_at, id
         """,
         fact_id,
     )
