@@ -33,10 +33,19 @@ Subject states: `pending → delivered/unknown → acknowledged → decided/canc
 cancelled clears it.
 Row security is ENABLE (not FORCE), as in core_303: the table owner (dashboard, migrations,
 backups) bypasses it and a butler role sees only rows whose `owning_schema` is its own. RLS is
-not the only fence: the triggers above apply to every role, every runtime query also filters
-on `current_schema()`, and a statement-level `BEFORE TRUNCATE` trigger on each of the five
-ledger tables refuses truncation (`42501`) for every role, owner included (the core_287 /
-core_293 precedent).
+not the only fence: the triggers above apply to every role, the listing and lookup queries
+also filter on `current_schema()`, and a statement-level `BEFORE TRUNCATE` trigger on each of
+the five ledger tables refuses truncation (`42501`) for every role, owner included (the
+core_287 / core_293 precedent).
+
+Which role runs what matters here. The worker, handoff, acknowledgement, close and retraction
+functions run in a butler daemon, whose pool is `butler_<schema>_rw` under row security. The
+`/api/owner-delivery` routes run in the dashboard API, whose pools log in as `POSTGRES_USER` and
+never `SET ROLE` (`init_db_manager`), so row security does not apply to them as the table owner.
+Their schema fence is code: `_locate` and the retraction queries filter on `current_schema()`,
+the retraction report checks ownership before calling `record_retraction`, and `redeem` refuses a
+subject from another schema. `record_retraction` and `lock_subject_of` address rows by id alone,
+so a new caller on an owner pool must make the same ownership check first.
 
 Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the action's RFC 0023 delivery
 rows, then the subject's presentations and tokens. A path that also needs the authority row

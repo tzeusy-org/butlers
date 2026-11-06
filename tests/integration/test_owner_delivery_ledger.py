@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
@@ -581,7 +582,7 @@ async def test_cutover_backfill_maps_old_cards_and_reaches_parity(ledger_pool) -
         assert len(await od.pending_retractions(conn, surface="telegram")) == 1
 
 
-def _app(ledger_pool: asyncpg.Pool) -> FastAPI:
+def _app(ledger_pool: asyncpg.Pool, *, butler: str = "relationship") -> FastAPI:
     app = FastAPI()
     app.state.approval_callback_connector_token = _CONNECTOR_TOKEN
     app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
@@ -589,7 +590,7 @@ def _app(ledger_pool: asyncpg.Pool) -> FastAPI:
     app.include_router(owner_delivery_router.router)
     app.include_router(approvals_router.router)
     app.dependency_overrides[get_db] = lambda: db_manager(
-        {"relationship": ledger_pool}, modules={"relationship": ["approvals"]}
+        {butler: ledger_pool}, modules={butler: ["approvals"]}
     )
     # A lambda: FastAPI reads the MagicMock class's (*args, **kw) as required query params.
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: MagicMock()
@@ -1097,3 +1098,323 @@ async def test_runtime_role_redeems_its_own_schemas_card(role_pools) -> None:
         )
         == "general"
     )
+
+
+# --- The switch gate (bu-dhloi1.49): every other path, as the role that really runs it. ---
+#
+# The worker, handoff, ack, close and retraction paths run in a butler daemon, whose pool is
+# butler_general_rw under row security. The routes run in the dashboard API, whose pool logs
+# in as the migration role with no SET ROLE, so it bypasses row security as the table owner.
+
+
+async def _enable_delivery(owner: asyncpg.Pool) -> None:
+    await owner.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled = true, worker_enabled = false"
+    )
+    await _enable(owner)
+
+
+@dataclass(frozen=True)
+class _ForeignCard:
+    subject_id: uuid.UUID
+    presentation_id: uuid.UUID
+    token: str
+
+
+async def _foreign_stale_card(owner: asyncpg.Pool) -> _ForeignCard:
+    """Another schema's resolved subject with a sent card and a token, written as the owner."""
+    subject_id = await _foreign_subject(owner)
+    presentation_id = uuid.uuid4()
+    token, verifier = od.mint_token()
+    await owner.execute(
+        "INSERT INTO public.owner_delivery_presentations (id, subject_id, owning_schema, "
+        "generation, surface, route_ref, retry_key, provider_ref, state) "
+        "VALUES ($1, $2, 'finance', 1, 'telegram', $3, $4, '66', 'sent')",
+        presentation_id,
+        subject_id,
+        _RECIPIENT,
+        f"{subject_id}:telegram:1",
+    )
+    await owner.execute(
+        "INSERT INTO public.owner_delivery_tokens (verifier, subject_id, owning_schema, "
+        "presentation_id, action, action_digest, owner_entity, surface, generation, expires_at) "
+        "SELECT $1::text, id, owning_schema, $2::uuid, 'approve', action_digest, owner_entity, "
+        "'telegram', "
+        "generation, clock_timestamp() + interval '1 hour' "
+        "FROM public.owner_delivery_subjects WHERE id = $3",
+        verifier,
+        presentation_id,
+        subject_id,
+    )
+    await owner.execute(
+        "UPDATE public.owner_delivery_subjects SET state = 'cancelled', "
+        "resolved_at = clock_timestamp(), generation = generation + 1 WHERE id = $1",
+        subject_id,
+    )
+    return _ForeignCard(subject_id, presentation_id, token)
+
+
+async def _assert_foreign_card_untouched(owner: asyncpg.Pool, card: _ForeignCard) -> None:
+    assert (
+        await owner.fetchval(
+            "SELECT state FROM public.owner_delivery_presentations WHERE id = $1",
+            card.presentation_id,
+        )
+        == "sent"
+    )
+    assert (
+        await owner.fetchval(
+            "SELECT count(*) FROM public.owner_delivery_receipts WHERE subject_id = $1",
+            card.subject_id,
+        )
+        == 0
+    )
+
+
+async def _receipt_kinds(owner: asyncpg.Pool, source_ref: uuid.UUID) -> set[str]:
+    rows = await owner.fetch(
+        "SELECT r.kind FROM public.owner_delivery_receipts r "
+        "JOIN public.owner_delivery_subjects s ON s.id = r.subject_id WHERE s.source_ref = $1",
+        str(source_ref),
+    )
+    return {row["kind"] for row in rows}
+
+
+async def test_runtime_role_worker_delivers_and_settles_a_card(role_pools) -> None:
+    owner, runtime = role_pools
+    await _enable_delivery(owner)
+    action_id = await _park(runtime, card=True)
+    during_handoff: list[str] = []
+
+    class _Observing(_Runtime):
+        async def handoff(self, claim: DeliveryClaim, envelope: dict[str, Any]) -> HandoffResult:
+            during_handoff.append(
+                await owner.fetchval(
+                    "SELECT state FROM approval_delivery_presentations WHERE id = $1",
+                    claim.presentation_id,
+                )
+            )
+            return await super().handoff(claim, envelope)
+
+    transport = _Observing(HandoffResult("confirmed", provider_reference="78"))
+    worker = ApprovalDeliveryWorker(
+        ApprovalDeliveryRepository(runtime), ApprovalDeliveryRenderer(), transport
+    )
+
+    assert await worker.process_one() is True
+
+    # mark_handoff_started committed before the send; complete_handoff settled after it.
+    assert during_handoff == ["handoff_started"]
+    tokens = _card_tokens(transport.envelopes[0])
+    assert len(tokens) == 2 and all(t.startswith("od1:") for t in tokens)
+    row = await owner.fetchrow(
+        "SELECT p.state, p.provider_ref, s.state AS subject_state "
+        "FROM public.owner_delivery_presentations p "
+        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id WHERE s.source_ref = $1",
+        str(action_id),
+    )
+    assert dict(row) == {"state": "sent", "provider_ref": "78", "subject_state": "delivered"}
+    # Every row the worker wrote is stamped with the role's own schema.
+    for table in ("subjects", "presentations", "tokens", "receipts", "source_map"):
+        schemas = await owner.fetch(
+            f"SELECT DISTINCT owning_schema FROM public.owner_delivery_{table}"
+        )
+        assert [r["owning_schema"] for r in schemas] == ["general"]
+    assert {"bridged", "sent"} <= await _receipt_kinds(owner, action_id)
+    won = await _redeem(runtime, action_id, tokens[0], surface="telegram")
+    assert won.outcome == "won"
+
+
+async def test_runtime_role_worker_records_an_ambiguous_send_as_unknown(role_pools) -> None:
+    owner, runtime = role_pools
+    await _enable_delivery(owner)
+    action_id = await _park(runtime)
+
+    await _deliver(runtime, HandoffResult("ambiguous", "provider_outcome_unknown"))
+
+    row = await owner.fetchrow(
+        "SELECT p.state, s.state AS subject_state FROM public.owner_delivery_presentations p "
+        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id WHERE s.source_ref = $1",
+        str(action_id),
+    )
+    assert dict(row) == {"state": "unknown", "subject_state": "pending"}
+    kinds = await _receipt_kinds(owner, action_id)
+    assert "send_unknown" in kinds and "sent" not in kinds
+
+
+async def test_runtime_role_acks_then_closes_for_the_authority(role_pools) -> None:
+    owner, runtime = role_pools
+    for ordinal, target in enumerate((ActionStatus.EXPIRED, ActionStatus.CANCELLED)):
+        action_id = await _park(runtime, ordinal=ordinal)
+        _, cards = await _present(runtime, action_id, "telegram")
+        ack = await _redeem(runtime, action_id, cards["telegram"].tokens["ack"], surface="telegram")
+        assert ack.outcome == "won"
+        assert await _state(owner, action_id) == ("pending", "acknowledged", 2)
+
+        transition = await transition_pending_action(
+            runtime,
+            action_id=action_id,
+            target_status=target,
+            decided_by="system:expiry",
+            event_actor="system:expiry",
+            event_reason="synthetic close after ack",
+        )
+
+        assert transition.changed
+        assert await _state(owner, action_id) == (target.value, target.value, 3)
+        assert {"acknowledged", "closed"} <= await _receipt_kinds(owner, action_id)
+
+
+async def test_runtime_role_lists_and_receipts_its_own_retraction(role_pools) -> None:
+    owner, runtime = role_pools
+    action_id = await _park(runtime)
+    _, cards = await _present(runtime, action_id, "telegram")
+    card = cards["telegram"]
+
+    async with runtime.acquire() as conn:
+        assert await od.pending_retractions(conn, surface="telegram") == ()
+        with pytest.raises(od.OwnerDeliveryRefused) as live:
+            async with conn.transaction():
+                await od.record_retraction(conn, card.id, retracted=True)
+    assert live.value.reason == "presentation_live"
+
+    won = await _redeem(runtime, action_id, card.tokens["reject"], surface="telegram")
+    assert [t.provider_ref for t in won.retract] == ["55"]
+
+    async with runtime.acquire() as conn:
+        listed = await od.pending_retractions(conn, surface="telegram")
+        assert [t.presentation_id for t in listed] == [card.id]
+        async with conn.transaction():
+            await od.record_retraction(conn, card.id, retracted=False, reason="provider_error")
+        async with conn.transaction():
+            await od.record_retraction(conn, card.id, retracted=True)
+        assert await od.pending_retractions(conn, surface="telegram") == ()
+
+    assert (
+        await owner.fetchval(
+            "SELECT state FROM public.owner_delivery_presentations WHERE id = $1", card.id
+        )
+        == "retracted"
+    )
+    assert {"retract_failed", "retracted"} <= await _receipt_kinds(owner, action_id)
+
+
+async def test_runtime_role_cannot_reach_another_schemas_card_or_token(role_pools) -> None:
+    owner, runtime = role_pools
+    foreign = await _foreign_stale_card(owner)
+    owner_entity = await owner.fetchval(
+        "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+    )
+
+    async with runtime.acquire() as conn:
+        assert await od.pending_retractions(conn, surface="telegram") == ()
+        assert await od.lock_subject_of(conn, foreign.presentation_id) is False
+        with pytest.raises(od.OwnerDeliveryRefused) as hidden:
+            async with conn.transaction():
+                await od.record_retraction(conn, foreign.presentation_id, retracted=True)
+        async with conn.transaction():
+            redeemed = await od.redeem(
+                conn,
+                foreign.token,
+                kind="approval",
+                source_ref="foreign-action",
+                expected_action="approve",
+                owner_entity=owner_entity,
+                surface="telegram",
+                current_action_digest="a" * 64,
+            )
+
+    assert hidden.value.reason == "presentation_unavailable"
+    assert (redeemed.outcome, redeemed.reason) == ("refused", "token_unknown")
+    await _assert_foreign_card_untouched(owner, foreign)
+
+
+@pytest.mark.parametrize(
+    ("login", "row_security"),
+    [
+        pytest.param("dashboard", False, id="dashboard-login-bypasses-row-security"),
+        pytest.param("butler", True, id="butler-role-under-row-security"),
+    ],
+)
+async def test_routes_decide_and_retract_only_their_own_schema(
+    role_pools, login: str, row_security: bool
+) -> None:
+    """The real API pool has no row security to lean on: its predicates are the only fence."""
+    owner, runtime = role_pools
+    route_pool = owner if login == "dashboard" else runtime
+    assert (
+        await route_pool.fetchval("SELECT row_security_active('public.owner_delivery_subjects')")
+        is row_security
+    )
+    foreign = await _foreign_stale_card(owner)
+    action_id = await _park(runtime)
+    _, cards = await _present(runtime, action_id, "telegram")
+    card = cards["telegram"]
+    connector = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(route_pool, butler="general")),
+        base_url="http://dashboard-api:41200",
+    ) as client:
+        decided = await client.post(
+            "/api/owner-delivery/actions",
+            json={"token": card.tokens["reject"]},
+            headers={**connector, "X-Butlers-Decision-Actor": "owner@telegram"},
+        )
+        foreign_token = await client.post(
+            "/api/owner-delivery/actions",
+            json={"token": foreign.token},
+            headers={**connector, "X-Butlers-Decision-Actor": "owner@telegram"},
+        )
+        listed = await client.get("/api/owner-delivery/retractions", headers=connector)
+        foreign_report = await client.post(
+            f"/api/owner-delivery/retractions/{foreign.presentation_id}",
+            json={"retracted": True},
+            headers=connector,
+        )
+        report = await client.post(
+            f"/api/owner-delivery/retractions/{card.id}",
+            json={"retracted": True},
+            headers=connector,
+        )
+        drained = await client.get("/api/owner-delivery/retractions", headers=connector)
+
+    assert decided.status_code == 200 and decided.json()["data"]["status"] == "rejected"
+    assert foreign_token.status_code == 409
+    assert foreign_token.json()["detail"]["reason"] == "token_unknown"
+    assert [item["provider_ref"] for item in listed.json()["data"]] == ["55"]
+    assert foreign_report.status_code == 404
+    assert report.status_code == 200
+    assert drained.json()["data"] == []
+    await _assert_foreign_card_untouched(owner, foreign)
+    # The audit trigger stamps current_user, so this proves which role ran the decision.
+    assert await owner.fetchval(
+        "SELECT writer_role FROM public.audit_log WHERE target = $1 AND action = 'approval.deny'",
+        str(action_id),
+    ) == await route_pool.fetchval("SELECT current_user")
+
+
+async def test_redeem_refuses_a_foreign_token_on_a_pool_that_bypasses_row_security(
+    role_pools,
+) -> None:
+    owner, _ = role_pools
+    foreign = await _foreign_stale_card(owner)
+    owner_entity = await owner.fetchval(
+        "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) LIMIT 1"
+    )
+
+    async with owner.acquire() as conn, conn.transaction():
+        assert await conn.fetchval("SELECT current_schema()") == "general"
+        redeemed = await od.redeem(
+            conn,
+            foreign.token,
+            kind="approval",
+            source_ref="foreign-action",
+            expected_action="approve",
+            owner_entity=owner_entity,
+            surface="telegram",
+            current_action_digest="a" * 64,
+        )
+
+    assert (redeemed.outcome, redeemed.reason) == ("refused", "subject_mismatch")
+    await _assert_foreign_card_untouched(owner, foreign)
