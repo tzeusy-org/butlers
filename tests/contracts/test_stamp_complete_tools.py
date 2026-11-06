@@ -667,7 +667,7 @@ _COPIES = [
 
 
 async def _seed_entities(pool) -> None:
-    for entity, roles in ((_ENTITY, "{owner}"), (_SENDER, "{}")):
+    for entity, roles in ((_ENTITY, ["owner"]), (_SENDER, [])):
         await pool.execute(
             "INSERT INTO public.entities (id, canonical_name, entity_type, roles) "
             "VALUES ($1, $2, 'person', $3::text[]) ON CONFLICT DO NOTHING",
@@ -749,7 +749,7 @@ _SUCCESSOR_RULE = [
     ("owner", "third_party", "mixed", True),
     ("owner", "mixed", "mixed", True),
     ("owner", "system", "system", False),
-    ("owner", None, None, False),
+    ("owner", None, "mixed", False),
     ("system", "third_party", "mixed", True),
     ("system", "mixed", "mixed", True),
     ("system", "system", "system", False),
@@ -760,7 +760,7 @@ _SUCCESSOR_RULE = [
     ("routed_owner", "third_party", "mixed", True),
     ("routed_owner", "mixed", "mixed", True),
     ("routed_owner", "system", "system", False),
-    ("routed_owner", None, None, False),
+    ("routed_owner", None, "mixed", False),
 ]
 
 
@@ -776,27 +776,28 @@ async def test_a_successor_follows_the_authority_rule_on_every_copying_tool(
         result = await copy(stores, source["id"])
     successor = await _stored(stores, result["id"])
     assert successor["content_authority"] == stored
-    assert successor["authority_entity_id"] == (
-        _SENDER if sender else successor["authority_entity_id"]
-    )
+    if stored in ("mixed", "system"):
+        assert successor["authority_entity_id"] == (_SENDER if sender else None)
     clean = stored in ("owner", "owner_device")
     assert _row_account(successor).owner_untainted is clean
     held = await stores.fetchval(f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", result["id"])
     assert bool(held) is (stored == "mixed")
 
 
-@pytest.mark.parametrize("authority", [None, "system"])
+@pytest.mark.parametrize(
+    ("authority", "stored", "held"), [(None, "mixed", True), ("system", "system", False)]
+)
 @_db
-async def test_an_unknown_or_system_successor_reads_unclean_through_each_stamped_read(
-    stores, monkeypatch, authority
+async def test_a_legacy_or_system_successor_reads_unclean_through_each_stamped_read(
+    stores, monkeypatch, authority, stored, held
 ):
-    """A NULL or system successor is neither owner data nor a held stranger's claim."""
+    """Neither is owner data, and only a third party's possible text is held."""
     monkeypatch.setattr(tasks, "_get_embedding_engine", _engine)
     seed = (f"contact:{_ENTITY}:task:a", "contact_task", "relationship", {})
     source = await _seed_authority(stores, seed, authority)
     with _writing_as("routed_owner"):
         result = await task_complete(stores, source["id"])
-    assert (await _stored(stores, result["id"]))["content_authority"] == authority
+    assert (await _stored(stores, result["id"]))["content_authority"] == stored
 
     with account_scope() as got:
         await memory_get(stores, "fact", str(result["id"]), read_policy=_POLICY)
@@ -815,6 +816,59 @@ async def test_an_unknown_or_system_successor_reads_unclean_through_each_stamped
     with account_scope() as noted:
         assert await note_list(stores, _ENTITY)
     assert (noted.opened, noted.owner_untainted) == (True, False)
-    assert not await stores.fetchval(
-        f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", result["id"]
+    assert (
+        bool(
+            await stores.fetchval(f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", result["id"])
+        )
+        is held
     )
+
+
+_STALE_CONDITION = ("condition:stale", "condition", "health", {"name": "a", "status": "active"})
+
+
+async def _superseded_by_owner_row(pool, source_authority: str) -> tuple[dict, dict]:
+    """A stale condition row whose current successor the owner wrote."""
+    stale = await _seed_authority(pool, _STALE_CONDITION, source_authority)
+    subject, predicate, scope, metadata = _STALE_CONDITION
+    current = await storage.store_fact(
+        pool,
+        subject,
+        predicate,
+        "owner current text",
+        _engine(),
+        scope=scope,
+        metadata=metadata,
+        content_authority="owner",
+    )
+    assert (await _stored(pool, stale["id"]))["validity"] == "superseded"
+    return stale, current
+
+
+@_db
+async def test_a_stale_id_cannot_put_a_mixed_successor_over_a_current_owner_fact(
+    stores, monkeypatch
+):
+    monkeypatch.setattr(conditions, "_get_embedding_engine", _engine)
+    stale, current = await _superseded_by_owner_row(stores, "third_party")
+    with _writing_as("routed_owner"), pytest.raises(ValueError, match="cannot supersede"):
+        await condition_update(stores, str(stale["id"]), notes="edited")
+    assert (await _stored(stores, current["id"]))["validity"] == "active"
+
+
+@pytest.mark.parametrize(
+    ("writer", "stale_authority"), [("routed_owner", "system"), ("system", "owner")]
+)
+@_db
+async def test_a_stale_id_replaces_a_current_owner_fact_with_an_unclean_system_successor(
+    stores, monkeypatch, writer, stale_authority
+):
+    """The recorded limit: the guard refuses only third_party and mixed, so this is not refused."""
+    monkeypatch.setattr(conditions, "_get_embedding_engine", _engine)
+    stale, current = await _superseded_by_owner_row(stores, stale_authority)
+    with _writing_as(writer):
+        result = await condition_update(stores, str(stale["id"]), notes="edited")
+    assert (await _stored(stores, current["id"]))["validity"] == "superseded"
+    successor = await _stored(stores, result["id"])
+    assert successor["content_authority"] == "system"
+    assert _row_account(successor).owner_untainted is False

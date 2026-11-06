@@ -82,6 +82,15 @@ resolve to the unknown label (`{world}`, all six categories)
   receipt when repeated or concurrent. `GET /api/memory/facts?held=true` SHALL list
   held facts. The dashboard Confirm action SHALL record its actor (`owner`) in
   `memory_events`; the MCP `memory_confirm` tool records `session`.
+- A fact that keeps a stored fact's text or metadata (a successor) is a carve-out from
+  deriving authority only from the routing context, conforming to RFC 0038 D6 and S1: its
+  authority SHALL follow from its writer's authority and its source's. An owner-class writer
+  SHALL store its own class over an owner-class source, `mixed` over a `third_party`, `mixed`
+  or NULL source, and `system` over a `system` source. A `system` writer SHALL store `mixed`
+  over a `third_party` or `mixed` source, and `system` over a `system`, NULL or owner-class
+  source. A successor of a `third_party` or `mixed` source SHALL keep its
+  `authority_entity_id`. A `mixed` successor is held: "SHALL NOT be held" applies to NULL and
+  `system` rows themselves. A successor SHALL NOT inherit `endorsed_at`.
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
 ID: REQ-module-memory-013
@@ -127,6 +136,15 @@ Scope: v1-mandatory
 - **THEN** the untainted fact SHALL remain current and in Profile Facts
 - **AND** the tainted entry SHALL be stored as a held candidate until the owner
   endorses it
+
+#### Scenario: A successor keeps its source's non-owner class
+
+- **WHEN** an owner session edits a fact it copies forward
+- **THEN** a successor of an owner-class source SHALL be owner-class
+- **AND** a successor of a `third_party` or `mixed` source SHALL be `mixed`, held, and name
+  the same sender
+- **AND** a successor of a NULL source SHALL be `mixed` and held
+- **AND** a successor of a `system` source SHALL be `system` and SHALL NOT be held
 
 #### Scenario: A forged owner anchor in content is not authority
 

@@ -106,10 +106,10 @@ def test_carrying_forward_refuses_a_source_that_did_not_select_its_stamp(missing
         ("third_party", "owner", "mixed"),
         ("mixed", "owner", "mixed"),
         ("system", "owner", "system"),
-        (None, "owner", None),
+        (None, "owner", "mixed"),
         ("third_party", "owner_device", "mixed"),
         ("system", "owner_device", "system"),
-        (None, "owner_device", None),
+        (None, "owner_device", "mixed"),
         ("third_party", "system", "mixed"),
         ("mixed", "system", "mixed"),
         ("system", "system", "system"),
@@ -130,6 +130,20 @@ async def test_a_successor_keeps_its_sources_non_owner_class(
     assert authority.authority == stored
 
 
+async def test_a_successor_still_validates_an_explicit_authority() -> None:
+    """The explicit path checks the value first, and None means derive, never store NULL."""
+    from butlers.modules.memory.content_authority import validate_authority
+    from butlers.modules.memory.storage import _stamp_authority
+
+    with carrying_forward(_source(None)), pytest.raises(Exception, match="(?i)authority"):
+        await _stamp_authority(MagicMock(), "not-an-authority", None)
+    with pytest.raises(Exception, match="(?i)authority"):
+        validate_authority(None)  # type: ignore[arg-type]
+    with lineage_scope(_writer(exposed=True)), carrying_forward(_source("owner")):
+        with pytest.raises(ExposedOwnerAuthorityError):
+            await _stamp_authority(MagicMock(), "owner", None)
+
+
 async def test_stamp_authority_weakens_a_derived_owner_authority_too() -> None:
     from butlers.modules.memory import storage
     from butlers.modules.memory.content_authority import ContentAuthority
@@ -146,6 +160,10 @@ async def test_stamp_authority_weakens_a_derived_owner_authority_too() -> None:
             system = await storage._stamp_authority(MagicMock(), None, None)
     assert (kept.authority, kept.entity_id) == ("mixed", sender)  # The sender stays named.
     assert (system.authority, system.entity_id) == ("system", None)  # Not the owner's id.
+    with patch.object(storage, "resolve_content_authority", AsyncMock(return_value=derived)):
+        with carrying_forward(_source(None)):
+            unknown = await storage._stamp_authority(MagicMock(), None, None)
+    assert (unknown.authority, unknown.entity_id) == ("mixed", None)
 
 
 _HA_ARGS = {

@@ -76,7 +76,7 @@ _DASHBOARD_CHANNEL = "dashboard"
 class ContentAuthority:
     """A stamped authority plus the sender entity it was derived from."""
 
-    authority: str | None
+    authority: str
     entity_id: uuid.UUID | None = None
 
 
@@ -217,14 +217,22 @@ def successor_authority(
 ) -> ContentAuthority:
     """The authority of a row that keeps a stored row's text, written by ``writer``.
 
-    A successor keeps its source's non-owner class, and ``mixed`` applies only where a
-    third party is in the lineage. An owner edit of a ``system`` row stays ``system`` and of
-    a legacy NULL row stays NULL, since neither is a stranger's claim and neither may be held
-    (REQ-module-memory-013). Every result but owner over owner reads as unclean (RFC 0038 D6).
+    A successor must not read better than its source (REQ-module-memory-013):
 
-    This is not ``combine_authorities``, where ``owner`` with ``system`` or unknown evidence
-    is ``mixed``: consolidation restates its evidence in new words, so it cannot say whose a
-    claim is. A successor has one source, whose class is known and is kept.
+    * owner-class over owner-class: the writer's class;
+    * owner-class over ``third_party``, ``mixed`` or NULL: ``mixed``;
+    * owner-class over ``system``: ``system``;
+    * ``system`` over ``third_party`` or ``mixed``: ``mixed``;
+    * ``system`` over ``system``, NULL or owner-class: ``system``.
+
+    Every result but owner over owner reads as unclean (RFC 0038 D6). A NULL source gives
+    ``mixed`` rather than ``system``, since a ``system`` fact renders unlabelled and a routine
+    edit must not remove the only warning on legacy text that may be a stranger's.
+
+    This differs from ``combine_authorities``, where ``owner`` with ``system`` evidence is
+    ``mixed``: consolidation restates several rows in new words and cannot say whose a claim
+    is. A successor has one ``system`` source, whose class is known and is kept, so an owner's
+    dose on a dashboard-created medication is not labelled as a third party's.
     """
     if not (is_owner_class(writer.authority) or writer.authority == SYSTEM):
         return writer
@@ -232,7 +240,9 @@ def successor_authority(
         return ContentAuthority(MIXED, source_entity_id)
     if writer.authority == SYSTEM or is_owner_class(source_authority):
         return writer
-    return ContentAuthority(source_authority)
+    if source_authority == SYSTEM:
+        return ContentAuthority(SYSTEM)
+    return ContentAuthority(MIXED)
 
 
 def combine_authorities(authorities: Iterable[str | None]) -> str:

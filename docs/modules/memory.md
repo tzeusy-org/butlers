@@ -78,7 +78,8 @@ fact and rule the weakest authority among its evidence episodes (differing or
 unknown authority yields `mixed`).
 
 A tool that edits a fact by writing a successor keeps the old text or metadata, so the
-successor's authority depends on its source as well as its writer. This applies to
+successor's authority depends on its source as well as its writer: the one exception to
+deriving authority only from the routing context. This applies to
 `gift_update_status`, `loan_settle`, `task_complete`, `condition_update`,
 `medication_update`, `medication_log_dose` and `research_update`, and to any session:
 
@@ -86,13 +87,20 @@ successor's authority depends on its source as well as its writer. This applies 
 | --- | --- | --- | --- |
 | owner-class | owner-class | the writer's class | a normal fact |
 | owner-class or `system` | `third_party`, `mixed` | `mixed`, same sender | "partly reported by" the sender, held, with a Vouch action |
+| owner-class | NULL | `mixed` | "partly reported by a third party", held, with a Vouch action |
 | owner-class | `system` | `system` | unlabelled, not held, not a Profile Fact |
-| owner-class | NULL | NULL | "source unverified", not held, not a Profile Fact |
 | `system` | owner-class, `system`, NULL | `system` | unlabelled, not held, not a Profile Fact |
 
-A vouch does not carry: a vouched fact's successor has no `endorsed_at`, so it is held
-again after the next edit. Passing an already superseded fact's id can now fail, because a
-non-owner successor cannot supersede a current owner-authored fact.
+The label on a successor of a NULL row may overstate it, because a legacy row's source is
+unknown; a vouch resolves the hold. "Not held" in the rules below describes NULL and `system`
+rows themselves, not a `mixed` successor. A vouch does not carry: a vouched fact's successor
+has no `endorsed_at`, so it is held again after the next edit.
+
+`condition_update`, `medication_update` and `task_complete` accept an already superseded
+fact's id. If a current owner-authored fact has replaced it, a `mixed` successor is refused
+("A non-owner-authored fact cannot supersede an owner-authored fact"). A `system` successor
+is not refused: it replaces the owner's current text with text built from the stale row, and
+reads as unclean.
 
 Steering memory is gated on that stamp:
 
