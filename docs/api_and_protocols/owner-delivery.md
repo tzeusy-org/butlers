@@ -142,7 +142,8 @@ presentation under the claim's action lock, maps the RFC 0023 intent/presentatio
 `owner_delivery_source_map`, and returns fresh tokens that replace the `apr1` buttons. The
 handoff marker moves the presentation to `unknown` in the same transaction; the handoff
 result settles it (`confirmed → sent` with the provider message id, `safe_retry → failed`,
-ambiguous stays `unknown` and never marks the subject delivered). A presentation that already
+an ambiguous result stays `unknown` and doesn't mark the subject delivered; a later dashboard
+render does, because the owner then has the card). A presentation that already
 left `pending` mints nothing, so a retry renders Open only rather than a second live card.
 
 The dashboard dossier is a presentation too: for a pending action, `GET /api/approvals/{id}`
