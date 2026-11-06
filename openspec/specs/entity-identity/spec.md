@@ -232,6 +232,17 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **AND** an operation that waited MUST see the marker and move nothing onto the entity
 - **AND** a memory entity delete that cannot finish MUST write no marker and MUST be retryable
 
+#### Scenario: A memory supersede cannot deadlock a forget or delete
+
+- **WHEN** a memory property fact write or a Dunbar tier pin replaces a fact on an entity that a forget or delete holds or is about to hold
+- **THEN** the write MUST lock its entity rows, in ascending id order, before its first fact lock
+- **AND** the write and the forget or delete MUST both complete, whichever reached the entity first
+
+#### Scenario: Concurrent memory entity deletes do not starve each other
+
+- **WHEN** two memory entity deletes overlap in one process, at the deployed pool maximum of 2
+- **THEN** they MUST run one at a time and both complete
+
 #### Scenario: Downstream merge failure restores the original owner
 
 - **WHEN** a merge fails after owner roles and references have moved inside its transaction

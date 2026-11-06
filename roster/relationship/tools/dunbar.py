@@ -851,6 +851,12 @@ async def dunbar_tier_set(
     # Retract any existing active overrides and optionally insert a new one atomically.
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. The insert below takes it for
+            # its foreign key, which after the retraction is a cycle with a forget.
+            if tier is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR KEY SHARE", entity_id
+                )
             # Bulk-retract all active overrides for this entity in one statement,
             # then cascade the memory_catalog disownment + entity_graph_edges
             # deletion forget_memory() would perform, on this same connection/
