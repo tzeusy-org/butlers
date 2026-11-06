@@ -241,8 +241,9 @@ receipt. A running daemon SHALL react to the fleet event immediately. Pending
 receipts SHALL be replayed on daemon startup; fleet-event delivery is a
 freshness path, not the recovery authority. The daemon SHALL establish its
 fleet-event listener before startup replay and SHALL re-establish the listener
-and replay pending receipts after a retained-listener connection failure.
-PostgreSQL SHALL restrict cohort creation to Relationship and receipt
+and replay pending receipts after a retained-listener connection failure. While
+idle, it SHALL periodically sweep for pending receipts, and SHALL retry a failed
+receipt after a backoff. PostgreSQL SHALL restrict cohort creation to Relationship and receipt
 settlement to the runtime role bound to the receipt's target schema.
 
 #### Scenario: A merge opens an honest receipt cohort
@@ -266,6 +267,19 @@ settlement to the runtime role bound to the receipt's target schema.
 - **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
 - **AND** an event committed during startup replay MUST NOT be lost
 - **AND** a listener connection failure MUST trigger listener re-establishment and pending replay
+
+#### Scenario: A running daemon recovers a missed event
+
+- **WHEN** a running memory-bearing daemon's schema has a pending receipt and it received no event
+- **THEN** its idle sweep MUST process the receipt without a restart or a reconnect
+
+#### Scenario: A failed receipt is retried
+
+- **WHEN** a schema's receipt is `failed` and its backoff has passed
+- **THEN** that schema's daemon MUST retry it without a restart
+- **AND** a successful retry MUST settle the receipt with the references counted across all attempts
+- **AND** a failing retry MUST leave it `failed`, name the latest error class, and restart the backoff
+- **AND** a live event for that receipt MUST NOT retry it
 
 ---
 

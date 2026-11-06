@@ -302,6 +302,30 @@ async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, mon
         "SELECT subject, object FROM relationship.entity_facts WHERE id = $1", linking_fact
     )
     assert (moved["subject"], moved["object"]) == (d, str(b))
+async def test_a_failed_local_rebind_is_named_in_the_contact_merge_log(
+    rel_pool, monkeypatch, caplog
+):
+    """The merge stands, and the schema left failed is not discarded silently (bu-dhloi1.52)."""
+    source_entity, target_entity, _fact_id, source, target = await _pair(rel_pool)
+
+    async def boom(*_args, **_kwargs):
+        raise ValueError("local rebind failed")
+
+    monkeypatch.setattr("butlers.entity_rebind._repoint_facts", boom)
+    result = await contacts_mod.contact_merge(rel_pool, source, target)
+
+    assert result["id"] == target
+    assert (
+        await rel_pool.fetchval(
+            "SELECT status FROM public.entity_rebind_log "
+            "WHERE source_entity_id = $1 AND target_schema = 'relationship'",
+            source_entity,
+        )
+        == "failed"
+    )
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("rebind failed" in m and "relationship" in m for m in warnings), warnings
+    assert any(str(target_entity) in m for m in warnings), warnings
 
 
 async def test_a_contact_merge_takes_no_lock_before_the_authority(rel_pool, monkeypatch):

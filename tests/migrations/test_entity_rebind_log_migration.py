@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.entity_rebind import _write_receipt
 from butlers.testing.migration import load_migration
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
@@ -119,6 +120,42 @@ async def test_entity_rebind_log_install_is_concurrent_replay_safe(
             )
             == 3
         )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_runtime_role_can_settle_a_retried_failed_receipt(db) -> None:
+    """The retry's own write, under the role that runs it in production (bu-dhloi1.52)."""
+    async with _pre_core_243(db) as pool:
+        await _run(pool, "upgrade")
+        source = await pool.fetchval(_ENTITY_INSERT)
+        target = await pool.fetchval(_ENTITY_INSERT)
+        rebind = await pool.fetchval("SELECT gen_random_uuid()")
+        await pool.execute(
+            """
+            INSERT INTO public.entity_rebind_log (
+                rebind_id, source_entity_id, target_entity_id, target_schema,
+                status, error_class, completed_at
+            ) VALUES ($1, $2, $3, 'general', 'failed', 'RuntimeError', now())
+            """,
+            rebind,
+            source,
+            target,
+        )
+
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute("SET LOCAL ROLE butler_general_rw")
+            receipt = await _write_receipt(
+                conn,
+                rebind_id=rebind,
+                source=source,
+                target=target,
+                target_schema="general",
+                references_rebound=1,
+                status="active",
+                error_class=None,
+            )
+
+        assert (receipt.status, receipt.error_class) == ("active", None)
 
 
 @pytest.mark.asyncio(loop_scope="session")

@@ -133,7 +133,10 @@ their local pending receipt immediately and refreshes dashboard caches. Event
 delivery is deliberately not the recovery authority: a daemon that missed it
 establishes its listener before draining pending receipts during startup. A
 listener connection failure triggers re-establishment plus another pending
-drain. PostgreSQL row security permits only Relationship to create a cohort
+drain. A running daemon also sweeps the ledger about once a minute while idle,
+so a missed event does not wait for a restart, and each sweep or startup drain
+retries a `failed` receipt once 15 minutes have passed since its last attempt.
+PostgreSQL row security permits only Relationship to create a cohort
 and permits each runtime role to settle only the receipt bound to its own
 schema.
 

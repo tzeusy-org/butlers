@@ -475,6 +475,8 @@ references are rebound from `public.entity_rebind_log`; each memory-enabled
 daemon handles only its own schema, reacts to live `entity.rebound.v1` events,
 establishes its listener before replaying pending receipts on startup, and
 re-establishes the listener plus replay after a retained connection failure.
+While idle it sweeps for pending receipts about once a minute, and it retries a
+failed receipt once 15 minutes have passed since its last attempt.
 
 ## Database Tables
 

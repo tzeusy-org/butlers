@@ -74,8 +74,9 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   authority, the only writer of the entities' facts. It therefore has the authority's locks,
   refusals, graph edge repair and audit row, its facts never move without the source's
   `merged_into`, and a refused entity merge refuses the contact merge. Only the rebind settlement
-  runs after commit, and the rebind ledger recovers a missed settlement. Two contacts of one entity
-  collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
+  runs after commit. The rebind ledger recovers a missed settlement, because each daemon's idle sweep
+  settles pending receipts and retries failed ones, and `contact_merge` logs any schema left failed.
+  Two contacts of one entity collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
   `contact_fact_changed` (409) if the row was retracted or re-valued meanwhile. Entity forget
   retracts every occurrence as-is and removes their graph edges, and a forgotten or deleted entity
   cannot then be merged on either side; Google/Steam hard deletes keep their all-version cascade.
