@@ -22,7 +22,6 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 import asyncpg
 
@@ -47,29 +46,6 @@ def is_withheld_sensitivity(sensitivity: str | None) -> bool:
     memory-catalog write path.
     """
     return (sensitivity or DEFAULT_SENSITIVITY) in WITHHELD_SENSITIVITIES
-
-
-async def lock_mirrored_edge_subjects(conn: Any, *subjects: uuid.UUID) -> None:
-    """Serialize a write that touches several subjects' edges, in one lock order.
-
-    The withheld-count trigger (core_318) locks one count row per subject, so two transactions
-    stubbing the same two entities in opposite order would otherwise deadlock. Hold the locks until
-    the enclosing fact write finishes.
-    """
-    await conn.execute(
-        """
-        SELECT pg_advisory_xact_lock(lock_id)
-        FROM (
-            SELECT DISTINCT hashtextextended(
-                current_schema() || ':entity-graph-subject:' || subject::text, 0
-            ) AS lock_id
-            FROM unnest($1::uuid[]) AS subjects(subject)
-            ORDER BY lock_id
-            OFFSET 0
-        ) AS ordered
-        """,
-        list(subjects),
-    )
 
 
 async def project_entity_graph_edge(
