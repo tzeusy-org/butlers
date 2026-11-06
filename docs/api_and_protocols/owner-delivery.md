@@ -72,7 +72,7 @@ same ownership check first:
 Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the rows below it: the action's
 RFC 0023 delivery rows and the subject's presentations and tokens. Those two groups have no
 fixed order between them (`close_for_authority` locks presentations before RFC 0023 rows;
-`complete_handoff` locks the RFC 0023 rows first). That is safe because every path that touches
+`complete_handoff` and `defer_pending_action` lock the RFC 0023 rows first). That is safe because every path that touches
 both holds the subject, and the action where it takes one, first. A path that also needs the
 authority row (`pending_actions`) takes it before all of them. Every path that touches both
 stores takes the subject before an RFC 0023 row:

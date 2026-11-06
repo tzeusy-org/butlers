@@ -363,10 +363,11 @@ async def present(
 
 
 #: Lock order: the authority row (``pending_actions``) when a path needs it, then the
-#: subject row, then the rows below it. The RFC 0023 delivery rows and the subject's
-#: presentation or token rows are both below the subject but have no fixed order between
-#: them: ``close_for_authority`` locks presentations before RFC 0023 rows, while
-#: ``complete_handoff`` locks the RFC 0023 rows first. That is safe because every path
+#: subject row, then the rows below it. The RFC 0023 rows (intent, then delivery rows) and
+#: the subject's presentation or token rows are both below the subject but have no fixed
+#: order between them: ``close_for_authority`` locks presentations before RFC 0023 rows,
+#: while ``complete_handoff`` and ``defer_pending_action`` lock the RFC 0023 rows first
+#: (defer takes the intent, RFC rows, then presentations). That is safe because every path
 #: that touches both holds the subject (and the action, where it takes one) first, so they
 #: queue instead of deadlocking.
 #: The one writer that skips the authority row is ``complete_handoff``: the executor holds
