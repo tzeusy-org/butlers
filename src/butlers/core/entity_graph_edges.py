@@ -22,6 +22,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 import asyncpg
 
@@ -48,7 +49,7 @@ def is_withheld_sensitivity(sensitivity: str | None) -> bool:
     return (sensitivity or DEFAULT_SENSITIVITY) in WITHHELD_SENSITIVITIES
 
 
-async def lock_mirrored_edge_subjects(conn: asyncpg.Connection, *subjects: uuid.UUID) -> None:
+async def lock_mirrored_edge_subjects(conn: Any, *subjects: uuid.UUID) -> None:
     """Serialize a write that touches several subjects' edges, in one lock order.
 
     The withheld-count trigger (core_318) locks one count row per subject, so two transactions
