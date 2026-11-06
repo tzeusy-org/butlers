@@ -877,7 +877,7 @@ async def test_gift_update_status_rejects_backward(rel_pool):
 
     c = await contact_create(rel_pool, "Gift-Backward")
     g = await gift_add(rel_pool, c["id"], "Watch")
-    await gift_update_status(rel_pool, g["id"], "purchased")
+    g = await gift_update_status(rel_pool, g["id"], "purchased")
 
     with pytest.raises(ValueError, match="Cannot move"):
         await gift_update_status(rel_pool, g["id"], "idea")

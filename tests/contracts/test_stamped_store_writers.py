@@ -244,14 +244,13 @@ def _sql_text(node: ast.AST, constants: dict[str, str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        sides = [_sql_text(side, constants) for side in (node.left, node.right)]
-        if sides == [None, None]:
+        sides = (node.left, node.right)
+        texts = [_sql_text(side, constants) or constants.get(ast.unparse(side)) for side in sides]
+        if texts == [None, None]:
             return None  # Not string concatenation that holds any SQL text.
         return "".join(
-            text
-            if text is not None
-            else constants.get(ast.unparse(side), f"{{{ast.unparse(side)}}}")
-            for text, side in zip(sides, (node.left, node.right), strict=True)
+            text if text is not None else f"{{{ast.unparse(side)}}}"
+            for text, side in zip(texts, sides, strict=True)
         )
     if isinstance(node, ast.JoinedStr):
         parts = []
@@ -359,13 +358,18 @@ def _store_writers() -> frozenset[str]:
 def test_a_table_named_by_concatenation_is_seen():
     source = (
         'TABLE = "facts"\n'
+        'PREFIX = "UPDATE "\n'
         "async def a(pool, name):\n"
+        '    await pool.execute(PREFIX + TABLE + " SET content = $1")\n'
+        "    await pool.execute(PREFIX + TABLE)\n"
         '    await pool.execute("UPDATE " + TABLE + " SET content = $1")\n'
         '    await pool.execute("UPDATE " + name + " SET content = $1")\n'
         '    await pool.execute("UPDATE public.entities SET " + name)\n'
     )
     scopes = {scope: strings for scope, _, strings in _scopes(ast.parse(source))}
     assert [text for text in scopes["a"] if _WRITE.search(text)] == [
+        "UPDATE facts SET content = $1",
+        "UPDATE facts",
         "UPDATE facts SET content = $1",
         "UPDATE {name} SET content = $1",
     ]

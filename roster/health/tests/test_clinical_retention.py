@@ -60,8 +60,8 @@ async def _write_every_clinical_record(pool) -> None:
     )
 
     med = await medication_add(pool, "RetentionMed", "10mg", "daily")
-    await medication_update(pool, str(med["id"]), dosage="20mg")
-    await medication_log_dose(pool, str(med["id"]))
+    edited = await medication_update(pool, str(med["id"]), dosage="20mg")
+    await medication_log_dose(pool, str(edited["id"]))
     cond = await condition_add(pool, "RetentionCondition")
     await condition_update(pool, str(cond["id"]), status="managed")
     await symptom_log(pool, "RetentionSymptom", 4)

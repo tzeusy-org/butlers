@@ -162,9 +162,10 @@ async def condition_update(
     """Update a condition. Allowed fields: name, status, diagnosed_at, notes.
 
     If status is provided, it must be one of: active, managed, resolved.
-    Implemented as a superseding store_fact (property fact semantics).
+    Implemented as a superseding store_fact (property fact semantics). An id that is no
+    longer current is refused, so a stale read cannot replace a newer fact.
     """
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import store_fact, subject_keyed_target
 
     cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
     allowed = {"name", "status", "diagnosed_at", "notes"}
@@ -182,9 +183,10 @@ async def condition_update(
 
     # Fetch existing condition fact by ID
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, content_authority,"
+        "SELECT id, subject, content, metadata, entity_id, valid_at, content_authority,"
         " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
-        " WHERE id = $1 AND predicate = 'condition' AND scope = 'health'",
+        " WHERE id = $1 AND predicate = 'condition' AND scope = 'health'"
+        " AND validity IN ('active', 'fading')",
         cond_uuid,
     )
     if row is None:
@@ -230,6 +232,7 @@ async def condition_update(
                 permanence="permanent",
                 scope="health",
                 valid_at=None,  # property fact — supersedes the previous
+                expected_supersedes_id=subject_keyed_target(row),
                 metadata=new_meta,
                 sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
             )
