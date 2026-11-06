@@ -1553,6 +1553,7 @@ async def promote_entity(
     """
     from butlers.tools.relationship.relationship_assert_fact import (
         _lock_fact_entities_batch,
+        _lock_fact_slots_batch,
         relationship_assert_fact,
         validate_fact_fields_or_raise,
     )
@@ -1666,6 +1667,13 @@ async def promote_entity(
                     {},
                 )
                 entity_id = result_row["id"]
+
+            # Each writer call below takes only its own slot, so take the whole request's
+            # slots once, or a merge or another promote sharing two of them could cross
+            # this body's order.
+            await _lock_fact_slots_batch(
+                conn, entity_id, ((fact.predicate, fact.object) for fact in body.initial_facts)
+            )
 
             # Assert any initial_facts via the central writer (inside the same transaction).
             for fact in body.initial_facts:

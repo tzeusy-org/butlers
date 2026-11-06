@@ -846,6 +846,27 @@ async def _lock_fact_entities_batch(conn: asyncpg.Connection, ids: Iterable[uuid
     )
 
 
+async def _lock_fact_slots_batch(
+    conn: asyncpg.Connection, subject: uuid.UUID, facts: Iterable[tuple[str, str]]
+) -> None:
+    """Take the identity slots of several ``(predicate, object)`` writes at once.
+
+    The slot counterpart of :func:`_lock_fact_entities_batch`: one writer call takes
+    only its own slots, so several calls in ONE transaction would take them in call
+    order. Each writer call then re-takes slots this transaction already holds.
+    """
+    from .identity_slots import lock_identity_slots
+
+    await lock_identity_slots(
+        conn,
+        (
+            (predicate, object_, subject)
+            for predicate, object_ in facts
+            if predicate in IDENTITY_PREDICATES
+        ),
+    )
+
+
 async def _insert_active_fact(
     conn: asyncpg.Connection,
     *,

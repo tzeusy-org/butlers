@@ -219,6 +219,14 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     from butlers.modules.memory.storage import store_fact
 
     async with pool.acquire() as conn, conn.transaction():
+        # Lock order: the entity before the loan row. The successor insert takes the entity
+        # for its foreign key, which with the loan row held is a cycle with a forget. A merge
+        # that moved the loan during this wait leaves the insert to take the new entity.
+        await conn.execute(
+            "SELECT id FROM public.entities WHERE id = "
+            "(SELECT entity_id FROM facts WHERE id = $1) FOR KEY SHARE",
+            loan_id,
+        )
         row = await conn.fetchrow(
             "SELECT id, subject, content, metadata, entity_id, content_authority,"
             " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"

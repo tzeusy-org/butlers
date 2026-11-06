@@ -31,6 +31,7 @@ entity_merge = roster_module("relationship", "tools/entity_merge")
 TargetEntityTombstonedError = entity_merge.TargetEntityTombstonedError
 merge_entity_pair = entity_merge.merge_entity_pair
 dunbar_tier_set = roster_module("relationship", "tools/dunbar").dunbar_tier_set
+loans = roster_module("relationship", "tools/loans")
 
 pytestmark = [
     pytest.mark.integration,
@@ -566,6 +567,123 @@ async def test_a_dunbar_override_in_flight_finishes_before_a_forget_or_delete(
         ("5", "retracted"),
     ]
     assert rows[1]["id"] == old
+
+
+async def _loan(pool: asyncpg.Pool, entity: uuid.UUID) -> uuid.UUID:
+    return await pool.fetchval(
+        "INSERT INTO facts (subject, entity_id, predicate, content, scope, valid_at) "
+        "VALUES ('opaque-subject', $1, 'loan', 'lunch', 'relationship', now()) RETURNING id",
+        entity,
+    )
+
+
+def _settle(pool: asyncpg.Pool, loan: uuid.UUID):
+    return loans.loan_settle(pool, loan)
+
+
+@pytest.fixture
+def loan_engine():
+    with patch.object(loans, "_get_embedding_engine", return_value=_fake_engine()):
+        yield
+
+
+async def _loan_rows(pool: asyncpg.Pool, entity: uuid.UUID) -> list[str]:
+    rows = await pool.fetch(
+        "SELECT validity FROM facts WHERE entity_id = $1 AND predicate = 'loan' ORDER BY created_at",
+        entity,
+    )
+    return [row["validity"] for row in rows]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("route", ["forget", "delete"])
+async def test_a_loan_settle_in_flight_finishes_before_a_forget_or_delete(
+    rel_pool, loan_engine, route
+) -> None:
+    """Settle got there first: its successor row is retired too, and neither side fails."""
+    removed = await _entity(rel_pool, "Removed")
+    loan = await _loan(rel_pool, removed)
+
+    holding = asyncio.Event()
+    resume = asyncio.Event()
+    real_insert = memory_storage._insert_fact_record
+
+    async def pausing_insert(*args, **kwargs):
+        holding.set()
+        await resume.wait()
+        return await real_insert(*args, **kwargs)
+
+    with (
+        patch.object(memory_storage, "_insert_fact_record", pausing_insert),
+        patch.object(memory_router, "_ENTITY_DELETE_DEADLINE_S", 3.0),
+    ):
+        settling = asyncio.create_task(_settle(rel_pool, loan))
+        await asyncio.wait_for(holding.wait(), timeout=10)
+        task = asyncio.create_task(_forget_or_delete(rel_pool, removed, route))
+        await _settled_or_lock_waiting(rel_pool, task)
+        resume.set()
+        settled, result = await asyncio.wait_for(
+            asyncio.gather(settling, task, return_exceptions=True), timeout=20
+        )
+
+    assert not isinstance(settled, BaseException), repr(settled)
+    assert not isinstance(result, BaseException), repr(result)
+    assert await _loan_rows(rel_pool, removed) == ["superseded", "retracted"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_loan_settle_waits_for_a_forget_and_finds_the_loan_gone(
+    rel_pool, loan_engine
+) -> None:
+    """The forget got there first, before retracting: settle must not take the loan row."""
+    forgotten = await _entity(rel_pool, "Forgotten")
+    loan = await _loan(rel_pool, forgotten)
+
+    locked = asyncio.Event()
+    resume = asyncio.Event()
+    real_retract = memory_entities._retract_facts_on_conn
+
+    async def pausing_retract(conn, entity_id):
+        locked.set()
+        await resume.wait()
+        return await real_retract(conn, entity_id)
+
+    with patch.object(memory_entities, "_retract_facts_on_conn", pausing_retract):
+        forget = asyncio.create_task(_forget_route()(forgotten, db=_dashboard_db(rel_pool)))
+        await asyncio.wait_for(locked.wait(), timeout=10)
+        settling = asyncio.create_task(_settle(rel_pool, loan))
+        await _settled_or_lock_waiting(rel_pool, settling)
+        resume.set()
+        result, settled = await asyncio.wait_for(
+            asyncio.gather(forget, settling, return_exceptions=True), timeout=20
+        )
+
+    assert not isinstance(result, BaseException), repr(result)
+    assert isinstance(settled, ValueError), repr(settled)
+    assert await _loan_rows(rel_pool, forgotten) == ["retracted"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_loan_moved_while_settle_waited_settles_on_its_new_entity(
+    rel_pool, loan_engine
+) -> None:
+    """Settle waits on the entity it read; a merge may have moved the loan by then."""
+    source = await _entity(rel_pool, "Source")
+    target = await _entity(rel_pool, "Target")
+    loan = await _loan(rel_pool, source)
+
+    async with rel_pool.acquire() as conn, conn.transaction():
+        await conn.execute("SELECT id FROM public.entities WHERE id = $1 FOR UPDATE", source)
+        settling = asyncio.create_task(_settle(rel_pool, loan))
+        await _settled_or_lock_waiting(rel_pool, settling)
+        await conn.execute("UPDATE facts SET entity_id = $1 WHERE id = $2", target, loan)
+
+    settled = await asyncio.wait_for(settling, timeout=20)
+
+    assert (
+        await rel_pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", settled["id"])
+        == target
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")
