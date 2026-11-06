@@ -42,6 +42,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.stamp_account import account_records
+
 from .staleness import (
     identity_staleness_band_sql,
     narrative_scope_sql,
@@ -344,6 +346,7 @@ async def _fetch_identity_facts(
             f."primary",
             f.observed_at,
             f.last_seen,
+            f.content_authority,
             f.taint_goal_id,
             f.taint_invocation_id,
             {identity_staleness_band_sql("f")} AS staleness_band
@@ -354,6 +357,7 @@ async def _fetch_identity_facts(
         """,
         entity_id,
     )
+    account_records(rows)  # D6: the stamp account a broker-forwarded read reports
     return [
         {
             "store": "identity",
@@ -405,6 +409,7 @@ async def _fetch_narrative_facts(
             f.source_butler AS src,
             f.confidence  AS conf,
             f.observed_at,
+            f.content_authority,
             f.taint_goal_id,
             f.taint_invocation_id,
             (
@@ -419,6 +424,7 @@ async def _fetch_narrative_facts(
         """,
         entity_id,
     )
+    account_records(rows)
     return [
         {
             "store": "narrative",

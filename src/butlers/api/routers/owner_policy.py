@@ -1,14 +1,18 @@
-"""Owner tighten-only policy: the one mutation path (REQ-capability-authorization-020).
+"""Owner policy: the one mutation path (REQ-capability-authorization-020).
 
 Every route needs the owner's verified dashboard session. An API key,
 connector callback, runtime session or model tool never carries one, and no
 MCP tool, domain or connector reaches ``OwnerPolicyWriter``; sw_059's RLS keeps
 the switchboard daemon role (where model sessions' tools run) read-only on the
-law. Changes only tighten: a loosening is refused ``dashboard_step_up_required``
-until the dashboard step-up gains a policy-loosening kind, the one missing
-mutation path. Expiry still lapses a term. The holds read returns the same
-typed ``{stage, constraint, generation, terms}`` receipt the broker records on
-the refusal, the effect and its pending action.
+law. ``tighten`` admits only a tightening. A loosening goes through the
+``policy_loosen`` dashboard step-up (bu-dhloi1.29): ``step-up/options`` derives
+the exact change from the ledger and asks for a passkey assertion bound to it
+(``{"required": false}`` when the change is not a loosening), and ``loosen``
+spends that step-up, sent as ``X-Dashboard-Step-Up``, with the write. Without
+an admitted step-up it is refused ``dashboard_step_up_required``. Expiry still
+lapses a term. The holds read returns the same typed ``{stage, constraint,
+generation, terms}`` receipt the broker records on the refusal, the effect and
+its pending action.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
@@ -24,16 +28,20 @@ from butlers.api.models import ApiResponse
 from butlers.api.models.owner_policy import (
     OwnerPolicy,
     OwnerPolicyHold,
+    OwnerPolicyLoosenOptions,
     OwnerPolicyReceipt,
     OwnerPolicyTermCreate,
+    OwnerPolicyTermLoosen,
     OwnerPolicyTermTighten,
 )
+from butlers.api.owner_auth.service import AuthError
 from butlers.capability_broker.catalog import CatalogSource, PublishedCatalogSource
 from butlers.capability_broker.contracts import BrokerRefused
 from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.core.owner_policy import (
     DeclaredResources,
     NarrowingUnsupported,
+    NotLoosening,
     OwnerPolicyWriter,
     PolicyConflict,
     PolicyUnavailable,
@@ -41,6 +49,7 @@ from butlers.core.owner_policy import (
     declared_resource_params,
     holds_for,
     list_terms,
+    loosen_binding,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,10 +147,66 @@ async def create_owner_policy_term(
 async def tighten_owner_policy_term(
     term_id: UUID, body: OwnerPolicyTermTighten, *, db: Db
 ) -> ApiResponse[OwnerPolicyReceipt]:
-    """Tighten a term at its expected version; loosening needs step-up and refuses."""
+    """Tighten a term at its expected version; a loosening is refused here (use ``loosen``)."""
     return await _change(
         db,
         lambda writer, _connection: writer.tighten(
+            body.owner_action_id,
+            term_id,
+            body.expected_version,
+            constraint=body.term,
+            expires_at=body.expires_at,
+        ),
+    )
+
+
+@router.post("/step-up/options", response_model=ApiResponse[dict])
+async def owner_policy_stepup_options(
+    body: OwnerPolicyLoosenOptions, request: Request, *, db: Db
+) -> ApiResponse[dict]:
+    """Ask for a passkey assertion bound to one exact loosening; nothing is written.
+
+    The change is derived from the ledger as it is now (term version and
+    policy generation), so the confirmation is spent only on that state.
+    """
+    pool = _owner_pool(db)
+    session = verified_dashboard_session.get()
+    try:
+        async with pool.acquire() as connection:
+            # This read scope ends BEFORE the separate authentication call.
+            binding = await loosen_binding(
+                connection,
+                body.owner_action_id,
+                body.term_id,
+                body.expected_version,
+                body.term,
+                body.expires_at,
+            )
+    except NotLoosening:
+        return ApiResponse(data={"required": False})
+    except PolicyConflict as exc:
+        raise _refuse(409, "owner_policy_conflict") from exc
+    except ValueError as exc:
+        raise _refuse(422, "owner_policy_invalid") from exc
+    except PolicyUnavailable as exc:
+        raise _refuse(503, "owner_policy_unavailable") from exc
+    service = getattr(request.app.state, "owner_auth_service", None)
+    if service is None:
+        raise _refuse(503, "owner_policy_unavailable")
+    try:
+        return ApiResponse(data=await service.stepup_options(session, binding))
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
+
+
+@router.post("/terms/{term_id}/loosen", response_model=ApiResponse[OwnerPolicyReceipt])
+async def loosen_owner_policy_term(
+    term_id: UUID, body: OwnerPolicyTermLoosen, *, db: Db
+) -> ApiResponse[OwnerPolicyReceipt]:
+    """Loosen a term at its expected version, spending the request's step-up."""
+    return await _change(
+        db,
+        lambda writer, _connection: writer.loosen(
             body.owner_action_id,
             term_id,
             body.expected_version,

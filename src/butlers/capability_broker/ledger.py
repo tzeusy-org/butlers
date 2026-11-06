@@ -10,13 +10,20 @@ the goal. No method does network I/O.
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID, uuid4
 
 from butlers.core.goal_admission import decode_grants, digest, encode_grants
 from butlers.core.goal_labels import EXPOSURE_CAUSES, Label
 from butlers.core.goal_ledger import GoalLedger
-from butlers.core.owner_policy import PolicyHold, PolicyUnavailable, hold_for, read_policy
+from butlers.core.owner_policy import (
+    Policy,
+    PolicyHold,
+    PolicyUnavailable,
+    hold_for,
+    read_policy,
+)
 
 from .contracts import (
     BrokerRefused,
@@ -238,24 +245,36 @@ class BrokerLedger:
 
     # -- owner law (sw_059; S1, REQ-capability-authorization-020) ----------------
 
-    async def owner_law(self, capability: Capability, args: dict[str, Any]) -> PolicyHold | None:
+    async def owner_law(
+        self,
+        capability: Capability,
+        args: dict[str, Any],
+        *,
+        resolved: frozenset[str] = frozenset(),
+        canonical: Callable[[Policy], Awaitable[Policy]] | None = None,
+    ) -> PolicyHold | None:
         """The owner's active terms on this call, read under this transaction.
 
         The generation row is held ``FOR SHARE`` until the call commits, so a
         concurrent owner change lands before this call or after its effect
         fence, never between. Unreadable policy refuses (fail closed).
+        ``resolved`` names the alias-resolved params whose values in ``args``
+        are canonical; ``canonical`` puts the terms' own ids in the same form
+        (``aliases``). Only those, and the alias-free params, can release a term.
         """
         try:
             policy = await read_policy(self.connection)
         except PolicyUnavailable:
             raise BrokerRefused(Reason.UNAVAILABLE) from None
+        if canonical is not None:
+            policy = await canonical(policy)
         return hold_for(
             policy,
             capability.identity,
             capability.domain,
             capability.effect_class,
             args,
-            capability.alias_free_params,
+            capability.alias_free_params | (resolved & capability.alias_resolved),
         )
 
     async def record_hold(

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from butlers.calendar_action_result import reconstruct_action_result as reconstruct_action_result
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION
 from butlers.core.tool_catalog import RecipientParameters
+from butlers.core.tool_presentation_inventory import ALL_CATEGORIES
 from butlers.modules.base import Module, ToolMeta, group_enabled, tool_registrar
 from butlers.modules.calendar_response import CalendarResponseCoordinator, CalendarResponseError
 from butlers.modules.calendar_response_fence import RESPONSE_FENCE_OWNERS, CalendarResponseFence
@@ -289,6 +290,8 @@ class CalendarModule(
                 idempotency="none",
                 owner_authority=False,
                 recipient_params=RecipientParameters(),
+                # Calendar event text can carry any S1 category (module-calendar).
+                categories=ALL_CATEGORIES,
             )
         if not self.canonical_approval_preparers():
             return metadata
@@ -326,6 +329,7 @@ class CalendarModule(
             ),
             read_stores=("calendar_events", "calendar_event_instances", "external:calendar"),
             write_stores=("calendar_action_log", "calendar_events", "external:calendar"),
+            categories=ALL_CATEGORIES,
         )
         return metadata
 

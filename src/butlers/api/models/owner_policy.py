@@ -1,4 +1,4 @@
-"""Owner tighten-only policy models (REQ-capability-authorization-020, bu-dhloi1.10).
+"""Owner policy models (REQ-capability-authorization-020, bu-dhloi1.10, bu-dhloi1.29).
 
 See ``src/butlers/core/owner_policy.py`` for the reader/writer and
 ``roster/switchboard/migrations/059_owner_policy.py`` for the tables.
@@ -40,6 +40,19 @@ class OwnerPolicyTermTighten(_Strict):
     expires_at: datetime | None = None
 
 
+class OwnerPolicyTermLoosen(OwnerPolicyTermTighten):
+    """Loosen a term at ``expected_version``; needs a ``policy_loosen`` step-up.
+
+    An earlier expiry is a loosening; an expiry at or before now lapses the term.
+    """
+
+
+class OwnerPolicyLoosenOptions(OwnerPolicyTermLoosen):
+    """The exact loosening the owner is asked to confirm with a passkey."""
+
+    term_id: UUID
+
+
 class OwnerPolicyTermRef(BaseModel):
     """The typed holding term a receipt, owner surface and /status all show."""
 
@@ -64,7 +77,7 @@ class OwnerPolicy(BaseModel):
 class OwnerPolicyReceipt(BaseModel):
     owner_action_id: str
     term_id: str
-    action: Literal["create", "tighten"]
+    action: Literal["create", "tighten", "loosen"]
     from_version: int | None
     to_version: int
     generation: int

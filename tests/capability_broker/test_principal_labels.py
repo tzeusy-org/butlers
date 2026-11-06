@@ -65,13 +65,23 @@ def test_a_missing_or_unknown_label_refuses_authentication(label):
     assert refused.value.reason is Reason.AUTHENTICATION
 
 
+@pytest.mark.parametrize("declared", [(), ("finance",), ("health", "routine"), tuple(CATEGORIES)])
+def test_a_capability_carries_exactly_its_declared_categories(declared):
+    # Sensitivity no longer stands in for categories (bu-dhloi1.27).
+    descriptor = SimpleNamespace(output_sensitivity="sensitive", categories=declared)
+    assert declared_categories(descriptor) == frozenset(declared)
+
+
 @pytest.mark.parametrize(
-    ("sensitivity", "expected"),
-    [("ordinary", frozenset()), ("sensitive", CATEGORIES), (None, CATEGORIES), ("x", CATEGORIES)],
+    "declared", [None, ["finance"], ("horoscope",), ("health", "health"), "health"]
 )
-def test_only_ordinary_output_carries_no_category(sensitivity, expected):
-    descriptor = SimpleNamespace(output_sensitivity=sensitivity)
-    assert declared_categories(descriptor) == expected
+def test_missing_or_unknown_categories_are_ungrantable(declared):
+    # REQ-capability-authorization-019: missing descriptor metadata is ungrantable.
+    descriptor = SimpleNamespace(output_sensitivity="ordinary", categories=declared)
+    with pytest.raises(ValueError, match="categories"):
+        declared_categories(descriptor)
+    with pytest.raises(ValueError, match="categories"):
+        declared_categories(SimpleNamespace(output_sensitivity="ordinary"))
 
 
 def test_a_row_without_label_columns_refuses_authentication():

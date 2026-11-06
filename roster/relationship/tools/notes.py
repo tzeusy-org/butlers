@@ -23,6 +23,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.stamp_account import account_records
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -218,7 +219,8 @@ async def note_list(
     """
     rows = await pool.fetch(
         """
-        SELECT id, content, created_at, metadata, taint_goal_id, taint_invocation_id
+        SELECT id, content, created_at, metadata, content_authority,
+               taint_goal_id, taint_invocation_id
         FROM facts
         WHERE subject = ANY($1::text[])
           AND predicate = 'contact_note'
@@ -231,6 +233,7 @@ async def note_list(
         limit,
         offset,
     )
+    account_records(rows)  # D6: the stamp account a broker-forwarded read reports
     return [_fact_to_note(dict(r), contact_id) for r in rows]
 
 

@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Default roster location relative to the repository root.
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
+_MCP_CLIENT_CLOSE_TIMEOUT_S = 5.0
 
 # These optional relation families drive the dashboard's graceful fan-out
 # surfaces.  Capture their presence once startup has finished wiring each
@@ -229,19 +231,31 @@ class MCPClientManager:
         except Exception as exc:
             raise ButlerUnreachableError(butler_name, cause=exc) from exc
 
-    async def _close_client(self, butler_name: str) -> None:
+    async def _close_client(
+        self, butler_name: str, *, expected_client: MCPClient | None = None
+    ) -> None:
         """Close a single client connection."""
+        # Compare and remove without an intervening await: a failed request
+        # must never evict a healthy replacement installed by another request.
+        if expected_client is not None and self._clients.get(butler_name) is not expected_client:
+            return
         client = self._clients.pop(butler_name, None)
         if client is not None:
             try:
-                await client.__aexit__(None, None, None)
+                await asyncio.wait_for(
+                    client.__aexit__(None, None, None), timeout=_MCP_CLIENT_CLOSE_TIMEOUT_S
+                )
                 logger.debug("Closed client for butler: %s", butler_name)
-            except Exception:
-                logger.warning("Error closing client for butler: %s", butler_name, exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "Error closing client for butler %s (%s)", butler_name, type(exc).__name__
+                )
 
-    async def invalidate_client(self, butler_name: str) -> None:
-        """Evict a cached client, e.g. after a stale-connection error."""
-        await self._close_client(butler_name)
+    async def invalidate_client(
+        self, butler_name: str, *, expected_client: MCPClient | None = None
+    ) -> None:
+        """Evict a cached client, optionally only the one a failed request observed."""
+        await self._close_client(butler_name, expected_client=expected_client)
 
     async def close(self) -> None:
         """Close all managed client connections."""

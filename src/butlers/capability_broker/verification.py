@@ -7,7 +7,9 @@ with ``assertions.verify_assertion``: signature under a keyring ``kid``,
 ``aud`` equal to this domain, ``exp``, capability equal to the called tool,
 ``args_digest`` over the raw arguments, and a ``call_id`` not seen within twice
 the assertion lifetime. The verified lineage is then bound
-(``core.goal_lineage``) for exactly that call.
+(``core.goal_lineage``) for exactly that call, with an empty D6 stamp account
+(``core.stamp_account``) that the call's store readers fill and that returns
+to the broker in the result's ``_meta``, bound to the verified call.
 
 Replay across a restart: the seen-call set lives in memory only, so an
 assertion issued before this process started (``iat = exp - 60 s`` earlier
@@ -44,6 +46,7 @@ from butlers.core.runtime_probe_control.keys import (
     VerifierKeyring,
     load_verifier_keyring,
 )
+from butlers.core.stamp_account import account_scope, attach_report
 
 from .assertions import ASSERTION_HEADER, LIFETIME_SECONDS, verify_assertion
 from .contracts import BrokerRefused, Reason
@@ -153,8 +156,10 @@ class AssertionVerificationMiddleware(Middleware):
             lineage = self.verifier.verify(values[0], name, dict(context.message.arguments or {}))
         except BrokerRefused:
             raise ToolError(REFUSED) from None
-        with lineage_scope(lineage):
-            return await call_next(context)
+        with lineage_scope(lineage), account_scope() as account:
+            result = await call_next(context)
+        # D6: the readers' stamp account, bound to this verified call.
+        return attach_report(result, account, lineage)
 
 
 def attach_domain_verification(

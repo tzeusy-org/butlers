@@ -97,13 +97,21 @@ class Principal:
 
 
 def declared_categories(descriptor: Any) -> frozenset[str]:
-    """The S1 categories a descriptor's output may carry.
+    """The S1 categories a descriptor's output may carry, exactly as declared.
 
-    D4 declares sensitivity, not categories, so this is conservative: only
-    ``ordinary`` output reads as none; ``sensitive`` or anything else is all six.
+    Missing metadata is ungrantable (S1): an undeclared, unknown, duplicated or
+    non-tuple declaration raises rather than defaulting, so a descriptor never
+    reaches the broker on an inferred category set. D4 ``output_sensitivity``
+    is not consulted.
     """
-    ordinary = getattr(descriptor, "output_sensitivity", None) == "ordinary"
-    return frozenset() if ordinary else CATEGORIES
+    declared = getattr(descriptor, "categories", None)
+    if (
+        not isinstance(declared, tuple)
+        or any(not isinstance(item, str) or item not in CATEGORIES for item in declared)
+        or len(declared) != len(set(declared))
+    ):
+        raise ValueError("descriptor categories are missing or unknown")
+    return frozenset(declared)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +128,9 @@ class Capability:
     # Resource params whose identifiers have no alias; only these can narrow
     # an owner-law term (any other narrowing selects every call).
     alias_free_params: frozenset[str] = frozenset()
+    # Aliasable resource params the domain resolves before owner law, as
+    # sorted (param, kind) pairs (``aliases``); they narrow on canonical ids.
+    alias_resolvers: tuple[tuple[str, str], ...] = ()
     safety_args: tuple[str, ...] = ()
     owner_authority: bool = False
     always_per_event: bool = False
@@ -128,10 +139,15 @@ class Capability:
     # ...and has an approvals gate configured for this tool (approval policy).
     approval_gate: bool = False
     idempotency: Literal["none", "key_required"] = "none"
-    # S1 sensitivity categories its output may carry; unknown is all six.
+    # S1 sensitivity categories its output may carry; a test double that
+    # omits them is all six. Real descriptors must declare them.
     categories: frozenset[str] = CATEGORIES
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=lambda: {"type": "object"}, repr=False)
+
+    @property
+    def alias_resolved(self) -> frozenset[str]:
+        return frozenset(name for name, _ in self.alias_resolvers)
 
     @property
     def identity(self) -> str:
@@ -152,6 +168,9 @@ class Capability:
                 name for name, bound in (descriptor.selection_bound or {}).items() if bound
             ),
             alias_free_params=frozenset(getattr(descriptor, "alias_free_params", None) or ()),
+            alias_resolvers=tuple(
+                sorted(dict(getattr(descriptor, "alias_resolvers", None) or {}).items())
+            ),
             safety_args=tuple(descriptor.safety_args or ()),
             owner_authority=bool(descriptor.owner_authority),
             always_per_event=declared_approval_mode(policy) == "always_per_event",

@@ -26,6 +26,7 @@ from butlers.core.goal_labels import Label, output_label
 from butlers.core.owner_policy import PolicyHold
 
 from .actuation import rfc0028_actuation_risk
+from .aliases import AliasResolver, Resolution, canonical_policy, resolve_args
 from .assertions import LIFETIME_SECONDS, AssertionSigner
 from .boundaries import BoundaryLedger, Extractor, content_bytes, extraction_key
 from .catalog import CatalogSource
@@ -97,6 +98,8 @@ class Broker:
         forward_timeout: float = 30,
         extractor: Extractor | None = None,
         quarantine_reads: bool = False,
+        aliases: AliasResolver | None = None,
+        alias_timeout: float = 2,
     ):
         self.pool, self.catalog, self.domains, self.signer = pool, catalog, domains, signer
         self.actuation_risk = actuation_risk
@@ -105,6 +108,10 @@ class Broker:
         # handle. Off, the first-switch read path is unchanged.
         self.extractor = extractor
         self.quarantine_reads = quarantine_reads
+        # bu-dhloi1.30: the domains' alias resolution before owner law. Without
+        # it a narrowing on an alias-resolved param cannot be trusted and selects.
+        self.aliases = aliases
+        self.alias_timeout = alias_timeout
         self.clock = clock
         self.transaction_timeout = transaction_timeout
         self.forward_timeout = forward_timeout
@@ -198,10 +205,9 @@ class Broker:
                 args = parse_json_object(canonical_bytes(arguments))
             except InvalidArguments:
                 raise BrokerRefused(Reason.POLICY) from None
-            args_digest = arguments_digest(args)
             async with self._transaction() as ledger:
                 principal = await ledger.authenticate(goal_id, token)
-                reserved = await self._authorize(ledger, principal, name, args, args_digest)
+                reserved, args = await self._authorize(ledger, principal, name, args)
             if isinstance(reserved, BrokerRefused):
                 raise reserved
             if reserved.decision.disposition is Disposition.PARK:
@@ -240,10 +246,28 @@ class Broker:
             return UNPUBLISHED_CAPABILITY
         return name if catalog.get(name) is not None else UNPUBLISHED_CAPABILITY
 
+    async def _resolve(self, capability: Capability, args: dict[str, Any]) -> Resolution:
+        return await resolve_args(self.aliases, capability, args, self.alias_timeout)
+
+    async def _owner_law(
+        self, ledger: BrokerLedger, capability: Capability, resolution: Resolution
+    ) -> PolicyHold | None:
+        async def canonical(policy):
+            return await canonical_policy(self.aliases, capability, policy, self.alias_timeout)
+
+        return await ledger.owner_law(
+            capability, resolution.args, resolved=resolution.resolved, canonical=canonical
+        )
+
     async def _authorize(
-        self, ledger: BrokerLedger, principal: Principal, name: str, args, args_digest: str
-    ) -> Reservation | BrokerRefused:
-        """D7 steps 2-4 inside the call's transaction, in the RFC's order."""
+        self, ledger: BrokerLedger, principal: Principal, name: str, args
+    ) -> tuple[Reservation | BrokerRefused, dict[str, Any]]:
+        """D7 steps 2-4 inside the call's transaction, in the RFC's order.
+
+        Returns the reservation and the arguments the call runs with: past the
+        grant scope check every declared alias is its canonical id (``aliases``),
+        and the digest the domain verifies is over exactly those arguments.
+        """
         catalog = await self._live_catalog.load(ledger.connection)
         if catalog.digest != principal.catalog_digest:
             raise self._refused(principal, name, Reason.CATALOG)
@@ -253,6 +277,8 @@ class Broker:
             raise self._refused(principal, name, Reason.CAPABILITY)
         if not _in_scope(capability, grant, args):
             raise self._refused(principal, name, Reason.RESOURCE)
+        resolution = await self._resolve(capability, args)
+        args = resolution.args
         recipient = await classify_recipients(ledger.connection, capability, args)
         risk = (
             self.actuation_risk(capability, args)
@@ -266,7 +292,7 @@ class Broker:
         # narrows: never refuses, always_ask parks the exact otherwise
         # permitted effect for per-event approval. A read has no effect to
         # park yet, so an always_ask term refuses it with its own reason.
-        hold = await ledger.owner_law(capability, args)
+        hold = await self._owner_law(ledger, capability, resolution)
         if hold is not None:
             if hold.constraint == "never":
                 raise self._refused(principal, name, Reason.POLICY, hold)
@@ -275,12 +301,14 @@ class Broker:
             decision = PER_EVENT
         if decision.disposition is Disposition.PARK and not capability.approvals_enabled:
             raise self._refused(principal, name, Reason.UNAVAILABLE, hold)
-        reserved = await ledger.reserve(principal, capability, decision, args_digest, recipient)
+        reserved = await ledger.reserve(
+            principal, capability, decision, arguments_digest(args), recipient
+        )
         if hold is not None and isinstance(reserved, Reservation):
             await ledger.record_hold(
                 principal, capability.identity, "parked", hold, effect_id=reserved.effect_id
             )
-        return reserved
+        return reserved, args
 
     @staticmethod
     def _refused(
@@ -617,7 +645,19 @@ class Broker:
                     # A never term committed after the park holds the effect
                     # at this fence; the owner's approval already answers
                     # always_ask. The dispatch transition rolls back.
-                    hold = await ledger.owner_law(reserved.capability, args)
+                    # The stored or edited call is never rewritten after its
+                    # approval: an alias in it resolves for matching only, and
+                    # a param whose canonical id differs cannot release a term.
+                    resolution = await self._resolve(reserved.capability, args)
+                    fixed = Resolution(
+                        args,
+                        frozenset(
+                            name
+                            for name in resolution.resolved
+                            if resolution.args[name] == args[name]
+                        ),
+                    )
+                    hold = await self._owner_law(ledger, reserved.capability, fixed)
                     if hold is not None and hold.constraint == "never":
                         held = (reserved, hold)
                         raise BrokerRefused(Reason.POLICY, effect_id=effect_id, hold=hold)

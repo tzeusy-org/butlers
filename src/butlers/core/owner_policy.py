@@ -12,8 +12,12 @@ reach the database only through ``OwnerPolicyWriter`` from the owner dashboard;
 no model capability, domain or connector writes them. Every change raises the
 singleton ``generation`` and the term's ``version`` by one under expected-version
 CAS, with one receipt per owner action, so a retried action is not a second
-change. Changes only tighten; loosening needs the owner's dashboard step-up,
-which does not admit it yet, so it refuses.
+change. ``tighten`` admits only a tightening. ``loosen`` (a weaker constraint,
+or an earlier or no-longer-absent expiry, which also lapses a term) needs the
+owner's dashboard step-up of kind ``policy_loosen`` (bu-dhloi1.29): a fresh
+passkey assertion bound by ``loosen_binding`` to that exact change at that term
+version and policy generation, spent once with the write. sw_060's trigger
+refuses any loosening whose exact result no step-up consumed in its transaction.
 """
 
 from __future__ import annotations
@@ -24,9 +28,13 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID, uuid4
+
+import asyncpg
+
+from butlers.core.dashboard_stepup import StepUpBinding, consume_stepup, dashboard_stepup_proof
 
 SelectorKind = Literal["capability", "region", "effect_class"]
 Constraint = Literal["never", "always_ask"]
@@ -49,6 +57,10 @@ class PolicyConflict(ValueError):
 
 class StepUpRequired(PermissionError):
     """A loosening change; it needs the owner's dashboard step-up."""
+
+
+class NotLoosening(ValueError):
+    """A change that does not loosen; it is a tightening and needs no step-up."""
 
 
 class NarrowingUnsupported(ValueError):
@@ -105,19 +117,27 @@ class DeclaredResources:
     """What the current catalog declares for a selector's capabilities."""
 
     params: frozenset[str]
-    # Params alias-free on every selected capability that declares them.
+    # Params that can narrow: on every selected capability that declares them,
+    # alias-free or resolved to a canonical id by the broker before owner law.
     alias_free: frozenset[str]
+
+
+def _resolved(capability: Any) -> frozenset[str]:
+    return frozenset(name for name, _ in getattr(capability, "alias_resolvers", ()))
 
 
 def declared_resource_params(
     capabilities: Iterable[Any], selector_kind: str, selector: str
 ) -> DeclaredResources:
-    """The resource arguments a selector's capabilities declare, and the alias-free ones."""
+    """The resource arguments a selector's capabilities declare, and the narrowable ones."""
     attribute = {"capability": "identity", "region": "domain", "effect_class": "effect_class"}
     selected = [c for c in capabilities if getattr(c, attribute[selector_kind]) == selector]
     params = frozenset(p for c in selected for p in c.resource_params)
     aliasable = frozenset(
-        p for c in selected for p in c.resource_params if p not in c.alias_free_params
+        p
+        for c in selected
+        for p in c.resource_params
+        if p not in c.alias_free_params and p not in _resolved(c)
     )
     return DeclaredResources(params, params - aliasable)
 
@@ -294,7 +314,7 @@ async def read_policy(connection: Any) -> Policy:
     return Policy(generation, tuple(Term.from_row(row) for row in rows))
 
 
-def _digest(request: Mapping[str, Any]) -> str:
+def _digest(request: Any) -> str:
     encoded = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode()).hexdigest()
 
@@ -305,6 +325,109 @@ def _tightens(old: Mapping[str, Any], constraint: str, expires_at: datetime | No
     if expires_at is not None and (old["expires_at"] is None or expires_at < old["expires_at"]):
         return False
     return True
+
+
+LOOSEN_KIND = "policy_loosen"
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_NAMESPACE = "SELECT current_database() || ':' || current_schema()"
+
+
+def _expiry_us(expires_at: datetime | None) -> str:
+    # Exact integer microseconds; sw_060 derives the same text from the row.
+    if expires_at is None:
+        return "none"
+    return str((expires_at - _EPOCH) // timedelta(microseconds=1))
+
+
+def loosen_target(term_id: UUID, version: int, constraint: str, expires_at) -> str:
+    """The resulting term state a policy_loosen step-up authorizes, exactly."""
+    return f"{term_id}:{version}:{constraint}:{_expiry_us(expires_at)}"
+
+
+def _change_request(
+    action: str, term_id: UUID, expected_version: int, constraint: str, expires_at
+) -> dict[str, Any]:
+    if constraint not in CONSTRAINTS:
+        raise ValueError("constraint")
+    if type(expected_version) is not int or expected_version < 1:
+        raise ValueError("expected_version")
+    return {
+        "action": action,
+        "term_id": str(term_id),
+        "expected_version": expected_version,
+        "term": constraint,
+        "expires_at": expires_at.isoformat() if expires_at else None,
+    }
+
+
+def _snapshot(row: Mapping[str, Any]) -> dict[str, Any]:
+    resources = row["resources"]
+    if isinstance(resources, str):
+        resources = json.loads(resources)
+    return {
+        "id": str(row["id"]),
+        "selector_kind": row["selector_kind"],
+        "selector": row["selector"],
+        "resources": resources,
+        "term": row["term"],
+        "version": row["version"],
+        "expires_at": _expiry_us(row["expires_at"]),
+        "owner_action_id": str(row["owner_action_id"]),
+    }
+
+
+async def loosen_binding(
+    connection: Any,
+    owner_action_id: UUID,
+    term_id: UUID,
+    expected_version: int,
+    constraint: str,
+    expires_at: datetime | None,
+    *,
+    lock: bool = False,
+) -> StepUpBinding:
+    """The exact loosening a policy_loosen step-up confirms, from this database.
+
+    The request binds the owner action, the term, the expected version and the
+    resulting constraint and expiry; the action binds the term row as it is now
+    and the policy generation, so a confirmation issued before any later policy
+    change cannot be spent after it. The dashboard derives it with an unlocked
+    read to issue the confirmation; ``OwnerPolicyWriter.loosen`` re-derives it
+    with the generation and term locked to spend it.
+    """
+    if expires_at is not None and expires_at.utcoffset() is None:
+        raise ValueError("expires_at")
+    request = _change_request("loosen", term_id, expected_version, constraint, expires_at)
+    namespace = await connection.fetchval(_NAMESPACE)
+    if not isinstance(namespace, str) or not namespace:
+        raise PolicyUnavailable("owner policy namespace unavailable")
+    suffix = " FOR UPDATE" if lock else ""
+    generation = await connection.fetchval(
+        "SELECT generation FROM switchboard.owner_policy_state WHERE id = 1" + suffix
+    )
+    if type(generation) is not int:
+        raise PolicyUnavailable("owner policy state missing")
+    row = await connection.fetchrow(
+        "SELECT * FROM switchboard.owner_policy_terms WHERE id = $1" + suffix, term_id
+    )
+    if row is None or row["version"] != expected_version:
+        raise PolicyConflict("owner policy version changed")
+    if _tightens(row, constraint, expires_at):
+        raise NotLoosening("not a loosening")
+    stepped = {
+        "kind": LOOSEN_KIND,
+        "namespace": namespace,
+        "version": 1,
+        "owner_action_id": str(owner_action_id),
+        **request,
+    }
+    return StepUpBinding(
+        LOOSEN_KIND,
+        loosen_target(term_id, expected_version + 1, constraint, expires_at),
+        _digest(stepped),
+        _digest([stepped, _snapshot(row), generation]),
+        namespace,
+    )
 
 
 class OwnerPolicyWriter:
@@ -388,15 +511,7 @@ class OwnerPolicyWriter:
         expires_at: datetime | None,
     ) -> dict[str, Any]:
         """Replace a term's constraint/expiry; only a tightening is admitted."""
-        if constraint not in CONSTRAINTS:
-            raise ValueError("constraint")
-        request = {
-            "action": "tighten",
-            "term_id": str(term_id),
-            "expected_version": expected_version,
-            "term": constraint,
-            "expires_at": expires_at.isoformat() if expires_at else None,
-        }
+        request = _change_request("tighten", term_id, expected_version, constraint, expires_at)
         async with self.connection.transaction():
             generation = await self._begin(owner_action_id, request)
             if isinstance(generation, dict):
@@ -425,6 +540,82 @@ class OwnerPolicyWriter:
                 expected_version + 1,
                 generation,
             )
+
+    async def loosen(
+        self,
+        owner_action_id: UUID,
+        term_id: UUID,
+        expected_version: int,
+        *,
+        constraint: str,
+        expires_at: datetime | None,
+    ) -> dict[str, Any]:
+        """Loosen a term at its expected version under a fresh dashboard step-up.
+
+        Without a step-up proof, or with one the trusted store does not admit
+        for exactly this change at this version and generation, nothing is
+        written and StepUpRequired is raised. The step-up is spent with the
+        write and its receipt, in this one transaction.
+        """
+        request = _change_request("loosen", term_id, expected_version, constraint, expires_at)
+        if dashboard_stepup_proof.get() is None:
+            raise StepUpRequired("loosening owner policy needs dashboard step-up")
+        try:
+            async with self.connection.transaction():
+                generation = await self._begin(owner_action_id, request)
+                if isinstance(generation, dict):
+                    return generation
+                binding = await loosen_binding(
+                    self.connection,
+                    owner_action_id,
+                    term_id,
+                    expected_version,
+                    constraint,
+                    expires_at,
+                    lock=True,
+                )
+                admission = await consume_stepup(self.connection, "begin", binding)
+                if admission.get("state") != "admitted":
+                    raise StepUpRequired("dashboard step-up not admitted")
+                await self.connection.execute(
+                    "UPDATE switchboard.owner_policy_terms SET term = $2, expires_at = $3, "
+                    "version = version + 1, owner_action_id = $4, "
+                    "updated_at = clock_timestamp() WHERE id = $1",
+                    term_id,
+                    constraint,
+                    expires_at,
+                    owner_action_id,
+                )
+                receipt = await self._receipt(
+                    owner_action_id,
+                    request,
+                    term_id,
+                    expected_version,
+                    expected_version + 1,
+                    generation,
+                )
+                retained = await consume_stepup(
+                    self.connection,
+                    "finish",
+                    binding,
+                    {
+                        "version": 1,
+                        "kind": LOOSEN_KIND,
+                        "id": str(owner_action_id),
+                        "rule_id": str(term_id),
+                    },
+                )
+                if retained.get("state") != "completed":
+                    raise RuntimeError("Step-up receipt unavailable")
+                return receipt
+        except (
+            asyncpg.InvalidSchemaNameError,
+            asyncpg.UndefinedTableError,
+            asyncpg.UndefinedFunctionError,
+            asyncpg.InsufficientPrivilegeError,
+        ) as exc:
+            # An unavailable trusted interface never falls back to an unconfirmed write.
+            raise StepUpRequired("dashboard step-up unavailable") from exc
 
     async def _begin(self, owner_action_id: UUID, request: Mapping[str, Any]) -> int | dict:
         """Lock the generation; a retried action returns its existing receipt."""
@@ -551,7 +742,9 @@ __all__ = [
     "CONSTRAINTS",
     "SELECTOR_KINDS",
     "DeclaredResources",
+    "LOOSEN_KIND",
     "NarrowingUnsupported",
+    "NotLoosening",
     "OwnerPolicyWriter",
     "Policy",
     "PolicyConflict",
@@ -566,5 +759,7 @@ __all__ = [
     "holds_for",
     "holds_for_goal",
     "list_terms",
+    "loosen_binding",
+    "loosen_target",
     "read_policy",
 ]

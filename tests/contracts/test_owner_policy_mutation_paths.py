@@ -7,7 +7,8 @@ route must be added here deliberately (and protected) or this fails.
 * Terms, receipts and the generation are written only by
   ``core/owner_policy.py``'s ``OwnerPolicyWriter``, and that writer is reached
   only from the owner-dashboard routes, each behind the verified dashboard
-  session (``tests/api/test_owner_policy_api.py``).
+  session (``tests/api/test_owner_policy_api.py``); a loosening also spends a
+  ``policy_loosen`` step-up (``tests/integration/test_owner_stepup_consumers.py``).
 * Holds are appended only by the broker ledger (``record_hold``).
 * sw_059's RLS keeps the switchboard daemon role (broker, MCP tools) read-only
   on terms and the generation (``tests/switchboard/test_owner_policy_postgres.py``).
@@ -40,6 +41,8 @@ OWNER_ROUTES = {
     ("GET", "/api/owner-policy"),
     ("POST", "/api/owner-policy/terms"),
     ("POST", "/api/owner-policy/terms/{term_id}/tighten"),
+    ("POST", "/api/owner-policy/terms/{term_id}/loosen"),
+    ("POST", "/api/owner-policy/step-up/options"),
     ("GET", "/api/owner-policy/holds"),
 }
 

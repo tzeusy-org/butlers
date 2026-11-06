@@ -18,7 +18,9 @@ Code lives in `src/butlers/capability_broker/`, beside `src/butlers/control.py`
 | `ledger.py` | SQL over the sw_047 goal ledger, its sw_057 labels and sw_059 owner-law holds; one goal row lock per transaction |
 | `service.py` | `Broker`: authorize, sign, forward or park, settle; approved execution; Stop cancellation |
 | `assertions.py` | Ed25519 `X-Butlers-Assertion` signer and the pure verifier domains wire in |
+| `aliases.py` | The `AliasResolver` seam, canonical argument pinning, term-id canonicalisation and `CalendarAliases` |
 | `domains.py` | The `Domains` seam and `ApprovalsParking`, the in-process park/cancel adapter |
+| `forwarder.py` | `HttpForwarder`: one `tools/call` per dispatch; D12 receipt mapping; the verified stamp account |
 | `server.py` | MCP streamable HTTP goal endpoint at `/goals/{goal_id}/mcp`, `BrokerSwitch`, `session_app` |
 | `typed.py` | M7: the one adopted closed typed shape, exact value validation, the held typed-value relaxation |
 | `boundaries.py` | M7: SQL over the sw_058 handles, extraction cache and child results; the `Extractor` seam |
@@ -44,7 +46,9 @@ last unit of budget: exactly one wins).
    child), and every restricted resource argument must name granted
    identifiers. A selection-bound parameter without a grant restriction has an
    empty scope; today's catalog declares none.
-3. Classify recipients and decide (`policy.decide`). Refusals contact no domain.
+3. Resolve declared resource aliases to canonical ids
+   ([Resolved aliases](#resolved-aliases-bu-dhloi130)); the rest of the call uses
+   them. Classify recipients and decide (`policy.decide`). Refusals contact no domain.
    Then apply the owner law ([Owner law](#owner-law-s1-bu-dhloi110)), which can
    only refuse or turn a dispatch into a per-event park.
 4. Check the budget (exhaustion commits `budget_exhausted` on the goal), refuse a
@@ -82,21 +86,116 @@ Every producer, deferred path and reader of a label:
 | Park, approval, edit, retry | the approved call runs under the requesting invocation's current label, which must cover the effect's snapshot; an edited effect row snapshots that label | `BrokerLedger.begin_approved` |
 | Receipt / unknown / not_received | no output join unless committed; the effect label never changes | `Broker._forward` |
 | Goal union | every invocation and inbox label joins it; reporting only | sw_057 `goal_invocation_exposure` |
-| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no complete stamp account from the store, joins `{world}` and all six | `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
+| D6 stores | an exposed write keeps the writer pointer (`taint_goal_id`, `taint_invocation_id`) and content authority, not a per-row label. A stamped read joins `{owner}`, the capability's categories and, for each tainted record, its writer invocation's persisted label resolved through the pointer. A missing, dangling or unreadable pointer, or no verified stamp account from the domain, joins `{world}` and all six | `core.stamp_account`; `DomainReceipt.stamped_owner_untainted` / `stamped_writers`; `BrokerLedger.writer_label` |
 | Reply evidence | a reply to a prompt of an exposed goal is outside content (goal union; conservative) | `accepted_source.py` `_reply` |
 
 Stored labels resolve through the writer pointer (lead decision on
 bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
 Unstamped legacy records keep their content-authority behaviour (original
-authority preserved, or unknown). No domain reports its stamp account over the
-wire yet, so `HttpForwarder` receipts make every stamped read the unknown label
-until one does.
+authority preserved, or unknown). Domains report the stamp account over the
+wire ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)); until the catalog
+admits a `stamped` descriptor, every model-reachable read is `untrusted` and
+the report changes no label.
 
-Until the per-tool `categories` declaration lands and is made required
-(bu-dhloi1.27, a switch-release blocker), categories are derived from the descriptor's D4
-`output_sensitivity` (`contracts.declared_categories`): `ordinary` is an
-explicit owner-catalog declaration of no sensitive category and carries none;
-anything undeclared or not `ordinary` carries all six.
+### Stamp accounts (D6, bu-dhloi1.28)
+
+`butlers.core.stamp_account` is both halves of the wire contract.
+
+- **Collect.** The domain's verification middleware binds an empty account
+  around exactly one verified call. Each D6 store reader passes the rows it
+  returns to `account_records`; outside a verified call that is a no-op.
+- **Classify.** A row is clean only when both stamp columns were selected, both
+  are null, and the store's authority rule says the owner wrote it. A row with
+  both pointers set adds its writer. Anything else (a half or unreadable
+  pointer, an unselected column, legacy or `system` authority) makes the
+  account not owner-untainted. More than 256 writers report not
+  owner-untainted.
+- **Report.** After the handler returns, the middleware writes the account to
+  the result's `_meta["butlers/stamp_account"]`:
+  `{version: 1, capability, call_id, args_digest, owner_untainted, writers}`,
+  with the verified assertion's own `capability`, `call_id` and `args_digest`.
+  It first removes any value the handler (or a server it proxies) put under
+  that key. A call whose readers never ran, or an error result, reports
+  nothing.
+- **Verify.** `HttpForwarder` accepts a report only when it has exactly those
+  keys, version 1, `owner_untainted` exactly `true`, at most 256 canonical UUID
+  pairs, and names the reservation's capability, `call_id` and `args_digest`.
+  Anything else is no account. Tool content is never read for a stamp, so
+  stored text cannot vouch for itself.
+
+The report's integrity is the broker-to-domain transport's, the same as the
+result it travels with; the binding stops a report from another call (a replay
+or a proxied result) being taken for this one.
+
+| D6 store | Reader that accounts | Owner-authored when |
+| --- | --- | --- |
+| memory episodes, facts, rules (decision memory) | `memory_search`, `memory_recall`, `memory_get` | `content_authority` is `owner` or `owner_device` |
+| contact notes | `relationship.notes.note_list` | same |
+| relationship entity facts, narrative facts | `relationship_lookup` identity and narrative reads | same (rel_037 / mem_013) |
+| conversation history | `conversation_recall` (`message_search`), `conversation_thread_read` (`message_thread_window`) | a `user` turn of a `dashboard` conversation; replies and other channels never |
+| captures, insight candidates | none: no model-reachable reader | n/a |
+
+A report shows which rows the readers saw. It cannot show that a tool returned
+nothing else: one tool may also read a store whose reader does not account.
+That completeness is a per-tool audit. The catalog check still refuses every
+`stamped` descriptor (`validate_authorization_catalog`), and the broker reads
+a receipt's account only for a `stamped` capability. So precision arrives one
+audited tool at a time.
+
+A capability's categories are its descriptor's required `categories` field
+(bu-dhloi1.27), a sorted subset of the six; D4 `output_sensitivity` is not
+consulted. The field is in `AUTHORIZATION_FIELDS`, so it is part of the
+authorization and generation digests, and missing metadata is ungrantable:
+an undeclared, unknown, duplicated or unsorted value is an authorization
+problem, so the descriptor is neither `authorization_complete` nor
+`grantable`. The broker catalog reader refuses a publication that carries
+one (`catalog_unavailable`, which the broker reports as `broker_unavailable`), and
+`contracts.declared_categories` raises rather than inferring a set.
+
+Every declaration names its categories explicitly. In the inventory,
+`_declare` takes a required `categories` keyword. A module-channel `ToolMeta`,
+such as calendar's `calendar_respond`, sets the same field. `CATEGORY_SPECS` cites the domain
+spec each declaration was read from.
+
+Under-declaring is a confidentiality leak, so one rule decides. A tool names
+fewer than all six (`ALL_CATEGORIES`) only if every field it returns is
+structured. Owner, LLM or third-party free text keeps all six: notes, memos,
+descriptions, typed titles, identity fields such as display and real names,
+message bodies, raw provider payloads that can
+carry owner-named or third-party text, and error paths that echo stored text.
+Finance category labels are owner free text, and merchant, payee and service
+names can reveal health (a pharmacy or clinic), so every finance tool returning
+either keeps all six; so do third-party catalog titles (works, games,
+achievements). Inside a narrowed tool,
+dated owner activity counts as `routine`. `NARROWED_CATEGORIES` gives each
+narrowed tool a one-line justification naming its output fields. A contract
+test (`tests/contracts/test_tool_category_declarations.py`) pins the narrowed
+set, so widening a tool's output has to touch it. There are 41 narrowed tools:
+
+| Domain | Narrowed tools | Categories |
+| --- | --- | --- |
+| finance | `learn_merchant_categories` (upserted count only) | `finance` |
+| health, google_health | the four `*_delete` booleans, `nutrition_summary`, and every Google Health read except `health_sleep_history` and `health_sleep_latest` (stored fact content prose) | `health`, `routine` |
+| lifestyle | `taste_add_verdict`, `taste_backfill_ledger`, `taste_get_summary` | `routine` |
+| education | progress-only results: snapshots, trends, `spaced_repetition_record_response`, `teaching_flow_start` | `routine` |
+| education | ids, counts and statuses: `curriculum_replan`, `diagnostic_complete`, `mastery_get_map_summary`, `mind_map_create`, `mind_map_edge_delete`, `mind_map_node_create`, `spaced_repetition_schedule_cleanup`, `teaching_flow_abandon` | none |
+| spotify | the six status-only playback controls, `spotify_save_tracks`, `spotify_remove_saved_tracks` | none |
+| steam | `steam_get_player_level`, `steam_get_current_players`, `steam_resolve_vanity_url` | none |
+| fleet | `module.states`, `list_butlers`, `pending_action_count` | none |
+
+Everything else names all six. That covers:
+
+- every tool returning a whole transaction, bill, subscription, account or
+  facts row (notes, description, raw/metadata JSON, account nicknames);
+- health notes, names and research;
+- education labels, descriptions, answers and flow state;
+- every Spotify read, which returns the raw provider payload (playlist names,
+  device names);
+- `steam_get_game_news` (third-party prose), and `steam_get_player_summary` and
+  `steam_get_friend_list` (their profiles carry `personaname` and `realname`);
+- tools whose results echo a caller-supplied string;
+- calendar, email, chat, Drive, memory, relationship, chronicler, general,
+  approvals, switchboard, travel, Home Assistant and the remaining core tools.
 Concurrent joins are single-statement unions under the row lock, so neither
 principal nor category is lost.
 
@@ -243,8 +342,41 @@ selected capability ([MCP model](../concepts/mcp-model.md)). Any other
 narrowing is refused at write with 422 `owner_policy_narrowing_unsupported`. At
 match time, a stored term narrowed on a param the current catalog no longer
 marks alias-free for the called capability holds every call of that capability.
-A domain alias-resolver seam would let aliasable params narrow later; it is not
-built.
+
+### Resolved aliases (bu-dhloi1.30)
+
+A param the catalog declares in `alias_resolvers` (param to a closed kind; today
+only `calendar`, on every calendar tool's `calendar_id`/`calendar_ids`) can also
+narrow. `capability_broker/aliases.py` holds the seam. After the grant scope
+check (which stays on the raw arguments) and before recipients, `decide` and
+owner law, the broker asks its trusted `AliasResolver` (a constructor input like
+`Domains`; `CalendarAliases` reads each domain's discovered provider
+`calendar_sources`) for each value's canonical id, under `alias_timeout`
+(2 s by default):
+
+- Every value of a param resolves to an answer that resolves to itself (a fixed
+  point): the call's arguments are replaced by the canonical ids. Those are what
+  is digested, signed into the assertion, dispatched and parked, so the domain
+  receives an id it resolves to itself and cannot re-resolve the call to another
+  resource after the check.
+- Anything else (no answer, a non-fixed-point answer, an error, the deadline, no
+  resolver, an omitted param) leaves the param unresolved. The call keeps its
+  arguments, and a term narrowed on that param selects it, as for any aliasable
+  param.
+- A term's narrowing ids on a resolved param are resolved too, so a term written
+  as `primary` holds the owner's calendar id. A term id that does not resolve
+  drops that narrowing, and the term holds every call on its selector.
+
+For `calendar`, an id resolves when, trimmed, it is a discovered provider
+calendar; `primary` resolves to the calendar whose id is the one discovered
+account's address, and to nothing when there is no account or more than one.
+
+At the approval fence the approved (or owner-edited) arguments are never
+rewritten. A param counts as resolved there only when its value is already the
+canonical id, so an edit naming an alias cannot release a term. Entity and
+contact merges are not resolved: `entity_id` params stay `alias_free_params`, and
+a merge survivor is not substituted. Nothing constructs the broker until the M6
+switch, so the seam is dark.
 
 Identifiers are compared in canonical form, both when
 stored and when matched: a UUID in any spelling becomes its lowercase
@@ -300,11 +432,17 @@ session sees only the closed reason.
 
 Changes go through expected-version CAS, with one receipt per owner action id:
 a retry returns that receipt, and a different change under the same id
-conflicts. A change only tightens: `always_ask` to `never`, or a later or no
-expiry. A loosening refuses `dashboard_step_up_required`: the dashboard
-step-up kinds (`scripts/init-db.sql`) have no policy-loosening kind yet, so
-loosening is the one missing mutation path (activation: bu-dhloi1.29). An
-expiry still lapses its term.
+conflicts. `tighten` admits only a tightening: `always_ask` to `never`, or a
+later or no expiry. Anything else is a loosening (including an earlier expiry,
+which can lapse a term now) and goes through `loosen` under the owner's
+`policy_loosen` dashboard step-up (bu-dhloi1.29): `loosen_binding` binds the
+owner action, term, expected version, resulting constraint and expiry, the
+term row and the policy generation, so a confirmation is spent once, on that
+exact change, and a later policy change makes it stale. Without an admitted
+step-up the change refuses `dashboard_step_up_required` and writes nothing; its
+receipt has action `loosen`. sw_060's term trigger refuses any loosening whose
+resulting `id:version:term:expiry` no step-up consumed in the same transaction.
+An expiry still lapses its term.
 
 Mutation paths. This is the whole set, pinned by
 `tests/contracts/test_owner_policy_mutation_paths.py`.
@@ -312,16 +450,17 @@ Mutation paths. This is the whole set, pinned by
 | Path | Writes | Guard |
 | --- | --- | --- |
 | `POST /api/owner-policy/terms`, `POST /api/owner-policy/terms/{id}/tighten` | terms, receipts, generation via `OwnerPolicyWriter` | verified owner dashboard session (`owner_dashboard_session_required`); tighten-only CAS |
+| `POST /api/owner-policy/step-up/options`, `POST /api/owner-policy/terms/{id}/loosen` | the same, via `OwnerPolicyWriter.loosen` | verified owner dashboard session plus a `policy_loosen` step-up (`X-Dashboard-Step-Up`) bound to the exact change; CAS |
 | `Broker` ledger `record_hold` | holds | runtime role, insert-only |
 | Switchboard daemon role (broker, every MCP tool, connector callbacks) | nothing else | sw_059 RLS: terms and generation read-only, receipts invisible |
-| Direct SQL, any role | — | triggers refuse DELETE/TRUNCATE everywhere, UPDATE of receipts/holds, and any term UPDATE that loosens, skips a version, rewrites the selector or reuses the owner action |
+| Direct SQL, any role | — | triggers refuse DELETE/TRUNCATE everywhere, UPDATE of receipts/holds, and any term UPDATE that skips a version, rewrites the selector, reuses the owner action, or loosens without a matching `policy_loosen` step-up consumed in its transaction |
 
 `GET /api/owner-policy` lists every term with its version, expiry and whether it
 is active, plus the generation. `GET /api/owner-policy/holds` takes exactly
 one of `goal_id`, `effect_id` (also the pending action id) or `refusal_id` and
 returns those holds with their typed receipts. Both need the dashboard session.
 Not here: `/status` and owner cards rendering the receipt (bu-dhloi1.13, S6
-surfaces), and the policy-loosening step-up kind (bu-dhloi1.29).
+surfaces), and the dashboard UI for the loosen ceremony.
 
 ## Refusal records and the goal filter (bu-m1u7zy.12)
 
@@ -357,6 +496,8 @@ the owning domain's endpoint with exactly one `X-Butlers-Assertion` header. A
 session that never opened is `not_received` (the one D12 retry); a result is
 `committed`; an error result, including a refused assertion, is `failed`;
 anything after the call was sent propagates and the effect becomes `unknown`.
+A committed receipt carries the domain's stamp account only when its `_meta`
+report names this call ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)).
 
 On the domain, `verification.AssertionVerificationMiddleware` is the outermost
 FastMCP middleware, so it runs before argument coercion, before the core tool
@@ -432,5 +573,5 @@ unchanged.
   switch that constructs the broker and turns domain verification on.
 - The service-plane tool inventory that domain verification exempts.
 - The M7 goal tools on the MCP endpoint (`handle.read`, extract, `goal.return`,
-  `goal.await`), a production `Extractor`, `quarantine_reads`, the step-up
-  installer's `contain` kind (bu-dhloi1.29) and an owner Contain route.
+  `goal.await`), a production `Extractor`, `quarantine_reads` and an owner
+  Contain route (the step-up interface admits `contain` since bu-dhloi1.29).

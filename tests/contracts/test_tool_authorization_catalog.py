@@ -16,6 +16,7 @@ import pytest
 from fastmcp import FastMCP
 
 from butlers.config import load_config
+from butlers.core.goal_labels import CATEGORIES
 from butlers.core.tool_catalog import (
     ToolCatalogError,
     build_tool_catalog,
@@ -338,7 +339,11 @@ async def test_all_rosters_have_complete_post_approval_authorization_catalogs(
         assert response.approval_policy["enabled"] is True
         assert response.approval_policy["configured_gate"] is True
         assert response.approval_policy["mode"] == "always_per_event"
+        # A module-channel declaration carries categories like the inventory.
+        assert set(response.categories) == CATEGORIES
     union = {d.canonical_name: d for c in catalogs.values() for d in c.descriptors}
+    for descriptor in union.values():
+        assert descriptor.categories is not None, descriptor.canonical_name
     assert "drive_share_file" not in union
     assert "drive_write_file" in union
     assert union["drive_write_file"].effect_class == "communicate"
@@ -425,11 +430,18 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
         ("selection_bound", {}),
         ("selection_bound", {"key": "yes"}),
         ("safety_args", ("_command_digest",)),
+        ("alias_resolvers", {"absent_parameter": "calendar"}),
+        ("alias_resolvers", {"key": "unknown_kind"}),
+        ("alias_resolvers", (("key", "calendar"),)),
         ("owner_domain", " "),
         ("approval_policy", "enabled"),
         ("recipient_params", RecipientParameters(default_owner_condition=True)),
         ("recipient_params", RecipientParameters(undeterminable_condition=" ")),
         ("recipient_params", RecipientParameters(argument_names=("key", "key"))),
+        ("categories", ("horoscope",)),
+        ("categories", ("health", "health")),
+        ("categories", ("routine", "health")),
+        ("categories", ["health"]),
     ):
         invalid = replace(reader, **{field_name: malformed})
         assert not invalid.grantable
@@ -522,6 +534,7 @@ async def test_authorization_policy_freezes_and_changes_generation_only() -> Non
         idempotency="none",
         owner_authority=False,
         recipient_params=RecipientParameters(argument_names=parties),
+        categories=tuple(sorted(CATEGORIES)),
     )
 
     async def build():
@@ -642,6 +655,25 @@ async def test_module_declarations_cannot_override_actual_owner_or_policy(monkey
         await _roster_catalog("messenger")
 
 
+def test_every_calendar_id_param_declares_the_calendar_alias_resolver() -> None:
+    """bu-dhloi1.30: 'primary' and trimmed ids resolve before owner law, then pin."""
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    calendar_params = {
+        (entry.canonical_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param in entry.resource_params or ()
+        if param in {"calendar_id", "calendar_ids"}
+    }
+    declared = {
+        (entry.canonical_name, param)
+        for entry in TOOL_PRESENTATION_INVENTORY
+        for param, kind in (entry.alias_resolvers or {}).items()
+        if kind == "calendar"
+    }
+    assert calendar_params and declared == calendar_params
+
+
 def test_inventory_marks_every_resource_param_selection_bound_or_not() -> None:
     """REQ-capability-authorization-002/-018: each resource param carries an explicit mark."""
     from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
@@ -712,6 +744,21 @@ async def test_declared_approval_modes_survive_real_roster_publication(monkeypat
                 validate_authorization_catalog(ungated, store_writers=STORE_WRITERS)
         with pytest.raises(TypeError):
             response.approval_policy["mode"] = "default"
+
+
+async def test_alias_resolvers_survive_real_roster_publication(monkeypatch) -> None:
+    """bu-dhloi1.30: the broker reads the resolver kind from the published catalog."""
+    from butlers.core.catalog_publication import decode_publication, publication
+
+    monkeypatch.setattr("butlers.db.Database.connect", AsyncMock())
+    catalog = await _roster_catalog("general")
+    restored = decode_publication(publication(catalog, "general"), "general")
+    for snapshot in (catalog, restored):
+        events = snapshot["calendar_list_events"]
+        assert dict(events.alias_resolvers) == {"calendar_id": "calendar"}
+        assert dict(snapshot["state_get"].alias_resolvers) == {}
+    with pytest.raises(TypeError):
+        restored["calendar_list_events"].alias_resolvers["calendar_id"] = "entity"
 
 
 @pytest.mark.parametrize("mode", [None, "", "sometimes", True, 1, [], {}])
