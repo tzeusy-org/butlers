@@ -36,9 +36,16 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { approveApproval, deferApproval, denyApproval, getApprovalDetail } from "@/api/index.ts";
+import {
+  ApiError,
+  approveApproval,
+  deferApproval,
+  denyApproval,
+  getApprovalDetail,
+  redeemOwnerDeliveryAction,
+} from "@/api/index.ts";
 import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/index.ts";
-import type { ApprovalCallPreview, DisplayedApprovalCall } from "@/api/types";
+import type { ApprovalCallPreview, DisplayedApprovalCall, OwnerDeliveryCard } from "@/api/types";
 import { toast } from "sonner";
 
 import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
@@ -50,11 +57,24 @@ import { Button } from "@/components/ui/button";
 export interface ViewedApproval {
   id: string;
   displayed_call: DisplayedApprovalCall;
+  /** The shown dossier's single-use tokens; absent while the rollout is off. */
+  owner_delivery?: OwnerDeliveryCard | null;
+}
+
+interface ApprovalReview {
+  id: string;
+  preview: ApprovalCallPreview;
+  owner_delivery?: OwnerDeliveryCard | null;
+}
+
+function isOwnerDeliveryRefusal(error: unknown): boolean {
+  return error instanceof ApiError
+    && (error.detail as { error?: unknown } | undefined)?.error === "owner_delivery_refused";
 }
 
 /** A real stored-call review, shared by summary-only surfaces. No raw args. */
 export function ApprovalCallReview({ review, onConfirm, onCancel }: {
-  review?: { id: string; preview: ApprovalCallPreview } | null;
+  review?: ApprovalReview | null;
   onConfirm: (view: ViewedApproval) => void;
   onCancel: () => void;
 }) {
@@ -67,7 +87,7 @@ export function ApprovalCallReview({ review, onConfirm, onCancel }: {
         createElement("strong", null, fact.label),
         createElement("p", { className: "whitespace-pre-wrap break-words" }, fact.value))),
       createElement(Button, { onClick: () => onConfirm({
-        id: review.id, displayed_call: { ...review.preview.displayed_call },
+        id: review.id, displayed_call: { ...review.preview.displayed_call }, owner_delivery: review.owner_delivery,
       }) }, "Approve reviewed call"),
       createElement(Button, { variant: "outline", onClick: onCancel }, "Cancel")));
 }
@@ -120,7 +140,7 @@ export function useApprovalDecisionMutations(
   options: UseApprovalDecisionMutationsOptions = {},
 ) {
   const qc = useQueryClient();
-  const [review, setReview] = useState<{ id: string; preview: ApprovalCallPreview } | null>(null);
+  const [review, setReview] = useState<ApprovalReview | null>(null);
   const reviewGeneration = useRef(0);
   useEffect(() => () => { reviewGeneration.current += 1; }, []);
   const cancelReview = useCallback(() => {
@@ -144,7 +164,7 @@ export function useApprovalDecisionMutations(
         toast.error("Open the approval dossier; this call cannot be approved from a summary.");
         return;
       }
-      setReview({ id, preview });
+      setReview({ id, preview, owner_delivery: detail.owner_delivery });
     } catch {
       if (generation === reviewGeneration.current) toast.error("Unable to load the stored call. Retry review.");
     }
@@ -182,8 +202,17 @@ export function useApprovalDecisionMutations(
   // decision so the row and its pending-count metadata refresh together.
   const reconcileKeys = [WAITING_KEY_PREFIX, HISTORY_KEY, ACTIONS_KEY_PREFIX];
 
+  // A refused token is an answer, never a reason to retry on another route: another
+  // surface decided, or the call changed. Say so and re-read the dossier.
+  function answerRefusal(id: string): void {
+    toast.error("This approval changed or was already decided. Nothing ran from this tap.");
+    void qc.invalidateQueries({ queryKey: ["approvals", "detail", id] });
+  }
+
   const approveMut = useOptimisticMutation<ApiResponse<ApprovalAction>, ViewedApproval, PendingSnapshot>({
-    mutationFn: ({ id, displayed_call }) => approveApproval(id, { displayed_call }),
+    mutationFn: ({ id, displayed_call, owner_delivery }) => owner_delivery
+      ? redeemOwnerDeliveryAction({ token: owner_delivery.approve_token, displayed_call })
+      : approveApproval(id, { displayed_call }),
     applyOptimisticUpdate: ({ id }) => dropFromPending(id),
     rollback,
     invalidateQueryKeys: () => reconcileKeys,
@@ -199,20 +228,28 @@ export function useApprovalDecisionMutations(
         toast.warning("Approved. Queued, not yet run. Retry from History.");
       }
     },
-    onError: (e) => toast.error(`Approve failed: ${e.message}`),
+    onError: (e, { id }) => {
+      if (isOwnerDeliveryRefusal(e)) answerRefusal(id);
+      else toast.error(`Approve failed: ${e.message}`);
+    },
   });
 
   const denyMut = useOptimisticMutation<
     ApiResponse<ApprovalAction>,
-    { id: string; reason?: string },
+    { id: string; reason?: string; owner_delivery?: OwnerDeliveryCard | null },
     PendingSnapshot
   >({
-    mutationFn: ({ id, reason }) => denyApproval(id, reason ? { reason } : undefined),
+    mutationFn: ({ id, reason, owner_delivery }) => owner_delivery
+      ? redeemOwnerDeliveryAction({ token: owner_delivery.reject_token, ...(reason ? { reason } : {}) })
+      : denyApproval(id, reason ? { reason } : undefined),
     applyOptimisticUpdate: ({ id }) => dropFromPending(id),
     rollback,
     invalidateQueryKeys: () => reconcileKeys,
     onSuccess: () => toast.success("Denied"),
-    onError: (e) => toast.error(`Deny failed: ${e.message}`),
+    onError: (e, { id }) => {
+      if (isOwnerDeliveryRefusal(e)) answerRefusal(id);
+      else toast.error(`Deny failed: ${e.message}`);
+    },
   });
 
   const deferMut = useOptimisticMutation<

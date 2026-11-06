@@ -3774,6 +3774,21 @@ async def approve_owning_action(
             # change the arguments the broker's effect digest commits to.
             raise HTTPException(status_code=409, detail=GOAL_EFFECT_REQUIRES_BROKER)
 
+        # Before any redemption: a dashboard token binds the stored call, and this binds
+        # that call to what the owner actually saw. An open-only call has no display.
+        if require_displayed_call:
+            preview = (
+                dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
+                if action_row is not None
+                else None
+            )
+            if (
+                displayed_call is None
+                or preview is None
+                or displayed_call.model_dump() != preview["displayed_call"]
+            ):
+                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+
         if owner_delivery_token is not None:
             if action_row is None:
                 return {"error": f"Approval not found: {action_id}"}
@@ -3801,19 +3816,6 @@ async def approve_owning_action(
                 audit_actor=actor_id,
                 audit_action="approval.approve",
             )
-
-        if require_displayed_call:
-            preview = (
-                dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
-                if action_row is not None
-                else None
-            )
-            if (
-                displayed_call is None
-                or preview is None
-                or displayed_call.model_dump() != preview["displayed_call"]
-            ):
-                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
 
         if action_row is not None and check_presented_digests:
             await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])

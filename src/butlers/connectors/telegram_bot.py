@@ -26,6 +26,7 @@ Environment Variables (from docs/connectors/telegram_bot.md):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -304,6 +305,9 @@ class TelegramBotConnectorConfig:
     # It is intentionally never read from the environment.
     approval_callback_connector_token: str | None = None
 
+    # Seconds between sweeps that retract owner cards staled by any decision path.
+    owner_delivery_sweep_interval_s: float = 60.0
+
     # Owner voice-note transcription (bu-r0dsz; telegram-voice-transcription spec). Disabled by
     # default: enabling sends owner audio to the configured STT service.
     voice_transcription_enabled: bool = False
@@ -369,6 +373,9 @@ class TelegramBotConnectorConfig:
                     "CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S", str(DEFAULT_MAX_DURATION_S)
                 )
             ),
+            owner_delivery_sweep_interval_s=float(
+                os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", "60")
+            ),
         )
 
 
@@ -412,6 +419,8 @@ class TelegramBotConnector:
         self._last_update_id: int | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
+        self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
+        self._owner_delivery_drain_lock = asyncio.Lock()
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -645,6 +654,7 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        self._start_owner_delivery_sweep()
 
         # Load checkpoint
         await self._load_checkpoint()
@@ -738,6 +748,7 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        self._start_owner_delivery_sweep()
 
         # Load ingestion policy rules before registering the webhook.
         await self._ingestion_policy.ensure_loaded()
@@ -763,6 +774,13 @@ class TelegramBotConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+
+        # Before the HTTP client closes: an in-flight drain still uses it.
+        if self._owner_delivery_sweep_task is not None:
+            self._owner_delivery_sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._owner_delivery_sweep_task
+            self._owner_delivery_sweep_task = None
 
         # Stop heartbeat
         if self._heartbeat is not None:
@@ -1386,13 +1404,40 @@ class TelegramBotConnector:
         except Exception:  # noqa: BLE001 -- stale UI is harmless
             logger.warning("Failed to remove a stale owner-delivery keyboard")
 
+    def _start_owner_delivery_sweep(self) -> None:
+        """Run the stale-card sweep: a card can go stale with no Telegram tap at all.
+
+        A dashboard decision, an expiry or a cancellation stales a card too. The listing is
+        not gated on the rollout flag, which governs minting only; without a ledger row it
+        is empty, and stale cards minted while the flag was on still get retracted.
+        """
+        if self._owner_delivery_sweep_task is not None:
+            return
+        config = self._config
+        if not config.internal_api_url or not config.approval_callback_connector_token:
+            return
+        self._owner_delivery_sweep_task = asyncio.create_task(self._owner_delivery_sweep_loop())
+
+    async def _owner_delivery_sweep_loop(self) -> None:
+        while True:
+            try:
+                await self._drain_owner_delivery_retractions()
+            except Exception:  # noqa: BLE001 -- the next sweep retries
+                logger.warning("Owner-delivery retraction sweep failed", exc_info=True)
+            await asyncio.sleep(self._config.owner_delivery_sweep_interval_s)
+
     async def _drain_owner_delivery_retractions(self) -> int:
         """Retract every stale owner card and receipt each attempt honestly.
 
         A card whose provider message id is unknown, or whose edit fails, is reported
-        as ``retracted=false``; it stays listed and its buttons stay harmless because
-        their tokens are already stale.
+        as ``retracted=false``; the ledger lists it again after a cooldown, up to a bound,
+        and its buttons stay harmless because their tokens are already stale. One drain at
+        a time: a tap and the sweep must not attempt the same card at once.
         """
+        async with self._owner_delivery_drain_lock:
+            return await self._drain_owner_delivery_retractions_locked()
+
+    async def _drain_owner_delivery_retractions_locked(self) -> int:
         connector_token = self._config.approval_callback_connector_token
         if not self._config.internal_api_url or not connector_token:
             return 0

@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse
-from butlers.api.models.approval import ApprovalAction
+from butlers.api.models.approval import ApprovalAction, DisplayedApprovalCall
 from butlers.api.routers.approvals import (
     _decision_actor_id,
     _find_action_pool,
@@ -45,6 +45,9 @@ router = APIRouter(prefix="/api/owner-delivery", tags=["owner-delivery"])
 
 class OwnerDeliveryActionRequest(BaseModel):
     token: str = Field(min_length=1, max_length=64)
+    # Dashboard only: the call the owner was shown (required to approve) and a denial note.
+    displayed_call: DisplayedApprovalCall | None = None
+    reason: str | None = None
 
 
 class OwnerDeliveryRetraction(BaseModel):
@@ -92,6 +95,11 @@ async def redeem_owner_action(
     callback = _callback_authenticated(http_request)
     actor_id = _decision_actor_id(callback_actor, callback_authenticated=callback)
     surface: owner_delivery.Surface = "telegram" if callback else "dashboard"
+    if callback and request.reason:
+        raise HTTPException(
+            status_code=403,
+            detail="Connector decisions cannot add a denial reason.",
+        )
     verifier = owner_delivery.token_verifier(request.token)
     if verifier is None:
         raise HTTPException(
@@ -123,13 +131,16 @@ async def redeem_owner_action(
             target_pool=target_pool,
             db_mgr=db_mgr,
             mcp_mgr=mcp_mgr,
+            # A Telegram card shows its exact call itself; the dashboard echoes what it showed.
+            displayed_call=request.displayed_call,
+            require_displayed_call=not callback,
             owner_delivery_token=request.token,
             owner_delivery_surface=surface,
         )
     return await deny_owning_action(
         parsed_id=parsed_id,
         actor_id=actor_id,
-        reason=None,
+        reason=request.reason,
         action_butler=action_butler,
         target_pool=target_pool,
         db_mgr=db_mgr,

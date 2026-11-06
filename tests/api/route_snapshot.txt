@@ -2079,7 +2079,7 @@ SCHEMA OwnTracksConnectionState 43585505910a
 SCHEMA OwnTracksSetupInstructions a8cbffa6fb9c
 SCHEMA OwnTracksStatusResponse 8b7b7bdb8832
 SCHEMA OwnTracksTokenResponse 8f03dcfca4e8
-SCHEMA OwnerDeliveryActionRequest 6d781f91503d
+SCHEMA OwnerDeliveryActionRequest 14d512dadf87
 SCHEMA OwnerDeliveryCard 26c1a45d1b35
 SCHEMA OwnerDeliveryRetraction 5432c1fd6db9
 SCHEMA OwnerDeliveryRetractionReport 086e02926afd

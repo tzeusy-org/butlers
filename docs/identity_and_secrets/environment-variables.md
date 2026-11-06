@@ -92,6 +92,7 @@ Connectors are independent processes that submit events to the Switchboard.
 |----------|---------|-------------|
 | `SWITCHBOARD_MCP_URL` | (required) | Switchboard MCP SSE endpoint, e.g. `http://butlers-up:41100/sse` in Compose |
 | `CONNECTOR_POLL_INTERVAL_S` | `1.0` | Poll interval in seconds (polling connectors) |
+| `CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S` | `60` | Seconds between the Telegram connector's stale owner-card retraction sweeps. |
 | `CONNECTOR_MAX_INFLIGHT` | `8` | Maximum concurrent ingest submissions |
 | `CONNECTOR_HEALTH_PORT` | per connector | Port for `/health` and `/metrics` |
 | `CONNECTOR_HEARTBEAT_INTERVAL_S` | `120` | Heartbeat interval in seconds |

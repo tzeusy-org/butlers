@@ -12,8 +12,9 @@ import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import httpx
@@ -48,6 +49,7 @@ from butlers.modules.approvals.owner_delivery_bridge import (
     parity,
 )
 from butlers.modules.approvals.park import park_pending_action
+from butlers.modules.approvals.previews import dashboard_call_preview
 from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
@@ -949,6 +951,139 @@ async def test_handoff_result_and_token_reject_on_one_card_never_deadlock(ledger
         str(action_id),
     )
     assert dict(card) == {"state": "sent", "provider_ref": "81"}
+
+
+async def _stale_telegram_card(ledger_pool: asyncpg.Pool) -> uuid.UUID:
+    action_id = await _park(ledger_pool)
+    _, cards = await _present(ledger_pool, action_id, "telegram")
+    await transition_pending_action(
+        ledger_pool,
+        action_id=action_id,
+        target_status=ActionStatus.CANCELLED,
+        decided_by="system:test",
+        event_actor="system:test",
+        event_reason="synthetic",
+    )
+    return cards["telegram"].id
+
+
+async def _listed(ledger_pool: asyncpg.Pool) -> list[uuid.UUID]:
+    async with ledger_pool.acquire() as conn:
+        return [t.presentation_id for t in await od.pending_retractions(conn, surface="telegram")]
+
+
+async def _fail_retraction(ledger_pool: asyncpg.Pool, card: uuid.UUID) -> None:
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        await od.record_retraction(conn, card, retracted=False, reason="provider_error")
+
+
+async def _age_receipts(owner: asyncpg.Pool, seconds: int) -> None:
+    """Receipts are append-only by trigger, so age one the only way: disable it for the test."""
+    trigger = "owner_delivery_receipts_append_only"
+    await owner.execute(
+        f"ALTER TABLE public.owner_delivery_receipts DISABLE TRIGGER {trigger}; "
+        f"UPDATE public.owner_delivery_receipts SET created_at = "
+        f"created_at - interval '{seconds} seconds'; "
+        f"ALTER TABLE public.owner_delivery_receipts ENABLE TRIGGER {trigger}"
+    )
+
+
+async def test_a_card_staled_without_any_tap_is_listed_for_the_sweep(ledger_pool) -> None:
+    card = await _stale_telegram_card(ledger_pool)
+
+    assert await _listed(ledger_pool) == [card]
+
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        await od.record_retraction(conn, card, retracted=True)
+    assert await _listed(ledger_pool) == []
+
+
+async def test_a_failed_retraction_cools_down_and_is_eventually_given_up(ledger_pool) -> None:
+    """Every failure writes a receipt, so a periodic sweep must not retry a dead card forever."""
+    card = await _stale_telegram_card(ledger_pool)
+
+    await _fail_retraction(ledger_pool, card)
+    assert await _listed(ledger_pool) == [], "listed again during the cooldown"
+
+    await _age_receipts(ledger_pool, od.RETRACTION_RETRY_AFTER_S + 1)
+    assert await _listed(ledger_pool) == [card], "a failed card gets another attempt"
+
+    for _ in range(od.RETRACTION_MAX_FAILED_ATTEMPTS - 1):
+        await _fail_retraction(ledger_pool, card)
+    await _age_receipts(ledger_pool, od.RETRACTION_RETRY_AFTER_S + 1)
+    assert await _listed(ledger_pool) == [], "still retried after the bound"
+    # Honest: nothing claims the card was retracted, and every attempt has its receipt.
+    assert (
+        await ledger_pool.fetchval(
+            "SELECT state FROM public.owner_delivery_presentations WHERE id = $1", card
+        )
+        == "sent"
+    )
+    assert (
+        await ledger_pool.fetchval(
+            "SELECT count(*) FROM public.owner_delivery_receipts "
+            "WHERE presentation_id = $1 AND kind = 'retract_failed'",
+            card,
+        )
+        == od.RETRACTION_MAX_FAILED_ATTEMPTS
+    )
+
+
+@pytest.mark.parametrize("verb", ["approve", "reject"])
+async def test_dashboard_session_decides_through_its_token_and_stales_telegram(
+    ledger_pool, monkeypatch, verb: str
+) -> None:
+    """The real route on a browser session: displayed call required, Telegram card listed."""
+    monkeypatch.setattr(
+        approvals_router,
+        "_dispatch_approved_action_outcome",
+        AsyncMock(return_value=SimpleNamespace(kind="failed", action=None)),
+    )
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    _, cards = await _present(ledger_pool, action_id, "telegram")
+    card = await approvals_router._dashboard_owner_delivery_card(ledger_pool, action_id)
+    assert card is not None
+    row = await ledger_pool.fetchrow(
+        "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", action_id
+    )
+    shown = dashboard_call_preview(row["tool_name"], row["tool_args"])["displayed_call"]
+    # No connector credential and no auth middleware: what a verified browser session reaches.
+    app = FastAPI()
+    app.include_router(owner_delivery_router.router)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"relationship": ledger_pool}, modules={"relationship": ["approvals"]}
+    )
+    app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: MagicMock()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://dashboard-api:41200"
+    ) as client:
+        unshown = await client.post(
+            "/api/owner-delivery/actions", json={"token": card.approve_token}
+        )
+        assert unshown.status_code == 409
+        assert unshown.json()["detail"] == approvals_router.APPROVAL_CALL_CHANGED_DETAIL
+        assert await _state(ledger_pool, action_id) == ("pending", "delivered", 1)
+
+        decided_by_owner = await client.post(
+            "/api/owner-delivery/actions",
+            json=(
+                {"token": card.approve_token, "displayed_call": shown}
+                if verb == "approve"
+                else {"token": card.reject_token, "reason": "Not this one"}
+            ),
+        )
+
+    status = "approved" if verb == "approve" else "rejected"
+    assert decided_by_owner.status_code == 200
+    assert decided_by_owner.json()["data"]["status"] == status
+    assert await _state(ledger_pool, action_id) == (status, "decided", 2)
+    assert await _listed(ledger_pool) == [cards["telegram"].id]
+    decided = await ledger_pool.fetchval(
+        "SELECT decided_surface FROM public.owner_delivery_subjects WHERE source_ref = $1",
+        str(action_id),
+    )
+    assert decided == "dashboard"
 
 
 async def test_minted_tokens_stay_redeemable_after_the_flag_is_turned_off(ledger_pool) -> None:
