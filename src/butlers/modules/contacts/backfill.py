@@ -50,7 +50,7 @@ class CandidateNameUnavailable(Exception):
 
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
-_SYNC_METADATA_KEYS = ("duplicate_candidate", "profile", "sources")
+_SYNC_METADATA_KEYS = ("profile", "sources")
 # A loss greater than half the active links is suspect; equality is accepted.
 # Empty full lists are always refused, independently of this limit.
 DEFAULT_MAX_SHRINK_FRACTION = 0.5
@@ -80,9 +80,10 @@ def _owned_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """The top-level metadata keys a sync writes, as a patch for ``metadata || $n``.
 
     Patching only these keeps any other key as the row holds it at the UPDATE: a
-    merge's ``merged_into``, or an ``unidentified`` that a promote removed after the
-    sync's read. ``profile`` and ``sources`` are still whole sub-documents from that
-    read, so a concurrent write to the same sub-document can be lost.
+    merge's ``merged_into``, or a flag that a promote removed after the sync's read.
+    ``profile`` and ``sources`` are still whole sub-documents from that read, so a
+    stale patch overwrites what was written there after it: profile keys from
+    ``contact_merge``'s reconcile or an owner edit can be lost.
     """
     return {key: metadata[key] for key in _SYNC_METADATA_KEYS if key in metadata}
 
@@ -376,7 +377,7 @@ class ContactBackfillWriter:
         # inside a Postgres transaction aborts it even when Python catches it, so any
         # reads needed before the atomic commit must happen outside that transaction.
         if duplicate_candidate:
-            metadata: dict[str, Any] = {"duplicate_candidate": True}
+            metadata: dict[str, Any] = {}
         else:
             existing_row = await self._pool.fetchrow(
                 "SELECT metadata FROM public.entities WHERE id = $1", entity_id
@@ -403,7 +404,10 @@ class ContactBackfillWriter:
         await db.execute(
             "UPDATE public.entities SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, "
             "updated_at = now() WHERE id = $2",
-            _owned_metadata(metadata),
+            {
+                **_owned_metadata(metadata),
+                **({"duplicate_candidate": True} if duplicate_candidate else {}),
+            },
             entity_id,
         )
 

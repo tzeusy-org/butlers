@@ -37,14 +37,14 @@ class _WriteAfterRead:
 
     async def fetchrow(self, query: str, *args: Any) -> Any:
         row = await self._pool.fetchrow(query, *args)
-        if not self.wrote and query.startswith("SELECT") and "metadata" in query:
+        read_by_id = query.startswith("SELECT") and query.endswith("WHERE id = $1")
+        if not self.wrote and read_by_id and "metadata" in query:
             self.wrote = True
             await self._write(args[0])
         return row
 
 
-@pytest.fixture
-async def pool(db) -> asyncpg.Pool:
+async def _database(db) -> asyncpg.Pool:
     return await db("core", "relationship", "approvals")
 
 
@@ -80,7 +80,8 @@ def _writer(pool: Any) -> ContactBackfillWriter:
     return ContactBackfillWriter(pool, provider="google", account_id="default")
 
 
-async def test_create_contact_keeps_a_merge_committed_after_its_read(pool):
+async def test_create_contact_keeps_a_merge_committed_after_its_read(db):
+    pool = await _database(db)
     survivor = await _person(pool)
 
     async def merge(entity: UUID) -> None:
@@ -94,7 +95,8 @@ async def test_create_contact_keeps_a_merge_committed_after_its_read(pool):
     assert metadata["profile"]["first_name"] == "Zhi"
 
 
-async def test_update_contact_keeps_a_merge_committed_after_its_read(pool):
+async def test_update_contact_keeps_a_merge_committed_after_its_read(db):
+    pool = await _database(db)
     source, survivor = await _person(pool), await _person(pool)
 
     async def merge(entity: UUID) -> None:
@@ -108,24 +110,50 @@ async def test_update_contact_keeps_a_merge_committed_after_its_read(pool):
     assert metadata["profile"]["first_name"] == "Zhi"
 
 
-async def test_update_contact_does_not_restore_a_key_removed_after_its_read(pool):
-    """It already wrote with ``||``, but of the whole read: a promote came undone."""
-    entity = await _person(pool, {"unidentified": True})
+@pytest.mark.parametrize("key", ["unidentified", "duplicate_candidate"])
+async def test_update_contact_does_not_restore_a_key_removed_after_its_read(db, key):
+    """A promote removes both flags; a sync that read them must not bring them back."""
+    pool = await _database(db)
+    entity = await _person(pool, {key: True})
 
     async def promote(target: UUID) -> None:
         await pool.execute(
-            "UPDATE public.entities SET metadata = metadata - 'unidentified' WHERE id = $1", target
+            "UPDATE public.entities SET metadata = metadata - $2::text WHERE id = $1", target, key
         )
 
     racing = _WriteAfterRead(pool, promote)
     await _writer(racing).update_contact(entity, _contact(), match_strategy="source_link")
     assert racing.wrote
     metadata = await _metadata(pool, entity)
-    assert "unidentified" not in metadata
+    assert key not in metadata
     assert metadata["profile"]["first_name"] == "Zhi"
 
 
-async def test_a_duplicate_candidate_is_still_flagged(pool):
+async def test_create_contact_does_not_restore_a_flag_removed_after_its_read(db):
+    """On a recovered entity: only the ``duplicate_candidate`` argument sets the flag."""
+    pool = await _database(db)
+    contact = _contact()
+    entity = await _writer(pool).create_contact(contact)
+    await pool.execute(
+        "UPDATE public.entities SET metadata = metadata || $2::jsonb WHERE id = $1",
+        entity,
+        {"duplicate_candidate": True},
+    )
+
+    async def promote(target: UUID) -> None:
+        await pool.execute(
+            "UPDATE public.entities SET metadata = metadata - 'duplicate_candidate' WHERE id = $1",
+            target,
+        )
+
+    racing = _WriteAfterRead(pool, promote)
+    assert await _writer(racing).create_contact(contact) == entity
+    assert racing.wrote
+    assert "duplicate_candidate" not in await _metadata(pool, entity)
+
+
+async def test_a_duplicate_candidate_is_still_flagged(db):
+    pool = await _database(db)
     async with pool.acquire() as conn, conn.transaction():
         entity = await _writer(pool).create_contact(
             _contact(), executor=conn, duplicate_candidate=True
@@ -156,12 +184,13 @@ async def _wait_for_row_lock_wait(pool: asyncpg.Pool) -> None:
     ("key", "value"),
     [("merged_into", "survivor"), ("deleted_at", "2026-11-06T00:00:00Z")],
 )
-async def test_a_promote_keeps_a_write_it_waited_on(pool, key, value):
+async def test_a_promote_keeps_a_write_it_waited_on(db, key, value):
     """Its batch lock is ``FOR KEY SHARE``, which lets a plain metadata UPDATE commit past it.
 
     The real merge takes ``FOR UPDATE`` and so cannot interleave; ``delete_entity``
     is a plain UPDATE and can. Both keys are written the plain way here.
     """
+    pool = await _database(db)
     await pool.execute(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ('Owner', 'person', ARRAY['owner'])"
