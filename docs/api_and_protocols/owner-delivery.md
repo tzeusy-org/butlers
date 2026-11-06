@@ -63,7 +63,8 @@ same ownership check first:
 | `record_retraction` | API; the route's ownership check runs first in the same transaction |
 | `present` | Daemon, under row security, and the API dashboard card; both with a subject just opened for the locked action in `current_schema()` |
 | `append_receipt` | The ledger functions listed here, after they resolve the subject, and the bridge's `prepare_telegram_presentation`; also `bridge_existing`, below |
-| `_retraction_targets` | `redeem`, after its schema check, and `close_for_authority`, whose update filters on `current_schema()` |
+| `_retraction_targets` | `redeem`, after its schema check, `close_for_authority`, whose update filters on `current_schema()`, and `advance_generation` |
+| `advance_generation` | API, from `defer_pending_action`; the id comes from `lock_open_subject`, which filters on `current_schema()` |
 | `begin_send`, `lock_subject_of` | Daemon, under row security; the id comes from `owner_presentation_for`, which filters on `current_schema()` |
 | `record_send` | Daemon, under row security; same source of id |
 | `delivery_inputs`, `record_holding_reason`, `bridge_existing` | No production caller yet; a first caller must supply the check |
@@ -84,9 +85,10 @@ A writer that starts from a presentation or token reads its `subject_id` unlocke
 subject, then the child. So a handoff result, a send settlement and a token decision on one
 card queue, never deadlock.
 
-Three kinds of path stay out of that chain. `defer_pending_action` takes the action, then the
-RFC 0023 rows, and never the subject (its already-expired branch is a decision and does).
-`heartbeat` and `record_prestart_retry` touch one RFC 0023 presentation row, so they hold nothing
+`defer_pending_action` follows the same order: the action, then the open subject, then the RFC
+0023 rows, then the presentations it retracts.
+
+Two kinds of path stay out of that chain. `heartbeat` and `record_prestart_retry` touch one RFC 0023 presentation row, so they hold nothing
 else while waiting on it. `claim_next` also takes one row, with `SKIP LOCKED`, so it never waits.
 `cancel_ineligible_presentations` takes no action, subject or intent lock either. It can update
 several presentation rows in one statement, but it skips a locked row and takes it on a later
@@ -144,6 +146,17 @@ handoff marker moves the presentation to `unknown` in the same transaction; the 
 result settles it (`confirmed → sent` with the provider message id, `safe_retry → failed`,
 ambiguous stays `unknown` and never marks the subject delivered). A presentation that already
 left `pending` mints nothing, so a retry renders Open only rather than a second live card.
+
+A dashboard defer re-presents the card rather than retrying it. `defer_pending_action` schedules
+the next RFC 0023 generation for `now + hours` and sets the action's expiry to that time plus its
+original decision window (the first expiry minus `requested_at`, recorded on the defer event as
+`decision_window_seconds` because later defers can no longer read it from the row). An action with
+no expiry keeps none. In the same transaction it locks the open subject and moves it to a new
+generation, so every token minted so far is stale, a sent card falls to `/retractions`, and
+dashboard and unsent rows retract at once. When the successor comes due, the worker presents it as
+a new row with fresh tokens and its own provider message id. With the flag off it carries `apr1`
+buttons instead. An action with no subject yet has nothing to move until
+the successor opens one. No receipt records the move itself; `approval_events` records the defer.
 
 The dashboard dossier is a presentation too: for a pending action, `GET /api/approvals/{id}`
 from the owner's session returns `owner_delivery: {subject_id, generation, approve_token,

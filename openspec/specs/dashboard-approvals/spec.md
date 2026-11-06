@@ -391,6 +391,8 @@ Scope: v1-mandatory
 - **AND** on success, one action/intent/presentation transaction extends
   `expires_at`, supersedes an unstarted current presentation, and schedules
   exactly one successor generation for that successful defer at `now + hours`
+- **AND** the new `expires_at` is that time plus the action's original decision
+  window, so the re-sent card can still decide; an action with no expiry keeps none
 - **AND** it retains the logical action key, does not enqueue a generic
   notification/deferred row, and appends
   `audit.append("approval.defer", target=action_id, note=str(hours))`

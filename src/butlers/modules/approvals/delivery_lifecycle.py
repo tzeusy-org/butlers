@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from butlers.core.owner_delivery import close_for_authority
+from butlers.core.owner_delivery import (
+    advance_generation,
+    close_for_authority,
+    lock_open_subject,
+)
 from butlers.metrics_registry import get_or_create_counter
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
@@ -234,24 +238,28 @@ async def _record_delivery_summary(
     ambiguous_count: int = 0,
     delivered_count: int = 0,
     attempt_count: int = 0,
+    decision_window_seconds: float | None = None,
     occurred_at: Any,
 ) -> None:
+    metadata = {
+        "reason_code": reason_code,
+        "cancelled_count": cancelled_count,
+        "superseded_count": superseded_count,
+        "successor_generation": successor_generation,
+        "cohort_membership_changed": cohort_membership_changed,
+        "ambiguous_count": ambiguous_count,
+        "delivered_count": delivered_count,
+        "attempt_count": attempt_count,
+    }
+    if decision_window_seconds is not None:
+        metadata["decision_window_seconds"] = decision_window_seconds
     await record_approval_event(
         connection,
         ApprovalEventType.APPROVAL_DELIVERY_TERMINAL,
         actor=actor,
         action_id=action_id,
         reason=reason_code,
-        metadata={
-            "reason_code": reason_code,
-            "cancelled_count": cancelled_count,
-            "superseded_count": superseded_count,
-            "successor_generation": successor_generation,
-            "cohort_membership_changed": cohort_membership_changed,
-            "ambiguous_count": ambiguous_count,
-            "delivered_count": delivered_count,
-            "attempt_count": attempt_count,
-        },
+        metadata=metadata,
         occurred_at=occurred_at,
     )
 
@@ -429,6 +437,29 @@ async def transition_pending_action(
         )
 
 
+async def _decision_window(connection: Any, action: PendingAction) -> timedelta | None:
+    """How long the owner originally had to decide; ``None`` for an action with no expiry.
+
+    A defer overwrites ``expires_at``, so only the first one can read the window from the
+    action row. It records the window on its event, and a later defer reads it back.
+    """
+    if action.expires_at is None:
+        return None
+    recorded = await connection.fetchval(
+        """
+        SELECT (event_metadata ->> 'decision_window_seconds')::double precision
+          FROM approval_events
+         WHERE action_id = $1 AND event_metadata ? 'decision_window_seconds'
+         ORDER BY occurred_at DESC, event_id DESC
+         LIMIT 1
+        """,
+        action.id,
+    )
+    if isinstance(recorded, float):
+        return timedelta(seconds=recorded)
+    return action.expires_at - action.requested_at
+
+
 async def defer_pending_action(
     source: Any,
     *,
@@ -438,7 +469,13 @@ async def defer_pending_action(
     now: Any | None = None,
     _already_in_transaction: bool = False,
 ) -> DeferTransition:
-    """Append exactly one direct successor for an authenticated defer."""
+    """Append exactly one direct successor for an authenticated defer.
+
+    The successor is due ``hours`` from now, and the action's new expiry gives the owner
+    their original decision window from then, so the re-sent card can still be decided. The
+    owner-delivery subject moves to a new generation in the same transaction: the old card
+    goes stale and is retracted, and the successor gets fresh tokens.
+    """
     if not 1 <= hours <= 168:
         raise ValueError("hours must be between 1 and 168")
     success_observations: list[LifecycleSuccessObservation] = []
@@ -486,6 +523,8 @@ async def defer_pending_action(
                 success_observation=expired.success_observation,
             )
 
+        # LOCK_ORDER: the subject comes before any RFC 0023 delivery row.
+        subject_id = await lock_open_subject(connection, kind="approval", source_ref=str(action_id))
         intent = await _lock_delivery_root(connection, action_id)
         if intent is None:
             return DeferTransition(action, False, delivery_missing=True)
@@ -541,7 +580,9 @@ async def defer_pending_action(
             connection, intent["id"]
         )
 
-        new_expires_at = database_now + timedelta(hours=hours)
+        due_at = database_now + timedelta(hours=hours)
+        window = await _decision_window(connection, action)
+        new_expires_at = None if window is None else due_at + window
         updated = await connection.fetchrow(
             "UPDATE pending_actions SET expires_at = $1 WHERE id = $2 AND status = 'pending' "
             "RETURNING *",
@@ -568,8 +609,10 @@ async def defer_pending_action(
             intent["id"],
             intent["action_key"],
             successor_generation,
-            new_expires_at,
+            due_at,
         )
+        if subject_id is not None:
+            await advance_generation(connection, subject_id)
         await _record_delivery_summary(
             connection,
             action_id=action_id,
@@ -581,6 +624,7 @@ async def defer_pending_action(
             ambiguous_count=ambiguous_count,
             delivered_count=delivered_count,
             attempt_count=attempt_count,
+            decision_window_seconds=None if window is None else window.total_seconds(),
             occurred_at=database_now,
         )
         observation = LifecycleSuccessObservation(
