@@ -160,11 +160,28 @@ posts the token to `/actions`, edits the tapped card, then drains `/retractions`
 drains on a timer (`CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S`, default 60 seconds, polling and
 webhook modes), so a card staled by a dashboard decision, expiry or cancellation is retracted
 with no tap. One drain runs at a time. Telegram's "message is not modified" counts as retracted,
-because the card already shows that end state; any other refusal is `provider_error` and is logged
-with the presentation id, as is a refused listing or receipt with its status. Every attempt is
-receipted: a card given up after 5
-failures keeps its state and receipts, and its buttons stay harmless because its tokens are
-stale.
+because the card already shows that end state.
+
+Failures split by what they say about the card, and every one is logged with the presentation id
+and the HTTP status or error type:
+
+- A refusal of the one message (HTTP 400 or 403), or a card with no usable provider id, is a
+  failed attempt. It is receipted as `retract_failed`, and the drain moves to the next card.
+- An outage (HTTP 401, 404, 429 or 5xx, or no response at all) says nothing about the card. It
+  writes no receipt, and the drain moves on because one such answer may concern that message
+  alone. Two in a row, with no real Telegram answer between them, end the drain until the next
+  sweep. However long the outage lasts, it consumes none of the bound and the cards retract on
+  recovery.
+
+A card given up after 5 failed attempts leaves the listing and keeps its state and receipts. Its
+buttons stay harmless because its tokens are stale. The give-up is signalled once, by a warning
+in the dashboard API log and by the `butlers.owner_delivery.retraction.given_up` OTel counter.
+`GET /api/approvals/metrics` reports how many such cards exist now as
+`owner_delivery_retractions_given_up`.
+
+The ledger does not record which bot sent a card, so the listing cannot be scoped to one bot. A
+second bot's connector would see the first bot's cards, get refused, and use up their attempts, so
+it must set `CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED=false`.
 
 ## Later-owned inputs (not active here)
 

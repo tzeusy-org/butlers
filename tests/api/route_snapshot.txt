@@ -1586,7 +1586,7 @@ SCHEMA ApprovalDetail 81afb5796f07
 SCHEMA ApprovalEvidence a6d1fa38cb99
 SCHEMA ApprovalGatedTool 8fe8094e04a0
 SCHEMA ApprovalGoalLineage bce6af8bb80c
-SCHEMA ApprovalMetrics 7052e9ab5210
+SCHEMA ApprovalMetrics d6a47dc8fcc0
 SCHEMA ApprovalRule ca3e4799063b
 SCHEMA ApprovalRuleCreateRequest 5534967545b6
 SCHEMA ApprovalRuleFromActionRequest 152ae77db082

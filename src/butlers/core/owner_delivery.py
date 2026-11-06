@@ -689,11 +689,14 @@ async def close_for_authority(
 
 async def record_retraction(
     conn: Any, presentation_id: UUID, *, retracted: bool, reason: str | None = None
-) -> None:
+) -> bool:
     """Receipt a provider retraction attempt; failure leaves only harmless stale UI.
 
     Only a stale card (subject resolved, or moved past the card's generation) can be marked
     retracted: a live card's buttons are still the owner's way to decide.
+
+    Returns whether this failure used the card's last attempt, once per card, so the caller
+    can tell an operator: the card leaves the listing with its buttons still showing.
     """
     subject, row = await _lock_subject_then_presentation(conn, presentation_id)
     if row is None:
@@ -713,6 +716,38 @@ async def record_retraction(
         presentation_id=presentation_id,
         detail={"reason": reason} if reason else {},
     )
+    if retracted or row["state"] not in ("sent", "unknown"):
+        return False
+    failures = await conn.fetchval(
+        "SELECT count(*) FROM public.owner_delivery_receipts "
+        "WHERE subject_id = $1 AND presentation_id = $2 AND kind = 'retract_failed'",
+        row["subject_id"],
+        presentation_id,
+    )
+    return failures == RETRACTION_MAX_FAILED_ATTEMPTS
+
+
+async def retractions_given_up(conn: Any, *, surface: Surface) -> int:
+    """How many of this schema's stale cards ran out of attempts and still show their buttons.
+
+    A schema without the ledger (core_317) has none.
+    """
+    if await conn.fetchval("SELECT to_regclass('public.owner_delivery_receipts')") is None:
+        return 0
+    count = await conn.fetchval(
+        "SELECT count(*) FROM public.owner_delivery_presentations p "
+        "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
+        "WHERE p.owning_schema = current_schema() AND p.surface = $1 "
+        "AND p.state IN ('sent', 'unknown') "
+        "AND (s.state IN ('decided', 'cancelled', 'expired') "
+        "     OR p.generation < s.generation) "
+        "AND (SELECT count(*) FROM public.owner_delivery_receipts r "
+        "     WHERE r.subject_id = p.subject_id AND r.presentation_id = p.id "
+        "     AND r.kind = 'retract_failed') >= $2",
+        surface,
+        RETRACTION_MAX_FAILED_ATTEMPTS,
+    )
+    return int(count or 0)
 
 
 async def pending_retractions(
@@ -725,7 +760,9 @@ async def pending_retractions(
     through :func:`record_retraction`. Every failure is a receipt, so a card that can never
     be retracted must not be retried forever: a failed card comes back only after
     :data:`RETRACTION_RETRY_AFTER_S`, and not at all after
-    :data:`RETRACTION_MAX_FAILED_ATTEMPTS`. Its buttons stay harmless, its tokens being stale.
+    :data:`RETRACTION_MAX_FAILED_ATTEMPTS` (:func:`retractions_given_up` counts those). Its
+    buttons stay harmless, its tokens being stale. A provider outage is not a failed attempt:
+    the surface owner reports nothing for it.
     """
     rows = await conn.fetch(
         "SELECT p.id, p.surface, p.route_ref, p.provider_ref "
@@ -866,6 +903,7 @@ __all__ = [
     "open_subject",
     "present",
     "record_retraction",
+    "retractions_given_up",
     "record_send",
     "redeem",
     "rollout_enabled",

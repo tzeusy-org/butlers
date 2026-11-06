@@ -167,6 +167,7 @@ identity environment variables cannot relabel emitted envelopes.
 | `BUTLER_TELEGRAM_TOKEN` | Yes | Bot token (resolved from DB first, then env) |
 | `CONNECTOR_POLL_INTERVAL_S` | For polling | Poll interval in seconds (default: 1.0) |
 | `CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S` | No | Seconds between stale owner-card retraction sweeps (default: `60`; must be positive and finite) |
+| `CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED` | No | Whether this connector retracts stale owner cards (default: `true`). Set `false` on any connector for a bot other than the one that sends owner cards. |
 | `CONNECTOR_WEBHOOK_URL` | For webhook | Public webhook URL |
 | `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Max concurrent ingest submissions |
 | `CONNECTOR_HEALTH_PORT` | No (default: 40081) | HTTP port for health endpoint |

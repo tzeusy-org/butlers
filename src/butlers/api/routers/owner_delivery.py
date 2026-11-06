@@ -24,6 +24,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
+from opentelemetry import metrics
 from pydantic import BaseModel, Field
 
 from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
@@ -41,6 +42,18 @@ from butlers.core import owner_delivery
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/owner-delivery", tags=["owner-delivery"])
+
+
+def _record_retraction_given_up() -> None:
+    """Add one to ``butlers.owner_delivery.retraction.given_up`` on the ``butlers`` OTel meter.
+
+    Resolved per call, like ``butlers.audit.log.appended``, so it binds to whichever meter
+    provider is installed when the card is given up.
+    """
+    metrics.get_meter("butlers").create_counter(
+        "butlers.owner_delivery.retraction.given_up",
+        description="Stale owner cards that ran out of retraction attempts and show buttons.",
+    ).add(1)
 
 
 class OwnerDeliveryActionRequest(BaseModel):
@@ -205,10 +218,18 @@ async def report_owner_delivery_retraction(
                 )
                 if not owned:
                     continue
-                await owner_delivery.record_retraction(
+                given_up = await owner_delivery.record_retraction(
                     conn, parsed, retracted=request.retracted, reason=request.reason
                 )
-                return ApiResponse(data={"recorded": True})
+            if given_up:
+                _record_retraction_given_up()
+                logger.warning(
+                    "Owner-delivery retraction given up for %s after %d failed attempts; "
+                    "its buttons still show but are harmless",
+                    parsed,
+                    owner_delivery.RETRACTION_MAX_FAILED_ATTEMPTS,
+                )
+            return ApiResponse(data={"recorded": True})
         except owner_delivery.OwnerDeliveryRefused as refused:
             raise HTTPException(status_code=409, detail=refused.reason) from None
         except Exception:

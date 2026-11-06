@@ -3889,6 +3889,7 @@ export interface ApprovalMetrics {
   delivery_by_state?: Record<string, number>;
   delivery_by_reason?: Record<string, number>;
   delivery_sources_complete?: boolean;
+  owner_delivery_retractions_given_up?: number;
 }
 
 /** Availability metadata for the independently aggregated approvals metric families. */

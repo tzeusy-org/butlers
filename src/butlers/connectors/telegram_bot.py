@@ -101,11 +101,17 @@ from butlers.telegram_api import (
     edit_telegram_message_text,
     remove_telegram_inline_keyboard,
     telegram_message_not_modified,
+    telegram_outage_status,
 )
 
 _DESCRIPTOR = connector_descriptor("telegram_bot")
 
 logger = logging.getLogger(__name__)
+
+#: A retraction outcome that says nothing about the card, so it is not receipted.
+_RETRACTION_PROVIDER_UNAVAILABLE = "provider_unavailable"
+#: One outage answer may concern that message alone; two in a row mean Telegram is down.
+_RETRACTION_OUTAGES_TO_STOP_DRAIN = 2
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
@@ -313,6 +319,9 @@ class TelegramBotConnectorConfig:
 
     # Seconds between sweeps that retract owner cards staled by any decision path.
     owner_delivery_sweep_interval_s: float = 60.0
+    # The ledger does not record which bot sent a card, so listing cannot be scoped to one.
+    # A second bot's connector must turn this off, or it burns the sending bot's attempts.
+    owner_delivery_sweep_enabled: bool = True
 
     # Owner voice-note transcription (bu-r0dsz; telegram-voice-transcription spec). Disabled by
     # default: enabling sends owner audio to the configured STT service.
@@ -386,6 +395,10 @@ class TelegramBotConnectorConfig:
                 )
             ),
             owner_delivery_sweep_interval_s=sweep_interval_s,
+            owner_delivery_sweep_enabled=(
+                os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED", "true").strip().lower()
+                in ("1", "true", "yes", "on")
+            ),
         )
 
 
@@ -1433,6 +1446,9 @@ class TelegramBotConnector:
         if self._owner_delivery_sweep_task is not None:
             return
         config = self._config
+        if not config.owner_delivery_sweep_enabled:
+            logger.info("Owner-delivery retraction sweep disabled for this connector")
+            return
         if not config.internal_api_url or not config.approval_callback_connector_token:
             return
         self._owner_delivery_sweep_task = asyncio.create_task(self._owner_delivery_sweep_loop())
@@ -1449,16 +1465,21 @@ class TelegramBotConnector:
     async def _drain_owner_delivery_retractions(self) -> int:
         """Retract every stale owner card and receipt each attempt honestly.
 
-        A card whose provider message id is unknown, or whose edit fails, is reported
-        as ``retracted=false``; the ledger lists it again after a cooldown, up to a bound,
-        and its buttons stay harmless because their tokens are already stale. One drain at
-        a time: a tap and the sweep must not attempt the same card at once.
+        A card whose provider message id is unknown, or whose edit Telegram refuses, is
+        reported as ``retracted=false``; the ledger lists it again after a cooldown, up to a
+        bound, and its buttons stay harmless because their tokens are already stale. An outage
+        says nothing about the card, so it gets no receipt and consumes none of the bound. One
+        such answer may be about that message alone, so the drain moves on; two in a row with
+        no real answer between them stop it until the next sweep. One drain at a time: a tap
+        and the sweep must not attempt the same card at once.
         """
         async with self._owner_delivery_drain_lock:
             return await self._drain_owner_delivery_retractions_locked()
 
     async def _drain_owner_delivery_retractions_locked(self) -> int:
         connector_token = self._config.approval_callback_connector_token
+        if not self._config.owner_delivery_sweep_enabled:
+            return 0
         if not self._config.internal_api_url or not connector_token:
             return 0
         base = f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/retractions"
@@ -1476,10 +1497,19 @@ class TelegramBotConnector:
             return 0
         items = payload.get("data") if isinstance(payload, dict) else None
         retracted = 0
+        outages_in_a_row = 0
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
                 continue
             ok, reason = await self._retract_owner_card(item)
+            if reason == _RETRACTION_PROVIDER_UNAVAILABLE:
+                outages_in_a_row += 1
+                if outages_in_a_row >= _RETRACTION_OUTAGES_TO_STOP_DRAIN:
+                    return retracted
+                continue
+            # A card with no usable message id never reached Telegram, so it is no answer.
+            if ok or reason == "provider_error":
+                outages_in_a_row = 0
             retracted += int(ok)
             if not ok:
                 logger.warning(
@@ -1530,7 +1560,31 @@ class TelegramBotConnector:
                     message_id=message_id,
                 )
             )
-        except Exception:  # noqa: BLE001 -- receipted as a failed retraction
+        except httpx.HTTPStatusError as exc:
+            # The status only: the exception's text carries the bot-token URL.
+            status = exc.response.status_code
+            logger.warning(
+                "Owner-delivery retraction refused by Telegram for %s (HTTP %s)",
+                item.get("presentation_id"),
+                status,
+            )
+            if telegram_outage_status(status):
+                return False, _RETRACTION_PROVIDER_UNAVAILABLE
+            return False, "provider_error"
+        except httpx.TransportError as exc:
+            logger.warning(
+                "Owner-delivery retraction could not reach Telegram for %s (%s)",
+                item.get("presentation_id"),
+                type(exc).__name__,
+            )
+            return False, _RETRACTION_PROVIDER_UNAVAILABLE
+        except Exception as exc:  # noqa: BLE001 -- receipted as a failed retraction
+            # The type only: an HTTP error's text can carry the bot-token URL.
+            logger.warning(
+                "Owner-delivery retraction failed unexpectedly for %s (%s)",
+                item.get("presentation_id"),
+                type(exc).__name__,
+            )
             return False, "provider_error"
         return True, None
 

@@ -2452,6 +2452,7 @@ async def get_metrics(
     delivery_by_state: dict[str, int] = {}
     delivery_by_reason: dict[str, int] = {}
     delivery_sources_complete = bool(action_pools)
+    owner_delivery_retractions_given_up = 0
 
     for butler_name, pool in action_pools:
         try:
@@ -2537,6 +2538,9 @@ async def get_metrics(
                 if has_delivery:
                     try:
                         snapshot = await ApprovalDeliveryRepository(conn).backlog_snapshot()
+                        owner_delivery_retractions_given_up += (
+                            await owner_delivery.retractions_given_up(conn, surface="telegram")
+                        )
                     except Exception:
                         # Delivery observability is additive. A partial/mixed
                         # rollout must not erase otherwise healthy approval
@@ -2620,6 +2624,7 @@ async def get_metrics(
         delivery_by_state=delivery_by_state,
         delivery_by_reason=delivery_by_reason,
         delivery_sources_complete=delivery_sources_complete,
+        owner_delivery_retractions_given_up=owner_delivery_retractions_given_up,
     )
 
     sources_degraded = sorted(set(action_sources.names) | set(rule_sources.names))
