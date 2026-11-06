@@ -234,7 +234,7 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 
 #### Scenario: A memory supersede cannot deadlock a forget or delete
 
-- **WHEN** a memory property fact write supersedes a fact on an entity that a forget or delete holds or is about to hold
+- **WHEN** a memory property fact write or a Dunbar tier pin replaces a fact on an entity that a forget or delete holds or is about to hold
 - **THEN** the write MUST lock its entity rows, in ascending id order, before its first fact lock
 - **AND** the write and the forget or delete MUST both complete, whichever reached the entity first
 

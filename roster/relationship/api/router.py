@@ -4080,6 +4080,12 @@ async def patch_entity_dunbar_tier(
     entity_id_str = str(entity_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. The insert below takes it for
+            # its foreign key, which after the retraction is a cycle with a forget.
+            if body.tier is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR KEY SHARE", entity_id
+                )
             # Retract any existing active override for this entity.
             await conn.execute(
                 """

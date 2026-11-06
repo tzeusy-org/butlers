@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import asyncpg
@@ -27,6 +30,7 @@ from butlers.roster_imports import roster_module
 entity_merge = roster_module("relationship", "tools/entity_merge")
 TargetEntityTombstonedError = entity_merge.TargetEntityTombstonedError
 merge_entity_pair = entity_merge.merge_entity_pair
+dunbar_tier_set = roster_module("relationship", "tools/dunbar").dunbar_tier_set
 
 pytestmark = [
     pytest.mark.integration,
@@ -476,6 +480,92 @@ async def test_a_supersede_waits_for_a_forget_that_holds_the_entity(rel_pool) ->
     assert not isinstance(result, BaseException), repr(result)
     assert not isinstance(new, BaseException), repr(new)
     assert await rel_pool.fetchval("SELECT validity FROM facts WHERE id = $1", old) == "retracted"
+
+
+class _PausingBeforeFactInsert:
+    """Pauses a writer after it has retracted a fact, before it inserts the replacement."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self.retracted = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._pool, name)
+
+    @asynccontextmanager
+    async def acquire(self):
+        async with self._pool.acquire() as conn:
+            yield _PausingConn(conn, self)
+
+
+class _PausingConn:
+    def __init__(self, conn: Any, pausing: _PausingBeforeFactInsert) -> None:
+        self._conn = conn
+        self._pausing = pausing
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+    async def execute(self, query: str, *args: object) -> str:
+        if "INSERT INTO facts" in query:
+            self._pausing.retracted.set()
+            await self._pausing.resume.wait()
+        return await self._conn.execute(query, *args)
+
+
+async def _set_tier(pool: object, entity: uuid.UUID, writer: str, contact: uuid.UUID) -> None:
+    """Pin a tier through the tool (linked contact) or the route's own contactless write."""
+    if writer == "tool":
+        await dunbar_tier_set(pool, contact, 15)
+        return
+    router = next(mod for name, mod in discover_butler_routers() if name == "relationship")
+    await router.patch_entity_dunbar_tier(entity, SimpleNamespace(tier=15), db=_dashboard_db(pool))
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("writer", ["tool", "route"])
+@pytest.mark.parametrize("removal", ["forget", "delete"])
+async def test_a_dunbar_override_in_flight_finishes_before_a_forget_or_delete(
+    rel_pool, writer, removal
+) -> None:
+    """Both writers retract the old override, then insert with the entity's foreign key."""
+    removed = await _entity(rel_pool, "Removed")
+    contact = uuid.uuid4()
+    if writer == "tool":
+        await rel_pool.execute(
+            "INSERT INTO contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+            contact,
+            removed,
+        )
+    old = await rel_pool.fetchval(
+        "INSERT INTO facts (subject, entity_id, predicate, content, scope, permanence) "
+        "VALUES ('opaque-subject', $1, 'dunbar_tier_override', '5', 'relationship', 'permanent') "
+        "RETURNING id",
+        removed,
+    )
+    pausing = _PausingBeforeFactInsert(rel_pool)
+
+    with patch.object(memory_router, "_ENTITY_DELETE_DEADLINE_S", 3.0):
+        setting = asyncio.create_task(_set_tier(pausing, removed, writer, contact))
+        await asyncio.wait_for(pausing.retracted.wait(), timeout=10)
+        task = asyncio.create_task(_forget_or_delete(rel_pool, removed, removal))
+        await _settled_or_lock_waiting(rel_pool, task)
+        pausing.resume.set()
+        set_result, result = await asyncio.wait_for(
+            asyncio.gather(setting, task, return_exceptions=True), timeout=20
+        )
+
+    assert not isinstance(set_result, BaseException), repr(set_result)
+    assert not isinstance(result, BaseException), repr(result)
+    rows = await rel_pool.fetch(
+        "SELECT id, content, validity FROM facts WHERE entity_id = $1 ORDER BY content", removed
+    )
+    assert [(row["content"], row["validity"]) for row in rows] == [
+        ("15", "retracted"),
+        ("5", "retracted"),
+    ]
+    assert rows[1]["id"] == old
 
 
 @pytest.mark.asyncio(loop_scope="session")

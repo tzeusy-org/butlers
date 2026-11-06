@@ -11,15 +11,18 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import asyncpg
 import pytest
 
+from butlers.api.router_discovery import discover_butler_routers
 from butlers.db import register_jsonb_codec
 from butlers.entity_rebind import process_pending_entity_rebinds
 from butlers.modules.memory.storage import store_fact
+from butlers.roster_imports import roster_module
 
 pytestmark = [
     pytest.mark.integration,
@@ -193,6 +196,37 @@ async def test_a_memory_supersede_takes_the_entity_lock_under_its_runtime_role(
     new = await store("new")
 
     assert new["supersedes_id"] == old["id"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dunbar_overrides_take_the_entity_lock_under_the_runtime_role(rebind_pools) -> None:
+    """The tool runs here; the route runs on the API's connecting role, not this one."""
+    owner, runtime_pools = rebind_pools
+    pool = runtime_pools["relationship"]
+    entity = await _entity(owner)
+    contact = uuid4()
+    await owner.execute(
+        "INSERT INTO relationship.contact_entity_map (contact_id, entity_id) VALUES ($1, $2)",
+        contact,
+        entity,
+    )
+    db = MagicMock()
+    db.butler_names = ["relationship"]
+    db.pool = MagicMock(return_value=pool)
+    router = next(mod for name, mod in discover_butler_routers() if name == "relationship")
+    contactless = await _entity(owner)
+
+    await roster_module("relationship", "tools/dunbar").dunbar_tier_set(pool, contact, 15)
+    await router.patch_entity_dunbar_tier(contactless, SimpleNamespace(tier=15), db=db)
+
+    assert (
+        await owner.fetchval(
+            "SELECT count(*) FROM relationship.facts WHERE entity_id = ANY($1::uuid[]) "
+            "AND predicate = 'dunbar_tier_override' AND validity = 'active'",
+            [entity, contactless],
+        )
+        == 2
+    )
 
 
 @pytest.mark.asyncio(loop_scope="session")
