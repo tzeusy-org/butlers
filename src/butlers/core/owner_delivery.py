@@ -135,7 +135,7 @@ class Presentation:
     surface: str
     state: str
     #: Fresh tokens by action; empty when the presentation was already handed off.
-    tokens: dict[str, str] = field(default_factory=dict)
+    tokens: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

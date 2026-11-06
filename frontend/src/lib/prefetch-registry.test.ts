@@ -16,7 +16,6 @@ vi.mock("@/api/index.ts", () => ({
   getMeasurementTypes: vi.fn(() => Promise.resolve({ types: [] })),
   getSession: vi.fn((id: string) => Promise.resolve({ data: { id } })),
   getSessions: vi.fn((params?: unknown) => Promise.resolve({ data: [], meta: { params } })),
-  getApprovalDetail: vi.fn((id: string) => Promise.resolve({ data: { id } })),
   getIngestionEvent: vi.fn((id: string) => Promise.resolve({ data: { id } })),
   getTimeline: vi.fn((params: unknown) => Promise.resolve({ data: [], meta: { params } })),
 }));
@@ -26,7 +25,6 @@ vi.mock("@/api/client", () => ({
 }));
 
 import {
-  getApprovalDetail,
   getButler,
   getEntity,
   getEpisode,
@@ -54,13 +52,9 @@ describe("resolvePrefetchTarget", () => {
     expect(getSession).toHaveBeenCalledWith("abc-123");
   });
 
-  it("maps /approvals/:id to ApprovalsPage's Dossier query key", () => {
-    const target = resolvePrefetchTarget("/approvals/appr-9");
-    expect(target).not.toBeNull();
-    expect(target!.queryKey).toEqual(["approvals", "detail", "appr-9"]);
-
-    target!.queryFn();
-    expect(getApprovalDetail).toHaveBeenCalledWith("appr-9");
+  it("never warms /approvals/:id: its GET records an owner-delivery presentation", () => {
+    expect(resolvePrefetchTarget("/approvals/appr-9")).toBeNull();
+    expect(resolvePrefetchTarget("/approvals/appr-9?review_source=messenger")).toBeNull();
   });
 
   it("maps /butlers/:name to ButlerDetailPage's primary query", () => {
@@ -134,8 +128,8 @@ describe("resolvePrefetchTarget", () => {
   });
 
   it("decodes a URL-encoded id segment", () => {
-    const target = resolvePrefetchTarget(`/approvals/${encodeURIComponent("a b")}`);
-    expect(target!.queryKey).toEqual(["approvals", "detail", "a b"]);
+    const target = resolvePrefetchTarget(`/sessions/${encodeURIComponent("a b")}`);
+    expect(target!.queryKey).toEqual(["session-detail-global", "a b"]);
   });
 
   it("returns null for an unmapped route", () => {

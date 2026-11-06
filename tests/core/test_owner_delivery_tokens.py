@@ -198,3 +198,13 @@ async def test_worker_retries_before_handoff_when_owner_delivery_refuses() -> No
         repository.claim, "provider_preflight_failed"
     )
     repository.mark_handoff_started.assert_not_awaited()
+
+
+def test_a_presentations_repr_never_shows_its_tokens() -> None:
+    """A dataclass repr reaches logs and tracebacks; the raw token must not."""
+    presentation = od.Presentation(
+        uuid.uuid4(), uuid.uuid4(), 1, "dashboard", "sent", {"approve": "od1:synthetic-secret"}
+    )
+
+    assert "synthetic-secret" not in repr(presentation)
+    assert presentation.tokens == {"approve": "od1:synthetic-secret"}

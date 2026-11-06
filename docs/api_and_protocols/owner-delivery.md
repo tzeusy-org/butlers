@@ -142,14 +142,15 @@ presentation under the claim's action lock, maps the RFC 0023 intent/presentatio
 `owner_delivery_source_map`, and returns fresh tokens that replace the `apr1` buttons. The
 handoff marker moves the presentation to `unknown` in the same transaction; the handoff
 result settles it (`confirmed → sent` with the provider message id, `safe_retry → failed`,
-ambiguous stays `unknown` and never marks the subject delivered). A presentation that already
+an ambiguous result stays `unknown` and doesn't mark the subject delivered; a later dashboard
+render does, because the owner then has the card). A presentation that already
 left `pending` mints nothing, so a retry renders Open only rather than a second live card.
 
 The dashboard dossier is a presentation too: for a pending action, `GET /api/approvals/{id}`
 from the owner's session returns `owner_delivery: {subject_id, generation, approve_token,
 reject_token}` (null while off, for connector reads and review sources, or on any failure).
 Every render is a delivery into the owner's authenticated response and carries its own
-tokens. The dossier's and the review dialog's Approve, and the dossier's Deny, post those tokens to
+tokens, so the dashboard's navigation warmup must never call this GET: a hover isn't a render. The dossier's and the review dialog's Approve, and the dossier's Deny, post those tokens to
 `POST /actions` when the detail carries them; a refusal is shown and the dossier re-read, never
 retried on another route. With no tokens (rollout off, or a read that failed closed) they use
 the displayed-call routes, whose decision still closes the subject. So do the one-tap Deny
