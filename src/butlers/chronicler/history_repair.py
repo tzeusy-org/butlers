@@ -850,20 +850,24 @@ async def _scan_expired_retention(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MAX_RETENTION_ADMISSION_TIMEOUT_MS / 1000
     try:
+        # The one client timer: no statement here may also pass asyncpg's ``timeout=``.
+        # If that fired first, this deadline could cancel the protocol's shared cancel
+        # future during the rollback, and the caller's next statement would then raise
+        # CancelledError although nothing was cancelled. Each statement_timeout below is
+        # the server's bound, and does not touch that future.
         async with asyncio.timeout_at(deadline):
             async with conn.transaction():
                 initial_timeout = await conn.fetchrow(
                     """SELECT current_setting('statement_timeout') AS previous_timeout,
                               setting::bigint AS previous_timeout_ms
                        FROM pg_catalog.pg_settings WHERE name='statement_timeout'""",
-                    timeout=MAX_RETENTION_ADMISSION_TIMEOUT_MS / 1000,
                 )
                 if initial_timeout is None:
                     raise RuntimeError("PostgreSQL statement_timeout setting is unavailable")
                 previous_timeout = str(initial_timeout["previous_timeout"])
                 previous_timeout_ms = int(initial_timeout["previous_timeout_ms"])
 
-                async def set_remaining_admission_timeout() -> float:
+                async def set_remaining_admission_timeout() -> None:
                     remaining_ms = int((deadline - loop.time()) * 1000)
                     if remaining_ms <= 0:
                         raise TimeoutError
@@ -875,23 +879,20 @@ async def _scan_expired_retention(
                     applied = await conn.fetchval(
                         "SELECT set_config('statement_timeout', $1, TRUE)",
                         f"{effective_ms}ms",
-                        timeout=effective_ms / 1000,
                     )
                     if applied is None:
                         raise RuntimeError("PostgreSQL statement_timeout setting is unavailable")
-                    return effective_ms / 1000
 
-                query_timeout = await set_remaining_admission_timeout()
+                await set_remaining_admission_timeout()
                 span = await conn.fetchrow(
                     """SELECT source_id, span_number, first_date, last_date, cursor_date,
                               batch_days, timeout_count
                        FROM chronicler.daily_repair_retention_spans
                        ORDER BY updated_at, source_id, span_number
                        LIMIT 1 FOR UPDATE SKIP LOCKED""",
-                    timeout=query_timeout,
                 )
                 if span is None:
-                    query_timeout = await set_remaining_admission_timeout()
+                    await set_remaining_admission_timeout()
                     source = await conn.fetchrow(
                         """WITH control AS (
                                SELECT timezone, closed_through
@@ -932,7 +933,6 @@ async def _scan_expired_retention(
                            ORDER BY source.start_at, source.id
                            LIMIT 1 FOR UPDATE OF source SKIP LOCKED""",
                         as_of,
-                        timeout=query_timeout,
                     )
                     if source is not None:
                         source_id = source["id"]
@@ -947,17 +947,16 @@ async def _scan_expired_retention(
                             for first, last in ranges
                             if first is not None and last is not None and first <= last
                         ]
-                        query_timeout = await set_remaining_admission_timeout()
+                        await set_remaining_admission_timeout()
                         await conn.execute(
                             """INSERT INTO chronicler.daily_repair_source_redactions
                                (source_id, reason_code) VALUES ($1, 'source_retention')
                                ON CONFLICT (source_id)
                                DO UPDATE SET reason_code = 'source_retention'""",
                             source_id,
-                            timeout=query_timeout,
                         )
                         for number, (first, last) in enumerate(ranges, start=1):
-                            query_timeout = await set_remaining_admission_timeout()
+                            await set_remaining_admission_timeout()
                             await conn.execute(
                                 """INSERT INTO chronicler.daily_repair_retention_spans
                                    (source_id, span_number, first_date, last_date,
@@ -969,23 +968,20 @@ async def _scan_expired_retention(
                                 first,
                                 last,
                                 MAX_RETENTION_CURSOR_DAYS,
-                                timeout=query_timeout,
                             )
-                        query_timeout = await set_remaining_admission_timeout()
+                        await set_remaining_admission_timeout()
                         await conn.fetchval(
                             "SELECT chronicler.redact_retention_facts($1)",
                             source_id,
-                            timeout=query_timeout,
                         )
-                        query_timeout = await set_remaining_admission_timeout()
+                        await set_remaining_admission_timeout()
                         await conn.execute(
                             """UPDATE chronicler.daily_repair_archive
                                SET content = NULL, audit_hash = NULL, text_access = 'redacted'
                                WHERE $1 = ANY(dependency_ids)""",
                             source_id,
-                            timeout=query_timeout,
                         )
-                        query_timeout = await set_remaining_admission_timeout()
+                        await set_remaining_admission_timeout()
                         span = await conn.fetchrow(
                             """SELECT source_id, span_number, first_date, last_date, cursor_date,
                                       batch_days, timeout_count
@@ -993,14 +989,12 @@ async def _scan_expired_retention(
                                WHERE source_id = $1
                                ORDER BY span_number LIMIT 1 FOR UPDATE""",
                             source_id,
-                            timeout=query_timeout,
                         )
 
-                query_timeout = await set_remaining_admission_timeout()
+                await set_remaining_admission_timeout()
                 await conn.execute(
                     "SELECT set_config('statement_timeout', $1, TRUE)",
                     previous_timeout,
-                    timeout=query_timeout,
                 )
     except (TimeoutError, asyncpg.exceptions.QueryCanceledError):
         # The nested transaction rolls back every admission write. Expiry-based
