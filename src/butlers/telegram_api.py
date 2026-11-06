@@ -198,6 +198,15 @@ _MESSAGE_NOT_MODIFIED = frozenset(
 )
 
 
+def telegram_outage_status(status_code: int) -> bool:
+    """Whether a Bot API status says the bot or provider failed, not the one message.
+
+    Telegram refuses a specific message with 400 or 403. 401 and 404 mean the token or API
+    path was rejected, 429 means slow down, and 5xx is the provider itself.
+    """
+    return status_code in (401, 404, 429) or status_code >= 500
+
+
 def telegram_message_not_modified(response: httpx.Response) -> bool:
     """Whether Telegram refused an edit because the message already looks that way.
 

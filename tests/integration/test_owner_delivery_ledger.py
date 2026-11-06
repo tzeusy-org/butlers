@@ -9,6 +9,7 @@ ambiguous provider results and failed retractions stay honest.
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -1029,6 +1030,105 @@ async def test_a_failed_retraction_cools_down_and_is_eventually_given_up(ledger_
         )
         == od.RETRACTION_MAX_FAILED_ATTEMPTS
     )
+
+
+async def _given_up_on_the_metrics(ledger_pool: asyncpg.Pool) -> int:
+    """The operator's read. A bare app: the metrics route's session gate is not under test."""
+    app = FastAPI()
+    app.include_router(approvals_router.router)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"relationship": ledger_pool}, modules={"relationship": ["approvals"]}
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://dashboard-api:41200"
+    ) as client:
+        response = await client.get("/api/approvals/metrics")
+    assert response.status_code == 200
+    return response.json()["data"]["owner_delivery_retractions_given_up"]
+
+
+async def test_giving_up_on_a_card_signals_once_and_shows_on_the_metrics(
+    ledger_pool, caplog: pytest.LogCaptureFixture
+) -> None:
+    card = await _stale_telegram_card(ledger_pool)
+    other = await _stale_telegram_card(ledger_pool)
+    await _fail_retraction(ledger_pool, other)
+    headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN}
+    before = owner_delivery_router.retractions_given_up_total._value.get()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(ledger_pool)), base_url="http://dashboard-api:41200"
+    ) as client:
+
+        async def report(retracted: bool) -> None:
+            response = await client.post(
+                f"/api/owner-delivery/retractions/{card}",
+                json={"retracted": retracted, "reason": None if retracted else "provider_error"},
+                headers=headers,
+            )
+            assert response.status_code == 200
+
+        for _ in range(od.RETRACTION_MAX_FAILED_ATTEMPTS - 1):
+            await report(False)
+        assert await _given_up_on_the_metrics(ledger_pool) == 0
+        assert owner_delivery_router.retractions_given_up_total._value.get() == before
+        assert "given up" not in caplog.text
+
+        with caplog.at_level(logging.WARNING):
+            await report(False)
+        assert str(card) in caplog.text and "given up" in caplog.text
+        assert await _given_up_on_the_metrics(ledger_pool) == 1
+        assert owner_delivery_router.retractions_given_up_total._value.get() == before + 1
+
+        # A late report past the bound must not signal the same card twice.
+        await report(False)
+        assert owner_delivery_router.retractions_given_up_total._value.get() == before + 1
+
+        # A tap retracts through the same report, and the card stops counting.
+        await report(True)
+        assert await _given_up_on_the_metrics(ledger_pool) == 0
+
+
+async def test_give_up_count_covers_only_this_schemas_cards(ledger_pool) -> None:
+    owner_entity = await _owner(ledger_pool)
+    subject_id = await ledger_pool.fetchval(
+        "INSERT INTO public.owner_delivery_subjects (id, kind, owning_schema, source_ref, "
+        "owner_entity, content_digest, action_digest, state, resolved_at, decision) "
+        "VALUES (gen_random_uuid(), 'approval', 'finance', 'foreign-action', $1, $2, $2, "
+        "'pending', NULL, NULL) RETURNING id",
+        owner_entity,
+        "a" * 64,
+    )
+    presentation_id = uuid.uuid4()
+    await ledger_pool.execute(
+        "INSERT INTO public.owner_delivery_presentations (id, subject_id, owning_schema, "
+        "generation, surface, route_ref, retry_key, provider_ref, state) "
+        "VALUES ($1, $2, 'finance', 1, 'telegram', $3, $4, '66', 'sent')",
+        presentation_id,
+        subject_id,
+        _RECIPIENT,
+        f"{subject_id}:telegram:1",
+    )
+    await ledger_pool.execute(
+        "UPDATE public.owner_delivery_subjects SET state = 'cancelled', "
+        "resolved_at = clock_timestamp(), generation = generation + 1 WHERE id = $1",
+        subject_id,
+    )
+    for _ in range(od.RETRACTION_MAX_FAILED_ATTEMPTS):
+        await ledger_pool.execute(
+            "INSERT INTO public.owner_delivery_receipts (subject_id, owning_schema, "
+            "presentation_id, kind, generation) VALUES ($1, 'finance', $2, 'retract_failed', 1)",
+            subject_id,
+            presentation_id,
+        )
+
+    assert await _given_up_on_the_metrics(ledger_pool) == 0
+
+
+async def test_give_up_count_is_zero_on_a_schema_without_the_ledger(db) -> None:
+    approvals_only = await db("approvals")
+    async with approvals_only.acquire() as conn:
+        assert await od.retractions_given_up(conn, surface="telegram") == 0
 
 
 @pytest.mark.parametrize("verb", ["approve", "reject"])

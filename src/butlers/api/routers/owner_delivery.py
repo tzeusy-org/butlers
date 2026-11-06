@@ -37,8 +37,14 @@ from butlers.api.routers.approvals import (
     deny_owning_action,
 )
 from butlers.core import owner_delivery
+from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
+
+retractions_given_up_total = get_or_create_counter(
+    "owner_delivery_retractions_given_up_total",
+    "Stale owner cards that ran out of retraction attempts and still show their buttons.",
+)
 
 router = APIRouter(prefix="/api/owner-delivery", tags=["owner-delivery"])
 
@@ -205,10 +211,18 @@ async def report_owner_delivery_retraction(
                 )
                 if not owned:
                     continue
-                await owner_delivery.record_retraction(
+                given_up = await owner_delivery.record_retraction(
                     conn, parsed, retracted=request.retracted, reason=request.reason
                 )
-                return ApiResponse(data={"recorded": True})
+            if given_up:
+                retractions_given_up_total.inc()
+                logger.warning(
+                    "Owner-delivery retraction given up for %s after %d failed attempts; "
+                    "its buttons still show but are harmless",
+                    parsed,
+                    owner_delivery.RETRACTION_MAX_FAILED_ATTEMPTS,
+                )
+            return ApiResponse(data={"recorded": True})
         except owner_delivery.OwnerDeliveryRefused as refused:
             raise HTTPException(status_code=409, detail=refused.reason) from None
         except Exception:

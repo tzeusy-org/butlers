@@ -193,8 +193,108 @@ async def test_any_other_provider_refusal_is_receipted_and_logged_without_the_bo
         assert await connector._drain_owner_delivery_retractions() == 0
 
     assert receipts == [{"retracted": False, "reason": "provider_error"}]
-    assert "p1" in caplog.text and "provider_error" in caplog.text
+    assert "p1" in caplog.text and "provider_error" in caplog.text and "400" in caplog.text
     assert "test-token" not in caplog.text
+
+
+def _failing_provider(connector: Any, failure: int | Exception, cards: int = 2) -> dict[str, Any]:
+    """Every Telegram call fails the same way, as in an outage; records what was attempted."""
+    seen: dict[str, Any] = {"edits": 0, "receipts": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/retractions"):
+            data = [{**_CARD, "presentation_id": f"p{i}"} for i in range(cards)]
+            return httpx.Response(200, json={"data": data})
+        if "/retractions/" in url:
+            seen["receipts"].append(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"recorded": True}})
+        seen["edits"] += 1
+        if isinstance(failure, Exception):
+            raise failure
+        return httpx.Response(failure, json={"ok": False, "error_code": failure})
+
+    connector._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return seen
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(500, id="provider 5xx"),
+        pytest.param(502, id="provider gateway"),
+        pytest.param(429, id="rate limited"),
+        pytest.param(401, id="bot token rejected"),
+        pytest.param(404, id="bot api path rejected"),
+        pytest.param(httpx.ConnectError("no route"), id="unreachable"),
+        pytest.param(httpx.ReadTimeout("slow"), id="timeout"),
+    ],
+)
+async def test_an_outage_consumes_no_attempt_and_stops_the_drain(
+    failure, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Nothing about the card failed, so the bound on failed attempts must not move."""
+    connector = _connector()
+    seen = _failing_provider(connector, failure)
+
+    with caplog.at_level(logging.WARNING):
+        assert await connector._drain_owner_delivery_retractions() == 0
+
+    assert seen["receipts"] == []
+    assert seen["edits"] == 1
+    if isinstance(failure, int):
+        assert str(failure) in caplog.text
+    assert "test-token" not in caplog.text
+
+
+@pytest.mark.parametrize("status", [400, 403])
+async def test_a_refusal_of_one_card_is_receipted_and_the_drain_continues(status) -> None:
+    connector = _connector()
+    seen = _failing_provider(connector, status)
+
+    assert await connector._drain_owner_delivery_retractions() == 0
+
+    assert seen["receipts"] == [{"retracted": False, "reason": "provider_error"}] * 2
+
+
+async def test_recovery_after_an_outage_retracts_with_no_failure_on_record() -> None:
+    connector = _connector()
+    seen = _failing_provider(connector, 503, cards=1)
+    assert await connector._drain_owner_delivery_retractions() == 0
+
+    receipts = _provider(connector)
+    assert await connector._drain_owner_delivery_retractions() == 1
+
+    assert seen["receipts"] == []
+    assert receipts == [{"retracted": True, "reason": None}]
+
+
+async def test_a_connector_with_the_sweep_disabled_attempts_nothing() -> None:
+    """Listing is not scoped to a bot, so a second bot's connector must be able to stand aside."""
+    connector = _connector()
+    connector._config.owner_delivery_sweep_enabled = False
+    seen = _failing_provider(connector, 400)
+
+    connector._start_owner_delivery_sweep()
+    assert connector._owner_delivery_sweep_task is None
+    assert await connector._drain_owner_delivery_retractions() == 0
+
+    assert seen == {"edits": 0, "receipts": []}
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [(None, True), ("true", True), ("1", True), ("false", False), ("0", False), ("no", False)],
+)
+def test_the_sweep_can_be_disabled_from_the_environment(monkeypatch, value, expected) -> None:
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+    monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:bot:1")
+    if value is None:
+        monkeypatch.delenv("CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED", value)
+
+    assert TelegramBotConnectorConfig.from_env().owner_delivery_sweep_enabled is expected
 
 
 async def test_a_refused_listing_is_logged_with_its_status(

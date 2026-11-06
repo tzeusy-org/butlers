@@ -459,6 +459,7 @@ class ApprovalMetrics(BaseModel):
     delivery_by_state: dict[str, int] = Field(default_factory=dict)
     delivery_by_reason: dict[str, int] = Field(default_factory=dict)
     delivery_sources_complete: bool = False
+    owner_delivery_retractions_given_up: int = 0
 
 
 class ApprovalActionApproveRequest(BaseModel):
