@@ -2330,7 +2330,7 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
       setVisibility("visible");
       await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
 
-      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1", undefined, { statusOnly: true });
     });
   });
 
@@ -2775,7 +2775,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
 
     expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
-    expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId);
+    expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId, undefined, { statusOnly: true });
     expect(container.textContent).toContain("Approved, awaiting dispatch.");
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
@@ -3005,7 +3005,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
 
     // A separate fresh request begins despite the ordinary cache entry, and
     // neither its stale title nor its Retry control becomes visible first.
-    expect(getApprovalDetail).toHaveBeenCalledWith(actionId);
+    expect(getApprovalDetail).toHaveBeenCalledWith(actionId, undefined, { statusOnly: true });
     expect(container.textContent).not.toContain("Cached stale dossier");
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
     expect(findButton(container, "Approve")).toBeUndefined();

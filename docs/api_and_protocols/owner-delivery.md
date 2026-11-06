@@ -174,6 +174,9 @@ tokens, so the dashboard's navigation warmup must never call this GET: a hover i
 retried on another route. With no tokens (rollout off, or a read that failed closed) they use
 the displayed-call routes, whose decision still closes the subject. So do the one-tap Deny
 rows on summary surfaces, which never load a dossier.
+`GET /api/approvals/{id}?present=false` is the status-only read: it mints no tokens, creates
+no presentation and records no delivery, and `owner_delivery` is null. The default presents.
+Only a caller that never renders the card sends it; today that is the Stalled-lane link check.
 
 The dashboard makes no such GET while its tab is hidden, whether the row is the page's own
 top-ranked selection or one named in the URL. It loads once the tab is visible, so nothing counts

@@ -59,7 +59,7 @@ OP GET /api/approvals/rules/suggestions/{action_id} 70a6c0ed77f6
 OP GET /api/approvals/rules/{rule_id} e39a35df4106
 OP GET /api/approvals/suggestions ea3cd64bc04f
 OP GET /api/approvals/unroutable fac3df93a6f6
-OP GET /api/approvals/{action_id} da2934a3ffc6
+OP GET /api/approvals/{action_id} f6a907041e31
 OP GET /api/attention/ledger 764b316021fa
 OP GET /api/attention/ledger/summary 91b80a1320ec
 OP GET /api/audit-log 1fa5758d7c96
