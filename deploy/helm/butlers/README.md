@@ -55,7 +55,8 @@ connector with a `healthPort` gets a `metrics-proxy` sidecar
 (`scripts/connector_metrics_proxy.py`) that republishes only `GET /metrics` on the named pod
 port `metrics` (9464). Pods carry `k8s.grafana.com/*` and `prometheus.io/*` scrape annotations;
 `connectorMetrics.podMonitor.enabled` adds a Prometheus Operator `PodMonitor` whose `job` and
-`connector` labels match the Compose scrape jobs. On pods `hostIngress.restrict` isolates, the
-host-ingress policy admits the metrics port from `connectorMetrics.allowFrom` (empty: any
-source). Which discovery the cluster LGTM stack honours is site configuration; confirm the
-targets appear after deploy.
+`connector` labels match the Compose scrape jobs. Default-deny ingress selects every pod, and the
+metrics port admits only pods in `connectorMetrics.sourceNamespace` (default `lgtm`, matched on
+`kubernetes.io/metadata.name`). The chart refuses an empty value and the public MCP namespaces.
+Which discovery the cluster LGTM stack honours, and which namespace its scraper runs in, are site
+configuration; confirm the targets appear after deploy.

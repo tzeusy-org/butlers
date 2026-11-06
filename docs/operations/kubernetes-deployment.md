@@ -137,6 +137,24 @@ address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers
 role the Docker bridge gateway played under compose. The NodePort Services use
 `externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
 
+Every other pod is covered too. `butlers-default-deny-ingress` selects all pods, and allowed
+ingress is the union of the policies selecting a pod, so a deny cannot subtract an allow.
+
+| Policy | Destination | Source and port |
+| --- | --- | --- |
+| `butlers-namespace-ingress` | Every pod without a narrower policy, including daemons | Pods in the namespace, any port |
+| `butlers-host-ingress` | Dashboard API, frontend, OwnTracks | Node and namespace pods; metrics port from the scraper namespace |
+| `butlers-metrics-ingress` | Other connectors with a metrics sidecar | Scraper namespace, metrics port only |
+| `butlers-control-ingress` | `butlers-control` | Namespace pods on 41100; session-host and control health on 41199 |
+
+The scraper namespace is `connectorMetrics.sourceNamespace` (default `lgtm`). It is matched on the
+immutable `kubernetes.io/metadata.name`; the chart refuses an empty value and the public MCP
+namespaces. If connector targets disappear after a deploy, the scraper runs somewhere else: set the
+value to its namespace. Rolling this back reopens unauthenticated daemon MCP ports to the cluster.
+This is rendered intent. Run `kubectl -n butlers-<env> get pods` after deploying to confirm probes
+still pass; a Helm render does not prove CNI enforcement. Kubernetes exempts traffic from a pod's
+own node, which is what lets kubelet probes through.
+
 ## Notification metadata repair evidence
 
 Before any historical notification metadata repair, follow the read-only
@@ -443,7 +461,7 @@ and effectiveness have not been re-verified by recording this decision.
 
 | Control | Configured behavior | Limit |
 | --- | --- | --- |
-| Host ingress restriction | With `hostIngress.restrict: true` (the shared default), the [host-ingress NetworkPolicy](../../deploy/helm/butlers/templates/networkpolicy.yaml) selects dashboard API, frontend and OwnTracks pods and admits ingress from `hostIngress.nodeSourceCidr` or pods in the same namespace. | This is an ingress rule, not owner authentication or an egress allowlist. It allows same-namespace pods; actual CNI enforcement and the node-source address require deployment evidence. |
+| Host ingress restriction | The [host-ingress NetworkPolicy](../../deploy/helm/butlers/templates/networkpolicy.yaml) selects dashboard API, frontend and OwnTracks pods and admits ingress from `hostIngress.nodeSourceCidr` or pods in the same namespace. | This is an ingress rule, not owner authentication or an egress allowlist. It allows same-namespace pods; actual CNI enforcement and the node-source address require deployment evidence. |
 | NodePort source preservation | The dashboard NodePort Service uses `externalTrafficPolicy: Local`, preserving client source IPs for the configured ingress/proxy checks. Tailscale Serve is the documented HTTPS entry point. | Source preservation and the intended proxy path do not prove the live firewall, Serve configuration, or protection of every node address. Network membership does not identify the owner. |
 | Dashboard owner authentication | The [dev overlay](../../deploy/helm/butlers/values.dev.yaml) enables the chart's canonical origin, RP ID and trusted-proxy configuration. The [owner-authentication boundary](../identity_and_secrets/dashboard-owner-auth.md) independently checks dashboard request authority. | The [prod overlay](../../deploy/helm/butlers/values.prod.yaml) has `dashboardAuth.enabled: false` and does not supply that browser configuration. Do not infer live enrollment, working proxy attribution, or prod passkey protection from the chart; optional API-key provisioning is separate. |
 | Declared mounts | The dashboard template declares its PVC and Secret mounts, with backups and the runtime-probe signing-key mount read-only. It declares no Docker socket or `hostPath` mount. | Read-only mounts and application authentication do not contain a privileged container compromise or protect the host from an escape. They do not replace the CLI sandbox's existing isolation and credential-handling requirements. |
