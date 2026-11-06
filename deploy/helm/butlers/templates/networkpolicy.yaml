@@ -10,10 +10,14 @@ tests/scripts/test_chart_ingress_union.py evaluates that union on the rendered c
 {{- if hasKey $metrics "allowFrom" }}
 {{- fail "connectorMetrics.allowFrom is retired: set connectorMetrics.sourceNamespace" }}
 {{- end }}
-{{- if $metrics.enabled }}
+{{- if not (regexMatch "^[0-9.]+/32$" (toString .Values.hostIngress.nodeSourceCidr)) }}
+{{- fail "hostIngress.nodeSourceCidr must be the node's single /32 address" }}
+{{- end }}
 {{- $source := toString $metrics.sourceNamespace }}
-{{- if or (not $metrics.sourceNamespace) (eq $source "<nil>") }}
-{{- fail "connectorMetrics.sourceNamespace is required when connectorMetrics.enabled: name the scraper's namespace" }}
+{{- if $metrics.enabled }}
+{{- /* Validate the exact string that renders, so quoting or spacing cannot slip a name past the checks. */ -}}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $source) }}
+{{- fail "connectorMetrics.sourceNamespace is required when connectorMetrics.enabled: name the scraper's namespace as one valid namespace name" }}
 {{- end }}
 {{- if or (has $source (list "mcp" "mcp-gateway")) (hasPrefix "butlers-public-" $source) }}
 {{- fail (printf "connectorMetrics.sourceNamespace %s may not scrape: the public MCP path has no route into this namespace" $source) }}
@@ -82,7 +86,7 @@ spec:
       from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $metrics.sourceNamespace }}
+              kubernetes.io/metadata.name: {{ $source | quote }}
     {{- end }}
 {{- if $metrics.enabled }}
 ---
@@ -108,7 +112,7 @@ spec:
       from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $metrics.sourceNamespace }}
+              kubernetes.io/metadata.name: {{ $source | quote }}
 {{- end }}
 
 {{- if .Values.butlersControl.enabled }}

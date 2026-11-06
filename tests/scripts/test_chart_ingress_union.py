@@ -27,6 +27,18 @@ _MONITORING_NAMESPACE = "lgtm"
 _METRICS_PORT = 9464
 _NODE_SOURCE = "10.42.0.1"
 _NARROWER_COMPONENTS = {"dashboard-api", "frontend", "connector-owntracks", "butlers-control"}
+_HOST_COMPONENTS = {"dashboard-api", "frontend", "connector-owntracks"}
+_CONTROL_RULES = [
+    {"from": [{"podSelector": {}}], "ports": [{"protocol": "TCP", "port": 41100}]},
+    {
+        "from": [
+            {"podSelector": {"matchLabels": {"app.kubernetes.io/instance": "butlers",
+                                             "app.kubernetes.io/component": component}}}
+            for component in ("session-host", "control-session-health")
+        ],
+        "ports": [{"protocol": "TCP", "port": 41199}],
+    },
+]  # fmt: skip
 _RENDERS = [("dev", ()), ("prod", ()), ("dev", ("butlersControl.enabled=true",))]
 
 
@@ -66,11 +78,6 @@ def _pods(docs: list[dict]) -> dict[str, dict]:
 def _pod_labels(pod: dict) -> dict[str, str]:
     # A CronJob template may carry no labels; a selector still has to reason about it.
     return pod.get("metadata", {}).get("labels", {})
-
-
-def _pod_ports(pod: dict) -> set[int]:
-    containers = pod["spec"]["containers"]
-    return {port["containerPort"] for c in containers for port in c.get("ports", [])}
 
 
 def _selects(selector: dict, labels: dict[str, str]) -> bool:
@@ -119,9 +126,18 @@ def _peer_admits(peer: dict, source: Source, policy_namespace: str) -> bool:
     return _selects(peer.get("podSelector", {}), source.labels)
 
 
+def _port_matches(item: dict, port: int) -> bool:
+    declared = item.get("port")
+    if declared is None:  # A protocol with no port means every port.
+        return True
+    if not isinstance(declared, int):
+        raise ValueError(f"named port needs resolving per pod: {item}")
+    return declared <= port <= item.get("endPort", declared)
+
+
 def _rule_admits(rule: dict, source: Source, port: int, policy_namespace: str) -> bool:
     ports = rule.get("ports")
-    if ports and not any(item.get("port") == port for item in ports):
+    if ports and not any(_port_matches(item, port) for item in ports):
         return False
     peers = rule.get("from")
     return not peers or any(_peer_admits(peer, source, policy_namespace) for peer in peers)
@@ -149,27 +165,53 @@ def _admitting(docs: list[dict], pod: dict, source: Source, port: int, ns: str) 
     ]
 
 
+def _peer_offence(rule: dict, peer: dict, labels: dict[str, str]) -> str | None:
+    """Why a peer is outside the reviewed flows; unlisted shapes offend, so this fails closed."""
+    unknown = set(peer) - {"ipBlock", "namespaceSelector", "podSelector"}
+    if unknown or not peer:
+        raise ValueError(f"unknown peer shape: {peer}")
+    component = labels.get("app.kubernetes.io/component")
+    if component == "butlers-control" and rule not in _CONTROL_RULES:
+        return "not a reviewed butlers-control rule"
+    if "ipBlock" in peer:
+        if peer != {"ipBlock": {"cidr": f"{_NODE_SOURCE}/32"}}:
+            return "ipBlock other than the node's address"
+        return None if component in _HOST_COMPONENTS else "node address on a non-host pod"
+    if "namespaceSelector" in peer:
+        scraper = {"matchLabels": {"kubernetes.io/metadata.name": _MONITORING_NAMESPACE}}
+        if peer != {"namespaceSelector": scraper}:
+            return "namespace other than exactly the named scraper namespace"
+        if rule.get("ports") != [{"protocol": "TCP", "port": _METRICS_PORT}]:
+            return "scraper namespace on anything but exactly the metrics port"
+        scraped = labels.get("butlers.io/connector-metrics") == "true"
+        return None if scraped or component in _HOST_COMPONENTS else "scraper on an unscraped pod"
+    return None
+
+
 def _offenders(docs: list[dict], env: str) -> list[str]:
-    """Every outside-namespace or cross-identity flow the reviewed flows do not include."""
-    ns = _NAMESPACE[env]
-    forbidden = ["mcp", "mcp-gateway", f"butlers-public-{env}"]
-    outsiders = [Source(name, {"app": "probe"}) for name in forbidden + ["unrelated"]]
-    monitor = Source(_MONITORING_NAMESPACE, {"app": "scraper"})
-    insider = Source(ns, {"app.kubernetes.io/component": "unreviewed-pod"})
+    """Every rule reaching beyond the reviewed flows, read from its shape, not sampled sources.
+
+    Sampling source labels, addresses and ports misses any selector the samples happen not
+    to match, so each peer must instead be a shape this file lists as reviewed.
+    """
+    policies = _ingress_policies(docs)
     found = []
     for name, pod in _pods(docs).items():
-        component = _pod_labels(pod).get("app.kubernetes.io/component", "<unlabelled>")
-        selector = f"{name} ({component})"
-        for port in sorted(_pod_ports(pod) | {41100, 41101, 41199, _METRICS_PORT}):
-            for source in outsiders:
-                for policy in _admitting(docs, pod, source, port, ns):
-                    found.append(f"{policy}: {source.namespace} -> {selector}:{port}")
-            if port != _METRICS_PORT:
-                for policy in _admitting(docs, pod, monitor, port, ns):
-                    found.append(f"{policy}: {monitor.namespace} -> {selector}:{port}")
-            if component == "butlers-control" and port != 41100:
-                for policy in _admitting(docs, pod, insider, port, ns):
-                    found.append(f"{policy}: unreviewed in-namespace -> {selector}:{port}")
+        labels = _pod_labels(pod)
+        target = f"{name} ({labels.get('app.kubernetes.io/component', '<unlabelled>')})"
+        selecting = [p for p in policies if _selects(p["spec"]["podSelector"], labels)]
+        if not selecting:
+            found.append(f"<no policy selects this pod, so all ingress is open> -> {target}")
+        for policy in selecting:
+            policy_name = policy["metadata"]["name"]
+            for rule in policy["spec"].get("ingress", []):
+                ports = rule.get("ports", "all ports")
+                if not rule.get("from"):
+                    found.append(f"{policy_name}: any source -> {target} {ports}")
+                for peer in rule.get("from", []):
+                    offence = _peer_offence(rule, peer, labels)
+                    if offence:
+                        found.append(f"{policy_name}: {peer} -> {target} {ports}: {offence}")
     return found
 
 
@@ -251,60 +293,122 @@ def test_no_new_allow_policy_selects_a_pod_with_a_narrower_reviewed_policy():
             )
 
 
-def _widening(from_rule: dict | None, selector: dict | None = None) -> dict:
-    rule = {} if from_rule is None else {"from": [from_rule]}
+_BUTLERS_UP = {"matchLabels": {"app.kubernetes.io/component": "butlers-up"}}
+_MCP = {"matchLabels": {"kubernetes.io/metadata.name": "mcp"}}
+_SCRAPER = {"matchLabels": {"kubernetes.io/metadata.name": _MONITORING_NAMESPACE}}
+_METRICS_RULE_PORTS = [{"protocol": "TCP", "port": _METRICS_PORT}]
+
+
+def _widening(peer: dict | None, ports: list[dict] | None = None, selector: dict | None = None):
+    rule: dict = {} if peer is None else {"from": [peer]}
+    if ports is not None:
+        rule["ports"] = ports
+    spec = {"podSelector": _BUTLERS_UP if selector is None else selector}
     return {
         "kind": "NetworkPolicy",
         "metadata": {"name": "widening"},
-        "spec": {"podSelector": selector or {}, "policyTypes": ["Ingress"], "ingress": [rule]},
+        "spec": {**spec, "policyTypes": ["Ingress"], "ingress": [rule]},
     }
 
 
 @pytest.mark.parametrize(
-    ("policy", "expected"),
+    ("peer", "ports"),
     [
-        (_widening(None), "widening: mcp -> butlers-up (butlers-up):41101"),
-        (
-            _widening({"namespaceSelector": {}}),
-            "widening: mcp -> butlers-up (butlers-up):41101",
+        pytest.param(None, None, id="any-source"),
+        pytest.param(None, [{"protocol": "TCP", "port": 41103}], id="any-source-one-daemon-port"),
+        pytest.param({"namespaceSelector": {}}, None, id="all-namespaces"),
+        pytest.param(
+            {"namespaceSelector": {}, "podSelector": {"matchLabels": {"app": "gateway"}}},
+            None,
+            id="all-namespaces-with-pod-label",
         ),
-        (
-            _widening(
-                {
-                    "namespaceSelector": {
-                        "matchExpressions": [
-                            {
-                                "key": "kubernetes.io/metadata.name",
-                                "operator": "NotIn",
-                                "values": ["kube-system"],
-                            }
-                        ]
-                    }
-                },
-                {
+        pytest.param({"namespaceSelector": _MCP}, None, id="forbidden-namespace"),
+        pytest.param(
+            {"namespaceSelector": _MCP, "podSelector": {"matchLabels": {"app": "gateway"}}},
+            None,
+            id="forbidden-namespace-with-pod-label",
+        ),
+        pytest.param(
+            {"namespaceSelector": _MCP},
+            [{"protocol": "TCP", "port": 41103}],
+            id="forbidden-namespace-one-unprobed-port",
+        ),
+        pytest.param(
+            {"namespaceSelector": {"matchLabels": {"team": "platform"}}},
+            None,
+            id="namespace-by-non-name-label",
+        ),
+        pytest.param(
+            {
+                "namespaceSelector": {
                     "matchExpressions": [
-                        {"key": "app.kubernetes.io/component", "operator": "Exists"}
+                        {
+                            "key": "kubernetes.io/metadata.name",
+                            "operator": "NotIn",
+                            "values": ["kube-system"],
+                        }
                     ]
-                },
-            ),
-            "widening: mcp-gateway -> butlers-up (butlers-up):41101",
+                }
+            },
+            None,
+            id="namespace-by-broad-expression",
         ),
-        (
-            _widening(
-                {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "mcp"}}}
-            ),
-            "widening: mcp -> frontend (frontend):41100",
+        pytest.param({"ipBlock": {"cidr": "0.0.0.0/0"}}, None, id="all-addresses"),
+        pytest.param({"ipBlock": {"cidr": "10.42.0.128/25"}}, None, id="pod-range-block"),
+        pytest.param({"ipBlock": {"cidr": f"{_NODE_SOURCE}/32"}}, None, id="node-on-a-daemon"),
+        pytest.param({"namespaceSelector": _SCRAPER}, [{"protocol": "TCP"}], id="protocol-only"),
+        pytest.param(
+            {"namespaceSelector": _SCRAPER},
+            [{"protocol": "TCP", "port": "daemon"}],
+            id="named-port",
         ),
+        pytest.param(
+            {"namespaceSelector": _SCRAPER},
+            [{"protocol": "TCP", "port": 41000, "endPort": 42000}],
+            id="port-range",
+        ),
+        pytest.param({"namespaceSelector": _SCRAPER}, _METRICS_RULE_PORTS, id="scraper-unscraped"),
     ],
 )
-def test_a_widening_policy_fails_naming_the_selector_and_source(policy, expected):
-    assert expected in _offenders([*_docs("dev"), policy], "dev")
+def test_a_widening_policy_fails_naming_the_selector_and_source(peer, ports):
+    found = _offenders([*_docs("dev"), _widening(peer, ports)], "dev")
+    assert len(found) == 1
+    assert found[0].startswith("widening: ")
+    assert "butlers-up (butlers-up)" in found[0]
+    assert ("any source" if peer is None else str(peer)) in found[0]
+
+
+def test_a_rule_widening_an_existing_policy_fails_too():
+    docs = _docs("dev")
+    host = next(d for d in docs if d["metadata"]["name"] == "butlers-host-ingress")
+    host["spec"]["ingress"][0]["from"].append({"ipBlock": {"cidr": "0.0.0.0/0"}})
+    found = _offenders(docs, "dev")
+    assert any(f.startswith("butlers-host-ingress: ") and "dashboard-api" in f for f in found)
 
 
 def test_a_namespace_only_allow_covering_the_control_session_port_fails():
     docs = _docs("dev", "butlersControl.enabled=true")
-    found = _offenders([*docs, _widening({"podSelector": {}})], "dev")
-    assert "widening: unreviewed in-namespace -> butlers-control (butlers-control):41199" in found
+    found = _offenders([*docs, _widening({"podSelector": {}}, selector={})], "dev")
+    assert any(f.startswith("widening: ") and "butlers-control" in f for f in found)
+
+
+@pytest.mark.parametrize(
+    ("item", "port", "expected"),
+    [
+        ({"protocol": "TCP"}, 41103, True),
+        ({"protocol": "TCP", "port": 41000, "endPort": 42000}, 41103, True),
+        ({"protocol": "TCP", "port": 41000, "endPort": 41050}, 41103, False),
+        ({"protocol": "TCP", "port": 9464}, 9464, True),
+        ({"protocol": "TCP", "port": 9464}, 9465, False),
+    ],
+)
+def test_port_matching_follows_kubernetes_semantics(item, port, expected):
+    assert _port_matches(item, port) is expected
+
+
+def test_a_named_port_refuses_rather_than_matching_nothing():
+    with pytest.raises(ValueError, match="named port"):
+        _port_matches({"protocol": "TCP", "port": "daemon"}, 41100)
 
 
 def test_an_unknown_peer_shape_refuses_instead_of_being_ignored():
@@ -320,6 +424,14 @@ def test_an_unknown_peer_shape_refuses_instead_of_being_ignored():
         (("connectorMetrics.sourceNamespace=mcp",), "may not scrape"),
         (("connectorMetrics.sourceNamespace=mcp-gateway",), "may not scrape"),
         (("connectorMetrics.sourceNamespace=butlers-public-dev",), "may not scrape"),
+        (('connectorMetrics.sourceNamespace="mcp"',), "sourceNamespace"),
+        (("connectorMetrics.sourceNamespace='mcp'",), "sourceNamespace"),
+        (("connectorMetrics.sourceNamespace=mcp ",), "sourceNamespace"),
+        (("connectorMetrics.sourceNamespace= mcp",), "sourceNamespace"),
+        (("connectorMetrics.sourceNamespace=~",), "sourceNamespace"),
+        (("connectorMetrics.sourceNamespace=lgtm\nextra: label",), "sourceNamespace"),
+        (("hostIngress.nodeSourceCidr=0.0.0.0/0",), "nodeSourceCidr"),
+        (("hostIngress.nodeSourceCidr=10.42.0.128/25",), "nodeSourceCidr"),
         (("connectorMetrics.allowFrom[0].ipBlock.cidr=0.0.0.0/0",), "allowFrom"),
         (("hostIngress.restrict=false",), "restrict"),
     ],
