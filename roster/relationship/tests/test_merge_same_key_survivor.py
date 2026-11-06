@@ -11,6 +11,7 @@ import pytest
 from butlers.roster_imports import roster_module
 
 merge_entity_pair = roster_module("relationship", "tools/entity_merge").merge_entity_pair
+read_fact_evidence = roster_module("relationship", "tools/fact_evidence").read_fact_evidence
 
 pytestmark = [
     pytest.mark.integration,
@@ -151,6 +152,23 @@ async def test_otherwise_the_target_row_survives_and_receives_the_evidence(
     assert await _validity(rel_pool, src_fact) == "superseded"
     assert await _evidence(rel_pool, tgt_fact) == {"from source", "from target"}
     assert await _evidence(rel_pool, src_fact) == {"from source"}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_carried_evidence_sharing_a_seq_reads_oldest_first(rel_pool) -> None:
+    """A collapse can leave two rows on one ``seq``; their read order must still be fixed."""
+    source = await _entity(rel_pool, "Source")
+    target = await _entity(rel_pool, "Target")
+    await _fact(rel_pool, source, "has-email", "a@example.test", evidence="older")
+    tgt_fact = await _fact(rel_pool, target, "has-email", "a@example.test", evidence="newer")
+
+    await merge_entity_pair(rel_pool, source_entity_id=source, target_entity_id=target)
+
+    packet = await read_fact_evidence(rel_pool, tgt_fact)
+    assert [(item["seq"], item["ref"]) for item in packet["evidence"]] == [
+        (1, "older"),
+        (1, "newer"),
+    ]
 
 
 @pytest.mark.asyncio(loop_scope="session")
