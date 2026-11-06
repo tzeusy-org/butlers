@@ -418,9 +418,7 @@ Contact ids do not narrow. `contact_merge` deletes the source's
 `contact_entity_map` row and records no survivor, so there is nothing to resolve,
 and `contact_id` to `entity_id` crosses params, which a per-param narrowing cannot
 express. A narrowing on one is refused at write, and a stored one selects every
-call. `contact_merge` also runs its entity merge after commit and only best-effort:
-if that fails, the facts have moved but the source entity has no `merged_into`, so
-a term on it does not follow them.
+call.
 
 Nothing constructs the broker until the M6
 switch, so the seam is dark.
