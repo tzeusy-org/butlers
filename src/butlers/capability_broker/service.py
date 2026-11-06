@@ -256,7 +256,7 @@ class Broker:
             return await canonical_policy(self.aliases, capability, policy, self.alias_timeout)
 
         return await ledger.owner_law(
-            capability, resolution.args, resolved=resolution.resolved, canonical=canonical
+            capability, resolution.matched, resolved=resolution.resolved, canonical=canonical
         )
 
     async def _authorize(
@@ -265,8 +265,9 @@ class Broker:
         """D7 steps 2-4 inside the call's transaction, in the RFC's order.
 
         Returns the reservation and the arguments the call runs with: past the
-        grant scope check every declared alias is its canonical id (``aliases``),
-        and the digest the domain verifies is over exactly those arguments.
+        grant scope check every declared alias of a pinned kind is its canonical
+        id (``aliases``), and the digest the domain verifies is over exactly those
+        arguments.
         """
         catalog = await self._live_catalog.load(ledger.connection)
         if catalog.digest != principal.catalog_digest:
@@ -647,7 +648,9 @@ class Broker:
                     # always_ask. The dispatch transition rolls back.
                     # The stored or edited call is never rewritten after its
                     # approval: an alias in it resolves for matching only, and
-                    # a param whose canonical id differs cannot release a term.
+                    # a param that needed pinning to its canonical id cannot
+                    # release a term. A match-only kind needs no pin, so a merge
+                    # since the park is matched on its survivor here.
                     resolution = await self._resolve(reserved.capability, args)
                     fixed = Resolution(
                         args,
@@ -656,6 +659,7 @@ class Broker:
                             for name in resolution.resolved
                             if resolution.args[name] == args[name]
                         ),
+                        resolution.matched,
                     )
                     hold = await self._owner_law(ledger, reserved.capability, fixed)
                     if hold is not None and hold.constraint == "never":

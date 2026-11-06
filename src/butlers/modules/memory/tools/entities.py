@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
@@ -19,15 +18,17 @@ logger = logging.getLogger(__name__)
 VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "other"})
 
 
-def _parse_metadata(raw: Any) -> dict[str, Any]:
-    """Safely parse a metadata value from asyncpg (may be dict, str, or None)."""
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        return json.loads(raw)
-    return dict(raw)
+# Lifecycle keys no caller may write: a merge and a delete have their own paths. Owner
+# law walks ``merged_into``, so a caller writing it could release a term by rewriting a
+# person's identity.
+TOMBSTONE_METADATA_KEYS = frozenset({"deleted_at", "merged_into"})
+# ``unidentified`` may be set only at create, where the butler skills mark a guessed
+# identity for owner review, and is cleared only by a promote.
+SYSTEM_METADATA_KEYS = TOMBSTONE_METADATA_KEYS | {"unidentified"}
+
+
+def _without(metadata: dict[str, Any] | None, keys: frozenset[str]) -> dict[str, Any]:
+    return {k: v for k, v in (metadata or {}).items() if k not in keys}
 
 
 # Minimum composite score to include a candidate in resolution results.
@@ -65,7 +66,7 @@ async def entity_create(
         canonical_name: The canonical name of the entity.
         entity_type: One of 'person', 'organization', 'place', 'other'.
         aliases: Optional list of alternative names for the entity.
-        metadata: Optional JSONB metadata dict.
+        metadata: Optional JSONB metadata dict, without ``TOMBSTONE_METADATA_KEYS``.
         roles: Optional list of identity roles (e.g. ['owner']).  Internal use
                only — not exposed to runtime MCP tool callers.
 
@@ -83,7 +84,7 @@ async def entity_create(
 
     aliases_list = aliases or []
     roles_list = roles or []
-    metadata_dict = dict(metadata) if metadata else {}
+    metadata_dict = _without(metadata, TOMBSTONE_METADATA_KEYS)
 
     insert_sql = """
         INSERT INTO public.entities
@@ -193,7 +194,8 @@ async def entity_update(
 
     - ``canonical_name``: replaces the current value when provided.
     - ``aliases``: replace-all semantics — pass the full desired list.
-    - ``metadata``: merge semantics — keys are merged into existing metadata.
+    - ``metadata``: merge semantics — keys are merged into existing metadata,
+      except ``SYSTEM_METADATA_KEYS``, which are dropped.
 
     Args:
         pool: asyncpg connection pool.
@@ -206,13 +208,6 @@ async def entity_update(
         Updated serialized entity dict or None if not found.
     """
     eid = uuid.UUID(entity_id)
-
-    current = await pool.fetchrow(
-        "SELECT id, metadata FROM public.entities WHERE id = $1",
-        eid,
-    )
-    if current is None:
-        return None
 
     set_clauses: list[str] = ["updated_at = now()"]
     params: list[Any] = []
@@ -228,11 +223,11 @@ async def entity_update(
         set_clauses.append(f"aliases = ${param_idx}")
         param_idx += 1
 
-    if metadata is not None:
-        existing_metadata: dict[str, Any] = _parse_metadata(current["metadata"])
-        merged = {**existing_metadata, **metadata}
-        params.append(merged)
-        set_clauses.append(f"metadata = ${param_idx}")
+    caller_metadata = _without(metadata, SYSTEM_METADATA_KEYS)
+    if caller_metadata:
+        # Merged in the UPDATE, so a merge committing first keeps what it wrote.
+        params.append(caller_metadata)
+        set_clauses.append(f"metadata = COALESCE(metadata, '{{}}'::jsonb) || ${param_idx}::jsonb")
         param_idx += 1
 
     params.append(eid)

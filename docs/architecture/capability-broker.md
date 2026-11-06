@@ -337,17 +337,19 @@ the term is written (`owner_policy_invalid`).
 Canonicalisation cannot make an aliasable identifier safe. Calendar's
 `calendar_id: "primary"` reaches the owner's calendar, so a deny on
 `owner@gmail.com` would be released by `primary`. A narrowing is therefore
-admitted only on params the catalog declares `alias_free_params` for every
-selected capability ([MCP model](../concepts/mcp-model.md)). Any other
+admitted only on params the catalog declares `alias_free_params` (or, below,
+`alias_resolvers`) for every selected capability
+([MCP model](../concepts/mcp-model.md)). Any other
 narrowing is refused at write with 422 `owner_policy_narrowing_unsupported`. At
 match time, a stored term narrowed on a param the current catalog no longer
 marks alias-free for the called capability holds every call of that capability.
 
 ### Resolved aliases (bu-dhloi1.30)
 
-A param the catalog declares in `alias_resolvers` (param to a closed kind; today
-only `calendar`, on every calendar tool's `calendar_id`/`calendar_ids`) can also
-narrow. `capability_broker/aliases.py` holds the seam. After the grant scope
+A param the catalog declares in `alias_resolvers` (param to a closed kind:
+`calendar` on every calendar tool's `calendar_id`/`calendar_ids`, `entity` on the
+audited entity UUID params) can also narrow. `capability_broker/aliases.py` holds
+the seam. After the grant scope
 check (which stays on the raw arguments) and before recipients, `decide` and
 owner law, the broker asks its trusted `AliasResolver` (a constructor input like
 `Domains`; `CalendarAliases` reads each domain's discovered provider
@@ -373,9 +375,52 @@ account's address, and to nothing when there is no account or more than one.
 
 At the approval fence the approved (or owner-edited) arguments are never
 rewritten. A param counts as resolved there only when its value is already the
-canonical id, so an edit naming an alias cannot release a term. Entity and
-contact merges are not resolved: `entity_id` params stay `alias_free_params`, and
-a merge survivor is not substituted. Nothing constructs the broker until the M6
+canonical id, so an edit naming an alias cannot release a term.
+
+The `entity` kind (`EntityAliases`, bu-dhloi1.34) closes a merge gap. A merge
+tombstones its source with `metadata.merged_into`, so a term written on the source
+would miss the survivor that now holds that person. Owner law compares the call's
+ids and the term's ids on the end of that chain, read in one statement from
+`public.entities`. A broken or cyclic chain, an id with no row and a non-UUID get
+no answer and fail closed; a deleted entity stays its own identity.
+
+This kind matches only, so `Resolution.args` keeps the id the call named while
+`Resolution.matched` carries the survivor. Pinning would break a merge tool, which
+must keep naming its source, and would widen a grant on the source to everything
+the survivor already held. The same read runs at the approval fence, so a merge
+after the park is matched there. The residual window is a merge that commits after
+the check and before the domain runs: a handler that follows `merged_into` itself
+would then reach the survivor.
+
+The call and the terms resolve in separate statements, so a merge can commit
+between them. This kind therefore compares raw ids beside survivors on both sides,
+at the call and at the fence, so a term holds any call the raw ids would have held,
+however the chain moved between the reads. That is the whole guarantee during a
+merge. Two cases still release, as raw comparison would, so neither is a regression:
+
+- X merges into Y between the reads, with the call on X and the term on Y. The call
+  was read before the merge, and a check run wholly before it also releases.
+- X has already merged into Y, the term is on X, the call is on Y, and Y merges into
+  Z between the reads. The call reads as Y and the term as X and Z, so they are
+  disjoint, although a check run wholly before or wholly after that merge holds the
+  call. This one is not equivalent to any serial order. Closing it needs both reads
+  in one statement, or a narrowing that keeps every id on its chain.
+
+Only a merge writes `merged_into`. `entity_create` and `entity_update`, the shared
+writers behind `memory_entity_create`, `memory_entity_update` and relationship
+`entity_update`, drop `merged_into` and `deleted_at` from caller metadata.
+`entity_update`, like the dashboard's entity update, also drops `unidentified`
+(`SYSTEM_METADATA_KEYS`). `entity_create` keeps it, because the butler skills use it
+to mark a guessed identity for owner review, and owner law never reads it.
+`entity_update` merges in the `UPDATE`, so it keeps what a concurrent merge committed.
+
+Contact ids do not narrow. `contact_merge` deletes the source's
+`contact_entity_map` row and records no survivor, so there is nothing to resolve,
+and `contact_id` to `entity_id` crosses params, which a per-param narrowing cannot
+express. A narrowing on one is refused at write, and a stored one selects every
+call.
+
+Nothing constructs the broker until the M6
 switch, so the seam is dark.
 
 Identifiers are compared in canonical form, both when
