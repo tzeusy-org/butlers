@@ -69,10 +69,13 @@ same ownership check first:
 | `record_send` | Daemon, under row security; same source of id |
 | `delivery_inputs`, `record_holding_reason`, `bridge_existing` | No production caller yet; a first caller must supply the check |
 
-Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the action's RFC 0023 delivery
-rows, then the subject's presentations and tokens. A path that also needs the authority row
-(`pending_actions`) takes it before all of them. Every path that touches both stores takes the
-subject before an RFC 0023 row:
+Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the rows below it: the action's
+RFC 0023 delivery rows and the subject's presentations and tokens. Those two groups have no
+fixed order between them (`close_for_authority` locks presentations before RFC 0023 rows;
+`complete_handoff` locks the RFC 0023 rows first). That is safe because every path that touches
+both holds the subject, and the action where it takes one, first. A path that also needs the
+authority row (`pending_actions`) takes it before all of them. Every path that touches both
+stores takes the subject before an RFC 0023 row:
 
 - decisions: `transition_pending_action` holds the action and closes the subject before it
   locks RFC 0023 rows;

@@ -929,7 +929,16 @@ async def test_handoff_result_and_token_reject_on_one_card_never_deadlock(ledger
 
     async def release_the_result_mid_decision() -> None:
         runtime.release.set()
-        await asyncio.sleep(0.5)  # complete_handoff now runs and blocks on a lock
+        # complete_handoff now runs and queues behind the reject's subject lock; wait until
+        # PostgreSQL reports a backend of this database waiting on a lock, no fixed sleep.
+        for _ in range(500):
+            if await ledger_pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock')"
+            ):
+                return
+            await asyncio.sleep(0.02)
+        raise AssertionError("complete_handoff never queued behind the decision's lock")
 
     results = await asyncio.wait_for(
         asyncio.gather(
