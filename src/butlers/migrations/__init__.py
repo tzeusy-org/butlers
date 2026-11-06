@@ -31,13 +31,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Root of the alembic directory (sibling to src/)
-ALEMBIC_DIR = Path(__file__).resolve().parent.parent.parent / "alembic"
+ALEMBIC_DIR = Path(__file__).resolve().parents[3] / "alembic"
 
 # Root of the butler config directories (sibling to src/)
-ROSTER_DIR = Path(__file__).resolve().parent.parent.parent / "roster"
+ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
 
 # Root of the modules directory (src/butlers/modules/)
-MODULES_DIR = Path(__file__).resolve().parent / "modules"
+MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
 
 # Shared chains: always included regardless of butler identity
 _SHARED_CHAINS = ["core"]

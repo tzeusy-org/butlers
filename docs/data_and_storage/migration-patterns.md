@@ -64,7 +64,7 @@ Individual butlers can have their own migration chains for butler-specific table
 
 ## Discovery and Resolution
 
-The `migrations.py` module (`src/butlers/migrations.py`) handles chain discovery:
+The `migrations.py` module (`src/butlers/migrations/__init__.py`) handles chain discovery:
 
 1. **`_discover_module_chains()`** -- Scans `src/butlers/modules/*/migrations/` for Python files.
 2. **`_discover_butler_chains()`** -- Scans `roster/*/migrations/` for Python files.
@@ -465,7 +465,7 @@ their separate authority contract or equate the trusted migration owner with run
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
 - `run_migrations` builds its Alembic config through
-  `src/butlers/migrations.py::_build_alembic_config`, which escapes `%` as `%%` in
+  `src/butlers/migrations/__init__.py::_build_alembic_config`, which escapes `%` as `%%` in
   `sqlalchemy.url`; percent-encoded libpq options
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE

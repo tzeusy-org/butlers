@@ -78,7 +78,7 @@ Health and sticky user-enabled state remain separate from declaration eligibilit
 
 ## Migrations
 
-CLI and daemon share `get_module_migration_chains()` in `src/butlers/migrations.py`.
+CLI and daemon share `get_module_migration_chains()` in `src/butlers/migrations/__init__.py`.
 They select declared modules' existing non-empty migration directories in dependency order, after
 the core and butler chains. The butler's own chain runs once. Roster source layout resolves aliases:
 `home_assistant` lives in `roster/home/modules`, so Health runs its `home` chain while Home already

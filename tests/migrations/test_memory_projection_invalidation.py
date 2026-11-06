@@ -60,7 +60,7 @@ def _apply_core_315_316_bodies(engine) -> None:
         ("core_315_memory_projection_invalidation.py", "core_314", "core_315"),
         ("core_316_chronicler_projection_read_boundary.py", "core_315", "core_316"),
     )
-    repo_root = Path(migrations_module.__file__).resolve().parents[2]
+    repo_root = Path(migrations_module.__file__).resolve().parents[3]
     versions = repo_root / "alembic" / "versions" / "core"
     with engine.begin() as connection:
         current = connection.scalar(text("SELECT version_num FROM public.alembic_version"))

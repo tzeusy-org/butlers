@@ -1007,6 +1007,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{schema}.sessions>",
     ): "burn-down: dynamic fleet session schema enumeration; not the RFC-0030 Concierge view",
     (
+        "src/butlers/migrations/projection.py",
+        "<dynamic:{table}>",
+    ): "dynamic-local: RFC 0039 D2 replica-identity helper; the calling chain names its own table and identifiers are validated; no foreign-schema access",
+    (
         "src/butlers/modules/approvals/email_guard.py",
         "relationship.entity_facts",
     ): "retire:bu-ys9hdx.4: identity/channel resolution source and its fixture authority",
