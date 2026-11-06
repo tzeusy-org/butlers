@@ -407,7 +407,11 @@ async def test_conversation_recall_returns_only_its_accounted_records(stores, ac
     messages = "public.dashboard_messages"
     assert await _unfaithful(stores, messages, accounted, "message_id") == set()
     conversations = "public.dashboard_conversations"
-    assert await _unfaithful(stores, conversations, accounted, "conversation_id") == set()
+    routing = [
+        {key: record[key] for key in ("conversation_id", "butler_name", "source_channel")}
+        for record in accounted
+    ]  # created_at is the message's here, so only the joined columns compare.
+    assert await _unfaithful(stores, conversations, routing, "conversation_id") == set()
 
 
 @_covers(("core", "conversation_thread_read"))
