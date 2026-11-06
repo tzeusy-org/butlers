@@ -243,6 +243,16 @@ def _sources() -> tuple[tuple[str, str], ...]:
 def _sql_text(node: ast.AST, constants: dict[str, str]) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        sides = [_sql_text(side, constants) for side in (node.left, node.right)]
+        if sides == [None, None]:
+            return None  # Not string concatenation that holds any SQL text.
+        return "".join(
+            text
+            if text is not None
+            else constants.get(ast.unparse(side), f"{{{ast.unparse(side)}}}")
+            for text, side in zip(sides, (node.left, node.right), strict=True)
+        )
     if isinstance(node, ast.JoinedStr):
         parts = []
         for part in node.values:
@@ -288,7 +298,7 @@ def _scopes(tree: ast.Module) -> Iterator[tuple[str, ast.AST, list[str]]]:
                 text = _sql_text(child, constants)
                 if text is not None:
                     owned.append(text)
-                if not isinstance(child, ast.JoinedStr):
+                if text is None:
                     yield from walk(child, name, owned)
 
     module: list[str] = []
@@ -344,6 +354,21 @@ def _store_writers() -> frozenset[str]:
                 if calls & _BASE_STORE_WRITERS:
                     wrappers.add(node.name)
     return frozenset(_BASE_STORE_WRITERS | wrappers)
+
+
+def test_a_table_named_by_concatenation_is_seen():
+    source = (
+        'TABLE = "facts"\n'
+        "async def a(pool, name):\n"
+        '    await pool.execute("UPDATE " + TABLE + " SET content = $1")\n'
+        '    await pool.execute("UPDATE " + name + " SET content = $1")\n'
+        '    await pool.execute("UPDATE public.entities SET " + name)\n'
+    )
+    scopes = {scope: strings for scope, _, strings in _scopes(ast.parse(source))}
+    assert [text for text in scopes["a"] if _WRITE.search(text)] == [
+        "UPDATE facts SET content = $1",
+        "UPDATE {name} SET content = $1",
+    ]
 
 
 def test_every_sql_writer_to_a_stamped_store_has_a_disposition():
