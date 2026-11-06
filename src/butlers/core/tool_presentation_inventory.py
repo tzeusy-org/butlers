@@ -12116,7 +12116,6 @@ STORE_WRITERS = MappingProxyType(
             ),
             native_writers=(
                 "butlers.owner_bootstrap._seed_owner_telegram_handle",
-                "butlers.tools.relationship.contacts._repoint_entity_facts",
                 "butlers.tools.relationship.entity_merge._move_candidate_reports",
                 "butlers.tools.relationship.entity_merge.merge_entity_pair",
                 "butlers.tools.relationship.fact_identity_decisions.decide_identity_fact",
