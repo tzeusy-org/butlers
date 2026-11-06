@@ -3481,6 +3481,25 @@ _EMAIL_ENRICHMENT_MIN_THREADS = 3
 _EMAIL_ENRICHMENT_MIN_DISTINCT_DAYS = 2
 
 
+_CLEAN_ENRICHMENT_ORPHAN = """
+    e.metadata ->> 'proposed_source' = 'email_identity_enrichment'
+    AND (e.metadata ->> 'deleted_at') IS NULL
+    AND (e.metadata ->> 'merged_into') IS NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.entity_facts ef WHERE ef.subject = e.id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.entity_facts ef
+        WHERE ef.object = e.id::text AND ef.object_kind = 'entity'
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM pending_actions pa
+        WHERE pa.tool_args ->> 'subject' = e.id::text
+          AND pa.status IN ('pending', 'approved', 'executed')
+    )
+"""
+
+
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
 
@@ -3518,40 +3537,47 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     # NB: public.contacts / public.contact_info were retired (DROPped by core_115 /
     # core_134); contact linkage now lives entirely in relationship.entity_facts, so the
     # entity_facts subject/object checks below fully cover "is this entity referenced".
-    archived = await db_pool.fetch(
-        """
-        UPDATE public.entities e
-        SET metadata = e.metadata
-                || jsonb_build_object(
-                    'deleted_at', to_jsonb(now()),
-                    'archived_reason', 'rejected_email_identity_enrichment'
-                ),
-            updated_at = now()
-        WHERE e.metadata ->> 'proposed_source' = 'email_identity_enrichment'
-          AND (e.metadata ->> 'deleted_at') IS NULL
-          AND (e.metadata ->> 'merged_into') IS NULL
-          AND NOT EXISTS (
-              SELECT 1 FROM relationship.entity_facts ef WHERE ef.subject = e.id
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM relationship.entity_facts ef
-              WHERE ef.object = e.id::text AND ef.object_kind = 'entity'
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM pending_actions pa
-              WHERE pa.tool_args ->> 'subject' = e.id::text
-                AND pa.status IN ('pending', 'approved', 'executed')
-          )
-        RETURNING e.id
-        """
+    candidates = await db_pool.fetch(
+        f"SELECT e.id FROM public.entities e WHERE {_CLEAN_ENRICHMENT_ORPHAN} ORDER BY e.id"
     )
+    archived = 0
+    for candidate in candidates:
+        async with db_pool.acquire() as conn, conn.transaction():
+            # The lock forget and merge take. An entity another writer or merge holds is
+            # left for the next run. The check must then be repeated in a new statement,
+            # because one that waited or locked would still read its earlier snapshot and
+            # miss a reference committed since.
+            if (
+                await conn.fetchval(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR UPDATE SKIP LOCKED",
+                    candidate["id"],
+                )
+                is None
+            ):
+                continue
+            reaped = await conn.fetchval(
+                f"""
+                UPDATE public.entities e
+                SET metadata = e.metadata
+                        || jsonb_build_object(
+                            'deleted_at', to_jsonb(now()),
+                            'archived_reason', 'rejected_email_identity_enrichment'
+                        ),
+                    updated_at = now()
+                WHERE e.id = $1 AND {_CLEAN_ENRICHMENT_ORPHAN}
+                RETURNING e.id
+                """,
+                candidate["id"],
+            )
+            if reaped is not None:
+                archived += 1
     if archived:
         logger.info(
             "email_identity_enrichment: archived %d orphaned entity(ies) from "
             "rejected/expired proposals",
-            len(archived),
+            archived,
         )
-    return len(archived)
+    return archived
 
 
 async def run_email_identity_enrichment(db_pool: asyncpg.Pool) -> dict[str, Any]:
