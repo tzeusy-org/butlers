@@ -3962,6 +3962,72 @@ def test_mandatory_projection_failure_rolls_back_source_and_fact_disposition(pos
         engine.dispose()
 
 
+def test_admission_deadline_never_cancels_the_commit_after_it(postgres_container, monkeypatch):
+    """The deadline cancelling asyncpg's shared cancel future must not reach the next statement.
+
+    Order forced, not timed: a statement's own asyncpg timer fires first, so the savepoint
+    rollback waits on the protocol's ``cancel_waiter``, and the admission deadline expires
+    during that wait. ``task.cancel()`` cancels that shared future. The outer COMMIT then
+    awaits the cancelled future and raises ``CancelledError`` though no task was cancelled.
+    With one client timer the sequence cannot start, and the hook here is never reached.
+    """
+    import butlers.chronicler.history_repair as history_repair
+
+    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = url.replace("postgresql+psycopg2://", "postgresql://")
+    monkeypatch.setattr(history_repair, "MAX_RETENTION_ADMISSION_TIMEOUT_MS", 500)
+    deadlines: list[asyncio.Timeout] = []
+    asyncpg_cancels = 0
+    real_timeout_at = asyncio.timeout_at
+
+    def only_expired_by_the_hook(when: float) -> asyncio.Timeout:
+        deadlines.append(real_timeout_at(when + 3600))
+        return deadlines[-1]
+
+    class ExpiresDeadlineDuringCancel(asyncpg.Connection):
+        def _cancel_current_command(self, waiter):
+            nonlocal asyncpg_cancels
+            asyncpg_cancels += 1
+            super()._cancel_current_command(waiter)
+            # Two turns: past the task's wakeup, which suspends it on ``cancel_waiter``.
+            loop = asyncio.get_running_loop()
+            loop.call_soon(loop.call_soon, deadlines[-1].reschedule, loop.time())
+
+    async def runtime_connection(conn):
+        await register_jsonb_codec(conn)
+        await conn.execute("SET ROLE butler_chronicler_rw")
+
+    async def scenario():
+        pool = await asyncpg.create_pool(
+            url,
+            server_settings={"search_path": "chronicler, public", "statement_timeout": "0"},
+            init=runtime_connection,
+            connection_class=ExpiresDeadlineDuringCancel,
+        )
+        holder = await asyncpg.connect(url)
+        try:
+            # Parks admission's first read on a real lock until a timer ends it.
+            blocking = holder.transaction()
+            await blocking.start()
+            await holder.execute(
+                "LOCK TABLE chronicler.daily_repair_retention_spans IN ACCESS EXCLUSIVE MODE"
+            )
+            with patch.object(asyncio, "timeout_at", only_expired_by_the_hook):
+                result = await history_repair.run_rebuild(
+                    pool, now=datetime(2026, 11, 6, tzinfo=UTC)
+                )
+            await blocking.rollback()
+            assert result["status"] == "pending_retention"
+            assert result["retention_admission_timeout"] is True
+            assert await pool.fetchval("SELECT 1") == 1
+            assert asyncpg_cancels == 0
+        finally:
+            await holder.close()
+            await pool.close()
+
+    asyncio.run(scenario())
+
+
 def test_retention_first_admission_has_total_deadline_and_read_barrier(postgres_container):
     """Admission timeout rolls source cleanup back; expiry still holds readers closed."""
     import time
