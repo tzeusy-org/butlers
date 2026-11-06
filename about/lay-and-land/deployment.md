@@ -310,9 +310,10 @@ because the assertion replay set is in memory.
 
 **Why not `butlers-<env>`.** [Observed] `butlers-tracker-egress` allows every pod in that
 namespace egress to `0.0.0.0/0`, and NetworkPolicies are additive, so no narrower policy could
-hold the public pod to the projection. **Precondition:** `butlers-<env>` has no default-deny
-ingress today [Observed]; that, with a contract test, lands before any gateway allow rule
-points into Butlers.
+hold the public pod to the projection. **Precondition:** the `butlers-<env>` chart renders
+default-deny ingress for every pod, with a contract test over the union of its policies
+(`tests/scripts/test_chart_ingress_union.py`); it reaches the cluster with the next deploy, and
+that deploy lands before any gateway allow rule points into Butlers.
 
 **Owner acts** (RFC 0039 Rollout, OD5). The ordered setup for a fresh environment, with checks
 for each step, is [Public MCP Read Surface](../../docs/operations/public-mcp-read-surface.md).
