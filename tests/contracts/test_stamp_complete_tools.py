@@ -1011,6 +1011,35 @@ async def test_a_live_legacy_row_with_an_entity_id_is_still_editable(
     assert (await _stored(stores, result["id"]))["validity"] == "active"
 
 
+_LEGACY_KEYS = [
+    pytest.param({"entity_id": _ENTITY}, id="entity_id"),
+    pytest.param({"valid_at": datetime.fromisoformat("2026-01-01T00:00:00+00:00")}, id="valid_at"),
+]
+
+
+@pytest.mark.parametrize("legacy", _LEGACY_KEYS)
+@pytest.mark.parametrize(("copy", "module", "seed"), _SUBJECT_KEYED)
+@_db
+async def test_reproduce_a_live_legacy_id_overwrites_its_successor(
+    stores, monkeypatch, copy, module, seed, legacy
+):
+    """bu-dhloi1.110: the second edit through the legacy id replaces the first edit's result."""
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    source = await _seed_copy_source(stores, seed, content_authority="system", **legacy)
+    successor = await copy(stores, source["id"])
+    await stores.execute(
+        "UPDATE facts SET content = 'successor text' WHERE id = $1", successor["id"]
+    )
+
+    overwriting = await copy(stores, source["id"])
+
+    assert (await _stored(stores, source["id"]))["validity"] == "active"
+    assert (await _stored(stores, successor["id"]))["validity"] == "superseded"
+    current = await _stored(stores, overwriting["id"])
+    assert current["validity"] == "active"
+    assert current["content"] != "successor text"
+
+
 @pytest.mark.parametrize(("copy", "module", "seed"), _REFUSES_STALE)
 @_db
 async def test_a_fading_id_is_still_editable(stores, monkeypatch, copy, module, seed):
