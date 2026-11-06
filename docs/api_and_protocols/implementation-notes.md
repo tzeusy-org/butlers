@@ -13,6 +13,12 @@ Moved verbatim from `AGENTS.md` (API and security contracts).
   (same module). `tests/api/test_actor_attribution_sweep.py` guards every route; extend its
   allow-lists only with a recorded justification. `X-Butlers-Decision-Actor` on approvals is
   server-verified and is not this defect.
+- Approval dispatch probes the selected MCP client with a read-only ping before invoking the
+  stored action. A closed or broken session may be conditionally evicted and ping retried once,
+  within the existing acquisition deadline. Eviction compares the observed client identity so a
+  concurrent healthy replacement survives, and closing the failed client is bounded. The action
+  itself is called once: closure after the ping returns the truthful dispatch failure and never
+  replays the action automatically. A later explicit owner Retry can acquire a fresh client.
 - Enumerating API routes: FastAPI mounts included routers lazily, so `create_app().routes` holds
   `_IncludedRouter` objects. Recurse into `route.original_router.routes`; the body model is
   `route.body_field.field_info.annotation`.

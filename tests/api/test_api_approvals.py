@@ -10,11 +10,13 @@ Extended (bu-5xiu9): defer bounds, policy round-trip, audit.append on verbs.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import anyio
 import httpx
 import pytest
 
@@ -1893,6 +1895,7 @@ async def test_approve_daemon_reachable_reports_dispatched(app):
     mcp_result.is_error = False
     mcp_result.content = [mcp_block]
     mock_client = MagicMock()
+    mock_client.ping = AsyncMock(return_value=True)
     mock_client.call_tool = AsyncMock(return_value=mcp_result)
 
     mock_mcp = MagicMock(spec=MCPClientManager)
@@ -2732,6 +2735,7 @@ def _build_dispatch_mocks(
     mcp_result.content = [mcp_block] if mcp_text_payload is not None else []
 
     mock_client = MagicMock()
+    mock_client.ping = AsyncMock(return_value=True)
     mock_client.call_tool = AsyncMock(return_value=mcp_result)
 
     mock_mcp = MagicMock(spec=MCPClientManager)
@@ -2940,22 +2944,193 @@ async def test_abandon_requires_reason_and_returns_terminal_action(app):
     "route_template",
     ("/api/approvals/actions/{action_id}/retry", "/api/approvals/{action_id}/retry"),
 )
-async def test_retry_reports_unreachable_owner_truthfully(app, route_template: str):
-    action = _make_action(status="approved")
-    _app_with_mock_db(app, fetchrow_return=action)
-    mock_mcp = MagicMock(spec=MCPClientManager)
-    mock_mcp.get_client = AsyncMock(side_effect=RuntimeError("connection refused"))
-    app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp
+@pytest.mark.parametrize("tool_name", ["telegram_react_to_message", "notify"])
+@pytest.mark.parametrize(
+    "failure,phase",
+    [
+        pytest.param(RuntimeError, "connect", id="no-observed-client"),
+        pytest.param(anyio.ClosedResourceError, "call", id="closed-after-ping"),
+        pytest.param(anyio.BrokenResourceError, "call", id="broken-after-ping"),
+        pytest.param(anyio.ClosedResourceError, "ping", id="closed-preflight"),
+        pytest.param(anyio.BrokenResourceError, "ping", id="broken-preflight"),
+        pytest.param(anyio.ClosedResourceError, "second-ping", id="second-closed"),
+        pytest.param(anyio.BrokenResourceError, "second-ping", id="second-broken"),
+        pytest.param(anyio.ClosedResourceError, "ping-timeout", id="second-ping-timeout"),
+        pytest.param(anyio.ClosedResourceError, "replacement", id="healthy-replacement"),
+    ],
+)
+async def test_retry_reports_unreachable_owner_truthfully(
+    app, route_template: str, tool_name: str, failure, phase, monkeypatch, request
+):
+    """Only read-only preflight can repeat; every action invocation stays once-only."""
+    import json
+    from inspect import signature
+
+    from fastmcp import Client, FastMCP
+    from mcp.client.session import ClientSession
+
+    import butlers.api.deps as deps
+    import butlers.api.routers.approvals as approvals
+    from butlers.modules.approvals.module import ApprovalsModule
+    from butlers.tools.switchboard.contracts import parse_notify_request
+    from butlers.tools.switchboard.notification.deliver import deliver
+
+    action = _make_action(tool_name=tool_name, status="approved")
+    action["tool_args"] = (
+        {"channel": "telegram", "message": "Approved fixture", "intent": "insight"}
+        if tool_name == "notify"
+        else {"chat_id": "12345", "message_id": "7", "emoji": "👍"}
+    )
+    _, db, pool, _ = _build_dispatch_mocks(
+        action_id=action["id"], tool_name=tool_name, tool_args=action["tool_args"]
+    )
+    async with pool.acquire() as conn:
+        conn.fetchrow.return_value = action
+        conn.fetchval.return_value = True
+
+        async def execute(query, *args):
+            if query.startswith("UPDATE pending_actions"):
+                action.update(status=args[0], execution_result=args[1], decided_at=args[2])
+            return "UPDATE 1"
+
+        conn.execute.side_effect = execute
+    app.dependency_overrides[get_db] = lambda: db
+    owner = "switchboard" if tool_name == "notify" else "messenger"
+    manager = MCPClientManager()
+    manager.register(owner, deps.ButlerConnectionInfo(owner, 41104))
+    # Real shallow-connected FastMCP state over a genuinely closed AnyIO stream.
+    # Neither an HTTP server nor a provider is contacted by this fixture.
+    read_send, read_receive = anyio.create_memory_object_stream(1)
+    write_send, write_receive = anyio.create_memory_object_stream(1)
+    for stream in (read_send, read_receive, write_send, write_receive):
+        request.addfinalizer(stream.close)
+    if failure is anyio.BrokenResourceError:
+        write_receive.close()
+    else:
+        write_send.close()
+    failed = Client(FastMCP("closed-cached-session"))
+    failed._session_state.session = ClientSession(read_receive, write_send)
+    assert failed.is_connected() is True
+    real_ping = failed.ping
+    failed.ping = AsyncMock(wraps=real_ping) if phase != "call" else AsyncMock(return_value=True)
+    failed.call_tool = AsyncMock(wraps=failed.call_tool)
+    failed.__aexit__ = AsyncMock()
+    manager._clients[owner] = failed
+    app.dependency_overrides[get_mcp_manager] = lambda: manager
+    effects = []
+    module = ApprovalsModule()
+    module._db = pool
+    module._butler_name = "messenger"
+    pool.fetchrow = conn.fetchrow
+
+    async def original_handler(name, kwargs):
+        assert name == tool_name
+        assert kwargs == action["tool_args"]
+        effects.append(kwargs)
+        return {"ok": True}
+
+    module.set_tool_executor(original_handler)
+
+    async def fresh_dispatch(name, kwargs):
+        if tool_name == "notify":
+            assert name == "deliver"
+            signature(deliver).bind(pool=pool, **kwargs)
+            parse_notify_request(kwargs["notify_request"])
+            assert kwargs["source_butler"] == "messenger"
+            assert kwargs["notify_request"]["delivery"] == action["tool_args"]
+            effects.append(kwargs)
+            return _mcp_result('{"ok":true}')
+        assert name == "dispatch_approved_action"
+        result = await module._dispatch_approved_action_by_id(kwargs["action_id"])
+        return _mcp_result(json.dumps(result, default=str))
+
+    fresh = MagicMock()
+    fresh.is_connected.return_value = True
+    fresh.__aenter__ = AsyncMock(return_value=fresh)
+    fresh.__aexit__ = AsyncMock()
+    fresh.ping = AsyncMock(return_value=True)
+    fresh.call_tool = AsyncMock(side_effect=fresh_dispatch)
+    factory = MagicMock(return_value=fresh)
+    monkeypatch.setattr(deps, "MCPClient", factory)
+    if failure is RuntimeError:
+        # A connect failure supplies no observed client and must not evict one.
+        monkeypatch.setattr(manager, "get_client", AsyncMock(side_effect=failure("unreachable")))
+    elif phase == "replacement":
+
+        async def replaced_ping():
+            manager._clients[owner] = fresh
+            return await real_ping()
+
+        failed.ping.side_effect = replaced_ping
+    elif phase == "second-ping":
+        fresh.ping.side_effect = failure()
+    elif phase == "ping-timeout":
+        monkeypatch.setattr(approvals, "_MCP_DISPATCH_PING_TIMEOUT_S", 0.01, raising=False)
+
+        async def hanging_ping():
+            await asyncio.Event().wait()
+
+        fresh.ping.side_effect = hanging_ping
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(route_template.format(action_id=action["id"]))
 
-    assert response.status_code == 502
-    assert response.json()["detail"] == "No reachable butler to dispatch action"
-    assert action["status"] == "approved"
-    assert action["execution_result"] is None
+        if phase in {"ping", "replacement"}:
+            # A stale read-only ping recovers before the first action call.
+            recovered = response
+            failed.ping.assert_awaited_once()
+            failed.call_tool.assert_not_awaited()
+            if phase == "replacement":
+                failed.__aexit__.assert_not_awaited()
+                factory.assert_not_called()
+                assert manager._clients[owner] is fresh
+            else:
+                failed.__aexit__.assert_awaited_once()
+                factory.assert_called_once()
+        else:
+            assert response.status_code == 502
+            assert response.json()["detail"] == "No reachable butler to dispatch action"
+            assert action["status"] == "approved"
+            assert action["execution_result"] is None
+            assert effects == []
+            if phase == "connect":
+                factory.assert_not_called()
+                assert manager._clients[owner] is failed
+                failed.__aexit__.assert_not_awaited()
+                failed.ping.assert_not_awaited()
+                failed.call_tool.assert_not_awaited()
+                return
+            failed.__aexit__.assert_awaited_once()
+            if phase in {"second-ping", "ping-timeout"}:
+                failed.ping.assert_awaited_once()
+                fresh.ping.assert_awaited_once()
+                failed.call_tool.assert_not_awaited()
+                fresh.call_tool.assert_not_awaited()
+                factory.assert_called_once()
+                if phase == "second-ping":
+                    fresh.__aexit__.assert_awaited_once()
+                    assert owner not in manager._clients
+                await manager.close()
+                return
+            # A closure AFTER a successful ping must never replay the action.
+            factory.assert_not_called()
+            failed.call_tool.assert_awaited_once()
+            assert owner not in manager._clients
+            # Only a separate explicit owner Retry may invoke the shared executor.
+            recovered = await client.post(route_template.format(action_id=action["id"]))
+            failed.call_tool.assert_awaited_once()
+            factory.assert_called_once()
+
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["data"]["status"] == "executed"
+    assert recovered.json()["data"]["dispatched"] is True
+    assert len(effects) == 1
+    assert action["execution_result"]["success"] is True
+    fresh.ping.assert_awaited_once()
+    fresh.call_tool.assert_awaited_once()
+    await manager.close()
 
 
 @pytest.mark.parametrize(
@@ -2968,6 +3143,7 @@ async def test_retry_reports_reachable_executor_rejection_truthfully(app, route_
     action = _make_action(status="approved")
     _app_with_mock_db(app, fetchrow_return=action)
     client = MagicMock()
+    client.ping = AsyncMock(return_value=True)
     client.call_tool = AsyncMock(
         return_value=_mcp_result(
             json.dumps(
@@ -3027,10 +3203,12 @@ async def test_dispatch_approved_action_outcome_never_falls_back_to_another_butl
     }
 
     messenger_client = MagicMock()
+    messenger_client.ping = AsyncMock(return_value=True)
     messenger_client.call_tool = AsyncMock(
         return_value=_mcp_result(json.dumps({"error": "No tool executor wired"}))
     )
     general_client = MagicMock()
+    general_client.ping = AsyncMock(return_value=True)
     general_client.call_tool = AsyncMock(return_value=_mcp_result(json.dumps(executed_payload)))
     clients = {"messenger": messenger_client, "general": general_client}
 
@@ -3062,6 +3240,7 @@ async def test_dispatch_approved_action_outcome_classifies_mcp_error():
 
     action_id = uuid4()
     mock_client = MagicMock()
+    mock_client.ping = AsyncMock(return_value=True)
     mock_client.call_tool = AsyncMock(return_value=_mcp_result("{}", is_error=True))
     mock_mcp = MagicMock(spec=MCPClientManager)
     mock_mcp.butler_names = ["messenger"]
