@@ -74,7 +74,9 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   packet. `contact_merge` does every write in one transaction that starts with the entity merge
   authority, the only writer of the entities' facts. It therefore has the authority's locks,
   refusals, graph edge repair and audit row, its facts never move without the source's
-  `merged_into`, and a refused entity merge refuses the contact merge. Only the rebind settlement
+  `merged_into`, and a refused entity merge refuses the contact merge. A contact on a removed entity
+  gets a `ValueError` naming it, and nothing moves; a route to merge such a contact is an open owner
+  decision (bu-dhloi1.124). Only the rebind settlement
   runs after commit. The rebind ledger recovers a missed settlement, because each daemon's idle sweep
   settles pending receipts and retries failed ones. `contact_merge` logs a failed receipt only for
   Relationship's own schema, the one it settles itself; every other schema is still `pending` when

@@ -129,8 +129,10 @@ async def test_a_refused_entity_merge_refuses_the_contact_merge(
             "deleted_at": {"deleted_at": "2026-11-06T00:00:00Z"},
         }[marker],
     )
-    with pytest.raises(error):
+    with pytest.raises(ValueError, match="its entity has been removed") as refused:
         await contacts_mod.contact_merge(rel_pool, source, target)
+    assert isinstance(refused.value.__cause__, error)
+    assert str(source if tombstoned == "source" else target) in str(refused.value)
     assert (
         await rel_pool.fetchval("SELECT subject FROM relationship.entity_facts WHERE id = $1", fact)
         == source_entity

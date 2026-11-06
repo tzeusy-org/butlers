@@ -794,6 +794,14 @@ _CONTACT_CHILD_TABLES = (
 )
 
 
+def _removed_entity_refusal(contact_id: uuid.UUID) -> str:
+    return (
+        f"Contact {contact_id} cannot be merged because its entity has been removed "
+        "(deleted, forgotten or merged away). Nothing was changed, and the removed entity "
+        "stays removed."
+    )
+
+
 async def _execute_if_present(conn: asyncpg.Connection, query: str, *args: Any) -> None:
     """Run one optional-table statement in a savepoint; skip a missing table/column."""
     try:
@@ -829,12 +837,17 @@ async def contact_merge(
         The updated target contact dict.
 
     Raises:
-        ValueError: If source or target contact not found, or IDs are identical.
-        EntityMergeError: the merge authority refused the entities (for example
-            one is already tombstoned, or two occurrences would collide). Nothing
-            is written.
+        ValueError: If source or target contact not found, IDs are identical, or
+            either contact's entity has been removed. Nothing is written.
+        EntityMergeError: the merge authority refused the entities for another
+            reason (for example two occurrences would collide). Nothing is written.
     """
-    from .entity_merge import merge_entity_pair_in_transaction, settle_entity_merge
+    from .entity_merge import (
+        SourceEntityTombstonedError,
+        TargetEntityTombstonedError,
+        merge_entity_pair_in_transaction,
+        settle_entity_merge,
+    )
 
     if source_id == target_id:
         raise ValueError("source_id and target_id must be different.")
@@ -872,11 +885,16 @@ async def contact_merge(
             # First, so its entity, candidate and fact locks and its refusals come
             # before any contact write.
             if entities is not None:
-                merge = await merge_entity_pair_in_transaction(
-                    cast(asyncpg.Connection, conn),
-                    source_entity_id=entities[0],
-                    target_entity_id=entities[1],
-                )
+                try:
+                    merge = await merge_entity_pair_in_transaction(
+                        cast(asyncpg.Connection, conn),
+                        source_entity_id=entities[0],
+                        target_entity_id=entities[1],
+                    )
+                except SourceEntityTombstonedError as exc:
+                    raise ValueError(_removed_entity_refusal(source_id)) from exc
+                except TargetEntityTombstonedError as exc:
+                    raise ValueError(_removed_entity_refusal(target_id)) from exc
 
             for table, fk_col in _CONTACT_CHILD_TABLES:
                 await _execute_if_present(
