@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.metrics_registry import get_or_create_counter
 
 logger = logging.getLogger(__name__)
@@ -353,9 +354,10 @@ class ApprovalDeliveryWorker:
         while not stop.is_set():
             try:
                 worked = await self.process_one()
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
+                # Only a cancel of this task is the shutdown fence. Anything else is a failed
+                # scan: nothing restarts this loop, and a started handoff stays reconcilable.
+                raise_if_task_cancelled(exc)
                 # Exception text can carry provider or SQL detail; keep the
                 # structured record to the closed outcome and the error class.
                 self._observe("scan", "failed")
