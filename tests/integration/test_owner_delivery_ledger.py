@@ -249,7 +249,7 @@ async def test_token_wins_once_and_every_competing_token_goes_stale(ledger_pool)
     assert calls == ["approve"]
 
     # The dashboard presentation retracts in the ledger; the sent Telegram card is the
-    # retraction target, and stays listed until a retraction is receipted.
+    # retraction target, and is listed until a retraction attempt is receipted.
     async with ledger_pool.acquire() as conn:
         assert [t.provider_ref for t in won.retract] == ["55"]
         listed = await od.pending_retractions(conn, surface="telegram")
@@ -258,7 +258,8 @@ async def test_token_wins_once_and_every_competing_token_goes_stale(ledger_pool)
             await od.record_retraction(
                 conn, cards["telegram"].id, retracted=False, reason="provider_error"
             )
-        assert len(await od.pending_retractions(conn, surface="telegram")) == 1
+        # A failed retraction cools the card down, so it leaves the list until the retry window.
+        assert await od.pending_retractions(conn, surface="telegram") == ()
         async with conn.transaction():
             await od.record_retraction(conn, cards["telegram"].id, retracted=True)
         assert await od.pending_retractions(conn, surface="telegram") == ()
