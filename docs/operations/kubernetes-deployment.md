@@ -152,8 +152,10 @@ immutable `kubernetes.io/metadata.name`; the chart refuses an empty value and th
 namespaces. If connector targets disappear after a deploy, the scraper runs somewhere else: set the
 value to its namespace. Rolling this back reopens unauthenticated daemon MCP ports to the cluster.
 This is rendered intent. Run `kubectl -n butlers-<env> get pods` after deploying to confirm probes
-still pass; a Helm render does not prove CNI enforcement. Kubernetes exempts traffic from a pod's
-own node, which is what lets kubelet probes through.
+still pass, `butlers-up` first because its `httpGet` probes take every daemon down if they fail; a
+Helm render does not prove CNI enforcement. Kubernetes exempts traffic from a pod's own node, which
+is what lets kubelet probes through. The same exemption lets host processes and `hostNetwork` pods
+reach daemon ports, so these policies do not limit anything already running on the node.
 
 ## Notification metadata repair evidence
 

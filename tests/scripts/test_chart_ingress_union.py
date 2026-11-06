@@ -68,6 +68,8 @@ def _pods(docs: list[dict]) -> dict[str, dict]:
     pods = {}
     for doc in docs:
         spec = doc.get("spec", {})
+        if doc["kind"] in {"Pod", "ReplicaSet", "ReplicationController"}:
+            raise ValueError(f"pod-bearing kind this evaluator does not read: {doc['kind']}")
         if doc["kind"] == "CronJob":
             pods[doc["metadata"]["name"]] = spec["jobTemplate"]["spec"]["template"]
         elif doc["kind"] in {"Deployment", "StatefulSet", "DaemonSet", "Job"}:
@@ -144,6 +146,9 @@ def _rule_admits(rule: dict, source: Source, port: int, policy_namespace: str) -
 
 
 def _ingress_policies(docs: list[dict]) -> list[dict]:
+    for doc in docs:
+        if "NetworkPolicy" in doc["kind"] and doc["kind"] != "NetworkPolicy":
+            raise ValueError(f"policy kind this evaluator does not read: {doc['kind']}")
     return [
         doc
         for doc in docs
@@ -195,8 +200,18 @@ def _offenders(docs: list[dict], env: str) -> list[str]:
     to match, so each peer must instead be a shape this file lists as reviewed.
     """
     policies = _ingress_policies(docs)
+    pods = _pods(docs)
     found = []
-    for name, pod in _pods(docs).items():
+    for policy in policies:
+        # Runtime-added labels (pod-template-hash, job-name) reach pods no template shows, so
+        # a rule whose selector matches no rendered template cannot be reasoned about here.
+        selector = policy["spec"]["podSelector"]
+        rules = policy["spec"].get("ingress", [])
+        if rules and not any(_selects(selector, _pod_labels(pod)) for pod in pods.values()):
+            found.append(
+                f"{policy['metadata']['name']}: {rules} -> {selector}: selects no rendered pod"
+            )
+    for name, pod in pods.items():
         labels = _pod_labels(pod)
         target = f"{name} ({labels.get('app.kubernetes.io/component', '<unlabelled>')})"
         selecting = [p for p in policies if _selects(p["spec"]["podSelector"], labels)]
@@ -254,7 +269,7 @@ def test_reviewed_flows_keep_working():
     assert admitted("dashboard-api", daemon, 41200)
     # Host ingress is unchanged: the node and namespace pods reach what the host serves.
     assert admitted("dashboard-api", node, 41200)
-    assert admitted("frontend", node, 80)
+    assert admitted("frontend", node, 8080)
     assert admitted("connector-owntracks", node, 40086)
     assert not admitted("butlers-up", node, 41101)
     # The configured scraper reaches declared metrics ports, on both kinds of connector.
@@ -376,6 +391,55 @@ def test_a_widening_policy_fails_naming_the_selector_and_source(peer, ports):
     assert found[0].startswith("widening: ")
     assert "butlers-up (butlers-up)" in found[0]
     assert ("any source" if peer is None else str(peer)) in found[0]
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        pytest.param(
+            {"matchExpressions": [{"key": "pod-template-hash", "operator": "Exists"}]},
+            id="deployment-runtime-label",
+        ),
+        pytest.param(
+            {"matchExpressions": [{"key": "job-name", "operator": "Exists"}]},
+            id="cronjob-runtime-label",
+        ),
+        pytest.param({"matchLabels": {"tier": "daemon"}}, id="label-on-no-template"),
+    ],
+)
+def test_a_policy_selecting_no_rendered_pod_fails(selector):
+    policy = _widening({"namespaceSelector": _MCP}, selector=selector)
+    found = _offenders([*_docs("dev"), policy], "dev")
+    assert len(found) == 1
+    assert found[0].startswith("widening: ") and "selects no rendered pod" in found[0]
+    assert "'mcp'" in found[0] and str(selector) in found[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "match"),
+    [
+        ("Pod", "pod-bearing kind"),
+        ("ReplicaSet", "pod-bearing kind"),
+        ("CiliumNetworkPolicy", "policy kind"),
+    ],
+)
+def test_a_kind_the_evaluator_cannot_read_refuses(kind, match):
+    extra = {"kind": kind, "metadata": {"name": "extra"}, "spec": {}}
+    with pytest.raises(ValueError, match=match):
+        _offenders([*_docs("dev"), extra], "dev")
+
+
+@pytest.mark.parametrize(("env", "settings"), _RENDERS)
+def test_no_pod_opens_a_path_that_network_policy_cannot_see(env, settings):
+    docs = _docs(env, *settings)
+    for name, pod in _pods(docs).items():
+        assert not pod["spec"].get("hostNetwork"), name
+        for container in pod["spec"]["containers"]:
+            assert not any("hostPort" in port for port in container.get("ports", [])), name
+    for service in (d for d in docs if d["kind"] == "Service"):
+        if service["spec"].get("type") == "NodePort":
+            component = service["spec"]["selector"]["app.kubernetes.io/component"]
+            assert component in _HOST_COMPONENTS, service["metadata"]["name"]
 
 
 def test_a_rule_widening_an_existing_policy_fails_too():
