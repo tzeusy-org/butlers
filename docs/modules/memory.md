@@ -87,14 +87,13 @@ deriving authority only from the routing context. This applies to
 | --- | --- | --- | --- |
 | owner-class | owner-class | the writer's class | a normal fact |
 | owner-class or `system` | `third_party`, `mixed` | `mixed`, same sender | "partly reported by" the sender, held, with a Vouch action |
-| owner-class | NULL | `mixed` | "partly reported by a third party", held, with a Vouch action |
+| owner-class or `system` | NULL | `mixed` | "partly reported by a third party", held, with a Vouch action |
 | owner-class | `system` | `system` | unlabelled, not held, not a Profile Fact |
-| `system` | owner-class, `system`, NULL | `system` | unlabelled, not held, not a Profile Fact |
+| `system` | owner-class, `system` | `system` | unlabelled, not held, not a Profile Fact |
 
-The label on an owner's successor of a NULL row may overstate it, because a legacy row's
-source is unknown; a vouch resolves the hold. A `system` writer over a NULL row is an accepted
-exception to RFC 0038 S1: the successor loses the "source unverified" label, later owner edits
-keep it `system`, and it still reads as unclean. "Not held" in the rules below describes NULL and `system`
+The label on a successor of a NULL row may overstate it, because a legacy row's source is
+unknown; a vouch resolves the hold. A dashboard edit is a `system` writer, so a dashboard edit
+of a legacy NULL row is held too. "Not held" in the rules below describes NULL and `system`
 rows themselves, not a `mixed` successor. A vouch does not carry: a vouched fact's successor
 has no `endorsed_at`, so it is held again after the next edit.
 

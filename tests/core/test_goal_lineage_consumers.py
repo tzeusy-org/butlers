@@ -113,7 +113,7 @@ def test_carrying_forward_refuses_a_source_that_did_not_select_its_stamp(missing
         ("third_party", "system", "mixed"),
         ("mixed", "system", "mixed"),
         ("system", "system", "system"),
-        (None, "system", "system"),
+        (None, "system", "mixed"),
         ("owner", "system", "system"),
         ("third_party", "third_party", "third_party"),
         ("owner", "third_party", "third_party"),

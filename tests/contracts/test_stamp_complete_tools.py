@@ -753,7 +753,7 @@ _SUCCESSOR_RULE = [
     ("system", "third_party", "mixed", True),
     ("system", "mixed", "mixed", True),
     ("system", "system", "system", False),
-    ("system", None, "system", False),
+    ("system", None, "mixed", False),
     ("system", "owner", "system", False),
     ("routed_owner", "owner", "owner", False),
     ("routed_owner", "owner_device", "owner", False),
@@ -827,7 +827,7 @@ async def test_a_legacy_or_system_successor_reads_unclean_through_each_stamped_r
 _STALE_CONDITION = ("condition:stale", "condition", "health", {"name": "a", "status": "active"})
 
 
-async def _superseded_by_owner_row(pool, source_authority: str) -> tuple[dict, dict]:
+async def _superseded_by_owner_row(pool, source_authority: str | None) -> tuple[dict, dict]:
     """A stale condition row whose current successor the owner wrote."""
     stale = await _seed_authority(pool, _STALE_CONDITION, source_authority)
     subject, predicate, scope, metadata = _STALE_CONDITION
@@ -845,13 +845,17 @@ async def _superseded_by_owner_row(pool, source_authority: str) -> tuple[dict, d
     return stale, current
 
 
+@pytest.mark.parametrize(
+    ("writer", "stale_authority"),
+    [("routed_owner", "third_party"), ("routed_owner", None), ("system", None)],
+)
 @_db
 async def test_a_stale_id_cannot_put_a_mixed_successor_over_a_current_owner_fact(
-    stores, monkeypatch
+    stores, monkeypatch, writer, stale_authority
 ):
     monkeypatch.setattr(conditions, "_get_embedding_engine", _engine)
-    stale, current = await _superseded_by_owner_row(stores, "third_party")
-    with _writing_as("routed_owner"), pytest.raises(ValueError, match="cannot supersede"):
+    stale, current = await _superseded_by_owner_row(stores, stale_authority)
+    with _writing_as(writer), pytest.raises(ValueError, match="cannot supersede"):
         await condition_update(stores, str(stale["id"]), notes="edited")
     assert (await _stored(stores, current["id"]))["validity"] == "active"
 

@@ -220,17 +220,14 @@ def successor_authority(
     A successor must not read better than its source (REQ-module-memory-013):
 
     * owner-class over owner-class: the writer's class;
-    * owner-class over ``third_party``, ``mixed`` or NULL: ``mixed``;
+    * owner-class or ``system`` over ``third_party``, ``mixed`` or NULL: ``mixed``;
     * owner-class over ``system``: ``system``;
-    * ``system`` over ``third_party`` or ``mixed``: ``mixed``;
-    * ``system`` over ``system``, NULL or owner-class: ``system``.
+    * ``system`` over ``system`` or owner-class: ``system``.
 
-    Every result but owner over owner reads as unclean (RFC 0038 D6). An owner-class writer
-    over a NULL source gives ``mixed`` rather than ``system``, since a ``system`` fact renders
-    unlabelled and an owner's routine edit must not remove the only warning on legacy text that
-    may be a stranger's. A ``system`` writer over NULL is the one exception: it stores ``system``
-    and does remove that warning, which departs from RFC 0038 S1 and is recorded in
-    REQ-module-memory-013.
+    Every result but owner over owner reads as unclean (RFC 0038 D6). A NULL source gives
+    ``mixed`` under either writer rather than ``system``, since a ``system`` fact renders
+    unlabelled and a routine edit must not remove the only warning on legacy text that may be a
+    stranger's (RFC 0038 S1: unknown provenance does not improve).
 
     This differs from ``combine_authorities``, where ``owner`` with ``system`` evidence is
     ``mixed``: consolidation restates several rows in new words and cannot say whose a claim
@@ -241,11 +238,11 @@ def successor_authority(
         return writer
     if source_authority in (THIRD_PARTY, MIXED):
         return ContentAuthority(MIXED, source_entity_id)
+    if source_authority is None:
+        return ContentAuthority(MIXED)
     if writer.authority == SYSTEM or is_owner_class(source_authority):
         return writer
-    if source_authority == SYSTEM:
-        return ContentAuthority(SYSTEM)
-    return ContentAuthority(MIXED)
+    return ContentAuthority(SYSTEM)
 
 
 def combine_authorities(authorities: Iterable[str | None]) -> str:
