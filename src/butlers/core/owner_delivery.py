@@ -830,7 +830,8 @@ async def record_holding_reason(conn: Any, subject_id: UUID, receipt: dict[str, 
     if not (
         isinstance(receipt, dict)
         and isinstance(receipt.get("stage"), str)
-        and isinstance(receipt.get("generation"), int)
+        # Exactly int: a bool passes isinstance and then fails the column's number CHECK.
+        and type(receipt.get("generation")) is int
         and isinstance(receipt.get("terms"), list)
     ):
         raise OwnerDeliveryRefused("holding_reason_invalid")
