@@ -27,6 +27,7 @@ from butlers.api.deps import get_db
 from butlers.api.deps import get_db as ingestion_db
 from butlers.modules.memory.consolidation import REAPABLE_EXPIRED_EPISODE_SQL
 from butlers.testing.db_manager import db_manager
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
@@ -2167,6 +2168,12 @@ class _EntityMemoryPool:
         self._fact_update_error = fact_update_error
         self._rebind_receipts = rebind_receipts or []
         self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self)
+
+    def transaction(self) -> AsyncCtx:
+        return AsyncCtx(None)
 
     async def fetchrow(self, query: str, *args: object):
         if "FROM public.entities" in query:

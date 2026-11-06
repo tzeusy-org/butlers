@@ -224,6 +224,14 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **THEN** the merge MUST be refused as tombstoned under the entity locks
 - **AND** both entities MUST be unchanged and no rebind receipt MUST exist
 
+#### Scenario: A forget or delete cannot race a merge or rebind
+
+- **WHEN** a forget or memory entity delete overlaps a merge or rebind of that entity
+- **THEN** it MUST hold the entity row `FOR UPDATE` from before it retires anything until its marker commits
+- **AND** references moved by an operation that finished first MUST be retired with the rest
+- **AND** an operation that waited MUST see the marker and move nothing onto the entity
+- **AND** a memory entity delete that cannot finish MUST write no marker and MUST be retryable
+
 #### Scenario: Downstream merge failure restores the original owner
 
 - **WHEN** a merge fails after owner roles and references have moved inside its transaction

@@ -128,7 +128,7 @@ OTHER_TABLES = {
     # The trip's own entity tables.
     "roster/travel/tools/bookings.py::update_itinerary",
     # A dashboard route that only sets validity on facts.
-    "src/butlers/api/routers/memory.py::delete_entity._retire_facts",
+    "src/butlers/api/routers/memory.py::_retire_entity_facts_for_delete._retire_facts",
     # Credential tables.
     "src/butlers/api/routers/secrets_v2.py::probe_system_credential",
     "src/butlers/api/routers/secrets_v2.py::set_system_credential",
