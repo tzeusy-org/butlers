@@ -120,13 +120,16 @@ _SUBSCRIBER_DDL = (
 _ENTITY_PARITY = """
 SELECT id FROM public.entities
 WHERE merged_into::text IS DISTINCT FROM CASE
-        WHEN metadata ->> 'merged_into' ~ '^[0-9a-fA-F-]{36}$'
+        WHEN metadata ->> 'merged_into' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
         THEN lower(metadata ->> 'merged_into') END
    OR deleted IS DISTINCT FROM (
         metadata ->> 'deleted_at' IS NOT NULL
         OR metadata ->> 'tombstone' IS NOT DISTINCT FROM 'true'
+        OR metadata ->> 'archived' IS NOT DISTINCT FROM 'true'
+        OR metadata ->> 'archived_at' IS NOT NULL
+        OR NOT listed
         OR (metadata ->> 'merged_into' IS NOT NULL
-            AND metadata ->> 'merged_into' !~ '^[0-9a-fA-F-]{36}$'))
+            AND metadata ->> 'merged_into' !~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'))
    OR unidentified IS DISTINCT FROM COALESCE(metadata ->> 'unidentified' = 'true', false)
    OR placeholder_name IS DISTINCT FROM COALESCE(
         canonical_name = 'Unknown (' || (metadata ->> 'source_channel') || ' '
@@ -423,6 +426,8 @@ def test_helper_refuses_an_unsafe_identifier() -> None:
         ("Null delete {u}", {"deleted_at": None}, (None, False, False, False)),
         ("Forgotten {u}", {"tombstone": True}, (None, True, False, False)),
         ("Not forgotten {u}", {"tombstone": False}, (None, False, False, False)),
+        ("Archived {u}", {"archived": True}, (None, True, False, False)),
+        ("Legacy archive {u}", {"archived_at": "2026-11-06"}, (None, True, False, False)),
         ("Bad pointer {u}", {"merged_into": "not-a-uuid"}, (None, True, False, False)),
         ("False pointer {u}", {"merged_into": False}, (None, True, False, False)),
         ("Unidentified {u}", {"unidentified": True}, (None, False, True, False)),
@@ -513,6 +518,33 @@ async def test_a_forgotten_entity_leaves_the_projection(projection: Projection) 
         )
         await projection.caught_up()
         assert not await _projected(subscriber, "public.entities", row_id)
+
+
+async def test_archive_and_unlist_leave_the_projection_and_reversal_returns(
+    projection: Projection,
+) -> None:
+    async with projection.source() as source, projection.subscriber() as subscriber:
+        archived = await _entity(source)
+        unlisted = await _entity(source)
+        await projection.caught_up()
+        await source.execute(
+            "UPDATE public.entities SET metadata = metadata || '{\"archived\": true}'::jsonb "
+            "WHERE id = $1",
+            archived,
+        )
+        await source.execute("UPDATE public.entities SET listed = false WHERE id = $1", unlisted)
+        await projection.caught_up()
+        assert not await _projected(subscriber, "public.entities", archived)
+        assert not await _projected(subscriber, "public.entities", unlisted)
+
+        await source.execute(
+            "UPDATE public.entities SET metadata = metadata - 'archived' WHERE id = $1", archived
+        )
+        await source.execute("UPDATE public.entities SET listed = true WHERE id = $1", unlisted)
+        await projection.caught_up()
+        assert await _projected(subscriber, "public.entities", archived)
+        assert await _projected(subscriber, "public.entities", unlisted)
+        await _assert_parity(source)
 
 
 async def test_a_promoted_sender_stays_out_until_renamed(projection: Projection) -> None:

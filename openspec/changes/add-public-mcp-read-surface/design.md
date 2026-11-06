@@ -80,10 +80,11 @@ plain columns, `merged_into UUID NULL`, `deleted BOOLEAN NOT NULL`,
 `unidentified BOOLEAN NOT NULL` and `placeholder_name BOOLEAN NOT NULL`, and a
 `BEFORE INSERT OR UPDATE` trigger keeps them equal to the JSONB keys, with
 `placeholder_name` true while `canonical_name` still equals the
-`Unknown (<source_channel> <source_value>)` form. [Observed] The dashboard forget
-route marks an entity with `metadata.tombstone` (`roster/relationship/api/router.py:5755`),
-and readers treat any present `merged_into` as a tombstone, so `deleted` is also true for
-`tombstone = 'true'` and for a `merged_into` that is not a UUID, whose column stays NULL.
+`Unknown (<source_channel> <source_value>)` form. [Observed] Other routes hide an entity
+from active surfaces through `tombstone`, `archived`, `archived_at` and `listed`
+(`roster/relationship/api/router.py:1161-1174,5755`, `roster/relationship/tools/contacts.py:336`),
+and readers treat any present `merged_into` as a tombstone, so `deleted` is also true for any
+of those and for a `merged_into` that is not a UUID, whose column stays NULL.
 A contract test proves parity. Existing readers keep reading the JSONB keys; moving them is out of
 scope. The manifest publishes `merged_into` and filters entities on `deleted
 = false AND unidentified = false AND placeholder_name = false`, with the three

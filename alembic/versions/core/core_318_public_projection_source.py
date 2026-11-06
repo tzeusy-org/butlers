@@ -9,8 +9,10 @@ filter needs is kept on the primary as source-owned materializations:
 
 * ``public.entities`` gains ``merged_into``, ``deleted``, ``unidentified`` and
   ``placeholder_name``, which a ``BEFORE`` trigger keeps equal to their ``metadata`` keys and
-  ``canonical_name`` (REQ-public-mcp-projection-007). ``deleted`` also covers the forget route's
-  ``tombstone`` key. Readers treat any present ``merged_into`` as a tombstone, so a value that is
+  ``canonical_name`` (REQ-public-mcp-projection-007). ``deleted`` means hidden from every active
+  surface: it also covers the ``tombstone``, ``archived`` and ``archived_at`` keys and
+  ``listed = false``, as ``_active_entity_condition`` in the relationship router does. Readers
+  treat any present ``merged_into`` as a tombstone, so a value that is
   not a UUID leaves the pointer NULL and sets ``deleted``, which withholds the row without failing
   a write or the backfill.
 * ``public.entity_graph_edges`` gains ``publish_key``, kept by a ``BEFORE`` trigger, because
@@ -63,6 +65,9 @@ def _deleted(row: str) -> str:
     return (
         f"(({row}metadata ->> 'deleted_at') IS NOT NULL "
         f"OR COALESCE(({row}metadata ->> 'tombstone') = 'true', false) "
+        f"OR COALESCE(({row}metadata ->> 'archived') = 'true', false) "
+        f"OR ({row}metadata ->> 'archived_at') IS NOT NULL "
+        f"OR NOT {row}listed "
         f"OR COALESCE(({row}metadata ->> 'merged_into') !~ '{_UUID}', false))"
     )
 

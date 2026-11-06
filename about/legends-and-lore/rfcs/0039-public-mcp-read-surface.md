@@ -402,11 +402,13 @@ same kind uses the same pattern:
   `src/butlers/identity.py:459`). Plain columns `merged_into UUID NULL`,
   `deleted BOOLEAN NOT NULL` and `unidentified BOOLEAN NOT NULL` are kept
   equal to them by a `BEFORE INSERT OR UPDATE` trigger (design.md S1).
-  [Observed] The dashboard forget route marks an entity with a fourth key,
-  `tombstone` (`roster/relationship/api/router.py:5755`), and readers treat
-  any present `merged_into` as a tombstone, so `deleted` is also true for
-  `tombstone = 'true'` and for a `merged_into` that is not a UUID, whose
-  column stays NULL. Either case withholds the row and fails no write.
+  [Observed] Other routes hide an entity from active surfaces through
+  `tombstone`, `archived`, `archived_at` and `listed`
+  (`roster/relationship/api/router.py:1161-1174,5755`,
+  `roster/relationship/tools/contacts.py:336`), and readers treat any present
+  `merged_into` as a tombstone. `deleted` is therefore true for any of those,
+  and for a `merged_into` that is not a UUID, whose column stays NULL. Each
+  case withholds the row and fails no write.
   [Observed] An unknown sender's entity is named `Unknown (<channel>
   <value>)` (`src/butlers/identity.py:1067-1071`), with `source_channel` and
   `source_value` in `metadata` (`identity.py:1208-1210`), and the dashboard

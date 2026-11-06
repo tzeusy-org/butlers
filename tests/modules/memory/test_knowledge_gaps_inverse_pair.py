@@ -212,6 +212,25 @@ async def _internal_edge(pool, left, right, predicate, *, sender=None, **kwargs)
         )
 
 
+async def test_mirrored_sensitive_writes_in_opposite_directions_do_not_deadlock(
+    pool_factory, session_hook
+):
+    """Each write stubs both subjects, and the withheld-count trigger locks a row for each."""
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+
+    async def _writes(subject, target):
+        predicate, _ = await _edge_predicates(pool, symmetric=True)
+        for _ in range(40):
+            await _internal_edge(pool, subject, target, predicate, sender=owner, sensitivity="pii")
+
+    results = await asyncio.gather(
+        _writes(left, right), _writes(right, left), return_exceptions=True
+    )
+    assert results == [None, None]
+
+
 async def _wait_for_advisory_wait(pool, pid):
     """Wait on PostgreSQL's actual lock waiter, never a scheduling sleep assumption."""
     async with asyncio.timeout(10):

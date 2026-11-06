@@ -256,10 +256,10 @@ Scope: v1-mandatory
 - **THEN** the next sweep SHALL rewrite it to match within 15 minutes
 
 ### Requirement: Entity flags are published as columns
-`public.entities` SHALL carry four plain columns maintained on the primary by a trigger on every insert and update: `merged_into` (UUID, nullable) equal to `metadata ->> 'merged_into'` when that value is a UUID and NULL otherwise; `deleted` (BOOLEAN NOT NULL) true exactly when `metadata ->> 'deleted_at'` is not null, `metadata ->> 'tombstone'` is `'true'` (the dashboard forget route), or `metadata ->> 'merged_into'` is present but not a UUID, because readers treat any present value as a tombstone; `unidentified` (BOOLEAN NOT NULL) true exactly when `metadata ->> 'unidentified'` is `'true'`; and `placeholder_name` (BOOLEAN NOT NULL) true exactly when `canonical_name` equals `Unknown (` || `metadata ->> 'source_channel'` || ` ` || `metadata ->> 'source_value'` || `)`, the name an unknown sender's entity is created with. The manifest SHALL publish `id`, `canonical_name`, `entity_type`, `aliases`, `roles` and `merged_into`, plus the filter columns `deleted`, `unidentified` and `placeholder_name`, which no `mcp_read` view returns, filtered to `deleted = false AND unidentified = false AND placeholder_name = false` with all three filter columns in the replica identity and in the column list, and SHALL never publish `metadata`.
+`public.entities` SHALL carry four plain columns maintained on the primary by a trigger on every insert and update: `merged_into` (UUID, nullable) equal to `metadata ->> 'merged_into'` when that value is a UUID and NULL otherwise; `deleted` (BOOLEAN NOT NULL) true exactly when the entity is hidden from active surfaces: `metadata ->> 'deleted_at'` or `metadata ->> 'archived_at'` is not null, `metadata ->> 'tombstone'` (the dashboard forget route) or `metadata ->> 'archived'` (the dashboard archive route) is `'true'`, `listed` is false, or `metadata ->> 'merged_into'` is present but not a UUID, because readers treat any present value as a tombstone; `unidentified` (BOOLEAN NOT NULL) true exactly when `metadata ->> 'unidentified'` is `'true'`; and `placeholder_name` (BOOLEAN NOT NULL) true exactly when `canonical_name` equals `Unknown (` || `metadata ->> 'source_channel'` || ` ` || `metadata ->> 'source_value'` || `)`, the name an unknown sender's entity is created with. The manifest SHALL publish `id`, `canonical_name`, `entity_type`, `aliases`, `roles` and `merged_into`, plus the filter columns `deleted`, `unidentified` and `placeholder_name`, which no `mcp_read` view returns, filtered to `deleted = false AND unidentified = false AND placeholder_name = false` with all three filter columns in the replica identity and in the column list, and SHALL never publish `metadata`.
 
 ID: REQ-public-mcp-projection-007
-Source: RFC 0039 D2 (entity flags) and D4 (relationship row); [Observed] alembic/versions/core/core_002_identity.py:124-127 merge and soft-delete keys in metadata; [Observed] src/butlers/identity.py:1067-1071,1208-1210 unidentified-sender names embed the channel value, kept in `source_channel` and `source_value`; [Observed] src/butlers/api/routers/memory.py:2866-2872 promote clears `unidentified` without renaming; [Observed] roster/relationship/api/router.py:5755 forget sets `tombstone`
+Source: RFC 0039 D2 (entity flags) and D4 (relationship row); [Observed] alembic/versions/core/core_002_identity.py:124-127 merge and soft-delete keys in metadata; [Observed] src/butlers/identity.py:1067-1071,1208-1210 unidentified-sender names embed the channel value, kept in `source_channel` and `source_value`; [Observed] src/butlers/api/routers/memory.py:2866-2872 promote clears `unidentified` without renaming; [Observed] roster/relationship/api/router.py:1161-1174 active-entity predicate; :5755 forget sets `tombstone`; roster/relationship/tools/contacts.py:336 sets `listed`
 Scope: v1-mandatory
 
 #### Scenario: Merge sets the published pointer
@@ -278,6 +278,10 @@ Scope: v1-mandatory
 #### Scenario: A forgotten entity leaves the projection
 - **WHEN** the dashboard forget route sets `metadata.tombstone` to true on the primary
 - **THEN** the entity SHALL be absent from the projection after replication catches up
+
+#### Scenario: An archived or unlisted entity leaves the projection
+- **WHEN** the owner archives an entity, or its `listed` becomes false, on the primary
+- **THEN** the entity SHALL be absent from the projection after replication catches up, and reversing it SHALL publish the entity again
 
 #### Scenario: A malformed merge pointer withholds the entity
 - **WHEN** an entity's `metadata ->> 'merged_into'` is present but not a UUID
