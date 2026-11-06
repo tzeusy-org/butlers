@@ -91,16 +91,22 @@ deriving authority only from the routing context. This applies to
 | owner-class | `system` | `system` | unlabelled, not held, not a Profile Fact |
 | `system` | owner-class, `system`, NULL | `system` | unlabelled, not held, not a Profile Fact |
 
-The label on a successor of a NULL row may overstate it, because a legacy row's source is
-unknown; a vouch resolves the hold. "Not held" in the rules below describes NULL and `system`
+The label on an owner's successor of a NULL row may overstate it, because a legacy row's
+source is unknown; a vouch resolves the hold. A `system` writer over a NULL row is an accepted
+exception to RFC 0038 S1: the successor loses the "source unverified" label, later owner edits
+keep it `system`, and it still reads as unclean. "Not held" in the rules below describes NULL and `system`
 rows themselves, not a `mixed` successor. A vouch does not carry: a vouched fact's successor
 has no `endorsed_at`, so it is held again after the next edit.
 
-`condition_update`, `medication_update`, `gift_update_status` and `task_complete` accept an
-already superseded fact's id. If a current owner-authored fact has replaced it, a `mixed` successor is refused
+`condition_update`, `medication_update` and `task_complete` accept an already superseded
+fact's id. If a current owner-authored fact has replaced it, a `mixed` successor is refused
 ("A non-owner-authored fact cannot supersede an owner-authored fact"). A `system` successor
 is not refused: it replaces the owner's current text with text built from the stale row, and
 reads as unclean.
+
+`gift_update_status` also accepts a superseded id, but it stores a temporal fact, which skips
+supersession and this guard. A stale gift id is never refused and replaces nothing: it adds a
+second active row beside the current one.
 
 Steering memory is gated on that stamp:
 

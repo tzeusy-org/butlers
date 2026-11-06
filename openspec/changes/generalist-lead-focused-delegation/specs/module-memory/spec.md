@@ -83,12 +83,15 @@ resolve to the unknown label (`{world}`, all six categories)
   held facts. The dashboard Confirm action SHALL record its actor (`owner`) in
   `memory_events`; the MCP `memory_confirm` tool records `session`.
 - A fact that keeps a stored fact's text or metadata (a successor) is a carve-out from
-  deriving authority only from the routing context, conforming to RFC 0038 D6 and S1: its
+  deriving authority only from the routing context, conforming to RFC 0038 D6 and, with the exception below, S1: its
   authority SHALL follow from its writer's authority and its source's. An owner-class writer
   SHALL store its own class over an owner-class source, `mixed` over a `third_party`, `mixed`
   or NULL source, and `system` over a `system` source. A `system` writer SHALL store `mixed`
   over a `third_party` or `mixed` source, and `system` over a `system`, NULL or owner-class
-  source. A successor of a `third_party` or `mixed` source SHALL keep its
+  source. A `system` writer over a NULL source is an accepted exception to RFC 0038 S1, under
+  which unknown provenance stays `{world}` and a label only increases: the successor loses the
+  "source unverified" label, and later owner edits keep it `system`. It still reads as unclean
+  under D6. A successor of a `third_party` or `mixed` source SHALL keep its
   `authority_entity_id`. A `mixed` successor is held: "SHALL NOT be held" applies to NULL and
   `system` rows themselves. A successor SHALL NOT inherit `endorsed_at`.
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.

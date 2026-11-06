@@ -872,3 +872,41 @@ async def test_a_stale_id_replaces_a_current_owner_fact_with_an_unclean_system_s
     successor = await _stored(stores, result["id"])
     assert successor["content_authority"] == "system"
     assert _row_account(successor).owner_untainted is False
+
+
+@pytest.mark.parametrize(("source", "stored"), [("owner", "owner"), ("third_party", "mixed")])
+@_db
+async def test_a_stale_gift_id_adds_a_second_active_row_and_is_never_refused(
+    stores, monkeypatch, source, stored
+):
+    """A gift is a temporal fact, so it skips supersession and the guard."""
+    monkeypatch.setattr(gifts, "_get_embedding_engine", _engine)
+    subject = f"entity:{_ENTITY}:gift:stale"
+    seed = (subject, "gift", "relationship", {"status": "idea"})
+    stale = await _seed_authority(stores, seed, source)
+    with _writing_as("routed_owner"):
+        current = await gift_update_status(stores, stale["id"], "purchased")
+        second = await gift_update_status(stores, stale["id"], "wrapped")
+    for result in (current, second):
+        row = await _stored(stores, result["id"])
+        assert (row["validity"], row["content_authority"]) == ("active", stored)
+    assert (
+        await stores.fetchval(
+            "SELECT count(*) FROM facts WHERE subject = $1 AND validity = 'active'", subject
+        )
+        == 2
+    )
+
+
+@_db
+async def test_a_vouch_does_not_carry_to_the_successor(stores, monkeypatch):
+    monkeypatch.setattr(tasks, "_get_embedding_engine", _engine)
+    seed = (f"contact:{_ENTITY}:task:vouched", "contact_task", "relationship", {})
+    source = await _seed_authority(stores, seed, "third_party")
+    await stores.execute("UPDATE facts SET endorsed_at = now() WHERE id = $1", source["id"])
+    with _writing_as("routed_owner"):
+        result = await task_complete(stores, source["id"])
+    assert (
+        await stores.fetchval("SELECT endorsed_at FROM facts WHERE id = $1", result["id"]) is None
+    )
+    assert await stores.fetchval(f"SELECT {HELD_FACT_SQL} FROM facts WHERE id = $1", result["id"])
