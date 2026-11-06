@@ -30,6 +30,7 @@ from butlers.core.general_settings import load_general_settings, resolve_general
 from butlers.core.health_baseline_metrics import METRICS as BASELINE_METRICS
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
+from butlers.modules.memory.storage import StaleSupersessionTargetError
 from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
@@ -79,6 +80,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/health", tags=["health"])
 
 BUTLER_DB = "health"
+
+
+def _stale_edit_conflict() -> HTTPException:
+    """409 for an edit whose record changed after the caller read it."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="The record changed since it was read. Reload it and apply the edit again.",
+    )
 
 
 def _pool(db: DatabaseManager):
@@ -921,8 +930,8 @@ async def update_medication(
 
     Only the supplied (non-null) fields are merged into the existing medication
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the medication does not exist and 422 if
-    no updatable fields were provided.
+    fact is superseded.  Returns 404 if the medication does not exist, 409 if it changed
+    since it was read, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import medication_update
 
@@ -935,6 +944,8 @@ async def update_medication(
         )
     try:
         result = await medication_update(pool, medication_id, **updates)
+    except StaleSupersessionTargetError as exc:
+        raise _stale_edit_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _medication_response(result)
@@ -1087,8 +1098,8 @@ async def update_condition(
 
     Only the supplied (non-null) fields are merged into the existing condition
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the condition does not exist and 422 if
-    no updatable fields were provided.
+    fact is superseded.  Returns 404 if the condition does not exist, 409 if it changed since it was
+    read, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import condition_update
 
@@ -1101,6 +1112,8 @@ async def update_condition(
         )
     try:
         result = await condition_update(pool, condition_id, **updates)
+    except StaleSupersessionTargetError as exc:
+        raise _stale_edit_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _condition_response(result)
