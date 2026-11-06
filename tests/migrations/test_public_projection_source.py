@@ -950,8 +950,32 @@ async def test_only_a_count_change_waits_on_the_source_lock(projection: Projecti
             sensitivity="pii",
         )
 
-        blocked = asyncio.create_task(
-            withhold_entity_graph_edge(
+        # The lock is taken at commit, so an open transaction neither waits nor holds it.
+        await source.execute("BEGIN")
+        await withhold_entity_graph_edge(
+            source,
+            source_schema="general",
+            source_table="facts",
+            source_id=uuid.uuid4(),
+            subject_entity_id=person,
+            sensitivity="pii",
+        )
+        blocked = asyncio.create_task(source.execute("COMMIT"))
+        done, _ = await asyncio.wait({blocked}, timeout=0.5)
+        assert not done
+        await holder.execute("COMMIT")
+        await blocked
+        await _assert_parity(source)
+
+
+async def test_a_stub_written_and_its_entity_deleted_in_one_transaction_commits(
+    projection: Projection,
+) -> None:
+    """The deferred count must not insert for an entity the transaction already removed."""
+    async with projection.source() as source:
+        person = await _entity(source)
+        async with source.transaction():
+            await withhold_entity_graph_edge(
                 source,
                 source_schema="general",
                 source_table="facts",
@@ -959,11 +983,55 @@ async def test_only_a_count_change_waits_on_the_source_lock(projection: Projecti
                 subject_entity_id=person,
                 sensitivity="pii",
             )
+            await source.execute("DELETE FROM public.entities WHERE id = $1", person)
+        await _assert_parity(source)
+
+
+async def test_a_rolled_back_savepoint_takes_its_count_with_it(projection: Projection) -> None:
+    async with projection.source() as source:
+        person = await _entity(source)
+        async with source.transaction():
+            with pytest.raises(RuntimeError):
+                async with source.transaction():
+                    await withhold_entity_graph_edge(
+                        source,
+                        source_schema="general",
+                        source_table="facts",
+                        source_id=uuid.uuid4(),
+                        subject_entity_id=person,
+                        sensitivity="pii",
+                    )
+                    raise RuntimeError("roll back to the savepoint")
+        assert not await source.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.entity_graph_withheld_counts WHERE entity_id = $1)",
+            person,
         )
-        done, _ = await asyncio.wait({blocked}, timeout=0.5)
-        assert not done
-        await holder.execute("COMMIT")
-        await blocked
+        await _assert_parity(source)
+
+
+async def test_hard_entity_deletes_spanning_sources_take_no_source_lock(
+    projection: Projection,
+) -> None:
+    """Two deletes in opposite source order would otherwise deadlock at commit."""
+    async with projection.source() as source, projection.source() as holder:
+        person = await _entity(source)
+        for schema in ("general", "home"):
+            await withhold_entity_graph_edge(
+                source,
+                source_schema=schema,
+                source_table="facts",
+                source_id=uuid.uuid4(),
+                subject_entity_id=person,
+                sensitivity="pii",
+            )
+        await holder.execute("BEGIN")
+        await holder.execute(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended('butlers:entity-graph-withheld:general.facts', 0))"
+        )
+        async with asyncio.timeout(5):
+            await source.execute("DELETE FROM public.entities WHERE id = $1", person)
+        await holder.execute("ROLLBACK")
         await _assert_parity(source)
 
 
@@ -1052,7 +1120,7 @@ async def test_every_published_edge_has_a_published_source_fact(projection: Proj
 # -- Migration shape ------------------------------------------------------------------------------
 
 
-def test_core_319_replaces_the_shared_trigger_and_only_the_last_schema_restores_it(
+def test_core_319_defers_the_shared_trigger_and_only_the_last_schema_restores_it(
     logical_postgres: object,
 ) -> None:
     url = create_migrated_test_db(
@@ -1063,14 +1131,18 @@ def test_core_319_replaces_the_shared_trigger_and_only_the_last_schema_restores_
     )
     asyncio.run(run_migrations(url, chain="core", schema="home"))
 
-    async def _takes_source_lock() -> bool:
+    async def _takes_source_lock_at_commit() -> tuple[bool, bool]:
         conn = await asyncpg.connect(url)
         try:
             body = await conn.fetchval(
                 "SELECT prosrc FROM pg_proc "
                 "WHERE oid = 'public.entity_graph_edges_sync_withheld_counts()'::regprocedure"
             )
-            return "pg_advisory_xact_lock" in body
+            deferred = await conn.fetchval(
+                "SELECT tgdeferrable AND tginitdeferred FROM pg_trigger "
+                "WHERE tgname = 'trg_entity_graph_edges_withheld_counts'"
+            )
+            return "pg_advisory_xact_lock" in body, deferred
         finally:
             await conn.close()
 
@@ -1078,11 +1150,11 @@ def test_core_319_replaces_the_shared_trigger_and_only_the_last_schema_restores_
         config = _build_alembic_config(url, chains=["core"], target_schema=schema)
         command.downgrade(config, "core@core_318")
 
-    assert asyncio.run(_takes_source_lock())
+    assert asyncio.run(_takes_source_lock_at_commit()) == (True, True)
     _downgrade("home")
-    assert asyncio.run(_takes_source_lock())
+    assert asyncio.run(_takes_source_lock_at_commit()) == (True, True)
     _downgrade("general")
-    assert not asyncio.run(_takes_source_lock())
+    assert asyncio.run(_takes_source_lock_at_commit()) == (False, False)
 
 
 def test_core_318_backfills_existing_rows_once_and_downgrades_last(

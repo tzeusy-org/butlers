@@ -262,14 +262,14 @@ async def test_batch_retractions_in_opposite_subject_order_do_not_deadlock(
 
         opposite = asyncio.create_task(_opposite_order())
 
-        async def _second_is_waiting() -> bool:
-            return await pool.fetchval(
+        async def _second_is_waiting_or_done() -> bool:
+            return opposite.done() or await pool.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND NOT granted)",
                 second_pid,
             )
 
         async with asyncio.timeout(10):
-            await poll_until(_second_is_waiting, interval_s=0.01)
+            await poll_until(_second_is_waiting_or_done, interval_s=0.01)
         await storage.cascade_fact_retraction(first, [right_second])
         await first_tx.commit()
         await opposite
@@ -279,6 +279,44 @@ async def test_batch_retractions_in_opposite_subject_order_do_not_deadlock(
         [left, right],
     )
     assert remaining == []
+
+
+async def test_a_mirrored_write_and_a_retraction_of_its_inverse_fact_both_commit(
+    pool_factory, session_hook
+):
+    """The writer waits on the fact row; the retractor must not then wait on anything it holds."""
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    predicate, _ = await _edge_predicates(pool, symmetric=True)
+    await _internal_edge(pool, left, right, predicate, sender=owner, sensitivity="pii")
+    inverse = await pool.fetchval(
+        "SELECT id FROM facts WHERE entity_id = $1 AND object_entity_id = $2",
+        right,
+        left,
+    )
+
+    async with pool.acquire() as retractor:
+        retractor_pid = await retractor.fetchval("SELECT pg_backend_pid()")
+        transaction = retractor.transaction()
+        await transaction.start()
+        await retractor.execute("UPDATE facts SET validity = 'retracted' WHERE id = $1", inverse)
+        writer = asyncio.create_task(
+            _internal_edge(pool, left, right, predicate, sender=owner, sensitivity="pii")
+        )
+
+        async def _writer_is_blocked() -> bool:
+            return await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                "WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                retractor_pid,
+            )
+
+        async with asyncio.timeout(10):
+            await poll_until(_writer_is_blocked, interval_s=0.01)
+        await storage.cascade_fact_retraction(retractor, [inverse])
+        await transaction.commit()
+        await writer
 
 
 async def _wait_for_advisory_wait(pool, pid):

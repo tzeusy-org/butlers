@@ -4,23 +4,24 @@ Revision ID: core_319
 Revises: core_318
 Create Date: 2026-11-07 00:00:00.000000
 
-The ``AFTER`` trigger from core_318 locks one ``public.entity_graph_withheld_counts`` row per
-subject, in whatever order a transaction's edge writes arrive. Mirrored ``store_fact`` writes and
-batch retractions touching the same two entities in opposite order therefore deadlocked. Every
-edge writer goes through this trigger, so the lock belongs here: once a write changes a count, the
-transaction holds one advisory lock per ``source_key`` until it ends, and row order within a source
-stops mattering. An edge write that changes no count takes no lock.
+The row-level trigger from core_318 locked one ``public.entity_graph_withheld_counts`` row per
+subject as each edge write arrived, so batch retractions over the same two entities in opposite
+order deadlocked. It is now a deferred constraint trigger that first takes one advisory lock per
+``source_key``. It fires at commit, so that lock is the last a transaction takes: nothing waits on
+another lock while holding it, and it is never held across ``store_fact``'s embedding. Row order
+within a source stops mattering, for every edge writer.
 
-A transaction changing the counts of two sources takes those locks in arrival order, so two such
-transactions can still deadlock against each other. ``store_fact``, batch retraction and entity
-merge each stay within one source; a hard delete of an entity, cascading over its edges, does not.
+Counts therefore change at commit, not at the edge write. No code reads them inside a writing
+transaction. An edge write that changes no count takes no lock.
 
-``store_fact`` embeds the inverse fact after its forward stub, so a mirrored sensitive write holds
-this lock across that embedding.
+A count for an entity deleted in the same transaction is skipped without a lock: its counts were
+cascaded away, and inserting one would fail the foreign key at commit. So a hard delete, the one
+writer that spans sources, locks nothing here. Otherwise a transaction changing two sources' counts
+takes those locks in arrival order.
 
-The core chain runs once per butler schema over this one shared function. Replacing it is
-idempotent, and only the last schema still at core_319 restores the core_318 body (core_308
-pattern).
+The core chain runs once per butler schema over these shared objects. Replacing them is idempotent,
+later schemas take no table lock, and only the last schema still at core_319 restores core_318's
+function and trigger (core_308 pattern).
 """
 
 from __future__ import annotations
@@ -34,7 +35,22 @@ depends_on = None
 
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_319:withheld-count-lock', 0))"
 _COUNTS = "public.entity_graph_withheld_counts"
+_TRIGGER = "trg_entity_graph_edges_withheld_counts"
+_EDGES = "public.entity_graph_edges"
+_FUNCTION = "public.entity_graph_edges_sync_withheld_counts()"
 _SOURCE_LOCK = """
+            IF old_entity IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM public.entities WHERE id = old_entity
+            ) THEN
+                old_entity := NULL;
+                old_key := NULL;
+            END IF;
+            IF new_entity IS NOT NULL AND NOT EXISTS (
+                SELECT 1 FROM public.entities WHERE id = new_entity
+            ) THEN
+                new_entity := NULL;
+                new_key := NULL;
+            END IF;
             PERFORM pg_advisory_xact_lock(
                 hashtextextended('butlers:entity-graph-withheld:' || source_key, 0)
             )
@@ -91,9 +107,33 @@ def _replace_function(source_lock: str) -> None:
     )
 
 
+def _trigger_is_deferred() -> bool:
+    return bool(
+        op.get_bind()
+        .exec_driver_sql(
+            f"""
+            SELECT tgdeferrable FROM pg_trigger
+            WHERE tgrelid = '{_EDGES}'::regclass AND tgname = '{_TRIGGER}'
+            """
+        )
+        .scalar()
+    )
+
+
 def upgrade() -> None:
     op.execute(_LOCK)
+    if _trigger_is_deferred():
+        return
     _replace_function(_SOURCE_LOCK)
+    op.execute(f"DROP TRIGGER {_TRIGGER} ON {_EDGES}")
+    op.execute(
+        f"""
+        CREATE CONSTRAINT TRIGGER {_TRIGGER}
+        AFTER INSERT OR UPDATE OR DELETE ON {_EDGES}
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION {_FUNCTION}
+        """
+    )
 
 
 def _core_319_installation_count() -> int:
@@ -132,3 +172,11 @@ def downgrade() -> None:
     if _core_319_installation_count() > 1:
         return
     _replace_function("")
+    op.execute(f"DROP TRIGGER {_TRIGGER} ON {_EDGES}")
+    op.execute(
+        f"""
+        CREATE TRIGGER {_TRIGGER}
+        AFTER INSERT OR UPDATE OR DELETE ON {_EDGES}
+        FOR EACH ROW EXECUTE FUNCTION {_FUNCTION}
+        """
+    )
