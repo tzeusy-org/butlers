@@ -88,9 +88,9 @@ Three kinds of path stay out of that chain. `defer_pending_action` takes the act
 RFC 0023 rows, and never the subject (its already-expired branch is a decision and does).
 `heartbeat` and `record_prestart_retry` touch one RFC 0023 presentation row, so they hold nothing
 else while waiting on it. `claim_next` also takes one row, with `SKIP LOCKED`, so it never waits.
-`cancel_ineligible_presentations` takes no action, subject or intent lock either, but it updates
-several presentation rows in one unordered statement, so it can hold one row while waiting on
-another. No test forces that, and bu-dhloi1.75 tracks it.
+`cancel_ineligible_presentations` takes no action, subject or intent lock either. It can update
+several presentation rows in one statement, but it skips a locked row and takes it on a later
+tick, so it waits on nothing.
 `cancel_goal_effects` decides its actions in id order, whatever order it is handed them.
 `tests/integration/test_owner_delivery_lock_order.py` forces these interleavings for single-card
 paths. It does not force cohort cards, which take several actions in id order.

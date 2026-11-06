@@ -186,10 +186,10 @@ class ApprovalDeliveryRepository:
     async def cancel_ineligible_presentations(self) -> int:
         """Cancel only presentation recovery; never transition a domain action.
 
-        Each statement updates several rows outside the action lock that serializes every
-        other multi-row writer of them, so it skips locked rows rather than wait: holding one
-        row while waiting on another could deadlock an owner's decision. The next tick takes
-        anything skipped.
+        Each statement updates several rows outside the action or cohort lock that serializes
+        every other multi-row writer of them, so it skips locked rows rather than wait: holding
+        one row while waiting on another could deadlock an owner's decision. The next tick
+        takes anything skipped.
         """
         direct = await self._pool.execute(
             """

@@ -1,7 +1,7 @@
 """The ineligible-presentation sweep never waits on a row, so it is in no lock cycle (bu-dhloi1.75).
 
-It runs outside the action lock that serializes every other multi-row writer of these rows, and
-it updates several rows in one statement. Skipping locked rows is what keeps it out of a cycle.
+It runs outside the action or cohort lock that serializes every other multi-row writer of these
+rows, and it updates several rows in one statement. Skipping locked rows is what keeps it out of a cycle.
 """
 
 from __future__ import annotations
@@ -122,11 +122,24 @@ async def test_sweep_skips_a_held_cohort_card_until_the_next_tick(sweep_pool) ->
     assert dict(row) == {"state": "cancelled", "last_reason_code": "cohort_empty"}
 
 
-async def test_sweep_still_gives_each_terminal_status_its_reason(sweep_pool) -> None:
+@pytest.mark.parametrize(
+    "status, reason",
+    [
+        ("approved", "action_approved"),
+        ("executed", "action_approved"),
+        ("rejected", "action_rejected"),
+        ("cancelled", "action_cancelled"),
+        ("expired", "action_expired"),
+        ("abandoned", "action_abandoned"),
+    ],
+)
+async def test_sweep_still_gives_each_terminal_status_its_reason(
+    sweep_pool, status: str, reason: str
+) -> None:
     """Moving the selection into a locking read must not change what is cancelled, or why."""
     action_id = await _park(sweep_pool)
     await sweep_pool.execute(
-        "UPDATE pending_actions SET status = 'rejected' WHERE id = $1", action_id
+        "UPDATE pending_actions SET status = $2 WHERE id = $1", action_id, status
     )
     repository = ApprovalDeliveryRepository(sweep_pool)
 
@@ -138,7 +151,7 @@ async def test_sweep_still_gives_each_terminal_status_its_reason(sweep_pool) -> 
     )
     assert dict(row) == {
         "state": "cancelled",
-        "last_reason_code": "action_rejected",
+        "last_reason_code": reason,
         "claim_token": None,
         "next_attempt_at": None,
     }
