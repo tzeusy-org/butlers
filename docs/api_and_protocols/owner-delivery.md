@@ -148,8 +148,12 @@ left `pending` mints nothing, so a retry renders Open only rather than a second 
 The dashboard dossier is a presentation too: for a pending action, `GET /api/approvals/{id}`
 from the owner's session returns `owner_delivery: {subject_id, generation, approve_token,
 reject_token}` (null while off, for connector reads and review sources, or on any failure).
-Every render is a delivery into the owner's authenticated response and carries its own
-tokens. The dossier's and the review dialog's Approve, and the dossier's Deny, post those tokens to
+A render is a delivery into the owner's authenticated response. Token rows are durable, so a
+render reuses the pair this API process last minted for the subject while the ledger says both
+can still be redeemed, and page views don't grow the table. The ledger stores only verifiers, so
+the raw pair stays in process memory (at most 1024 cards, oldest evicted, never logged). A restart
+or eviction mints a new pair, and an earlier pair stays redeemable until its action closes or it
+expires. The dossier's and the review dialog's Approve, and the dossier's Deny, post those tokens to
 `POST /actions` when the detail carries them; a refusal is shown and the dossier re-read, never
 retried on another route. With no tokens (rollout off, or a read that failed closed) they use
 the displayed-call routes, whose decision still closes the subject. So do the one-tap Deny

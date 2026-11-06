@@ -31,7 +31,7 @@ import hashlib
 import hmac
 import json
 import secrets
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Final, Literal
@@ -134,7 +134,7 @@ class Presentation:
     generation: int
     surface: str
     state: str
-    #: Fresh tokens by action; empty when the presentation was already handed off.
+    #: Tokens by action; empty when the presentation was already handed off.
     tokens: dict[str, str] = field(default_factory=dict)
 
 
@@ -371,6 +371,24 @@ async def present(
 #: (``tests/core/test_owner_delivery_lock_order.py`` and the PG races in
 #: ``tests/integration/test_owner_delivery_ledger.py``).
 LOCK_ORDER: Final = ("authority", "subject", "rfc0023", "presentation|token")
+
+
+async def tokens_redeemable(
+    conn: Any, subject_id: UUID, generation: int, tokens: Iterable[str]
+) -> bool:
+    """Whether every token is this subject's and generation's, unspent and unexpired."""
+    verifiers = [token_verifier(token) for token in tokens]
+    if not verifiers or None in verifiers:
+        return False
+    live = await conn.fetchval(
+        "SELECT count(*) FROM public.owner_delivery_tokens "
+        "WHERE subject_id = $1 AND generation = $2 AND verifier = ANY($3::text[]) "
+        "AND consumed_at IS NULL AND expires_at > clock_timestamp()",
+        subject_id,
+        generation,
+        verifiers,
+    )
+    return live == len(verifiers)
 
 
 async def lock_subject_of(conn: Any, presentation_id: UUID) -> bool:
@@ -883,6 +901,7 @@ __all__ = [
     "ACTIONS",
     "LOCK_ORDER",
     "lock_subject_of",
+    "tokens_redeemable",
     "append_receipt",
     "DeliveryInputs",
     "delivery_inputs",

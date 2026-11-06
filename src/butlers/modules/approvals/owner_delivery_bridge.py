@@ -25,6 +25,9 @@ APPROVAL_ACTIONS: tuple[od.Action, ...] = ("approve", "reject")
 #: Bound for a token whose action has no expiry of its own.
 _DEFAULT_TOKEN_TTL = timedelta(hours=72)
 _DASHBOARD_ROUTE = "owner:dashboard"
+#: Oldest first. A card evicted here mints again on its next render, which is only a few rows.
+_DASHBOARD_PRESENTATIONS_KEPT = 1024
+_dashboard_presentations: dict[uuid.UUID, od.Presentation] = {}
 
 #: ``pending_actions.status`` -> the subject state parity expects.
 _EXPECTED_SUBJECT = {
@@ -176,10 +179,24 @@ async def owner_presentation_for(
 
 
 async def present_on_dashboard(conn: Any, action: Mapping[str, Any]) -> od.Presentation | None:
-    """The dashboard presentation of a pending action with fresh tokens, when enabled."""
+    """The dashboard presentation of a pending action with live tokens, when enabled.
+
+    Token rows are durable and a page view is not a decision, so a render reuses the tokens
+    this process last minted for the subject while the ledger says they can still be
+    redeemed. The ledger stores only verifiers, so the raw tokens are kept in memory, as long
+    as the card is live and never written anywhere. A restart or eviction mints again.
+    Call with the action row locked: that serializes renders of one action.
+    """
     if action.get("status") != "pending" or not await od.rollout_enabled(conn):
         return None
     subject = await open_approval_subject(conn, action)
+    kept = _dashboard_presentations.get(subject.id)
+    if kept is not None:
+        if kept.generation == subject.generation and await od.tokens_redeemable(
+            conn, subject.id, kept.generation, kept.tokens.values()
+        ):
+            return kept
+        del _dashboard_presentations[subject.id]
     now = await conn.fetchval("SELECT clock_timestamp()")
     presentation = await od.present(
         conn,
@@ -190,6 +207,10 @@ async def present_on_dashboard(conn: Any, action: Mapping[str, Any]) -> od.Prese
         expires_at=token_expiry(action, now),
     )
     await _map(conn, store="approval_action", source_id=str(action["id"]), subject_id=subject.id)
+    if presentation.tokens:
+        while len(_dashboard_presentations) >= _DASHBOARD_PRESENTATIONS_KEPT:
+            del _dashboard_presentations[next(iter(_dashboard_presentations))]
+        _dashboard_presentations[subject.id] = presentation
     return presentation
 
 
