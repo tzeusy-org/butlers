@@ -32,12 +32,12 @@ def _merge_refusal_message(classification: str, source_id: uuid.UUID, target_id:
             "Use contact_search(query=<name>) to find the correct contact ID."
         ),
         "source_tombstoned": (
-            f"Source contact {source_id} was already merged into another contact. "
-            "Use contact_search(query=<name>) to find the surviving contact."
+            f"Source contact {source_id} was already merged or deleted. "
+            "Use contact_search(query=<name>) to look for a live contact; there may be none."
         ),
         "target_tombstoned": (
-            f"Target contact {target_id} was already merged into another contact. "
-            "Use contact_search(query=<name>) to find the surviving contact."
+            f"Target contact {target_id} was already merged or deleted. "
+            "Use contact_search(query=<name>) to look for a live contact; there may be none."
         ),
         "temporal_occurrence_collision": (
             f"Contacts {source_id} and {target_id} hold dated records that would collide "

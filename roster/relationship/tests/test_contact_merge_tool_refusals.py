@@ -32,8 +32,8 @@ async def _call_merge(monkeypatch, error: Exception, source: uuid.UUID, target: 
 @pytest.mark.parametrize(
     "classification,names,hint",
     [
-        ("source_tombstoned", "source", "already merged"),
-        ("target_tombstoned", "target", "already merged"),
+        ("source_tombstoned", "source", "merged or deleted"),
+        ("target_tombstoned", "target", "merged or deleted"),
         ("source_missing", "source", "contact_search"),
         ("target_missing", "target", "contact_search"),
         ("temporal_occurrence_collision", "both", "Resolve the duplicate"),
