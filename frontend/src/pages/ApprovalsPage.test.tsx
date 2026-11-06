@@ -3265,7 +3265,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     await flushUntil(
       () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === pendingId),
     );
-    expect(getApprovalDetail).toHaveBeenCalledWith(pendingId);
+    expect(getApprovalDetail).toHaveBeenCalledWith(pendingId, undefined, { statusOnly: true });
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
     expect(findButton(container, "Defer")).toBeUndefined();
