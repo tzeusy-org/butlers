@@ -28,7 +28,7 @@ _FAILED_RETRY_BACKOFF_S = 900.0
 _ENTITY_MERGED_INTO_SQL = "SELECT metadata->>'merged_into' FROM public.entities WHERE id = $1"
 _ENTITY_LOCK_SQL = """
     SELECT metadata->>'merged_into' AS merged_into,
-           metadata->>'tombstone' = 'true' OR metadata ? 'deleted_at' AS forgotten
+           metadata->>'tombstone' = 'true' OR metadata->>'deleted_at' IS NOT NULL AS forgotten
     FROM public.entities
     WHERE id = $1
     FOR KEY SHARE

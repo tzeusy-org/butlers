@@ -302,6 +302,8 @@ async def test_a_contact_merge_and_an_entity_merge_cannot_deadlock(rel_pool, mon
         "SELECT subject, object FROM relationship.entity_facts WHERE id = $1", linking_fact
     )
     assert (moved["subject"], moved["object"]) == (d, str(b))
+
+
 async def test_a_failed_local_rebind_is_named_in_the_contact_merge_log(
     rel_pool, monkeypatch, caplog
 ):
