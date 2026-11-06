@@ -1699,3 +1699,183 @@ async def test_redeem_refuses_a_foreign_token_on_a_pool_that_bypasses_row_securi
 
     assert (redeemed.outcome, redeemed.reason) == ("refused", "subject_mismatch")
     await _assert_foreign_card_untouched(owner, foreign)
+
+
+# The typed inputs later lanes read: the broker's hold receipt and ``delivery_inputs``.
+_HOLD = {"stage": "owner_policy", "terms": [{"kind": "synthetic"}], "generation": 3}
+
+
+async def _holding_reason(pool: asyncpg.Pool, subject_id: uuid.UUID) -> Any:
+    return await pool.fetchval(
+        "SELECT holding_reason FROM public.owner_delivery_subjects WHERE id = $1", subject_id
+    )
+
+
+@pytest.mark.parametrize("codec", [True, False], ids=["jsonb codec", "no jsonb codec"])
+async def test_holding_reason_is_stored_as_an_object_and_reads_back_typed(
+    ledger_pool, codec: bool
+) -> None:
+    """Passed as a text parameter, the codec cannot encode the receipt a second time."""
+    subject, _ = await _present(ledger_pool, await _park(ledger_pool))
+
+    async with ledger_pool.acquire() as conn:
+        if not codec:
+            await conn.reset_type_codec("jsonb", schema="pg_catalog")
+        try:
+            await od.record_holding_reason(conn, subject.id, _HOLD)
+            inputs = await od.delivery_inputs(conn, subject.id)
+            stored = await conn.fetchrow(
+                "SELECT jsonb_typeof(holding_reason) AS kind, holding_reason ->> 'stage' AS stage "
+                "FROM public.owner_delivery_subjects WHERE id = $1",
+                subject.id,
+            )
+        finally:
+            await register_jsonb_codec(conn)
+
+    assert inputs is not None and inputs.holding_reason == _HOLD
+    assert dict(stored) == {"kind": "object", "stage": "owner_policy"}
+
+
+async def test_a_later_hold_replaces_the_earlier_one(ledger_pool) -> None:
+    subject, _ = await _present(ledger_pool, await _park(ledger_pool))
+    later = {**_HOLD, "generation": 4}
+
+    async with ledger_pool.acquire() as conn:
+        await od.record_holding_reason(conn, subject.id, _HOLD)
+        await od.record_holding_reason(conn, subject.id, later)
+        inputs = await od.delivery_inputs(conn, subject.id)
+
+    assert inputs is not None and inputs.holding_reason == later
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        pytest.param("owner_policy", id="not an object"),
+        pytest.param({"terms": [], "generation": 1}, id="no stage"),
+        pytest.param({"stage": 1, "terms": [], "generation": 1}, id="stage not text"),
+        pytest.param({"stage": "s", "terms": []}, id="no generation"),
+        pytest.param({"stage": "s", "terms": [], "generation": "1"}, id="generation text"),
+        pytest.param({"stage": "s", "terms": [], "generation": True}, id="generation bool"),
+        pytest.param({"stage": "s", "generation": 1}, id="no terms"),
+        pytest.param({"stage": "s", "terms": {}, "generation": 1}, id="terms not a list"),
+    ],
+)
+async def test_a_malformed_hold_receipt_is_refused_by_name_and_stores_nothing(
+    ledger_pool, receipt: Any
+) -> None:
+    subject, _ = await _present(ledger_pool, await _park(ledger_pool))
+
+    async with ledger_pool.acquire() as conn:
+        with pytest.raises(od.OwnerDeliveryRefused) as refused:
+            await od.record_holding_reason(conn, subject.id, receipt)
+
+    assert refused.value.reason == "holding_reason_invalid"
+    assert await _holding_reason(ledger_pool, subject.id) is None
+
+
+@pytest.mark.parametrize(
+    "status, state",
+    [("rejected", "decided"), ("expired", "expired"), ("cancelled", "cancelled")],
+)
+async def test_a_hold_on_a_closed_subject_changes_nothing(
+    ledger_pool, status: str, state: str
+) -> None:
+    """The frozen-subject trigger would raise, so the write must not reach a closed row."""
+    subject, _ = await _present(ledger_pool, await _park(ledger_pool))
+
+    async with ledger_pool.acquire() as conn:
+        await od.record_holding_reason(conn, subject.id, _HOLD)
+        async with conn.transaction():
+            await od.close_for_authority(
+                conn, kind="approval", source_ref=subject.source_ref, status=status
+            )
+        await od.record_holding_reason(conn, subject.id, {**_HOLD, "generation": 4})
+        inputs = await od.delivery_inputs(conn, subject.id)
+
+    assert inputs is not None
+    assert (inputs.state, inputs.holding_reason) == (state, _HOLD)
+
+
+async def test_delivery_inputs_reads_the_subject_and_its_current_presentations(
+    ledger_pool,
+) -> None:
+    """The dashboard card counts as sent once rendered; Telegram waits for its handoff."""
+    subject, _ = await _present(
+        ledger_pool, await _park(ledger_pool), "telegram", "dashboard", sent=False
+    )
+
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        # Telegram's row is physically first; an index scan would sort them with no ORDER BY.
+        await conn.execute("SET LOCAL enable_indexscan = off")
+        await conn.execute("SET LOCAL enable_bitmapscan = off")
+        await conn.execute("SET LOCAL enable_indexonlyscan = off")
+        inputs = await od.delivery_inputs(conn, subject.id)
+
+    assert inputs == od.DeliveryInputs(
+        subject.id,
+        "approval",
+        subject.generation,
+        "delivered",
+        None,
+        None,
+        (("dashboard", "sent"), ("telegram", "pending")),
+    )
+
+
+async def test_delivery_inputs_leaves_out_presentations_of_an_earlier_generation(
+    ledger_pool,
+) -> None:
+    action_id = await _park(ledger_pool)
+    subject, _ = await _present(ledger_pool, action_id, "dashboard", "telegram")
+    await ledger_pool.execute(
+        "UPDATE public.owner_delivery_subjects SET generation = generation + 1 WHERE id = $1",
+        subject.id,
+    )
+    await _present(ledger_pool, action_id, "telegram", sent=False)
+
+    async with ledger_pool.acquire() as conn:
+        inputs = await od.delivery_inputs(conn, subject.id)
+
+    assert inputs is not None
+    assert inputs.generation == subject.generation + 1
+    assert inputs.surfaces == (("telegram", "pending"),)
+
+
+async def test_delivery_inputs_of_an_unknown_subject_is_none(ledger_pool) -> None:
+    async with ledger_pool.acquire() as conn:
+        assert await od.delivery_inputs(conn, uuid.uuid4()) is None
+
+
+async def test_no_urgency_class_is_admissible_yet(ledger_pool) -> None:
+    subject, _ = await _present(ledger_pool, await _park(ledger_pool))
+
+    with pytest.raises(asyncpg.CheckViolationError):
+        await ledger_pool.execute(
+            "UPDATE public.owner_delivery_subjects SET urgency_class = 'now' WHERE id = $1",
+            subject.id,
+        )
+
+
+async def test_runtime_role_holds_its_own_subject_and_cannot_reach_another_schemas(
+    role_pools,
+) -> None:
+    owner, runtime = role_pools
+    foreign = await _foreign_subject(owner)
+    own = await owner.fetchval(
+        "INSERT INTO public.owner_delivery_subjects (id, kind, owning_schema, source_ref, "
+        "owner_entity, content_digest, action_digest) SELECT gen_random_uuid(), 'approval', "
+        "'general', 'own-action', owner_entity, content_digest, action_digest "
+        "FROM public.owner_delivery_subjects WHERE id = $1 RETURNING id",
+        foreign,
+    )
+
+    async with runtime.acquire() as conn:
+        await od.record_holding_reason(conn, own, _HOLD)
+        await od.record_holding_reason(conn, foreign, _HOLD)
+        own_inputs = await od.delivery_inputs(conn, own)
+        foreign_inputs = await od.delivery_inputs(conn, foreign)
+
+    assert own_inputs is not None and own_inputs.holding_reason == _HOLD
+    assert foreign_inputs is None
+    assert await _holding_reason(owner, foreign) is None
