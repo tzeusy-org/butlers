@@ -664,17 +664,23 @@ class ApprovalDeliveryRepository:
                     return True
                 attempt_number = int(current["attempt_count"])
                 now = await connection.fetchval("SELECT clock_timestamp()")
+                reason_code = result.reason_code
+                next_attempt_at = None
                 if result.classification == "confirmed":
                     state = "delivered"
-                    next_attempt_at = None
-                elif result.classification == "safe_retry":
+                elif result.classification != "safe_retry":
+                    state = "ambiguous"
+                elif await self._has_later_generation(connection, claim):
+                    # A defer landed while this handoff was out. Its successor owns the retry:
+                    # this row may not rejoin the sendable set, or it would send early and take
+                    # the successor's owner presentation.
+                    state = "superseded"
+                    reason_code = "defer_rescheduled"
+                else:
                     state = "retry_wait"
                     next_attempt_at = now + timedelta(
                         seconds=_backoff_seconds(claim.presentation_key, attempt_number)
                     )
-                else:
-                    state = "ambiguous"
-                    next_attempt_at = None
                 updated = await connection.fetchrow(
                     """
                     UPDATE approval_delivery_presentations
@@ -690,7 +696,7 @@ class ApprovalDeliveryRepository:
                     claim.claim_token,
                     claim.claim_fence,
                     state,
-                    result.reason_code,
+                    reason_code,
                     next_attempt_at,
                     now,
                 )
@@ -707,6 +713,26 @@ class ApprovalDeliveryRepository:
                 )
                 await self._settle_owner_presentation(connection, claim, result)
                 return True
+
+    @staticmethod
+    async def _has_later_generation(connection: Any, claim: DeliveryClaim) -> bool:
+        """Whether this locked row's intent has moved on; a separate read sees a fresh snapshot."""
+        return bool(
+            await connection.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                      FROM approval_delivery_presentations AS this
+                      JOIN approval_delivery_presentations AS later
+                        ON later.intent_id = this.intent_id
+                       AND later.presentation_generation > this.presentation_generation
+                     WHERE this.id = $1 AND this.presentation_generation = $2
+                )
+                """,
+                claim.presentation_id,
+                claim.presentation_generation,
+            )
+        )
 
     @staticmethod
     async def _settle_owner_presentation(

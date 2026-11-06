@@ -823,7 +823,7 @@ async def test_defer_replaces_prestart_generation_at_database_time(
     rows = await delivery_pool.fetch(
         """
         SELECT p.presentation_generation, p.state,
-               p.presentation_key, p.not_before = pa.expires_at AS due_matches_expiry
+               p.presentation_key, p.not_before < pa.expires_at AS decidable_when_due
           FROM approval_delivery_intents AS i
           JOIN pending_actions AS pa ON pa.id = i.action_id
           JOIN approval_delivery_presentations AS p ON p.intent_id = i.id
@@ -834,7 +834,7 @@ async def test_defer_replaces_prestart_generation_at_database_time(
     assert [row["presentation_generation"] for row in rows] == [1, 2]
     assert [row["state"] for row in rows] == ["superseded", "ready"]
     assert rows[1]["presentation_key"] == f"{admission.action_key}:p:2"
-    assert rows[1]["due_matches_expiry"] is True
+    assert rows[1]["decidable_when_due"] is True
     assert await delivery_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
 
 

@@ -149,6 +149,8 @@ Scope: v1-mandatory
 #### Scenario: Dashboard defer schedules a guarded re-presentation
 - **WHEN** an authenticated dashboard actor defers a still-pending action for `1 ≤ hours ≤ 168`
 - **THEN** the same action/intent transaction extends expiry, supersedes an unstarted current presentation, and appends the next presentation generation for `now + hours`
+- **AND** the new expiry is that time plus the action's original decision window, so the re-sent card can still decide; an action with no expiry keeps none
+- **AND** the same transaction stales every owner-delivery token minted so far, so the old card is retracted and the re-sent card carries fresh tokens and its own provider reference
 - **AND** it keeps the logical action key, cannot route through generic notifications, and does not grant the worker ability to defer or schedule future presentations
 
 #### Scenario: Already-executed action is replayed

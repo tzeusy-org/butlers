@@ -687,6 +687,41 @@ async def close_for_authority(
     return retract
 
 
+async def lock_open_subject(conn: Any, *, kind: str, source_ref: str) -> UUID | None:
+    """Lock the current schema's unresolved subject of one authority row, if it has one.
+
+    A store without the ledger (a pre-core_317 schema) has none, as in
+    :func:`close_for_authority`.
+    """
+    if (
+        await conn.fetchval("SELECT to_regclass('public.owner_delivery_subjects') IS NOT NULL")
+        is not True
+    ):
+        return None
+    value = await conn.fetchval(
+        "SELECT id FROM public.owner_delivery_subjects "
+        "WHERE owning_schema = current_schema() AND kind = $1 AND source_ref = $2 "
+        "AND state NOT IN ('decided', 'cancelled', 'expired') FOR UPDATE",
+        kind,
+        source_ref,
+    )
+    return value if isinstance(value, UUID) else None
+
+
+async def advance_generation(conn: Any, subject_id: UUID) -> None:
+    """Move a subject locked by :func:`lock_open_subject` to a new generation, still open.
+
+    Every token minted so far goes stale, so the next presentation on each surface is a new
+    row with fresh tokens and its own provider reference. Sent cards fall to
+    :func:`pending_retractions`; dashboard and unsent rows retract here.
+    """
+    await conn.execute(
+        "UPDATE public.owner_delivery_subjects SET generation = generation + 1 WHERE id = $1",
+        subject_id,
+    )
+    await _retraction_targets(conn, subject_id)
+
+
 async def record_retraction(
     conn: Any, presentation_id: UUID, *, retracted: bool, reason: str | None = None
 ) -> bool:
@@ -883,6 +918,8 @@ async def record_holding_reason(conn: Any, subject_id: UUID, receipt: dict[str, 
 __all__ = [
     "ACTIONS",
     "LOCK_ORDER",
+    "advance_generation",
+    "lock_open_subject",
     "lock_subject_of",
     "append_receipt",
     "DeliveryInputs",

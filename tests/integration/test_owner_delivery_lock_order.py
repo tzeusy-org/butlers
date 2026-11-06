@@ -71,6 +71,7 @@ _ON_MARKER_ACTION = "FOR UPDATE OF pa"
 _ON_DECISION_ACTION = "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE"
 _ON_SUBJECT = "FROM public.owner_delivery_subjects WHERE id = $1 FOR UPDATE"
 _ON_SUBJECT_CLOSE = "UPDATE public.owner_delivery_subjects SET state = $3"
+_ON_SUBJECT_DEFER = "AND source_ref = $2 AND state NOT IN ('decided', 'cancelled', 'expired') FOR"
 _ON_INTENT = "FROM approval_delivery_intents WHERE action_id = $1 FOR UPDATE"
 _ON_RFC_DEFER = "FROM approval_delivery_presentations AS p WHERE p.intent_id = $1"
 _ON_RFC_RESULT = "state = 'handoff_started' FOR UPDATE"
@@ -319,14 +320,20 @@ async def test_result_holding_the_subject_queues_a_decision_holding_the_action(
     }
 
 
-async def test_defer_never_waits_for_a_held_subject(contended) -> None:
+async def test_defer_takes_the_subject_before_the_rfc_rows(contended) -> None:
+    """It stops on the subject with no RFC row held, so a result's subject-first path can't cycle."""
     card = await _claimed_card(contended)
 
     async with _holding(contended, _HOLD_SUBJECT, str(card.action_id)):
-        deferred = await asyncio.wait_for(
-            defer_pending_action(contended, action_id=card.action_id, hours=1, actor="owner"),
-            _DEADLINE_S / 2,
+        deferring = asyncio.create_task(
+            defer_pending_action(contended, action_id=card.action_id, hours=1, actor="owner")
         )
+        await _until_waiting(contended, _ON_SUBJECT_DEFER)
+        # NOWAIT raises if defer already holds either row while it waits on the subject.
+        assert await contended.fetch(f"{_HOLD_INTENT} NOWAIT", card.action_id)
+        assert await contended.fetch(f"{_HOLD_RFC} NOWAIT", card.claim.presentation_id)
+
+    (deferred,) = await _finish(deferring)
 
     assert deferred.changed
     states = await contended.fetch(
@@ -339,7 +346,7 @@ async def test_defer_never_waits_for_a_held_subject(contended) -> None:
 async def test_defer_holding_the_rfc_rows_never_cycles_with_a_result_and_a_decision(
     contended,
 ) -> None:
-    """Defer takes action then RFC rows; a result takes subject then RFC rows, never the action."""
+    """Defer holds the action and subject here; a result queues on the subject, never the action."""
     card = await _claimed_card(contended, handed_off=True)
 
     async with _holding(contended, _HOLD_RFC, card.claim.presentation_id):
@@ -352,9 +359,9 @@ async def test_defer_holding_the_rfc_rows_never_cycles_with_a_result_and_a_decis
                 card.claim, HandoffResult("confirmed", provider_reference="93")
             )
         )
-        await _until_waiting(contended, _ON_RFC_DEFER, _ON_RFC_RESULT)
+        await _until_waiting(contended, _ON_RFC_DEFER, _ON_SUBJECT)
         deciding = asyncio.create_task(_decide(contended, card.action_id))
-        await _until_waiting(contended, _ON_RFC_DEFER, _ON_RFC_RESULT, _ON_DECISION_ACTION)
+        await _until_waiting(contended, _ON_RFC_DEFER, _ON_SUBJECT, _ON_DECISION_ACTION)
 
     deferred, completed, decided = await _finish(deferring, completing, deciding)
 
@@ -544,5 +551,15 @@ async def test_every_path_racing_on_one_card_never_deadlocks(contended, attempt:
 
     results = await _finish(*(racer() for racer in racers))
 
-    assert results[1].outcome == "won"
-    assert (await _settled(contended, card))["action"] == "rejected"
+    # Redeem first: the defer finds the action decided. Defer first: the token is stale.
+    redeemed, deferred = results[1], results[2]
+    action = (await _settled(contended, card))["action"]
+    if redeemed.outcome == "won":
+        assert action == "rejected" and deferred.changed is False
+    else:
+        assert (redeemed.outcome, redeemed.reason, action) == (
+            "refused",
+            "stale_generation",
+            "pending",
+        )
+        assert deferred.changed is True

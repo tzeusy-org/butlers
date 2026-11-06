@@ -4133,10 +4133,12 @@ async def defer_approval(
     *,
     db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
-    """Defer an approval by extending its expiry — POST /api/approvals/{id}/defer {hours: int}.
+    """Defer an approval and re-present it later — POST /api/approvals/{id}/defer {hours: int}.
 
-    ``hours`` must be in [1, 168].  The action's ``expires_at`` is extended by the
-    given number of hours and the action remains in ``pending`` state.
+    ``hours`` must be in [1, 168]. The card is sent again in that many hours, and
+    ``expires_at`` moves to that time plus the action's original decision window, so the
+    action stays ``pending`` and the new card can decide it. An action with no expiry keeps
+    none.
     """
     try:
         parsed_id = UUID(action_id)

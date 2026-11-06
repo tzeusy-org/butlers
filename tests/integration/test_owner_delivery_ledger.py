@@ -12,6 +12,7 @@ import asyncio
 import logging
 import shutil
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -37,7 +38,10 @@ from butlers.core.approval_delivery_worker import (
 )
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import operations as approvals_ops
-from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
+from butlers.modules.approvals.delivery_lifecycle import (
+    defer_pending_action,
+    transition_pending_action,
+)
 from butlers.modules.approvals.delivery_recovery import (
     ApprovalDeliveryRenderer,
     ApprovalDeliveryRepository,
@@ -103,7 +107,13 @@ async def _owner(ledger_pool: asyncpg.Pool) -> uuid.UUID:
     return owner
 
 
-async def _park(ledger_pool: asyncpg.Pool, ordinal: int = 0, *, card: bool = False) -> uuid.UUID:
+async def _park(
+    ledger_pool: asyncpg.Pool,
+    ordinal: int = 0,
+    *,
+    card: bool = False,
+    window: timedelta | None = timedelta(hours=72),
+) -> uuid.UUID:
     """Park one action. ``card=True`` uses a tool whose card shows the exact call.
 
     Approve and Reject are offered only on such a card; every other card is Open only
@@ -121,7 +131,7 @@ async def _park(ledger_pool: asyncpg.Pool, ordinal: int = 0, *, card: bool = Fal
         ),
         agent_summary="Synthetic owner-delivery fixture",
         requested_at=now,
-        expires_at=now + timedelta(hours=72),
+        expires_at=None if window is None else now + window,
         why="Synthetic reason",
         evidence=[],
         blast_radius="contact",
@@ -1879,3 +1889,396 @@ async def test_runtime_role_holds_its_own_subject_and_cannot_reach_another_schem
     assert own_inputs is not None and own_inputs.holding_reason == _HOLD
     assert foreign_inputs is None
     assert await _holding_reason(owner, foreign) is None
+
+
+# Defer re-presents the card: the owner gets back a card that can still decide.
+async def _defer_due_now(pool: asyncpg.Pool, action_id: uuid.UUID, hours: int = 2) -> Any:
+    """Defer as of ``hours`` ago through defer's own clock, so the successor is due now."""
+    then = await pool.fetchval("SELECT clock_timestamp() - make_interval(hours => $1)", hours)
+    transition = await defer_pending_action(
+        pool, action_id=action_id, hours=hours, actor="owner", now=then
+    )
+    assert transition.changed is True
+    return then
+
+
+async def _action_times(pool: asyncpg.Pool, action_id: uuid.UUID) -> Any:
+    return await pool.fetchrow(
+        "SELECT requested_at, expires_at FROM pending_actions WHERE id = $1", action_id
+    )
+
+
+async def _successor_due(pool: asyncpg.Pool, action_id: uuid.UUID) -> datetime:
+    return await pool.fetchval(
+        "SELECT p.not_before FROM approval_delivery_presentations p "
+        "JOIN approval_delivery_intents i ON i.id = p.intent_id WHERE i.action_id = $1 "
+        "ORDER BY p.presentation_generation DESC LIMIT 1",
+        action_id,
+    )
+
+
+async def _telegram_cards(pool: asyncpg.Pool) -> list[dict[str, Any]]:
+    rows = await pool.fetch(
+        "SELECT generation, state, provider_ref FROM public.owner_delivery_presentations "
+        "WHERE surface = 'telegram' ORDER BY generation"
+    )
+    return [dict(row) for row in rows]
+
+
+async def _retractions(pool: asyncpg.Pool) -> list[str | None]:
+    async with pool.acquire() as conn:
+        targets = await od.pending_retractions(conn, surface="telegram")
+    return [target.provider_ref for target in targets]
+
+
+async def test_defer_gives_back_the_decision_window_and_sends_nothing_before_it_is_due(
+    ledger_pool,
+) -> None:
+    action_id = await _park(ledger_pool, card=True, window=timedelta(hours=5))
+    original = await _action_times(ledger_pool, action_id)
+    window = original["expires_at"] - original["requested_at"]
+    now = await ledger_pool.fetchval("SELECT clock_timestamp()")
+
+    await defer_pending_action(ledger_pool, action_id=action_id, hours=3, actor="owner", now=now)
+
+    assert await _successor_due(ledger_pool, action_id) == now + timedelta(hours=3)
+    deferred = await _action_times(ledger_pool, action_id)
+    assert deferred["expires_at"] == now + timedelta(hours=3) + window
+    assert await ApprovalDeliveryRepository(ledger_pool).claim_next() is None
+
+
+async def test_a_second_defer_gives_back_the_same_window_not_a_larger_one(ledger_pool) -> None:
+    action_id = await _park(ledger_pool, card=True, window=timedelta(hours=5))
+    original = await _action_times(ledger_pool, action_id)
+    window = original["expires_at"] - original["requested_at"]
+    now = await ledger_pool.fetchval("SELECT clock_timestamp()")
+
+    await defer_pending_action(ledger_pool, action_id=action_id, hours=3, actor="owner", now=now)
+    later = now + timedelta(hours=1)
+    await defer_pending_action(ledger_pool, action_id=action_id, hours=4, actor="owner", now=later)
+
+    assert await _successor_due(ledger_pool, action_id) == later + timedelta(hours=4)
+    deferred = await _action_times(ledger_pool, action_id)
+    assert deferred["expires_at"] == later + timedelta(hours=4) + window
+
+
+async def test_defer_of_an_action_with_no_expiry_keeps_none_and_schedules_the_successor(
+    ledger_pool,
+) -> None:
+    action_id = await _park(ledger_pool, card=True, window=None)
+    now = await ledger_pool.fetchval("SELECT clock_timestamp()")
+
+    await defer_pending_action(ledger_pool, action_id=action_id, hours=2, actor="owner", now=now)
+
+    assert (await _action_times(ledger_pool, action_id))["expires_at"] is None
+    assert await _successor_due(ledger_pool, action_id) == now + timedelta(hours=2)
+
+
+async def test_a_deferred_card_comes_back_decidable_and_the_old_one_goes_stale(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    first = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="77"))
+    old_approve, _ = _card_tokens(first.envelopes[0])
+
+    await _defer_due_now(ledger_pool, action_id)
+    assert await _retractions(ledger_pool) == ["77"]
+
+    stale = await _redeem(ledger_pool, action_id, old_approve, surface="telegram")
+    assert (stale.outcome, stale.reason) == ("refused", "stale_generation")
+
+    second = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+    new_approve, new_reject = _card_tokens(second.envelopes[0])
+    assert new_approve.startswith("od1:") and new_reject.startswith("od1:")
+    assert new_approve != old_approve
+    assert await _telegram_cards(ledger_pool) == [
+        {"generation": 1, "state": "sent", "provider_ref": "77"},
+        {"generation": 2, "state": "sent", "provider_ref": "78"},
+    ]
+    assert await _retractions(ledger_pool) == ["77"]
+    expires = await ledger_pool.fetch(
+        "SELECT DISTINCT expires_at FROM public.owner_delivery_tokens WHERE generation = 2"
+    )
+    assert [row["expires_at"] for row in expires] == [
+        (await _action_times(ledger_pool, action_id))["expires_at"]
+    ]
+
+    won = await _redeem(ledger_pool, action_id, new_approve, surface="telegram")
+    assert won.outcome == "won"
+    assert set(await _retractions(ledger_pool)) == {"77", "78"}
+
+
+async def test_a_card_not_yet_sent_when_deferred_is_first_sent_decidable_at_its_due_time(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+
+    await _defer_due_now(ledger_pool, action_id)
+    runtime = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="77"))
+
+    assert len(_card_tokens(runtime.envelopes[0])) == 2
+    assert await _telegram_cards(ledger_pool) == [
+        {"generation": 1, "state": "sent", "provider_ref": "77"}
+    ]
+    assert await _retractions(ledger_pool) == []
+
+
+async def test_defer_stales_the_dashboard_card_and_the_next_render_can_decide(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    _, cards = await _present(ledger_pool, action_id, "dashboard")
+
+    await defer_pending_action(ledger_pool, action_id=action_id, hours=2, actor="owner")
+
+    stale = await _redeem(
+        ledger_pool, action_id, cards["dashboard"].tokens["approve"], surface="dashboard"
+    )
+    assert (stale.outcome, stale.reason) == ("refused", "stale_generation")
+    assert (
+        await ledger_pool.fetchval(
+            "SELECT state FROM public.owner_delivery_presentations "
+            "WHERE surface = 'dashboard' AND generation = 1"
+        )
+        == "retracted"
+    )
+    card = await approvals_router._dashboard_owner_delivery_card(ledger_pool, action_id)
+    assert card is not None and card.generation == 2
+    won = await _redeem(ledger_pool, action_id, card.approve_token, surface="dashboard")
+    assert won.outcome == "won"
+
+
+async def test_with_the_flag_off_a_deferred_card_comes_back_with_legacy_buttons(
+    ledger_pool,
+) -> None:
+    action_id = await _park(ledger_pool, card=True)
+    await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="77"))
+
+    await _defer_due_now(ledger_pool, action_id)
+    second = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+
+    tokens = _card_tokens(second.envelopes[0])
+    assert len(tokens) == 2 and all(t.startswith("apr1:") for t in tokens)
+    assert await ledger_pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
+
+
+async def test_defer_after_the_flag_is_turned_off_still_retracts_the_minted_card(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="77"))
+    await _enable(ledger_pool, False)
+
+    await _defer_due_now(ledger_pool, action_id)
+
+    assert await _retractions(ledger_pool) == ["77"]
+    second = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+    assert all(t.startswith("apr1:") for t in _card_tokens(second.envelopes[0]))
+
+
+async def test_a_deferred_cohort_member_gets_its_own_card_and_the_digest_stays_sendable(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    actions = [await _park(ledger_pool, ordinal, card=True) for ordinal in range(5)]
+    deferred, other = actions[3], actions[4]
+
+    await _defer_due_now(ledger_pool, deferred)
+
+    runtime = _Runtime(HandoffResult("confirmed", provider_reference="77"))
+    worker = ApprovalDeliveryWorker(
+        ApprovalDeliveryRepository(ledger_pool), ApprovalDeliveryRenderer(), runtime
+    )
+    while await worker.process_one():
+        pass
+    own_cards = [
+        envelope
+        for envelope in runtime.envelopes
+        if any(
+            action.get("reference", {}).get("params", {}).get("action_id") == str(deferred)
+            for action in envelope["actions"]
+        )
+    ]
+    assert len(own_cards) == 1 and len(_card_tokens(own_cards[0])) == 2
+    other_state = await ledger_pool.fetchrow(
+        "SELECT p.state, m.eligible FROM approval_delivery_cohort_members m "
+        "JOIN approval_delivery_intents i ON i.id = m.intent_id "
+        "JOIN approval_delivery_presentations p ON p.cohort_id = m.cohort_id "
+        "WHERE i.action_id = $1",
+        other,
+    )
+    assert other_state["eligible"] is True and other_state["state"] != "cancelled"
+
+
+async def test_a_defer_racing_a_started_handoff_retracts_that_card_once_its_result_lands(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    repository = ApprovalDeliveryRepository(ledger_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert await repository.mark_handoff_started(claim) is True
+
+    await _defer_due_now(ledger_pool, action_id)
+    assert await repository.complete_handoff(
+        claim, HandoffResult("confirmed", provider_reference="77")
+    )
+
+    assert await _retractions(ledger_pool) == ["77"]
+    second = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+    assert len(_card_tokens(second.envelopes[0])) == 2
+    assert await _retractions(ledger_pool) == ["77"]
+
+
+async def _safe_retry_after_a_racing_defer(
+    pool: asyncpg.Pool, defer: Callable[[uuid.UUID], Awaitable[Any]], *, reclaimed: bool = False
+) -> ApprovalDeliveryRepository:
+    """Defer while a handoff is out, then have it come back retryable with its backoff over."""
+    action_id = await _park(pool, card=True)
+    repository = ApprovalDeliveryRepository(pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert await repository.mark_handoff_started(claim) is True
+
+    await defer(action_id)
+    if reclaimed:
+        await pool.execute(
+            "UPDATE approval_delivery_presentations SET claim_expires_at = clock_timestamp() "
+            "WHERE state = 'handoff_started'"
+        )
+        claim = await repository.claim_next()
+        assert claim is not None and claim.reconcile_only is True
+    assert await repository.complete_handoff(
+        claim, HandoffResult("safe_retry", reason_code="transport_unavailable")
+    )
+
+    await pool.execute(
+        "UPDATE approval_delivery_presentations SET next_attempt_at = clock_timestamp() "
+        "WHERE state = 'retry_wait'"
+    )
+    return repository
+
+
+@pytest.mark.parametrize("enabled", [True, False], ids=["flag on", "flag off"])
+@pytest.mark.parametrize("reclaimed", [False, True], ids=["same claim", "reclaimed"])
+async def test_a_safe_retry_after_a_racing_defer_sends_nothing_before_the_due_time(
+    ledger_pool, enabled: bool, reclaimed: bool
+) -> None:
+    await _enable(ledger_pool, enabled)
+
+    async def defer(action_id: uuid.UUID) -> None:
+        await defer_pending_action(ledger_pool, action_id=action_id, hours=2, actor="owner")
+
+    repository = await _safe_retry_after_a_racing_defer(ledger_pool, defer, reclaimed=reclaimed)
+
+    assert await repository.claim_next() is None
+    assert await ledger_pool.fetch(
+        "SELECT presentation_generation, state, last_reason_code "
+        "FROM approval_delivery_presentations ORDER BY presentation_generation"
+    ) == [(1, "superseded", "defer_rescheduled"), (2, "ready", "defer_rescheduled")]
+
+
+async def test_a_safe_retry_after_a_racing_defer_leaves_the_successor_its_own_card(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+
+    async def defer(action_id: uuid.UUID) -> None:
+        await _defer_due_now(ledger_pool, action_id)
+
+    repository = await _safe_retry_after_a_racing_defer(ledger_pool, defer)
+
+    runtime = await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+
+    tokens = _card_tokens(runtime.envelopes[0])
+    assert len(tokens) == 2 and all(token.startswith("od1:") for token in tokens)
+    assert await _telegram_cards(ledger_pool) == [
+        {"generation": 1, "state": "failed", "provider_ref": None},
+        {"generation": 2, "state": "sent", "provider_ref": "78"},
+    ]
+    assert await repository.claim_next() is None
+    assert await _retractions(ledger_pool) == []
+
+
+async def test_a_safe_retry_landing_after_the_successor_was_sent_sends_nothing_more(
+    ledger_pool,
+) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    repository = ApprovalDeliveryRepository(ledger_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+    assert await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert await repository.mark_handoff_started(claim) is True
+    await _defer_due_now(ledger_pool, action_id)
+    await _deliver(ledger_pool, HandoffResult("confirmed", provider_reference="78"))
+
+    assert await repository.complete_handoff(
+        claim, HandoffResult("safe_retry", reason_code="transport_unavailable")
+    )
+    await ledger_pool.execute(
+        "UPDATE approval_delivery_presentations SET next_attempt_at = clock_timestamp() "
+        "WHERE state = 'retry_wait'"
+    )
+
+    assert await repository.claim_next() is None
+    assert await _telegram_cards(ledger_pool) == [
+        {"generation": 1, "state": "failed", "provider_ref": None},
+        {"generation": 2, "state": "sent", "provider_ref": "78"},
+    ]
+
+
+async def test_a_refused_defer_leaves_the_subjects_generation_alone(ledger_pool) -> None:
+    await _enable(ledger_pool)
+    action_id = await _park(ledger_pool, card=True)
+    subject, cards = await _present(ledger_pool, action_id, "dashboard")
+    await _redeem(ledger_pool, action_id, cards["dashboard"].tokens["reject"], surface="dashboard")
+    closed = await ledger_pool.fetchval(
+        "SELECT generation FROM public.owner_delivery_subjects WHERE id = $1", subject.id
+    )
+
+    transition = await defer_pending_action(
+        ledger_pool, action_id=action_id, hours=2, actor="owner"
+    )
+
+    assert transition.changed is False
+    assert (
+        await ledger_pool.fetchval(
+            "SELECT generation FROM public.owner_delivery_subjects WHERE id = $1", subject.id
+        )
+        == closed
+    )
+
+
+async def test_defer_of_a_pending_action_whose_subject_already_closed_leaves_it_frozen(
+    ledger_pool,
+) -> None:
+    """The frozen-subject trigger would refuse a move, so the defer must not try one."""
+    action_id = await _park(ledger_pool, card=True)
+    subject, _ = await _present(ledger_pool, action_id, "dashboard")
+    async with ledger_pool.acquire() as conn, conn.transaction():
+        await od.close_for_authority(
+            conn, kind="approval", source_ref=subject.source_ref, status="cancelled"
+        )
+    closed = await ledger_pool.fetchval(
+        "SELECT generation FROM public.owner_delivery_subjects WHERE id = $1", subject.id
+    )
+
+    transition = await defer_pending_action(
+        ledger_pool, action_id=action_id, hours=2, actor="owner"
+    )
+
+    assert transition.changed is True
+    assert (
+        await ledger_pool.fetchval(
+            "SELECT generation FROM public.owner_delivery_subjects WHERE id = $1", subject.id
+        )
+        == closed
+    )
