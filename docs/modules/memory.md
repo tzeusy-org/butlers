@@ -96,8 +96,8 @@ unknown; a vouch resolves the hold. "Not held" in the rules below describes NULL
 rows themselves, not a `mixed` successor. A vouch does not carry: a vouched fact's successor
 has no `endorsed_at`, so it is held again after the next edit.
 
-`condition_update`, `medication_update` and `task_complete` accept an already superseded
-fact's id. If a current owner-authored fact has replaced it, a `mixed` successor is refused
+`condition_update`, `medication_update`, `gift_update_status` and `task_complete` accept an
+already superseded fact's id. If a current owner-authored fact has replaced it, a `mixed` successor is refused
 ("A non-owner-authored fact cannot supersede an owner-authored fact"). A `system` successor
 is not refused: it replaces the owner's current text with text built from the stale row, and
 reads as unclean.
