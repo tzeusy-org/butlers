@@ -76,6 +76,9 @@ class _ExecutingButlerClient:
         self._module = module
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
+    async def ping(self) -> bool:
+        return True
+
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((tool_name, arguments))
         assert tool_name == "dispatch_approved_action"
@@ -377,6 +380,9 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
 
         def __init__(self) -> None:
             self.calls = []
+
+        async def ping(self) -> bool:
+            return True
 
         async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
             from inspect import signature

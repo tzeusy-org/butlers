@@ -24,8 +24,10 @@ from functools import lru_cache
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
+import anyio
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from fastmcp import Client as MCPClient
 from pydantic import BaseModel, ValidationError
 
 from butlers.api.approval_review import resolve_messenger_reviews
@@ -1210,6 +1212,7 @@ async def approve_action(
 
 
 _MCP_DISPATCH_TIMEOUT_S = 30.0
+_MCP_DISPATCH_PING_TIMEOUT_S = 5.0
 
 
 def _first_json_block(mcp_result: Any) -> Any:
@@ -1261,6 +1264,42 @@ def _safe_dispatch_detail(value: Any) -> str:
     if "No tool executor wired" in raw_detail or "No registered handler" in raw_detail:
         return "owning butler has no registered executor for this action"
     return "executor returned an invalid or unsuccessful response"
+
+
+async def _invalidate_closed_dispatch_client(
+    manager: MCPClientManager, butler_name: str, client: MCPClient | None, error: Exception
+) -> None:
+    """Discard a proven closed session without replaying an irreversible call."""
+    if client is None or not isinstance(
+        error, (anyio.ClosedResourceError, anyio.BrokenResourceError)
+    ):
+        return
+    try:
+        await manager.invalidate_client(butler_name, expected_client=client)
+    except Exception:
+        # Cache cleanup must not replace the original truthful dispatch failure.
+        logger.warning("Failed to invalidate closed approval MCP client for %s", butler_name)
+
+
+async def _get_approved_dispatch_client(manager: MCPClientManager, butler_name: str) -> MCPClient:
+    """Recover a closed session with read-only pings before any action invocation.
+
+    The caller bounds this entire acquisition to the existing dispatch timeout.
+    Only ping may be repeated; the irreversible tool call stays outside here.
+    """
+    for attempt in range(2):
+        client = None
+        try:
+            client = await manager.get_client(butler_name)
+            await asyncio.wait_for(client.ping(), timeout=_MCP_DISPATCH_PING_TIMEOUT_S)
+            return client
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError) as exc:
+            if client is None:
+                raise
+            await _invalidate_closed_dispatch_client(manager, butler_name, client, exc)
+            if attempt == 1:
+                raise
+    raise RuntimeError("Approval MCP preflight did not establish a client")
 
 
 async def _dispatch_approved_action_outcome(
@@ -1327,9 +1366,11 @@ async def _dispatch_approved_action_outcome(
                 "source_butler": action_butler,
                 "notify_request": notify_request,
             }
+            client = None
             try:
                 client = await asyncio.wait_for(
-                    mcp_mgr.get_client("switchboard"), timeout=_MCP_DISPATCH_TIMEOUT_S
+                    _get_approved_dispatch_client(mcp_mgr, "switchboard"),
+                    timeout=_MCP_DISPATCH_TIMEOUT_S,
                 )
                 mcp_result = await asyncio.wait_for(
                     client.call_tool("deliver", dispatch_args), timeout=_MCP_DISPATCH_TIMEOUT_S
@@ -1340,6 +1381,7 @@ async def _dispatch_approved_action_outcome(
                     action_id,
                     exc_info=True,
                 )
+                await _invalidate_closed_dispatch_client(mcp_mgr, "switchboard", client, exc)
                 dispatch_failure = _DispatchOutcome(kind="unreachable")
                 raise RuntimeError("switchboard deliver is unreachable") from exc
 
@@ -1441,21 +1483,24 @@ async def _dispatch_approved_action_outcome(
     target_butlers = [action_butler]
 
     for butler_name in target_butlers:
+        client = None
         try:
             client = await asyncio.wait_for(
-                mcp_mgr.get_client(butler_name), timeout=_MCP_DISPATCH_TIMEOUT_S
+                _get_approved_dispatch_client(mcp_mgr, butler_name),
+                timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
             mcp_result = await asyncio.wait_for(
                 client.call_tool("dispatch_approved_action", {"action_id": action_id}),
                 timeout=_MCP_DISPATCH_TIMEOUT_S,
             )
-        except Exception:
+        except Exception as exc:
             logger.warning(
                 "Failed to dispatch approved action %s via butler %s",
                 action_id,
                 butler_name,
                 exc_info=True,
             )
+            await _invalidate_closed_dispatch_client(mcp_mgr, butler_name, client, exc)
             return _DispatchOutcome(kind="unreachable")
 
         result = _first_json_block(mcp_result)
