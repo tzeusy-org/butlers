@@ -63,7 +63,7 @@ async def test_a_dosage_edit_between_doses_keeps_the_dose_count(health_pool):
     med = await medication_add(health_pool, "Metformin", "500mg", "daily", quantity=10)
     await _log_doses(health_pool, str(med["id"]), 3)
     edited = await medication_update(health_pool, str(med["id"]), dosage="850mg")
-    await medication_update(health_pool, str(edited["id"]), notes="with dinner")
+    edited = await medication_update(health_pool, str(edited["id"]), notes="with dinner")
     await _log_doses(health_pool, str(edited["id"]), 3)
 
     # 10 pills - 6 doses = 4 days left; forgetting the first 3 would say 7.
@@ -135,7 +135,7 @@ async def test_another_medications_doses_are_not_counted(health_pool):
 
     metformin = await medication_add(health_pool, "Metformin", "500mg", "daily", quantity=10)
     other = await medication_add(health_pool, "Aspirin", "100mg", "daily", quantity=100)
-    await medication_update(health_pool, str(other["id"]), dosage="75mg")
+    other = await medication_update(health_pool, str(other["id"]), dosage="75mg")
     await _log_doses(health_pool, str(other["id"]), 5)
     await _log_doses(health_pool, str(metformin["id"]), 2)
 
