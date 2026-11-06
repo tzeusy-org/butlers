@@ -6,6 +6,7 @@ changes FastMCP listing, invocation, approval, module-state, or caller authority
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import cast
 
@@ -56,6 +57,9 @@ def _declare(
             authorization["write_stores"] = (*authorization.get("write_stores", ()), boundary)
     # Undeclared: no identifier is alias-free, so nothing narrows an owner term.
     alias_free = cast(tuple[str, ...], authorization.pop("alias_free_params", ()))
+    resolvers = MappingProxyType(
+        dict(cast(Mapping[str, str], authorization.pop("alias_resolvers", {})))
+    )
     return tuple(
         ToolPresentation(
             canonical_name=name,
@@ -67,6 +71,7 @@ def _declare(
             approval_policy={"mode": approval_mode},
             alias_free_params=alias_free,
             categories=tuple(sorted(categories)),
+            alias_resolvers=resolvers,
             **authorization,
         )
         for name in names.split()
@@ -2378,6 +2383,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id", "entity_ids"),
+        alias_resolvers={"calendar_id": "calendar"},
         alias_free_params=("entity_ids",),
         selection_bound={"calendar_id": False, "entity_ids": False},
         safety_args=(),
@@ -2417,6 +2423,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id"),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"event_id": False, "calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2459,6 +2466,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id"),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"event_id": False, "calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2500,6 +2508,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_ids",),
+        alias_resolvers={"calendar_ids": "calendar"},
         selection_bound={"calendar_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2517,6 +2526,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2553,6 +2563,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id"),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"event_id": False, "calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2587,6 +2598,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2622,6 +2634,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2639,6 +2652,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2662,6 +2676,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id", "entity_ids"),
+        alias_resolvers={"calendar_id": "calendar"},
         alias_free_params=("entity_ids",),
         selection_bound={"event_id": False, "calendar_id": False, "entity_ids": False},
         safety_args=(),
@@ -2706,6 +2721,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id", "entity_ids"),
+        alias_resolvers={"calendar_id": "calendar"},
         alias_free_params=("entity_ids",),
         selection_bound={"event_id": False, "calendar_id": False, "entity_ids": False},
         safety_args=(),
