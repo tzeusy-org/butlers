@@ -422,7 +422,7 @@ async def test_cancel_ineligible_holds_only_the_presentation(contended) -> None:
 
 
 async def test_presentation_only_paths_do_contend_on_the_presentation(contended) -> None:
-    """The control for the two tests above: the presentation row is what these paths need."""
+    """The control for the retry, reclaim and heartbeat test: they do need the presentation row."""
     action_id = await _park(contended)
     rfc_id = await contended.fetchval(
         "SELECT p.id FROM approval_delivery_presentations p "
