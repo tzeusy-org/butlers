@@ -395,14 +395,23 @@ would then reach the survivor.
 The call and the terms resolve in separate statements, so a merge can commit
 between them. This kind therefore compares raw ids beside survivors on both sides,
 at the call and at the fence, so a term holds any call the raw ids would have held,
-however the chain moved between the reads. A call on an id still live when read,
-against a term on the survivor it merges into before the term's read, is released,
-as raw comparison would release it: that call was read before the merge.
+however the chain moved between the reads. That is the whole guarantee during a
+merge. Two cases still release, as raw comparison would, so neither is a regression:
+
+- X merges into Y between the reads, with the call on X and the term on Y. The call
+  was read before the merge, and a check run wholly before it also releases.
+- X has already merged into Y, the term is on X, the call is on Y, and Y merges into
+  Z between the reads. The call reads as Y and the term as X and Z, so they are
+  disjoint, although a check run wholly before or wholly after that merge holds the
+  call. This one is not equivalent to any serial order. Closing it needs both reads
+  in one statement, or a narrowing that keeps every id on its chain.
 
 Only a merge writes `merged_into`. `entity_create` and `entity_update`, the shared
 writers behind `memory_entity_create`, `memory_entity_update` and relationship
-`entity_update`, drop `deleted_at`, `merged_into` and `unidentified` from caller
-metadata (`SYSTEM_METADATA_KEYS`, which the dashboard's entity update also applies).
+`entity_update`, drop `merged_into` and `deleted_at` from caller metadata.
+`entity_update`, like the dashboard's entity update, also drops `unidentified`
+(`SYSTEM_METADATA_KEYS`). `entity_create` keeps it, because the butler skills use it
+to mark a guessed identity for owner review, and owner law never reads it.
 `entity_update` merges in the `UPDATE`, so it keeps what a concurrent merge committed.
 
 Contact ids do not narrow. `contact_merge` deletes the source's

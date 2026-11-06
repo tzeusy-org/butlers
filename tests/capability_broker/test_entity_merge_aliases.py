@@ -20,12 +20,14 @@ import asyncpg
 import pytest
 from fastmcp import FastMCP
 
+from butlers.api.routers.memory import list_entities, promote_entity
 from butlers.capability_broker.contracts import BrokerRefused, Capability, Catalog, Reason
 from butlers.core.owner_policy import declared_resource_params
 from butlers.core.tool_catalog import RecipientParameters
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
 from butlers.roster_imports import roster_module
+from butlers.testing.db_manager import db_manager
 from butlers.tools.relationship.entity_merge import merge_entity_pair
 from tests.capability_broker.helpers import capability
 from tests.capability_broker.test_broker_ledger import (
@@ -412,7 +414,6 @@ async def test_a_created_entity_cannot_be_born_a_tombstone(broker_db_url):
             metadata={
                 "merged_into": str(survivor),
                 "deleted_at": "2026-11-06T00:00:00Z",
-                "unidentified": True,
                 "note": "kept",
             },
         )
@@ -420,6 +421,43 @@ async def test_a_created_entity_cannot_be_born_a_tombstone(broker_db_url):
             "SELECT metadata FROM public.entities WHERE id = $1", UUID(created["entity_id"])
         )
         assert metadata == {"note": "kept"}
+
+
+async def test_an_agent_created_unidentified_entity_reaches_owner_review(broker_db_url):
+    """The butler skills create a guessed identity with the flag; the owner must see it."""
+    async with _world(broker_db_url) as w:
+        create = await _memory_tool(w.owner, "memory_entity_create")
+        created = await create(f"Sam {uuid4()}", "person", metadata={"unidentified": True})
+        entity_id = created["entity_id"]
+        db = db_manager({"relationship": w.owner})
+
+        async def listed(unidentified: bool) -> set[str]:
+            page = await list_entities(
+                q=None,
+                entity_type=None,
+                unidentified=unidentified,
+                archived=False,
+                offset=0,
+                limit=200,
+                db=db,
+            )
+            return {entity.id for entity in page.data}
+
+        assert entity_id in await listed(True)
+        assert entity_id not in await listed(False)
+        promoted = await promote_entity(entity_id, db=db)
+        assert promoted.data.unidentified is False
+        assert entity_id in await listed(False)
+
+
+async def test_an_update_cannot_mark_an_entity_unidentified(broker_db_url):
+    """The flag is set at create and cleared by a promote; an update changes neither."""
+    async with _world(broker_db_url) as w:
+        create = await _memory_tool(w.owner, "memory_entity_create")
+        update = await _memory_tool(w.owner, "memory_entity_update")
+        flagged = await create(f"Sam {uuid4()}", "person", metadata={"unidentified": True})
+        result = await update(flagged["entity_id"], metadata={"unidentified": False, "note": "n"})
+        assert result["metadata"] == {"unidentified": True, "note": "n"}
 
 
 async def test_a_contact_merge_leaves_no_survivor_pointer_to_resolve(broker_db_url):

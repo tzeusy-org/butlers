@@ -18,14 +18,17 @@ logger = logging.getLogger(__name__)
 VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "other"})
 
 
-# Lifecycle keys only their own paths write: a merge, a delete, an unknown-sender
-# reservation. Owner law walks ``merged_into``, so a caller writing it could release a
-# term by rewriting a person's identity.
-SYSTEM_METADATA_KEYS = frozenset({"deleted_at", "merged_into", "unidentified"})
+# Lifecycle keys no caller may write: a merge and a delete have their own paths. Owner
+# law walks ``merged_into``, so a caller writing it could release a term by rewriting a
+# person's identity.
+TOMBSTONE_METADATA_KEYS = frozenset({"deleted_at", "merged_into"})
+# ``unidentified`` may be set only at create, where the butler skills mark a guessed
+# identity for owner review, and is cleared only by a promote.
+SYSTEM_METADATA_KEYS = TOMBSTONE_METADATA_KEYS | {"unidentified"}
 
 
-def _caller_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
-    return {k: v for k, v in (metadata or {}).items() if k not in SYSTEM_METADATA_KEYS}
+def _without(metadata: dict[str, Any] | None, keys: frozenset[str]) -> dict[str, Any]:
+    return {k: v for k, v in (metadata or {}).items() if k not in keys}
 
 
 # Minimum composite score to include a candidate in resolution results.
@@ -63,7 +66,7 @@ async def entity_create(
         canonical_name: The canonical name of the entity.
         entity_type: One of 'person', 'organization', 'place', 'other'.
         aliases: Optional list of alternative names for the entity.
-        metadata: Optional JSONB metadata dict, without ``SYSTEM_METADATA_KEYS``.
+        metadata: Optional JSONB metadata dict, without ``TOMBSTONE_METADATA_KEYS``.
         roles: Optional list of identity roles (e.g. ['owner']).  Internal use
                only — not exposed to runtime MCP tool callers.
 
@@ -81,7 +84,7 @@ async def entity_create(
 
     aliases_list = aliases or []
     roles_list = roles or []
-    metadata_dict = _caller_metadata(metadata)
+    metadata_dict = _without(metadata, TOMBSTONE_METADATA_KEYS)
 
     insert_sql = """
         INSERT INTO public.entities
@@ -220,7 +223,7 @@ async def entity_update(
         set_clauses.append(f"aliases = ${param_idx}")
         param_idx += 1
 
-    caller_metadata = _caller_metadata(metadata)
+    caller_metadata = _without(metadata, SYSTEM_METADATA_KEYS)
     if caller_metadata:
         # Merged in the UPDATE, so a merge committing first keeps what it wrote.
         params.append(caller_metadata)

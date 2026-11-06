@@ -28,9 +28,11 @@ the source must not reach what the survivor already held.
 The call and the terms resolve in separate statements, so a merge can commit
 between them. A match-only kind therefore compares the raw ids beside the
 survivors on both sides: a term holds a call it would have held before any
-aliasing, however the chain moved between the reads. The rest of a merge is
-ordered by those reads, so a call on an id still live when it was read, against a
-term on the survivor that id then merged into, is released as the raw ids are.
+aliasing, however the chain moved between the reads. Two cases still release, as
+raw ids would: a call on X against a term on Y when X merges into Y between the
+reads, and, with X already merged into Y, a call on Y against a term on X when Y
+merges into Z between the reads. The second matches no serial order of the reads
+and the merge; closing it needs both reads in one statement.
 
 The seam is a trusted constructor input, like ``Domains``. Nothing constructs
 the broker until the M6 switch.
