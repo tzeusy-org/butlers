@@ -176,9 +176,11 @@ the displayed-call routes, whose decision still closes the subject. So do the on
 rows on summary surfaces, which never load a dossier.
 
 The dashboard makes no such GET while its tab is hidden, whether the row is the page's own
-top-ranked selection or one named in the URL. It loads once the tab is visible, so nothing counts
-as delivered in a tab nobody is looking at; a link opened in a background tab loads when shown.
-Other API clients can still call the GET: the server can't tell whether a tab is visible.
+top-ranked selection or one named in the URL. It loads once the tab is visible, so a delivery
+means "rendered in a non-hidden tab", not "seen": a visible window on an idle screen still
+fetches, and the gate cannot tell that nobody is looking. Any future reader of delivered state
+must use that narrower meaning. A link opened in a background tab loads when shown. Other API
+clients can still call the GET: the server can't tell whether a tab is visible.
 
 The Telegram connector handles `od1:` taps before `apr1:` (primary owner channel only),
 posts the token to `/actions`, edits the tapped card, then drains `/retractions`. It also
