@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from butlers.core.owner_delivery import close_for_authority
 from butlers.metrics_registry import get_or_create_counter
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.executor import _approval_write_transaction
@@ -342,6 +343,17 @@ async def transition_pending_action(
             )
             return PendingTransition(PendingAction.from_row(latest) if latest else None, False)
 
+        # Every path that leaves pending (token, legacy callback, dashboard, expiry,
+        # cancellation) resolves the owner-delivery subject in this transaction, so
+        # no presented token can authorize anything afterwards. No subject: no-op.
+        # It runs before the RFC 0023 rows are locked: the owner-delivery LOCK_ORDER is
+        # action, subject, then RFC 0023 delivery rows, the order the handoff takes too.
+        await close_for_authority(
+            connection,
+            kind="approval",
+            source_ref=str(action_id),
+            status=effective_status.value,
+        )
         intent = await _lock_delivery_root(connection, action_id)
         cancelled_count = 0
         membership_changed = False

@@ -7,6 +7,10 @@ RFC 0019 (parked automation), RFC 0021 (one-tap approvals), RFC 0022
 (cross-process event transport), `about/heart-and-soul/security.md`
 (Approval Gates)
 
+> **Successor (RFC 0038 S6, bu-dhloi1.13):** delivery identity, acknowledgement and action
+> tokens move to the canonical owner-delivery ledger; this RFC's tables remain the transport
+> queue. Store-by-store map: `docs/api_and_protocols/owner-delivery.md`.
+
 ## Decision
 
 Use a schema-local transactional delivery intent, fenced presentation

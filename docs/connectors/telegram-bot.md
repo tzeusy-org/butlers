@@ -251,3 +251,13 @@ grep "endpoint_identity\|getMe" /var/log/butlers/telegram-bot-connector.log 2>/d
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+## Owner-delivery card taps (`od1`, dark)
+
+When canonical owner delivery is enabled, approval cards carry `od1:` single-use tokens.
+The connector handles them before `apr1:` callbacks: only the primary owner channel is
+accepted; the token goes unchanged to `POST /api/owner-delivery/actions` with the callback
+credential; the tapped card is edited to its outcome (a refused tap only loses its buttons,
+and a changed call says nothing ran); then it drains `GET /api/owner-delivery/retractions`,
+editing each stale card and receipting `retracted` true or false per card. Tokens are never
+logged. See [Owner delivery](../api_and_protocols/owner-delivery.md).

@@ -908,7 +908,7 @@
     "[\"src/butlers/api/routers/approvals.py\", \"reportArgumentType\", \"63d3f1aef494a2f9a8cf1e0ce37a10f8a1320f36129950d8038c817e472a7823\"]": 3,
     "[\"src/butlers/api/routers/approvals.py\", \"reportArgumentType\", \"75e352cb181487bccca259794c70ab8a18f1fd05f8096127ba1c01bba9267edd\"]": 2,
     "[\"src/butlers/api/routers/approvals.py\", \"reportArgumentType\", \"77eb434877cbd2b42a610fa2f76b1ed09a643249fe98361b6cfe58df3effe43f\"]": 1,
-    "[\"src/butlers/api/routers/approvals.py\", \"reportArgumentType\", \"cfbc0bca3768a8bf2ca4f6d0df295f762bda04c2012540691c6f2776fc613721\"]": 4,
+    "[\"src/butlers/api/routers/approvals.py\", \"reportArgumentType\", \"cfbc0bca3768a8bf2ca4f6d0df295f762bda04c2012540691c6f2776fc613721\"]": 3,
     "[\"src/butlers/api/routers/approvals.py\", \"reportArgumentType\", \"f1c98020994a1a92b4f6aad7997631f722592dca584d669484cd9132f8b3674e\"]": 3,
     "[\"src/butlers/api/routers/approvals.py\", \"reportCallIssue\", \"d40de4932be48adb0d926a68e0599d3557f610b2ae0a835e96b6aa2ea7acfb5f\"]": 5,
     "[\"src/butlers/api/routers/approvals.py\", \"reportGeneralTypeIssues\", \"401f5b2806a7874c049105fa566b233349c787f74bbbdc9b166d2687346f657c\"]": 1,

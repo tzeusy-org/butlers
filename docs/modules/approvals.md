@@ -325,6 +325,15 @@ No raw secret-field fallback or truncated preview earns an Approve button.
 Rows presented before migration 018 carry no digest and are not checked.
 Migration 018's downgrade refuses while any presentation carries a digest.
 
+## Canonical owner delivery (dark)
+
+With `public.owner_delivery_rollout.enabled`, a single card carries single-use `od1` tokens
+instead of `apr1` HMAC tokens, bound to one owner-delivery subject per action; a decision on
+any surface (or by any other path through `transition_pending_action`) stales every other
+card's buttons and queues them for retraction. See
+[Owner delivery](../api_and_protocols/owner-delivery.md). Default off; nothing changes
+until it is enabled.
+
 ## Related Pages
 
 - [Module System](module-system.md)

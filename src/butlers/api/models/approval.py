@@ -173,6 +173,15 @@ class ApprovalGoalLineage(BaseModel):
 ApprovalAction.model_rebuild()
 
 
+class OwnerDeliveryCard(BaseModel):
+    """One dashboard presentation of an owner-delivery subject (bu-dhloi1.13)."""
+
+    subject_id: str
+    generation: int
+    approve_token: str
+    reject_token: str
+
+
 class ApprovalDetail(BaseModel):
     """Full dossier for a single approval — returned by GET /api/approvals/{id}.
 
@@ -218,6 +227,14 @@ class ApprovalDetail(BaseModel):
     origin: Literal["prepared"] | None = Field(
         default=None,
         description="Exact stored 'prepared' classification, or null for unknown origin.",
+    )
+    owner_delivery: OwnerDeliveryCard | None = Field(
+        default=None,
+        description=(
+            "Canonical owner-delivery presentation of a pending action for the owner's "
+            "dashboard session: single-use tokens for POST /api/owner-delivery/actions. "
+            "Null while owner delivery is off, for connector reads, or when unavailable."
+        ),
     )
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(

@@ -85,6 +85,7 @@ from butlers.core.approval_callbacks import (
     verify_approval_callback_token,
 )
 from butlers.core.logging import configure_logging
+from butlers.core.owner_delivery import TOKEN_PREFIX as OWNER_DELIVERY_TOKEN_PREFIX
 from butlers.credential_store import (
     CredentialStore,
     shared_db_name_from_env,
@@ -146,6 +147,7 @@ _GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
 
 _APPROVAL_CALLBACK_DECISION_ACTOR = "owner@telegram"
 _APPROVAL_CALLBACK_DECISION_HEADER = "X-Butlers-Decision-Actor"
+_OWNER_DELIVERY_RETRACTED_TEXT = "Handled elsewhere. Open the dashboard for the outcome."
 _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "approved": "✅ Approved",
     "executed": "✅ Approved",
@@ -993,6 +995,8 @@ class TelegramBotConnector:
                 # path additive, then benignly acknowledge all other buttons.
                 if await self._maybe_handle_confirm_callback(update):
                     return
+                if await self._maybe_handle_owner_delivery_callback(update):
+                    return
                 if await self._maybe_handle_approval_callback(update):
                     return
                 if await self._maybe_handle_gap_interview_callback(update):
@@ -1303,6 +1307,148 @@ class TelegramBotConnector:
 
         await self._edit_approval_callback_message(callback_query, resolved_status)
         return True
+
+    async def _maybe_handle_owner_delivery_callback(self, update: dict[str, Any]) -> bool:
+        """Redeem one canonical ``od1`` card token (bu-dhloi1.13) without entering ingestion.
+
+        Order: primary-owner channel, prompt acknowledgement, the single owner-delivery
+        action route (which binds owner, surface, generation, digest and expiry and
+        consumes the token), then the tapped card's edit and a drain of every other
+        card that is now stale. The token is opaque here and is never logged.
+        """
+        callback_query = update.get("callback_query")
+        if not isinstance(callback_query, dict):
+            return False
+        token = callback_query.get("data")
+        if not isinstance(token, str) or not token.startswith(f"{OWNER_DELIVERY_TOKEN_PREFIX}:"):
+            return False
+        callback_query_id = str(callback_query.get("id", ""))
+        if not await self._is_primary_owner_callback(callback_query):
+            logger.warning("Ignored owner-delivery callback from a non-primary-owner channel")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+        if callback_query_id:
+            await self._answer_callback_query(callback_query_id, "Processing decision…")
+        status = await self._submit_owner_delivery_action(token)
+        if status is not None:
+            await self._edit_approval_callback_message(callback_query, status)
+        else:
+            await self._clear_stale_keyboard(callback_query)
+        await self._drain_owner_delivery_retractions()
+        return True
+
+    async def _submit_owner_delivery_action(self, token: str) -> str | None:
+        """POST the token; returns the terminal card status, or ``None`` when refused."""
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
+            logger.warning("Owner-delivery callback without an internal API credential")
+            return None
+        try:
+            response = await self._http_client.post(
+                f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/actions",
+                json={"token": token},
+                headers={
+                    _APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR,
+                    APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
+                },
+            )
+            if response.status_code == 409:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else None
+                reason = detail.get("reason") if isinstance(detail, dict) else None
+                return "changed_since_shown" if reason == "action_changed" else None
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+        except Exception:  # noqa: BLE001 -- a callback must never crash polling
+            logger.warning("Owner-delivery action route failed")
+            return None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        status = data.get("status") if isinstance(data, dict) else None
+        return status if isinstance(status, str) else None
+
+    async def _clear_stale_keyboard(self, callback_query: dict[str, Any]) -> None:
+        """A refused tap's card is stale: drop its buttons; nothing was decided."""
+        message = callback_query.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if chat_id is None or not isinstance(message_id, int):
+            return
+        try:
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- stale UI is harmless
+            logger.warning("Failed to remove a stale owner-delivery keyboard")
+
+    async def _drain_owner_delivery_retractions(self) -> int:
+        """Retract every stale owner card and receipt each attempt honestly.
+
+        A card whose provider message id is unknown, or whose edit fails, is reported
+        as ``retracted=false``; it stays listed and its buttons stay harmless because
+        their tokens are already stale.
+        """
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
+            return 0
+        base = f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/retractions"
+        headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token}
+        try:
+            response = await self._http_client.get(base, headers=headers)
+            if response.status_code != 200:
+                return 0
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            logger.warning("Owner-delivery retraction listing failed")
+            return 0
+        items = payload.get("data") if isinstance(payload, dict) else None
+        retracted = 0
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
+                continue
+            ok, reason = await self._retract_owner_card(item)
+            retracted += int(ok)
+            try:
+                await self._http_client.post(
+                    f"{base}/{item['presentation_id']}",
+                    json={"retracted": ok, "reason": reason},
+                    headers=headers,
+                )
+            except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
+                logger.warning("Owner-delivery retraction receipt failed")
+        return retracted
+
+    async def _retract_owner_card(self, item: dict[str, Any]) -> tuple[bool, str | None]:
+        chat_id = item.get("route_ref")
+        provider_ref = item.get("provider_ref")
+        if not isinstance(chat_id, str) or not isinstance(provider_ref, str):
+            return False, "provider_ref_missing"
+        try:
+            message_id = int(provider_ref)
+        except ValueError:
+            return False, "provider_ref_unusable"
+        try:
+            await edit_telegram_message_text(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=_OWNER_DELIVERY_RETRACTED_TEXT,
+            )
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- receipted as a failed retraction
+            return False, "provider_error"
+        return True, None
 
     async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
         sender = callback_query.get("from")

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -146,6 +146,9 @@ class ApprovalDeliveryRepository(Protocol):
 
     async def complete_handoff(self, claim: DeliveryClaim, result: HandoffResult) -> bool: ...
 
+    # Optional (bu-dhloi1.13): ``prepare_owner_delivery(claim, owner_recipient)`` returns
+    # the card's single-use owner-delivery tokens, or ``None`` while that path is off.
+
 
 class ApprovalDeliveryRenderer(Protocol):
     """Approvals-owned deterministic rendering boundary."""
@@ -156,6 +159,7 @@ class ApprovalDeliveryRenderer(Protocol):
         *,
         owner_recipient: str,
         callback_secret: str,
+        owner_tokens: Mapping[str, str] | None = None,
     ) -> dict[str, Any]: ...
 
     def render_digest(
@@ -298,11 +302,26 @@ class ApprovalDeliveryWorker:
                 if not isinstance(callback_secret, str) or not callback_secret:
                     await self._prestart_retry(claim, "callback_secret_unavailable")
                     return True
-                envelope = self._renderer.render_single(
-                    subject,
-                    owner_recipient=owner_recipient,
-                    callback_secret=callback_secret,
+                # Canonical owner delivery (bu-dhloi1.13, default off): the repository
+                # opens the subject and this card's presentation and returns its
+                # single-use tokens, which replace the legacy HMAC buttons.
+                prepare: Callable[..., Awaitable[Mapping[str, str] | None]] | None = getattr(
+                    self._repository, "prepare_owner_delivery", None
                 )
+                owner_tokens = await prepare(claim, owner_recipient) if prepare else None
+                if owner_tokens is None:
+                    envelope = self._renderer.render_single(
+                        subject,
+                        owner_recipient=owner_recipient,
+                        callback_secret=callback_secret,
+                    )
+                else:
+                    envelope = self._renderer.render_single(
+                        subject,
+                        owner_recipient=owner_recipient,
+                        callback_secret=callback_secret,
+                        owner_tokens=owner_tokens,
+                    )
             else:
                 envelope = self._renderer.render_digest(
                     subject,

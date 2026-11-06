@@ -51,6 +51,13 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   content-free row (status, category) per attempt the publisher refused before retaining an export,
   so the case API can prove such an attempt `unpublished`. Fenced like the exports table. See
   [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.owner_delivery_*`** -- Canonical owner-delivery ledger (core_317, dark): subjects,
+  presentations, single-use token verifiers, append-only receipts and the RFC 0023 source map,
+  plus the `owner_delivery_rollout` flag. In `public` because subject CAS, the owning approval
+  decision and the receipt share one butler-role transaction. Non-FORCE RLS limits each
+  `butler_<schema>_rw` to its own `owning_schema` rows; triggers enforce immutability,
+  generation fences and append-only history for every role. See
+  [Owner delivery](../api_and_protocols/owner-delivery.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
