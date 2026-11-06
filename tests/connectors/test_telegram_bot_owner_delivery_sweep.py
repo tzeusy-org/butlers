@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
@@ -129,3 +132,89 @@ def test_sweep_interval_comes_from_the_environment(monkeypatch, value, expected)
         monkeypatch.setenv("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", value)
 
     assert TelegramBotConnectorConfig.from_env().owner_delivery_sweep_interval_s == expected
+
+
+_CARD = {"presentation_id": "p1", "route_ref": "9001", "provider_ref": "55"}
+_NOT_MODIFIED = {
+    "ok": False,
+    "error_code": 400,
+    "description": "Bad Request: message is not modified: specified new message content and "
+    "reply markup are exactly the same as a current content and reply markup of the message",
+}
+_GONE = {"ok": False, "error_code": 400, "description": "Bad Request: message to edit not found"}
+
+
+def _provider(
+    connector: Any, *, edit: Any = None, keyboard: Any = None, listing: int = 200
+) -> list:
+    """Real helpers over a real transport, so ``raise_for_status`` behaves as in production."""
+    receipts: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("/retractions"):
+            return httpx.Response(listing, json={"data": [_CARD]})
+        if "/retractions/" in url:
+            receipts.append(json.loads(request.content))
+            return httpx.Response(200, json={"data": {"recorded": True}})
+        body = edit if url.endswith("/editMessageText") else keyboard
+        if body is None:
+            return httpx.Response(200, json={"ok": True, "result": {}})
+        return httpx.Response(400, json=body)
+
+    connector._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return receipts
+
+
+@pytest.mark.parametrize(
+    "edit, keyboard",
+    [
+        pytest.param(None, _NOT_MODIFIED, id="the edit already dropped the keyboard"),
+        pytest.param(_NOT_MODIFIED, None, id="a relisted card already shows the retracted text"),
+        pytest.param(_NOT_MODIFIED, _NOT_MODIFIED, id="an earlier attempt finished the job"),
+    ],
+)
+async def test_message_not_modified_is_a_retraction_that_worked(edit, keyboard) -> None:
+    connector = _connector()
+    receipts = _provider(connector, edit=edit, keyboard=keyboard)
+
+    assert await connector._drain_owner_delivery_retractions() == 1
+
+    assert receipts == [{"retracted": True, "reason": None}]
+
+
+async def test_any_other_provider_refusal_is_receipted_and_logged_without_the_bot_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector = _connector()
+    receipts = _provider(connector, edit=_GONE)
+
+    with caplog.at_level(logging.WARNING):
+        assert await connector._drain_owner_delivery_retractions() == 0
+
+    assert receipts == [{"retracted": False, "reason": "provider_error"}]
+    assert "p1" in caplog.text and "provider_error" in caplog.text
+    assert "test-token" not in caplog.text
+
+
+async def test_a_refused_listing_is_logged_with_its_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector = _connector()
+    receipts = _provider(connector, listing=503)
+
+    with caplog.at_level(logging.WARNING):
+        assert await connector._drain_owner_delivery_retractions() == 0
+
+    assert receipts == []
+    assert "503" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "inf"])
+def test_a_sweep_interval_that_would_spin_or_never_run_is_refused(monkeypatch, value) -> None:
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+    monkeypatch.setenv("CONNECTOR_ENDPOINT_IDENTITY", "telegram:bot:1")
+    monkeypatch.setenv("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", value)
+
+    with pytest.raises(ValueError, match="CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S"):
+        TelegramBotConnectorConfig.from_env()

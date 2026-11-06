@@ -29,9 +29,11 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import os
 import random
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from threading import Thread
@@ -95,7 +97,11 @@ from butlers.db import db_params_from_env
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage import BlobStore
-from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
+from butlers.telegram_api import (
+    edit_telegram_message_text,
+    remove_telegram_inline_keyboard,
+    telegram_message_not_modified,
+)
 
 _DESCRIPTOR = connector_descriptor("telegram_bot")
 
@@ -352,6 +358,12 @@ class TelegramBotConnectorConfig:
                 "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED is true"
             )
 
+        sweep_interval_s = float(os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", "60"))
+        if not (math.isfinite(sweep_interval_s) and sweep_interval_s > 0):
+            raise ValueError(
+                "CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S must be a positive number of seconds"
+            )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -373,9 +385,7 @@ class TelegramBotConnectorConfig:
                     "CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S", str(DEFAULT_MAX_DURATION_S)
                 )
             ),
-            owner_delivery_sweep_interval_s=float(
-                os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", "60")
-            ),
+            owner_delivery_sweep_interval_s=sweep_interval_s,
         )
 
 
@@ -387,6 +397,15 @@ def _replay_message_metadata(update: dict[str, Any]) -> dict[str, Any]:
             spans = bot_message_spans(msg, _extract_normalized_text(msg) or "")
             return {"untrusted_spans": spans or None, "in_reply_to_ref": bot_in_reply_to_ref(msg)}
     return {}
+
+
+async def _tolerate_not_modified(edit: Awaitable[Any]) -> None:
+    """Await one end-state edit; Telegram's "message is not modified" means it already holds."""
+    try:
+        await edit
+    except httpx.HTTPStatusError as exc:
+        if not telegram_message_not_modified(exc.response):
+            raise
 
 
 class TelegramBotConnector:
@@ -1422,8 +1441,9 @@ class TelegramBotConnector:
         while True:
             try:
                 await self._drain_owner_delivery_retractions()
-            except Exception:  # noqa: BLE001 -- the next sweep retries
-                logger.warning("Owner-delivery retraction sweep failed", exc_info=True)
+            except Exception as exc:  # noqa: BLE001 -- the next sweep retries
+                # The type only: an HTTP error's text can carry the bot-token URL.
+                logger.warning("Owner-delivery retraction sweep failed (%s)", type(exc).__name__)
             await asyncio.sleep(self._config.owner_delivery_sweep_interval_s)
 
     async def _drain_owner_delivery_retractions(self) -> int:
@@ -1446,6 +1466,9 @@ class TelegramBotConnector:
         try:
             response = await self._http_client.get(base, headers=headers)
             if response.status_code != 200:
+                logger.warning(
+                    "Owner-delivery retraction listing refused (%s)", response.status_code
+                )
                 return 0
             payload = response.json()
         except Exception:  # noqa: BLE001
@@ -1458,12 +1481,22 @@ class TelegramBotConnector:
                 continue
             ok, reason = await self._retract_owner_card(item)
             retracted += int(ok)
+            if not ok:
+                logger.warning(
+                    "Owner-delivery retraction failed for %s (%s)", item["presentation_id"], reason
+                )
             try:
-                await self._http_client.post(
+                receipt = await self._http_client.post(
                     f"{base}/{item['presentation_id']}",
                     json={"retracted": ok, "reason": reason},
                     headers=headers,
                 )
+                if receipt.status_code != 200:
+                    logger.warning(
+                        "Owner-delivery retraction receipt refused for %s (%s)",
+                        item["presentation_id"],
+                        receipt.status_code,
+                    )
             except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
                 logger.warning("Owner-delivery retraction receipt failed")
         return retracted
@@ -1478,18 +1511,24 @@ class TelegramBotConnector:
         except ValueError:
             return False, "provider_ref_unusable"
         try:
-            await edit_telegram_message_text(
-                self._http_client,
-                self._telegram_api_base,
-                chat_id=chat_id,
-                message_id=message_id,
-                text=_OWNER_DELIVERY_RETRACTED_TEXT,
+            # Each edit sets an end state, so "message is not modified" means it holds: the
+            # text edit may already drop the keyboard, and a relisted card is already edited.
+            await _tolerate_not_modified(
+                edit_telegram_message_text(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=_OWNER_DELIVERY_RETRACTED_TEXT,
+                )
             )
-            await remove_telegram_inline_keyboard(
-                self._http_client,
-                self._telegram_api_base,
-                chat_id=chat_id,
-                message_id=message_id,
+            await _tolerate_not_modified(
+                remove_telegram_inline_keyboard(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
             )
         except Exception:  # noqa: BLE001 -- receipted as a failed retraction
             return False, "provider_error"

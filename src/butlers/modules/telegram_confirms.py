@@ -7,6 +7,7 @@ butlers never receive the module, provider client, token or raw send callables.
 from butlers.core.attention_ledger import check_owner_notify_suppression
 from butlers.core.confirm_delivery import ConfirmDelivery
 from butlers.core.permissions import NOTIFY_PERMISSION, require_permission
+from butlers.telegram_api import telegram_message_not_modified
 from butlers.telegram_text import text_units
 
 
@@ -42,17 +43,7 @@ def messenger_confirm_delivery(service, telegram, *, allowed):
             },
         )
         data = response.json()
-        if (
-            response.status_code == 400
-            and data.get("ok") is False
-            and data.get("error_code") == 400
-            and data.get("description")
-            in {
-                "Bad Request: message is not modified",
-                "Bad Request: message is not modified: specified new message content and reply "
-                "markup are exactly the same as a current content and reply markup of the message",
-            }
-        ):
+        if telegram_message_not_modified(response):
             return True
         response.raise_for_status()
         return data.get("ok") is True
