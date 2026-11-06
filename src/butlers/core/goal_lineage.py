@@ -26,7 +26,7 @@ import asyncio
 import contextvars
 import json
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +39,21 @@ UNVERIFIED_CALL_REFUSAL = {
     "reason": "authentication",
     "retryable": False,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class CarriedSource:
+    """The stamp and authority of a row whose text a new row keeps."""
+
+    goal_id: uuid.UUID | None
+    invocation_id: uuid.UUID | None
+    content_authority: str | None
+    authority_entity_id: uuid.UUID | None
+
+
+_carried: contextvars.ContextVar[CarriedSource | None] = contextvars.ContextVar(
+    "d6_carried_source", default=None
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,11 +169,17 @@ def unverified_call_refusal(tool_name: str) -> dict[str, Any] | None:
 
 
 def taint_stamp() -> tuple[uuid.UUID | None, uuid.UUID | None]:
-    """``(taint_goal_id, taint_invocation_id)`` for a write: set only under exposure."""
+    """``(taint_goal_id, taint_invocation_id)`` for a write.
+
+    Set under exposure, or when the write carries forward a stamped row's text.
+    """
     lineage = _current.get()
-    if lineage is None or not lineage.exposed:
-        return None, None
-    return lineage.goal_id, lineage.invocation_id
+    if lineage is not None and lineage.exposed:
+        return lineage.goal_id, lineage.invocation_id
+    carried = _carried.get()
+    if carried is not None:
+        return carried.goal_id, carried.invocation_id
+    return None, None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +206,56 @@ def taint_insert(first_param: int) -> TaintInsert:
         f", ${first_param}, ${first_param + 1}",
         (goal_id, invocation_id),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class TaintUpdate:
+    """The taint part of one text-writing UPDATE, empty unless the write is exposed."""
+
+    assignments: str = ""
+    values: tuple[uuid.UUID, ...] = ()
+
+
+def taint_update(first_param: int) -> TaintUpdate:
+    """``, taint_goal_id = $n, taint_invocation_id = $n+1`` under exposure only.
+
+    The row's text is now this writer's, so it takes the pointer from any earlier
+    writer. An unexposed update names neither column and leaves a pointer in place.
+    """
+    goal_id, invocation_id = taint_stamp()
+    if goal_id is None or invocation_id is None:
+        return TaintUpdate()
+    return TaintUpdate(
+        f", taint_goal_id = ${first_param}, taint_invocation_id = ${first_param + 1}",
+        (goal_id, invocation_id),
+    )
+
+
+@contextmanager
+def carrying_forward(source: Mapping[str, Any]) -> Iterator[None]:
+    """Facts written in this block keep text copied from the ``source`` row.
+
+    A successor must not launder its source: an unexposed writer keeps the source's
+    writer pointer, and its authority follows ``content_authority.successor_authority``.
+    ``source`` must have selected both stamp columns and both authority columns.
+    """
+    token = _carried.set(
+        CarriedSource(
+            source["taint_goal_id"],
+            source["taint_invocation_id"],
+            source["content_authority"],
+            source["authority_entity_id"],
+        )
+    )
+    try:
+        yield
+    finally:
+        _carried.reset(token)
+
+
+def carried_source() -> CarriedSource | None:
+    """The source row of the enclosing ``carrying_forward`` block, if any."""
+    return _carried.get()
 
 
 def taint_read(row_ref: str) -> str:

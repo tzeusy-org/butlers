@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.health._helpers import (
     HEALTH_SENSITIVITY_CONFIDENTIAL,
     _get_owner_entity_id,
@@ -178,7 +179,8 @@ async def medication_update(
 
     # Fetch the existing medication fact by ID.
     row = await pool.fetchrow(
-        "SELECT id, subject, metadata FROM facts"
+        "SELECT id, subject, metadata, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
         med_uuid,
     )
@@ -207,20 +209,21 @@ async def medication_update(
     # fact. Do NOT pass entity_id: supersession must key on (subject, predicate)
     # so the edit only supersedes THIS medication's prior fact, not every other
     # medication anchored to the owner entity (see medication_add for details).
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=existing_subject,
-            predicate="medication",
-            content=content,
-            embedding_engine=embedding_engine,
-            permanence="permanent",
-            scope="health",
-            valid_at=None,  # property fact — supersedes the previous
-            metadata=new_meta,
-            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=existing_subject,
+                predicate="medication",
+                content=content,
+                embedding_engine=embedding_engine,
+                permanence="permanent",
+                scope="health",
+                valid_at=None,  # property fact — supersedes the previous
+                metadata=new_meta,
+                sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
+            )
+        )["id"]
 
     return {
         "id": new_fact_id,
@@ -353,7 +356,8 @@ async def medication_log_dose(
 
     # Validate medication fact exists
     med_row = await pool.fetchrow(
-        "SELECT id, metadata FROM facts"
+        "SELECT id, metadata, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
         med_uuid,
     )
@@ -376,21 +380,22 @@ async def medication_log_dose(
     if notes is not None:
         metadata["notes"] = notes
 
-    fact_id = (
-        await store_fact(
-            pool,
-            subject="owner",
-            predicate="took_dose",
-            content=med_name,
-            embedding_engine=embedding_engine,
-            permanence="permanent",
-            scope="health",
-            entity_id=owner_entity_id,
-            valid_at=valid_at,
-            metadata=metadata,
-            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
-        )
-    )["id"]
+    with carrying_forward(med_row):
+        fact_id = (
+            await store_fact(
+                pool,
+                subject="owner",
+                predicate="took_dose",
+                content=med_name,
+                embedding_engine=embedding_engine,
+                permanence="permanent",
+                scope="health",
+                entity_id=owner_entity_id,
+                valid_at=valid_at,
+                metadata=metadata,
+                sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
+            )
+        )["id"]
 
     return {
         "id": fact_id,

@@ -53,7 +53,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.goal_lineage import taint_insert
+from butlers.core.goal_lineage import taint_insert, taint_update
 from butlers.core.owner import fetch_owner_entity_id as _get_owner_entity_id
 
 logger = logging.getLogger(__name__)
@@ -1184,10 +1184,12 @@ async def bulk_update_transactions(
             param_idx += 1
 
         overlay_expr = ", ".join(overlay_pairs)
+        taint = taint_update(param_idx)
+        overlay_values.extend(taint.values)
 
         update_sql = f"""
         UPDATE facts
-        SET metadata = metadata || jsonb_build_object({overlay_expr})
+        SET metadata = metadata || jsonb_build_object({overlay_expr}){taint.assignments}
         WHERE predicate = ANY($1::text[])
           AND validity = 'active'
           AND scope = 'finance'

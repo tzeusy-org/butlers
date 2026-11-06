@@ -93,9 +93,11 @@ Stored labels resolve through the writer pointer (lead decision on
 bu-dhloi1.6): no memory, relationship or `public` store gains label columns.
 Unstamped legacy records keep their content-authority behaviour (original
 authority preserved, or unknown). Domains report the stamp account over the
-wire ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)); until the catalog
-admits a `stamped` descriptor, every model-reachable read is `untrusted` and
-the report changes no label.
+wire ([Stamp accounts](#stamp-accounts-d6-bu-dhloi128)). The catalog admits a
+`stamped` descriptor only for an audited read
+([Stamp completeness](#stamp-completeness-d6-bu-dhloi133)); every other
+model-reachable read over these stores stays `untrusted`, and its report
+changes no label.
 
 ### Stamp accounts (D6, bu-dhloi1.28)
 
@@ -137,10 +139,74 @@ or a proxied result) being taken for this one.
 
 A report shows which rows the readers saw. It cannot show that a tool returned
 nothing else: one tool may also read a store whose reader does not account.
-That completeness is a per-tool audit. The catalog check still refuses every
-`stamped` descriptor (`validate_authorization_catalog`), and the broker reads
-a receipt's account only for a `stamped` capability. So precision arrives one
-audited tool at a time.
+That completeness is a per-tool audit, and the broker reads a receipt's account
+only for a `stamped` capability. So precision arrives one audited tool at a
+time.
+
+### Stamp completeness (D6, bu-dhloi1.33)
+
+`validate_authorization_catalog` refuses a `stamped` descriptor unless it is in
+`tool_catalog.STAMP_COMPLETE_READS`, is a read of known provenance, and declares
+no store outside its audit. `tests/contracts/test_stamp_complete_tools.py` runs
+each tool below against a real database and walks its whole output: a returned
+value that no accounted record holds fails, unless the field is named here.
+
+| Tool | Verdict | Fields not from an accounted record |
+| --- | --- | --- |
+| `memory_search`, `memory_recall` | `stamped` | none: one table per type, scores added to the accounted row |
+| `memory_get` | `stamped` | none; it also returns retracted and forgotten rows |
+| `note_list` | `stamped` | `contact_id`, the caller's argument |
+| `conversation_thread_read` | `stamped` | `conversation_id`, the caller's argument |
+| `conversation_recall` | `stamped` | `butler_name` (server-held routing identity), `deep_link` (derived from it), `snippet` (`ts_headline` over the accounted row's content) |
+| `relationship_lookup` | `untrusted` | the entity header and candidates: `public.entities` has no stamp and connectors write it. `account_unstamped` keeps its report unclean |
+| `note_search` | `untrusted` | not audited; its reader does not account |
+
+The read side is only half of it: a read reports a row clean when its pointer is
+null and its authority is the owner's, which holds only if no writer puts other
+text there unstamped. `tests/contracts/test_stamped_store_writers.py` scans the
+source for every SQL write to these stores and gives each a disposition: stamps,
+no text (checked: assigns no `content`, `metadata`, `subject` or `predicate`), no
+model-reachable caller (from reading the callers, not checked), or conversation
+routing. A new statement, a new copying function, or a new presentable writer
+fails there until it is audited, within the limits of what the scan reads (below).
+
+- **Text updates under exposure.** `meal_update`, `measurement_update`,
+  `symptom_update` and `bulk_update_transactions` set the pointer with
+  `goal_lineage.taint_update`. The text is now that writer's, so a later exposed
+  writer takes the pointer; an unexposed edit leaves it in place.
+- **Mutators under exposure.** `memory_mark_harmful` drops its `reason` (which
+  would otherwise reach rule content through anti-pattern inversion), and a
+  correction forget keeps its reason only in `memory_events`. Both stamp the row
+  if it has no pointer. `mark_helpful` and `confirm` change counters and carry no
+  text, so they stay unstamped.
+- **Copied rows.** A successor that keeps a stored row's text or metadata
+  (`gift_update_status`, `loan_settle`, `task_complete`, `condition_update`,
+  `medication_update`, `medication_log_dose`, `research_update`) writes inside
+  `goal_lineage.carrying_forward`. An unexposed writer keeps the source's pointer.
+  The authority rule is live, not dark, because it applies to any session; see
+  REQ-module-memory-013 and [Content authority](../modules/memory.md#content-authority).
+
+Three limits go with these verdicts:
+
+- **One pointer per row.** A row names one writer: the first for a counter or
+  flag, the latest for text. A partly merged row (`bulk_update_transactions`, a
+  metadata edit) keeps an earlier writer's fields under the later writer's label.
+  A copy under a second exposed writer keeps the first writer's text, such as
+  `loan_settle`'s verbatim description, under the second writer's label alone: the row
+  stays exposed, but the first writer's principals are not in its label.
+- **The scan reads literals.** It sees `UPDATE`, `INSERT INTO` and `MERGE INTO` on a
+  table named plainly, by schema, with `ONLY`, quoted, or by an f-string field, and any
+  field it cannot resolve to a module constant needs a disposition. It sees every
+  statement in a string. Two things stay uncaught: SQL built with `+`, and a copier that
+  reads the row through a helper instead of a literal in the function. Every current
+  `store_*` caller was read by hand for the second, and a future one is not guarded.
+- **Pre-partition laundering.** A fact or rule that was laundered to `owner`
+  before the partition reads as clean until the authority demotion has run
+  (`docs/operations/memory-authority-demotion.md`). The declaration is dark, so
+  the demotion's receipts are a precondition of the switch release, not of this
+  catalog entry.
+
+Categories stay all six on these tools: their free text can hold anything.
 
 A capability's categories are its descriptor's required `categories` field
 (bu-dhloi1.27), a sorted subset of the six; D4 `output_sensitivity` is not

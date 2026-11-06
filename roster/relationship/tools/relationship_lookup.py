@@ -42,7 +42,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.stamp_account import account_records
+from butlers.core.stamp_account import account_records, account_unstamped
 
 from .staleness import (
     identity_staleness_band_sql,
@@ -198,6 +198,7 @@ async def _resolve_ref(
 
     if not rows:
         return None, False, []
+    account_unstamped()  # D6: names and aliases come from public.entities, which has no stamp
 
     candidates = [
         {
@@ -257,6 +258,7 @@ async def _fetch_entity_header(
     )
     if row is None:
         return None
+    account_unstamped()  # D6: public.entities has no stamp, and connectors write it
 
     return {
         "id": str(row["id"]),

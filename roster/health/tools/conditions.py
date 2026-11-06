@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward, taint_update
 from butlers.tools.health._helpers import (
     HEALTH_SENSITIVITY_CONFIDENTIAL,
     _get_owner_entity_id,
@@ -181,7 +182,8 @@ async def condition_update(
 
     # Fetch existing condition fact by ID
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata FROM facts"
+        "SELECT id, subject, content, metadata, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND predicate = 'condition' AND scope = 'health'",
         cond_uuid,
     )
@@ -217,20 +219,21 @@ async def condition_update(
     # fact. Do NOT pass entity_id: supersession must key on (subject, predicate)
     # so the edit only supersedes THIS condition's prior fact, not every other
     # condition anchored to the owner entity (see condition_add for details).
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=existing_subject,
-            predicate="condition",
-            content=content,
-            embedding_engine=embedding_engine,
-            permanence="permanent",
-            scope="health",
-            valid_at=None,  # property fact — supersedes the previous
-            metadata=new_meta,
-            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=existing_subject,
+                predicate="condition",
+                content=content,
+                embedding_engine=embedding_engine,
+                permanence="permanent",
+                scope="health",
+                valid_at=None,  # property fact — supersedes the previous
+                metadata=new_meta,
+                sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
+            )
+        )["id"]
 
     return {
         "id": new_fact_id,
@@ -406,10 +409,12 @@ async def symptom_update(
     # Repair pre-classification symptom rows as part of the edit, and atomically
     # retire any catalog entry written while the symptom was still ``normal``.
     # Catalog search excludes rows with ``invalid_at`` set.
+    taint = taint_update(6)
     await pool.execute(
         "WITH updated AS ("
         " UPDATE facts"
         " SET content = $2, metadata = $3, valid_at = $4, sensitivity = $5"
+        f"{taint.assignments}"
         " WHERE id = $1"
         " RETURNING id"
         ")"
@@ -424,6 +429,7 @@ async def symptom_update(
         new_meta,
         occurred_at,
         HEALTH_SENSITIVITY_CONFIDENTIAL,
+        *taint.values,
     )
 
     cond_id = new_meta.get("condition_id")

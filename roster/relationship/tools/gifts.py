@@ -27,6 +27,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -207,7 +208,8 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     from butlers.modules.memory.storage import store_fact
 
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts"
+        "SELECT id, subject, content, metadata, entity_id, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND scope = 'relationship'",
         gift_id,
     )
@@ -262,20 +264,21 @@ async def gift_update_status(pool: asyncpg.Pool, gift_id: uuid.UUID, status: str
     )
 
     # Insert the new status snapshot as a temporal fact.
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=row["subject"],
-            predicate="gift",
-            content=description,
-            embedding_engine=embedding_engine,
-            permanence="stable",
-            scope="relationship",
-            entity_id=entity_id,
-            valid_at=now,
-            metadata=new_metadata,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=row["subject"],
+                predicate="gift",
+                content=description,
+                embedding_engine=embedding_engine,
+                permanence="stable",
+                scope="relationship",
+                entity_id=entity_id,
+                valid_at=now,
+                metadata=new_metadata,
+            )
+        )["id"]
 
     return {
         "id": new_fact_id,

@@ -31,8 +31,9 @@ account unopened, and no report is sent.
 What a report cannot prove is that a tool's readers saw every record it
 returns. That is a property of the tool's code, and the catalog owns it: a
 capability's receipt is read as stamped only when its descriptor says
-``output_trust = stamped``, which the catalog check still refuses for every
-tool.
+``output_trust = stamped``, which the catalog check admits only for the audited
+tools in ``tool_catalog.STAMP_COMPLETE_READS``. A reader of output from a store
+with no stamp columns says so with ``account_unstamped``.
 """
 
 from __future__ import annotations
@@ -140,6 +141,14 @@ def account_records(
         account.add(record, owner_authored(record))
 
 
+def account_unstamped() -> None:
+    """The call returns output from a store with no stamp: never owner-untainted."""
+    account = _account.get()
+    if account is not None:
+        account.opened = True
+        account.owner_untainted = False
+
+
 def attach_report(result: Any, account: StampAccount, lineage: Any) -> Any:
     """Return ``result`` with the account in ``_meta``, replacing any handler value."""
     from fastmcp.tools import ToolResult
@@ -206,6 +215,7 @@ __all__ = [
     "StampAccount",
     "account_records",
     "account_scope",
+    "account_unstamped",
     "attach_report",
     "content_authority_is_owner",
     "parse_report",

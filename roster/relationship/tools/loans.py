@@ -29,6 +29,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,8 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
 
     async with pool.acquire() as conn, conn.transaction():
         row = await conn.fetchrow(
-            "SELECT id, subject, content, metadata, entity_id FROM facts"
+            "SELECT id, subject, content, metadata, entity_id, content_authority,"
+            " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
             " WHERE id = $1 AND scope = 'relationship' AND validity = 'active' FOR UPDATE",
             loan_id,
         )
@@ -243,20 +245,21 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
             loan_id,
             now,
         )
-        new_fact_id = (
-            await store_fact(
-                _BoundConnectionPool(conn),
-                subject=row["subject"],
-                predicate="loan",
-                content=row["content"],
-                embedding_engine=embedding_engine,
-                permanence="stable",
-                scope="relationship",
-                entity_id=row["entity_id"],
-                valid_at=now,
-                metadata=new_metadata,
-            )
-        )["id"]
+        with carrying_forward(row):
+            new_fact_id = (
+                await store_fact(
+                    _BoundConnectionPool(conn),
+                    subject=row["subject"],
+                    predicate="loan",
+                    content=row["content"],
+                    embedding_engine=embedding_engine,
+                    permanence="stable",
+                    scope="relationship",
+                    entity_id=row["entity_id"],
+                    valid_at=now,
+                    metadata=new_metadata,
+                )
+            )["id"]
 
         try:
             from butlers.core.cost_claims import retract_claim

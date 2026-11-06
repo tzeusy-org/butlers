@@ -22,6 +22,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
+
 logger = logging.getLogger(__name__)
 
 _embedding_engine: Any = None
@@ -192,7 +194,8 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
     from butlers.modules.memory.storage import store_fact
 
     row = await pool.fetchrow(
-        "SELECT id, subject, content, metadata, entity_id FROM facts"
+        "SELECT id, subject, content, metadata, entity_id, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
         " WHERE id = $1 AND scope = 'relationship'",
         task_id,
     )
@@ -210,20 +213,21 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
 
     embedding_engine = _get_embedding_engine()
 
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=row["subject"],
-            predicate="contact_task",
-            content=row["content"],
-            embedding_engine=embedding_engine,
-            permanence="stable",
-            scope="relationship",
-            entity_id=None,  # None so supersession uses subject key (per-task)
-            valid_at=None,  # property fact — supersedes previous
-            metadata=new_metadata,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=row["subject"],
+                predicate="contact_task",
+                content=row["content"],
+                embedding_engine=embedding_engine,
+                permanence="stable",
+                scope="relationship",
+                entity_id=None,  # None so supersession uses subject key (per-task)
+                valid_at=None,  # property fact — supersedes previous
+                metadata=new_metadata,
+            )
+        )["id"]
 
     contact_id = _extract_contact_id(row["subject"])
     result: dict[str, Any] = {

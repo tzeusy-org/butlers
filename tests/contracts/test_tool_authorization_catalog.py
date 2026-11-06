@@ -498,10 +498,32 @@ async def test_authorization_catalog_rejects_real_definition_mutations() -> None
             validate_authorization_catalog(
                 replace(catalog, descriptors=(trusted,)), store_writers=writers
             )
-    with pytest.raises(ToolCatalogError, match="stamp producer"):
+    with pytest.raises(ToolCatalogError, match="audited stamp producer"):
         validate_authorization_catalog(
             changed(replace(reader, output_trust="stamped")), store_writers=STORE_WRITERS
         )
+    audited = replace(
+        reader,
+        canonical_name="note_list",
+        module_name="relationship",
+        output_trust="stamped",
+        unknown_output_source=False,
+        read_stores=("facts",),
+    )
+    only = lambda item: replace(catalog, descriptors=(item,))  # noqa: E731
+    validate_authorization_catalog(only(audited), store_writers=STORE_WRITERS)
+    # A declaration that outgrows its audit is refused until it is audited again.
+    with pytest.raises(ToolCatalogError, match="unaudited stores: public.entities"):
+        validate_authorization_catalog(
+            only(replace(audited, read_stores=("facts", "public.entities"))),
+            store_writers=STORE_WRITERS,
+        )
+    for unknown in (
+        replace(audited, unknown_output_source=True),
+        replace(audited, effect_class="record", write_stores=()),
+    ):
+        with pytest.raises(ToolCatalogError, match="read of known provenance"):
+            validate_authorization_catalog(only(unknown), store_writers=STORE_WRITERS)
 
 
 async def test_authorization_policy_freezes_and_changes_generation_only() -> None:

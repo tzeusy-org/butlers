@@ -210,6 +210,41 @@ async def resolve_content_authority(
     return classify_routing_context(routing_context, owner_entity_id)
 
 
+def successor_authority(
+    writer: ContentAuthority,
+    source_authority: str | None,
+    source_entity_id: uuid.UUID | None,
+) -> ContentAuthority:
+    """The authority of a row that keeps a stored row's text, written by ``writer``.
+
+    A successor must not read better than its source (REQ-module-memory-013):
+
+    * owner-class over owner-class: the writer's class;
+    * owner-class or ``system`` over ``third_party``, ``mixed`` or NULL: ``mixed``;
+    * owner-class over ``system``: ``system``;
+    * ``system`` over ``system`` or owner-class: ``system``.
+
+    Every result but owner over owner reads as unclean (RFC 0038 D6). A NULL source gives
+    ``mixed`` under either writer rather than ``system``, since a ``system`` fact renders
+    unlabelled and a routine edit must not remove the only warning on legacy text that may be a
+    stranger's (RFC 0038 S1: unknown provenance does not improve).
+
+    This differs from ``combine_authorities``, where ``owner`` with ``system`` evidence is
+    ``mixed``: consolidation restates several rows in new words and cannot say whose a claim
+    is. A successor has one ``system`` source, whose class is known and is kept, so an owner's
+    dose on a dashboard-created medication is not labelled as a third party's.
+    """
+    if not (is_owner_class(writer.authority) or writer.authority == SYSTEM):
+        return writer
+    if source_authority in (THIRD_PARTY, MIXED):
+        return ContentAuthority(MIXED, source_entity_id)
+    if source_authority is None:
+        return ContentAuthority(MIXED)
+    if writer.authority == SYSTEM or is_owner_class(source_authority):
+        return writer
+    return ContentAuthority(SYSTEM)
+
+
 def combine_authorities(authorities: Iterable[str | None]) -> str:
     """Weakest authority across evidence: identical stays, anything else is mixed.
 
