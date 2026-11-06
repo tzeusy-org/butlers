@@ -522,7 +522,11 @@ async def test_note_search_accounts_its_notes_and_is_unclean_for_the_joined_name
         pointer = next(item for item in output if item["content"] == "exposed lighthouse")
         assert pointer["taint_goal_id"] == str(exposed.goal_id)
         assert pointer["taint_invocation_id"] == str(exposed.invocation_id)
-        assert _uncovered(output, accounted, exempt=_ECHOED_NOTE) == {"contact_name"}
+        # The accounted row holds the joined name, so the value walk cannot flag it. It is not
+        # a column of the stamped table, which is why the account must go unclean below.
+        assert _uncovered(output, accounted, exempt=_ECHOED_NOTE) == set()
+        assert "contact_name" in accounted[0].keys()
+        assert "contact_name" not in await _memory_columns(stores, "facts")
         assert await _unfaithful(stores, "facts", accounted) == set()
         assert account.opened is True
         assert account.owner_untainted is False
