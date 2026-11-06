@@ -27,7 +27,7 @@ PostgreSQL Database: butlers
 The `public` schema contains tables that multiple butlers need to read. It is the canonical location for identity resolution data:
 
 - **`public.entities`** -- Entity graph nodes. Each entity has a `canonical_name`, `entity_type`, `roles` array, and `metadata` JSONB. `merged_into`, `deleted`, `unidentified` and `placeholder_name` (core_318) are trigger-kept copies of `metadata` and `canonical_name` for the public MCP row filter (RFC 0039 D2); application code keeps reading and writing `metadata`.
-- **`public.entity_graph_withheld_counts`** -- Withheld graph stubs per entity and `<source_schema>.<source_table>` (core_318). A definer trigger on `public.entity_graph_edges` is the only writer, and that trigger also keeps `publish_key`; butler roles read it. Both exist for the public MCP projection (RFC 0039 D2).
+- **`public.entity_graph_withheld_counts`** -- Withheld graph stubs per entity and `<source_schema>.<source_table>` (core_318). A definer trigger on `public.entity_graph_edges` is the only writer, and that trigger also keeps `publish_key`; butler roles read it. A count-changing write holds one advisory lock per source until its transaction ends (core_319), so count row order cannot deadlock. Both exist for the public MCP projection (RFC 0039 D2).
 - **`public.entity_info`** -- Key-value pairs attached to entities. Used for credential storage (e.g., `google_oauth_refresh` tokens). UNIQUE on `(entity_id, type)`.
 - **`public.google_accounts`** -- Connected Google account registry with companion entities.
 - **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable

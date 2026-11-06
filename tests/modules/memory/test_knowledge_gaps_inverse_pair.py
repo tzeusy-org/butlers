@@ -231,6 +231,56 @@ async def test_mirrored_sensitive_writes_in_opposite_directions_do_not_deadlock(
     assert results == [None, None]
 
 
+async def test_batch_retractions_in_opposite_subject_order_do_not_deadlock(
+    pool_factory, session_hook
+):
+    """Two transactions each retract a stub of both subjects, in opposite order."""
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+
+    async def _stub(subject, target):
+        predicate, _ = await _edge_predicates(pool, inverse=False)
+        stored = await _internal_edge(
+            pool, subject, target, predicate, sender=owner, sensitivity="pii"
+        )
+        return stored["id"]
+
+    left_first, left_second = await _stub(left, right), await _stub(left, right)
+    right_first, right_second = await _stub(right, left), await _stub(right, left)
+
+    async with pool.acquire() as first, pool.acquire() as second:
+        second_pid = await second.fetchval("SELECT pg_backend_pid()")
+        first_tx = first.transaction()
+        await first_tx.start()
+        await storage.cascade_fact_retraction(first, [left_first])
+
+        async def _opposite_order():
+            async with second.transaction():
+                await storage.cascade_fact_retraction(second, [right_first])
+                await storage.cascade_fact_retraction(second, [left_second])
+
+        opposite = asyncio.create_task(_opposite_order())
+
+        async def _second_is_waiting() -> bool:
+            return await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = $1 AND NOT granted)",
+                second_pid,
+            )
+
+        async with asyncio.timeout(10):
+            await poll_until(_second_is_waiting, interval_s=0.01)
+        await storage.cascade_fact_retraction(first, [right_second])
+        await first_tx.commit()
+        await opposite
+
+    remaining = await pool.fetch(
+        "SELECT entity_id FROM public.entity_graph_withheld_counts WHERE entity_id = ANY($1)",
+        [left, right],
+    )
+    assert remaining == []
+
+
 async def _wait_for_advisory_wait(pool, pid):
     """Wait on PostgreSQL's actual lock waiter, never a scheduling sleep assumption."""
     async with asyncio.timeout(10):

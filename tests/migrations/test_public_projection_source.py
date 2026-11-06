@@ -922,6 +922,51 @@ async def test_counts_follow_every_edge_transition(projection: Projection) -> No
         await _assert_parity(source)
 
 
+async def test_only_a_count_change_waits_on_the_source_lock(projection: Projection) -> None:
+    """A stub write waits on its source's lock; a live edge and another source's stub do not."""
+    async with projection.source() as source, projection.source() as holder:
+        person, other = await _entity(source), await _entity(source)
+        await holder.execute("BEGIN")
+        await holder.execute(
+            "SELECT pg_advisory_xact_lock("
+            "hashtextextended('butlers:entity-graph-withheld:general.facts', 0))"
+        )
+
+        await project_entity_graph_edge(
+            source,
+            source_schema="general",
+            source_table="facts",
+            source_id=uuid.uuid4(),
+            subject_entity_id=person,
+            predicate="knows",
+            object_entity_id=other,
+        )
+        await withhold_entity_graph_edge(
+            source,
+            source_schema="home",
+            source_table="facts",
+            source_id=uuid.uuid4(),
+            subject_entity_id=person,
+            sensitivity="pii",
+        )
+
+        blocked = asyncio.create_task(
+            withhold_entity_graph_edge(
+                source,
+                source_schema="general",
+                source_table="facts",
+                source_id=uuid.uuid4(),
+                subject_entity_id=person,
+                sensitivity="pii",
+            )
+        )
+        done, _ = await asyncio.wait({blocked}, timeout=0.5)
+        assert not done
+        await holder.execute("COMMIT")
+        await blocked
+        await _assert_parity(source)
+
+
 @pytest.mark.parametrize("role", ["butler_general_rw", "butler_relationship_rw"])
 async def test_a_butler_role_writes_stubs_without_holding_the_counts_table(
     projection: Projection, role: str
@@ -1005,6 +1050,39 @@ async def test_every_published_edge_has_a_published_source_fact(projection: Proj
 
 
 # -- Migration shape ------------------------------------------------------------------------------
+
+
+def test_core_319_replaces_the_shared_trigger_and_only_the_last_schema_restores_it(
+    logical_postgres: object,
+) -> None:
+    url = create_migrated_test_db(
+        logical_postgres,
+        migration_db_name(),
+        ["core"],
+        schemas={"core": "general"},
+    )
+    asyncio.run(run_migrations(url, chain="core", schema="home"))
+
+    async def _takes_source_lock() -> bool:
+        conn = await asyncpg.connect(url)
+        try:
+            body = await conn.fetchval(
+                "SELECT prosrc FROM pg_proc "
+                "WHERE oid = 'public.entity_graph_edges_sync_withheld_counts()'::regprocedure"
+            )
+            return "pg_advisory_xact_lock" in body
+        finally:
+            await conn.close()
+
+    def _downgrade(schema: str) -> None:
+        config = _build_alembic_config(url, chains=["core"], target_schema=schema)
+        command.downgrade(config, "core@core_318")
+
+    assert asyncio.run(_takes_source_lock())
+    _downgrade("home")
+    assert asyncio.run(_takes_source_lock())
+    _downgrade("general")
+    assert not asyncio.run(_takes_source_lock())
 
 
 def test_core_318_backfills_existing_rows_once_and_downgrades_last(
