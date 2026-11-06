@@ -191,7 +191,7 @@ async def task_list(
 
 async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any]:
     """Mark a task as completed. An id that is no longer current is refused."""
-    from butlers.modules.memory.storage import store_fact, subject_keyed_target
+    from butlers.modules.memory.storage import store_fact, subject_keyed_guard
 
     row = await pool.fetchrow(
         "SELECT id, subject, content, metadata, entity_id, valid_at, content_authority,"
@@ -226,7 +226,7 @@ async def task_complete(pool: asyncpg.Pool, task_id: uuid.UUID) -> dict[str, Any
                 scope="relationship",
                 entity_id=None,  # None so supersession uses subject key (per-task)
                 valid_at=None,  # property fact — supersedes previous
-                expected_supersedes_id=subject_keyed_target(row),
+                **subject_keyed_guard(row),
                 metadata=new_metadata,
             )
         )["id"]

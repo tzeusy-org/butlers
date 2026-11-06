@@ -165,7 +165,7 @@ async def condition_update(
     Implemented as a superseding store_fact (property fact semantics). An id that is no
     longer current is refused, so a stale read cannot replace a newer fact.
     """
-    from butlers.modules.memory.storage import store_fact, subject_keyed_target
+    from butlers.modules.memory.storage import store_fact, subject_keyed_guard
 
     cond_uuid = uuid.UUID(condition_id) if isinstance(condition_id, str) else condition_id
     allowed = {"name", "status", "diagnosed_at", "notes"}
@@ -232,7 +232,7 @@ async def condition_update(
                 permanence="permanent",
                 scope="health",
                 valid_at=None,  # property fact — supersedes the previous
-                expected_supersedes_id=subject_keyed_target(row),
+                **subject_keyed_guard(row),
                 metadata=new_meta,
                 sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
             )

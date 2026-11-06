@@ -52,13 +52,17 @@ class StaleSupersessionTargetError(ValueError):
     """Raised when an optimistic supersession target is no longer current."""
 
 
-def subject_keyed_target(row: Mapping[str, Any]) -> uuid.UUID | None:
-    """The ``expected_supersedes_id`` for a copy of ``row`` stored under its subject alone.
+def subject_keyed_guard(row: Mapping[str, Any]) -> dict[str, Any]:
+    """``store_fact`` arguments for an edit of ``row`` stored under its subject alone.
 
     Such a store looks for the current row by subject with no ``entity_id`` and no ``valid_at``.
-    A live legacy row with either set is never that row, so naming it would refuse a live edit.
+    A live legacy row with either set is never that row, so naming it would refuse every edit.
+    Its first edit writes a successor beside it, and any later store would replace that
+    successor with text built from the legacy row, so it is refused once a current row exists.
     """
-    return row["id"] if row["entity_id"] is None and row["valid_at"] is None else None
+    if row["entity_id"] is None and row["valid_at"] is None:
+        return {"expected_supersedes_id": row["id"]}
+    return {"refuse_if_current": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1575,6 +1579,7 @@ async def store_fact(
     request_id: str | None = None,
     idempotency_key: str | None = None,
     expected_supersedes_id: uuid.UUID | None = None,
+    refuse_if_current: bool = False,
     retention_class: str = "operational",
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
@@ -1639,6 +1644,9 @@ async def store_fact(
             supersession happen in the same transaction; otherwise a
             ``StaleSupersessionTargetError`` (a ``ValueError`` subclass) is
             raised and no fact is written.
+        refuse_if_current: Raise ``StaleSupersessionTargetError`` and write nothing if a
+            current fact matches the supersession identity key. For an edit of a named row
+            that the key cannot find; the default keeps ordinary supersession.
         retention_class: Retention policy class for the fact (default
             'operational').  Controls lifecycle management behaviour.
         sensitivity: Data sensitivity classification (default 'normal').
@@ -1975,8 +1983,10 @@ async def store_fact(
                 return _graph_schema
 
             supersedes_id = None
-            if skip_supersession and expected_supersedes_id is not None:
-                raise ValueError("expected_supersedes_id cannot be used for a temporal fact")
+            if skip_supersession and (expected_supersedes_id is not None or refuse_if_current):
+                raise ValueError(
+                    "expected_supersedes_id or refuse_if_current cannot be used for a temporal fact"
+                )
             if not skip_supersession:
                 # Check for an existing *property* active fact using the appropriate key.
                 # Only consider rows with valid_at IS NULL (property facts).
@@ -2026,9 +2036,14 @@ async def store_fact(
 
                 current_id = existing["id"] if existing else None
                 if expected_supersedes_id is not None and current_id != expected_supersedes_id:
+                    current = f"; the current row is {current_id}" if current_id else ""
                     raise StaleSupersessionTargetError(
                         f"expected supersession target {expected_supersedes_id!r} "
-                        "is no longer current"
+                        f"is no longer current{current}"
+                    )
+                if refuse_if_current and current_id is not None:
+                    raise StaleSupersessionTargetError(
+                        f"this fact is no longer current; the current row is {current_id}"
                     )
 
                 if existing:
