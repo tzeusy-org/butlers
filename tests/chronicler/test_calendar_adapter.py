@@ -239,6 +239,23 @@ async def test_title_final_fallback_when_no_richer_context() -> None:
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    ("fields", "expected"),
+    [
+        ({"metadata": {"summary": "Standup"}, "event_location": "Zoom"}, "summary"),
+        ({"metadata": {}, "event_title": "Standup", "event_location": "Zoom"}, "summary"),
+        ({"metadata": {}, "event_title": " ", "event_location": "12 Secret Rd"}, "fallback"),
+        ({"metadata": {}, "event_title": None, "event_description": "Agenda"}, "fallback"),
+        ({"metadata": {}, "event_title": None}, "fallback"),
+    ],
+)
+async def test_payload_says_where_the_title_came_from(fields, expected) -> None:
+    """The public projection withholds a title built from the inviter's free text."""
+    ep = await _project_one(_instance_row(**fields))
+    assert ep.payload["title_source"] == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     ("event_metadata", "expected"),
     [
         (

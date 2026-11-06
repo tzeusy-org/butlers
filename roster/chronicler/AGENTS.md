@@ -879,6 +879,15 @@ left untouched.
   (`_owner_id_in_savepoint`): a failed lookup inside the resolver's transaction
   would abort it. A lane tap on an occupation interview is refused.
 
+## Public projection tables (RFC 0039 D2)
+
+`episodes_public` and `rollups_public` are the only Chronicler data the public MCP publishes.
+`v_episodes_public_source` (chronicler_031) defines them. A trigger on `overrides` rewrites them in
+the override's transaction, and `chronicler_public_projection_sweep` adds new episodes and repairs
+drift every 15 minutes. So a new episode is absent for up to 15 minutes, while a restriction is
+immediate. Sweep and trigger share an advisory lock; a writer of these tables must take it first,
+or a stale read can republish a row the owner just restricted.
+
 ## Situational blocks and anchors (bu-r3fmja)
 
 - `chronicler.situation_inferred` re-derives whole days; its blocks' `source_ref`

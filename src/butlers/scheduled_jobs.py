@@ -1987,6 +1987,16 @@ async def _run_chronicler_rollup_daily_job(
     return await run_rollup_daily(pool, job_args)
 
 
+async def _run_chronicler_public_projection_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Repair Chronicler's public projection tables (RFC 0039 D2, deterministic)."""
+    from butlers.chronicler.public_projection import sweep_public_projection
+
+    return await sweep_public_projection(pool)
+
+
 async def _run_chronicler_narrate_daily_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2289,6 +2299,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_comms": _run_chronicler_project_comms_job,
             "chronicler_routines_mine": _run_chronicler_routines_mine_job,
             "chronicler_rollup_daily": _run_chronicler_rollup_daily_job,
+            "chronicler_public_projection_sweep": _run_chronicler_public_projection_sweep_job,
             "chronicler_narrate_daily": _run_chronicler_narrate_daily_job,
         },
         "home": {

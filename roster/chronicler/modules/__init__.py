@@ -127,6 +127,13 @@ _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
         "job_name": "chronicler_rollup_daily",
     },
     {
+        # Every 15 minutes (RFC 0039 D2): adds new episodes to the public projection tables and
+        # repairs drift. Overrides update them in their own transaction. No LLM.
+        "name": "chronicler_public_projection_sweep",
+        "cron": "*/15 * * * *",
+        "job_name": "chronicler_public_projection_sweep",
+    },
+    {
         # Daily, 01:20 (bu-v9y18, telemetry-distillation bead 6): the one
         # optional, bounded LLM call per local day, labeling the already-
         # materialized `daily_rollups`/`daily_rollup_flags` rows for
