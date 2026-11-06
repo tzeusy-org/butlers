@@ -1,11 +1,14 @@
 """Unit controls for finite historical quantitative repair."""
 
+import ast
+import inspect
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from butlers.chronicler import history_repair
 from butlers.chronicler.history_repair import (
     FactWriteToken,
     RepairDayVersion,
@@ -18,6 +21,21 @@ from butlers.chronicler.history_repair import (
 from butlers.chronicler.rollups import _local_day_bounds_utc
 
 pytestmark = pytest.mark.unit
+
+
+def test_retention_admission_arms_no_second_client_timer():
+    """Any statement's own ``timeout=`` can race the deadline into a bare CancelledError.
+
+    The real-database test forces that race on admission's first read only, so this
+    holds every statement to the rule.
+    """
+    tree = ast.parse(inspect.getsource(history_repair._scan_expired_retention))
+    timed = [
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and any(kw.arg == "timeout" for kw in node.keywords)
+    ]
+    assert timed == []
 
 
 @pytest.mark.parametrize(("day", "hours"), [(date(2026, 3, 8), 23), (date(2026, 11, 1), 25)])

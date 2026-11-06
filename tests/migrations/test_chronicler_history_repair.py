@@ -3977,6 +3977,7 @@ def test_admission_deadline_never_cancels_the_commit_after_it(postgres_container
     url = url.replace("postgresql+psycopg2://", "postgresql://")
     monkeypatch.setattr(history_repair, "MAX_RETENTION_ADMISSION_TIMEOUT_MS", 500)
     deadlines: list[asyncio.Timeout] = []
+    asyncpg_cancels = 0
     real_timeout_at = asyncio.timeout_at
 
     def only_expired_by_the_hook(when: float) -> asyncio.Timeout:
@@ -3985,6 +3986,8 @@ def test_admission_deadline_never_cancels_the_commit_after_it(postgres_container
 
     class ExpiresDeadlineDuringCancel(asyncpg.Connection):
         def _cancel_current_command(self, waiter):
+            nonlocal asyncpg_cancels
+            asyncpg_cancels += 1
             super()._cancel_current_command(waiter)
             # Two turns: past the task's wakeup, which suspends it on ``cancel_waiter``.
             loop = asyncio.get_running_loop()
@@ -4010,11 +4013,14 @@ def test_admission_deadline_never_cancels_the_commit_after_it(postgres_container
                 "LOCK TABLE chronicler.daily_repair_retention_spans IN ACCESS EXCLUSIVE MODE"
             )
             with patch.object(asyncio, "timeout_at", only_expired_by_the_hook):
-                result = await history_repair.run_rebuild(pool, now=datetime.now(UTC))
+                result = await history_repair.run_rebuild(
+                    pool, now=datetime(2026, 11, 6, tzinfo=UTC)
+                )
             await blocking.rollback()
             assert result["status"] == "pending_retention"
             assert result["retention_admission_timeout"] is True
             assert await pool.fetchval("SELECT 1") == 1
+            assert asyncpg_cancels == 0
         finally:
             await holder.close()
             await pool.close()
