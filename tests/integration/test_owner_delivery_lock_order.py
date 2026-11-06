@@ -239,7 +239,8 @@ async def test_decision_holding_the_action_refuses_the_marker_behind_it(contende
     assert await _settled(contended, card) == {
         "action": "rejected",
         "subject": "decided",
-        "card": "pending",
+        # Never handed off, so nothing outside the ledger renders it: the close retracts it.
+        "card": "retracted",
         "rfc": "cancelled",
         "attempts": [],
     }
