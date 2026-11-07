@@ -284,7 +284,7 @@ async def test_initial_snapshot_shares_driver_budget_and_preserves_cleanup(monke
     inbox = uuid.uuid4()
     acquire = pool.acquire
     fetchrow = pool.fetchrow
-    acquire_budgets, query_budgets, initial_queries = [], [], []
+    acquire_budgets, query_budgets, initial_queries, acquisition_elapsed = [], [], [], []
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     first = True
 
@@ -316,12 +316,14 @@ async def test_initial_snapshot_shares_driver_budget_and_preserves_cleanup(monke
             async with acquire() as connection:
                 yield connection
             return
+        started = asyncio.get_running_loop().time()
         async with AsyncExitStack() as stack:
             async with asyncio.timeout(seconds):
                 if case == "acquire-timeout":
                     await asyncio.Event().wait()
                 await asyncio.sleep(budget / 4)
                 connection = await stack.enter_async_context(acquire(timeout=seconds))
+            acquisition_elapsed.append(asyncio.get_running_loop().time() - started)
             yield connection
 
     async def driver_fetchrow(query, *args, **options):
@@ -331,6 +333,9 @@ async def test_initial_snapshot_shares_driver_budget_and_preserves_cleanup(monke
             seconds = options.get("timeout")
             assert seconds is not None, "snapshot query needs a driver deadline"
             assert 0 < seconds < acquire_budgets[0], "query must use the remaining budget"
+            assert seconds <= acquire_budgets[0] - acquisition_elapsed[0], (
+                "acquisition time must be deducted from query allowance"
+            )
             query_budgets.append(seconds)
             async with asyncio.timeout(seconds):
                 if case == "query-timeout":
