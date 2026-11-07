@@ -89,7 +89,7 @@ def _stale_edit_conflict() -> HTTPException:
     """409 for an edit whose record changed after the caller read it."""
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
-        detail="The record changed since it was read. Reload it and apply the edit again.",
+        detail="The record changed since it was read. Reload it and edit its current version.",
     )
 
 

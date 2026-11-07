@@ -168,7 +168,11 @@ async def medication_update(
     ``quantity_updated_at`` to now, which the insight-scan job (bu-dtmbn) uses
     as the anchor for counting doses consumed against the new supply.
     """
-    from butlers.modules.memory.storage import store_fact, subject_keyed_guard
+    from butlers.modules.memory.storage import (
+        stale_fact_error,
+        store_fact,
+        subject_keyed_guard,
+    )
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
     allowed = {"name", "dosage", "frequency", "schedule", "active", "notes", "quantity"}
@@ -186,7 +190,9 @@ async def medication_update(
         med_uuid,
     )
     if row is None:
-        raise ValueError(f"Medication {medication_id} not found")
+        raise await stale_fact_error(
+            pool, "Medication", med_uuid, predicate="medication", scope="health"
+        )
 
     row = _row_to_dict(row)
     existing_meta = row.get("metadata", {})
@@ -352,7 +358,7 @@ async def medication_log_dose(
     notes: str | None = None,
 ) -> dict[str, Any]:
     """Log a medication dose. Use skipped=True to record a missed dose."""
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import stale_fact_error, store_fact
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
 
@@ -365,7 +371,9 @@ async def medication_log_dose(
         med_uuid,
     )
     if med_row is None:
-        raise ValueError(f"Medication {medication_id} not found")
+        raise await stale_fact_error(
+            pool, "Medication", med_uuid, predicate="medication", scope="health"
+        )
 
     med_row = _row_to_dict(med_row)
     med_meta = med_row.get("metadata", {})

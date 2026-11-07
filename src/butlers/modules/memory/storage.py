@@ -56,6 +56,37 @@ class OwnerAuthoredSupersessionError(ValueError):
     """Raised when a non-owner-authored fact would supersede an owner-authored one."""
 
 
+async def stale_fact_error(
+    pool: Pool, label: str, fact_id: Any, *, predicate: str, scope: str
+) -> ValueError:
+    """The error for an id a copying tool's read refused, naming the current row if any.
+
+    A session holding an old id, such as one embedded in a schedule prompt, can retry against
+    the id named here. A row of another predicate or scope stays not found.
+    """
+    row = await pool.fetchrow(
+        "SELECT subject, tenant_id, validity FROM facts"
+        " WHERE id = $1 AND predicate = $2 AND scope = $3",
+        fact_id,
+        predicate,
+        scope,
+    )
+    if row is None:
+        return ValueError(f"{label} {fact_id} not found")
+    current = await pool.fetchval(
+        "SELECT id FROM facts WHERE subject = $1 AND predicate = $2 AND scope = $3"
+        " AND tenant_id = $4 AND validity IN ('active', 'fading')"
+        " ORDER BY created_at DESC LIMIT 1",
+        row["subject"],
+        predicate,
+        scope,
+        row["tenant_id"],
+    )
+    if current is None:
+        return ValueError(f"{label} {fact_id} is {row['validity']}, with no current version")
+    return ValueError(f"{label} {fact_id} is no longer current; the current id is {current}")
+
+
 def subject_keyed_guard(row: Mapping[str, Any]) -> dict[str, Any]:
     """``store_fact`` arguments for an edit of ``row`` stored under its subject alone.
 
