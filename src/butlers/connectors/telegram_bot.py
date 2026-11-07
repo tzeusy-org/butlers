@@ -707,10 +707,9 @@ class TelegramBotConnector:
         await self._global_ingestion_policy.ensure_loaded()
 
         # Wait for Switchboard to be ready before entering the poll loop.
-        # Telegram advances the update offset as soon as getUpdates returns —
-        # messages received while the Switchboard is down would be permanently
-        # lost if we started polling immediately.  Block here until the
-        # Switchboard health endpoint responds 200 OK.
+        # Block here until the Switchboard health endpoint responds 200 OK, so
+        # a cold start does not spend its first polls failing against a
+        # Switchboard that is still booting.
         try:
             await wait_for_switchboard_ready(self._config.switchboard_mcp_url)
         except TimeoutError:
@@ -732,25 +731,7 @@ class TelegramBotConnector:
 
         while self._running:
             try:
-                updates = await self._get_updates()
-                if updates:
-                    logger.info(
-                        "Polled Telegram updates",
-                        extra={
-                            "update_count": len(updates),
-                            "endpoint_identity": self._config.endpoint_identity,
-                        },
-                    )
-
-                    # Process each update
-                    for update in updates:
-                        await self._process_update(update)
-
-                    # Save checkpoint after successful batch
-                    await self._save_checkpoint()
-
-                # Flush filtered event buffer and drain replay-pending rows.
-                await self._flush_and_drain()
+                await self._poll_once()
 
                 # Successful poll — reset backoff
                 self._consecutive_failures = 0
@@ -774,6 +755,36 @@ class TelegramBotConnector:
                 sleep_s = capped_backoff + jitter
 
             await asyncio.sleep(sleep_s)
+
+    async def _poll_once(self) -> None:
+        """One poll cycle: fetch a batch, handle it, checkpoint, flush."""
+        updates = await self._get_updates()
+        if updates:
+            logger.info(
+                "Polled Telegram updates",
+                extra={
+                    "update_count": len(updates),
+                    "endpoint_identity": self._config.endpoint_identity,
+                },
+            )
+
+            # Process each update
+            for update in updates:
+                await self._process_update(update)
+                # Confirm to Telegram only what was handled: the next getUpdates
+                # offset is last + 1, so a ConnectionError above leaves this
+                # update (and the rest of the batch) to be fetched again.
+                update_id = update.get("update_id")
+                if isinstance(update_id, int) and (
+                    self._last_update_id is None or update_id > self._last_update_id
+                ):
+                    self._last_update_id = update_id
+
+            # Save checkpoint after successful batch
+            await self._save_checkpoint()
+
+        # Flush filtered event buffer and drain replay-pending rows.
+        await self._flush_and_drain()
 
     async def start_webhook(self) -> None:
         """Register webhook for prod mode.
@@ -854,9 +865,8 @@ class TelegramBotConnector:
             data = resp.json()
             updates: list[dict[str, Any]] = data.get("result", [])
 
-            if updates:
-                self._last_update_id = updates[-1]["update_id"]
-
+            # _last_update_id is NOT advanced here: ``_poll_once`` advances it
+            # per handled update, because the next offset confirms updates.
             # Mark API as connected on success.
             self._record_source_api_success()
 
@@ -1034,10 +1044,10 @@ class TelegramBotConnector:
         updates) are silently skipped.
 
         ``ConnectionError`` is re-raised so the outer polling loop can catch it
-        and retry the entire batch without saving the checkpoint.  Telegram
-        advances the update offset as soon as ``getUpdates`` returns, so the
-        only way to prevent message loss is to not advance our own checkpoint
-        when delivery to Switchboard fails.
+        and retry from this update.  Telegram confirms (drops) every update
+        below the offset we send next, so ``_poll_once`` advances
+        ``_last_update_id`` only after an update is handled; a failed update
+        and the rest of its batch are fetched again.
 
         Other exceptions are logged and swallowed — a single malformed update
         must not block the rest of the batch.
@@ -1068,8 +1078,8 @@ class TelegramBotConnector:
                     return  # Nothing to ingest
 
                 # Ingestion policy gate: evaluate before Switchboard submission.
-                # update_id is already advanced by _get_updates, so blocked updates
-                # are intentionally dropped — this is not an error condition.
+                # Blocked updates count as handled and the offset moves past
+                # them — they are intentionally dropped, not an error condition.
                 _ip_envelope = self._build_ingestion_envelope(update)
 
                 # 1. Connector-scope rules (block/pass_through)
@@ -1149,8 +1159,9 @@ class TelegramBotConnector:
 
                 await self._submit_to_ingest(envelope)
             except ConnectionError:
-                # Switchboard unavailable — propagate so the outer loop
-                # retries with backoff and does NOT save the checkpoint.
+                # Switchboard unavailable — propagate so the outer loop retries
+                # with backoff. ``_poll_once`` has not advanced past this
+                # update, so the next getUpdates offset re-fetches it.
                 raise
             except Exception as exc:
                 logger.exception(
