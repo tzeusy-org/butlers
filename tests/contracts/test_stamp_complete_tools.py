@@ -23,8 +23,11 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
+from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.core.goal_lineage import VerifiedLineage, lineage_scope
 from butlers.core.stamp_account import (
     StampAccount,
@@ -58,6 +61,7 @@ from butlers.tools.relationship.loans import loan_settle
 from butlers.tools.relationship.notes import note_list, note_search
 from butlers.tools.relationship.relationship_lookup import relationship_lookup
 from butlers.tools.relationship.tasks import task_complete
+from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 
 def _db(test):
@@ -924,6 +928,7 @@ async def test_a_legacy_or_system_successor_reads_unclean_through_each_stamped_r
 
 
 _REFUSES_STALE = [p for p in _COPIES if p.id not in ("research_update", "loan_settle")]
+_COPY_BY_ID = {p.id: p.values for p in _COPIES}
 _SUBJECT_KEYED = [
     p for p in _COPIES if p.id in ("condition_update", "medication_update", "task_complete")
 ]
@@ -999,16 +1004,98 @@ async def test_a_fact_superseded_after_the_read_is_refused(stores, monkeypatch, 
     assert await _live_rows(stores, seed) == 1
 
 
+_LEGACY_KEYS = [
+    pytest.param({"entity_id": _ENTITY}, id="entity_id"),
+    pytest.param({"valid_at": datetime.fromisoformat("2026-01-01T00:00:00+00:00")}, id="valid_at"),
+]
+
+
+async def _legacy_with_successor(pool, copy, seed, legacy) -> tuple[dict, dict]:
+    source = await _seed_copy_source(pool, seed, content_authority="system", **legacy)
+    successor = await copy(pool, source["id"])  # A live legacy row's first edit is not refused.
+    assert (await _stored(pool, successor["id"]))["validity"] == "active"
+    await pool.execute("UPDATE facts SET content = 'successor text' WHERE id = $1", successor["id"])
+    return source, successor
+
+
+@pytest.mark.parametrize("legacy", _LEGACY_KEYS)
 @pytest.mark.parametrize(("copy", "module", "seed"), _SUBJECT_KEYED)
 @_db
-async def test_a_live_legacy_row_with_an_entity_id_is_still_editable(
-    stores, monkeypatch, copy, module, seed
+async def test_a_live_legacy_id_cannot_overwrite_its_successor(
+    stores, monkeypatch, copy, module, seed, legacy
 ):
-    """A subject-only store cannot find this row, so naming it would refuse a live edit."""
+    """bu-dhloi1.110: the refusal names the current row, and neither row changes."""
     monkeypatch.setattr(module, "_get_embedding_engine", _engine)
-    source = await _seed_copy_source(stores, seed, content_authority="system", entity_id=_ENTITY)
-    result = await copy(stores, source["id"])
-    assert (await _stored(stores, result["id"]))["validity"] == "active"
+    source, successor = await _legacy_with_successor(stores, copy, seed, legacy)
+    with pytest.raises(storage.StaleSupersessionTargetError, match=str(successor["id"])):
+        await copy(stores, source["id"])
+    assert (await _stored(stores, source["id"]))["validity"] == "active"
+    current = await _stored(stores, successor["id"])
+    assert (current["validity"], current["content"]) == ("active", "successor text")
+    retried = await copy(stores, successor["id"])  # The named row is the one to edit.
+    assert (await _stored(stores, retried["id"]))["validity"] == "active"
+    assert (await _stored(stores, successor["id"]))["validity"] == "superseded"
+
+
+_HEALTH_ROUTES = [
+    pytest.param("medications", {"dosage": "20mg"}, *_COPY_BY_ID["medication_update"], id="meds"),
+    pytest.param("conditions", {"status": "managed"}, *_COPY_BY_ID["condition_update"], id="cond"),
+]
+
+
+def _health_client(pool) -> httpx.AsyncClient:
+    db = MagicMock(spec=DatabaseManager)
+    db.pool.return_value = pool
+    app = create_app(api_key="")
+    app.dependency_overrides[get_db] = lambda: db
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.parametrize(("collection", "body", "copy", "module", "seed"), _HEALTH_ROUTES)
+@_db
+async def test_the_health_routes_answer_a_real_refusal_with_409_and_a_stale_id_with_404(
+    stores, monkeypatch, collection, body, copy, module, seed
+):
+    """The routes and the tools composed, on real rows: no tool is patched."""
+    monkeypatch.setattr(module, "_get_embedding_engine", _engine)
+    legacy, successor = await _legacy_with_successor(stores, copy, seed, {"entity_id": _ENTITY})
+    retried = await copy(stores, successor["id"])
+    async with _health_client(stores) as client:
+        refused = await client.put(f"/api/health/{collection}/{legacy['id']}", json=body)
+        stale = await client.put(f"/api/health/{collection}/{successor['id']}", json=body)
+        current = await client.put(f"/api/health/{collection}/{retried['id']}", json=body)
+    assert refused.status_code == 409, refused.text
+    assert stale.status_code == 404, stale.text
+    assert current.status_code == 200, current.text
+
+
+@pytest.mark.parametrize("legacy", _LEGACY_KEYS)
+@_db
+async def test_a_write_naming_no_row_still_supersedes_beside_a_legacy_row(
+    stores, monkeypatch, legacy
+):
+    """The refusal is opt-in: an ordinary subject-keyed store is unchanged."""
+    monkeypatch.setattr(conditions, "_get_embedding_engine", _engine)
+    seed = next(p for p in _SUBJECT_KEYED if p.id == "condition_update").values[2]
+    _, successor = await _legacy_with_successor(stores, _update_condition, seed, legacy)
+    ordinary = await _store_current(stores, seed)
+    assert (await _stored(stores, successor["id"]))["validity"] == "superseded"
+    assert (await _stored(stores, ordinary["id"]))["validity"] == "active"
+
+
+@_db
+async def test_a_temporal_fact_cannot_ask_for_the_refusal(stores):
+    with pytest.raises(ValueError, match="temporal fact"):
+        await storage.store_fact(
+            stores,
+            "condition:temporal",
+            "condition",
+            "text",
+            _engine(),
+            scope="health",
+            valid_at=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+            refuse_if_current=True,
+        )
 
 
 @pytest.mark.parametrize(("copy", "module", "seed"), _REFUSES_STALE)

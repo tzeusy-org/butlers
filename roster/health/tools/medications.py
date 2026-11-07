@@ -168,7 +168,7 @@ async def medication_update(
     ``quantity_updated_at`` to now, which the insight-scan job (bu-dtmbn) uses
     as the anchor for counting doses consumed against the new supply.
     """
-    from butlers.modules.memory.storage import store_fact, subject_keyed_target
+    from butlers.modules.memory.storage import store_fact, subject_keyed_guard
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
     allowed = {"name", "dosage", "frequency", "schedule", "active", "notes", "quantity"}
@@ -221,7 +221,7 @@ async def medication_update(
                 permanence="permanent",
                 scope="health",
                 valid_at=None,  # property fact — supersedes the previous
-                expected_supersedes_id=subject_keyed_target(row),
+                **subject_keyed_guard(row),
                 metadata=new_meta,
                 sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
             )

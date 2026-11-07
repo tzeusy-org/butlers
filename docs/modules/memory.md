@@ -101,9 +101,13 @@ The seven copying tools refuse a fact id that is no longer current, so a stale r
 newer fact or add a second live row. `research_update` and `loan_settle` accept only `active`
 rows, and the other five accept `active` or `fading`. `condition_update`, `medication_update`
 and `task_complete` also pass `expected_supersedes_id` to `store_fact`, which catches a row
-superseded after the read. A live legacy row with `entity_id` or `valid_at` set is not found
-by that subject-only store, so it is edited without that check, and it stays active beside
-its successor as it did before.
+superseded after the read.
+
+A live legacy row with `entity_id` or `valid_at` set is not found by that subject-only store.
+Its first edit writes a successor beside it, and it stays active. Any later edit through its
+id is refused, and the error names the current row, so the edit can go there instead. Today
+the owner sees both rows until the legacy one is deleted. `medication_log_dose` is not
+refused, because a dose replaces nothing.
 
 Steering memory is gated on that stamp:
 
