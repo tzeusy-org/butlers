@@ -26,7 +26,7 @@ from butlers.testing.db import open_pool
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
 from tests.chronicler.test_calendar_adapter import _instance_row
-from tests.migrations.test_public_projection_source import Projection, _asyncpg_url
+from tests.migrations.test_public_projection_source import Projection, replicated_projection
 from tests.migrations.test_public_projection_source import (
     logical_postgres as logical_postgres,  # noqa: F401
 )
@@ -78,7 +78,7 @@ def chronicler_projection(logical_postgres) -> Iterator[Projection]:
     The manifest/generator belongs to .4; these explicit tables/columns/filter
     implement RFC0039 D2's Chronicler transport contract without that dependency.
     """
-    source_name, subscriber_name = migration_db_name(), migration_db_name()
+    source_name = migration_db_name()
     url = create_migrated_test_db(
         logical_postgres,
         source_name,
@@ -87,107 +87,32 @@ def chronicler_projection(logical_postgres) -> Iterator[Projection]:
         revisions={"chronicler": "chronicler_029"},
     )
     prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
-    source_url = _asyncpg_url(logical_postgres, source_name)
-    subscriber_url = _asyncpg_url(logical_postgres, subscriber_name)
-    subscriber_created = False
-    slot_created = False
-
-    async def prepare() -> None:
-        nonlocal subscriber_created, slot_created
-        admin = await asyncpg.connect(_asyncpg_url(logical_postgres, "postgres"))
-        try:
-            await admin.execute(f'CREATE DATABASE "{subscriber_name}"')
-            subscriber_created = True
-            port = await admin.fetchval("SHOW port")
-        finally:
-            await admin.close()
-        source = await asyncpg.connect(source_url)
-        try:
-            await source.execute("CREATE TABLE public.projection_barrier (id UUID PRIMARY KEY)")
-            await source.execute("""
-                CREATE PUBLICATION chronicler_public_test FOR
-                    TABLE chronicler.episodes_public (
-                        id, started_at, ended_at, kind, title, category,
-                        effective_privacy, tombstoned
-                    ) WHERE (effective_privacy IN ('normal', 'sensitive') AND tombstoned = false),
-                    TABLE chronicler.rollups_public,
-                    TABLE public.projection_barrier
-            """)
-            # Separate slot creation avoids a same-cluster CREATE SUBSCRIPTION deadlock.
-            await source.fetchval(
-                "SELECT pg_create_logical_replication_slot('chronicler_public_test', 'pgoutput')"
-            )
-            slot_created = True
-        finally:
-            await source.close()
-        subscriber = await asyncpg.connect(subscriber_url)
-        try:
-            await subscriber.execute("""
-                CREATE SCHEMA chronicler;
-                CREATE TABLE chronicler.episodes_public (
-                    id UUID PRIMARY KEY, started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ,
-                    kind TEXT, title TEXT, category TEXT, effective_privacy TEXT, tombstoned BOOLEAN
-                );
-                CREATE TABLE chronicler.rollups_public (
-                    local_date DATE, group_kind TEXT, group_key TEXT, minutes INTEGER,
-                    PRIMARY KEY (local_date, group_kind, group_key)
-                );
-                CREATE TABLE public.projection_barrier (id UUID PRIMARY KEY)
-            """)
-            conninfo = (
-                f"host=127.0.0.1 port={port} dbname={source_name} "
-                f"user={logical_postgres.username} password={logical_postgres.password}"
-            )
-            await subscriber.execute(
-                f"CREATE SUBSCRIPTION chronicler_public_test CONNECTION '{conninfo}' "
-                "PUBLICATION chronicler_public_test "
-                "WITH (create_slot = false, slot_name = 'chronicler_public_test')"
-            )
-            # Initial copies use separate table-sync workers. A barrier proves
-            # cross-table commit order only once all three tables are streaming.
-            async with asyncio.timeout(30):
-                while not await subscriber.fetchval(  # noqa: ASYNC110 -- external PostgreSQL table-sync state
-                    """
-                    SELECT count(*) = 3 AND bool_and(srsubstate = 'r')
-                    FROM pg_subscription_rel
-                    WHERE srsubid = (
-                        SELECT oid FROM pg_subscription WHERE subname = 'chronicler_public_test'
-                    )
-                """
-                ):
-                    await asyncio.sleep(0.05)
-        finally:
-            await subscriber.close()
-
-    async def disconnect() -> None:
-        if subscriber_created:
-            subscriber = await asyncpg.connect(subscriber_url)
-            try:
-                await subscriber.execute("DROP SUBSCRIPTION IF EXISTS chronicler_public_test")
-            finally:
-                await subscriber.close()
-        source = await asyncpg.connect(source_url)
-        try:
-            # CREATE SUBSCRIPTION may fail after slot creation. It owns the slot
-            # only after successful creation; clean that partial setup as well.
-            if slot_created:
-                await source.execute("""
-                    SELECT pg_drop_replication_slot('chronicler_public_test')
-                    WHERE EXISTS (
-                        SELECT 1 FROM pg_replication_slots WHERE slot_name = 'chronicler_public_test'
-                    )
-                """)
-            await source.execute("DROP PUBLICATION IF EXISTS chronicler_public_test")
-        finally:
-            await source.close()
-
-    try:
-        asyncio.run(prepare())
-        projection = Projection(source_url=source_url, subscriber_url=subscriber_url)
-        asyncio.run(projection.caught_up())
+    with replicated_projection(
+        logical_postgres,
+        source_name,
+        publication="""
+            CREATE PUBLICATION chronicler_public_test FOR
+                TABLE chronicler.episodes_public (
+                    id, started_at, ended_at, kind, title, category,
+                    effective_privacy, tombstoned
+                ) WHERE (effective_privacy IN ('normal', 'sensitive') AND tombstoned = false),
+                TABLE chronicler.rollups_public,
+                TABLE public.projection_barrier
+        """,
+        publication_name="chronicler_public_test",
+        subscription_name="chronicler_public_test",
+        subscriber_tables={
+            "chronicler.episodes_public": (
+                "id UUID PRIMARY KEY, started_at TIMESTAMPTZ, ended_at TIMESTAMPTZ, "
+                "kind TEXT, title TEXT, category TEXT, effective_privacy TEXT, tombstoned BOOLEAN"
+            ),
+            "chronicler.rollups_public": (
+                "local_date DATE, group_kind TEXT, group_key TEXT, minutes INTEGER, "
+                "PRIMARY KEY (local_date, group_kind, group_key)"
+            ),
+        },
+    ) as projection:
         yield projection
-    finally:
-        asyncio.run(disconnect())
 
 
 async def _episode(

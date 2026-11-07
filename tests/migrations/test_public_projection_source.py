@@ -13,8 +13,8 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 
 import asyncpg
@@ -107,14 +107,18 @@ _SUBSCRIBER_TABLES = {
     "public.entity_graph_withheld_counts": (
         "entity_id UUID, source_key TEXT, withheld INTEGER, PRIMARY KEY (entity_id, source_key)"
     ),
-    "public.projection_barrier": "id UUID PRIMARY KEY",
 }
-_SUBSCRIBER_DDL = (
-    "CREATE SCHEMA general; CREATE SCHEMA relationship; CREATE SCHEMA health; "
-    + " ".join(
-        f"CREATE TABLE {table} ({columns});" for table, columns in _SUBSCRIBER_TABLES.items()
+
+
+def _subscriber_ddl(tables: Mapping[str, str]) -> str:
+    """The selective subscriber schema, shared by every source projection fixture."""
+    schemas = dict.fromkeys(table.split(".")[0] for table in tables)
+    return (
+        " ".join(f"CREATE SCHEMA {schema};" for schema in schemas if schema != "public")
+        + " "
+        + " ".join(f"CREATE TABLE {table} ({columns});" for table, columns in tables.items())
     )
-)
+
 
 # Parity with the source expressions, written independently of the migration's SQL.
 _ENTITY_PARITY = """
@@ -220,56 +224,117 @@ def projection(logical_postgres: object) -> Iterator[Projection]:
         asyncio.run(run_migrations(migrated_url, chain="memory", schema=schema))
     asyncio.run(run_migrations(migrated_url, chain="relationship", schema="relationship"))
 
+    with replicated_projection(
+        logical_postgres,
+        source_name,
+        publication=_PUBLICATION,
+        publication_name="butlers_public_v1",
+        subscription_name="butlers_public_sub",
+        subscriber_tables=_SUBSCRIBER_TABLES,
+    ) as built:
+        yield built
+
+
+@contextmanager
+def replicated_projection(
+    logical_postgres: object,
+    source_name: str,
+    *,
+    publication: str,
+    publication_name: str,
+    subscription_name: str,
+    subscriber_tables: Mapping[str, str],
+) -> Iterator[Projection]:
+    """Attach the shared logical subscriber topology to an already migrated source.
+
+    Callers provide reviewed publication SQL and only the public subscriber
+    columns. The source barrier, schema construction, slot, readiness and
+    partial-setup cleanup have one owner across Package A and Chronicler.
+    """
     subscriber_name = migration_db_name()
     source_url = _asyncpg_url(logical_postgres, source_name)
     subscriber_url = _asyncpg_url(logical_postgres, subscriber_name)
     admin_url = _asyncpg_url(logical_postgres, "postgres")
+    tables = {**subscriber_tables, "public.projection_barrier": "id UUID PRIMARY KEY"}
+    subscriber_created = False
+    slot_created = False
 
-    async def _connect() -> None:
+    async def connect() -> None:
+        nonlocal subscriber_created, slot_created
         admin = await asyncpg.connect(admin_url)
         try:
             await admin.execute(f'CREATE DATABASE "{subscriber_name}"')
+            subscriber_created = True
             port = await admin.fetchval("SHOW port")
         finally:
             await admin.close()
         source = await asyncpg.connect(source_url)
         try:
             await source.execute("CREATE TABLE public.projection_barrier (id UUID PRIMARY KEY)")
-            await source.execute(_PUBLICATION)
+            await source.execute(publication)
+            # A separate slot avoids same-cluster CREATE SUBSCRIPTION deadlock.
             await source.fetchval(
-                "SELECT pg_create_logical_replication_slot('butlers_public_sub', 'pgoutput')"
+                "SELECT pg_create_logical_replication_slot($1, 'pgoutput')", subscription_name
             )
+            slot_created = True
         finally:
             await source.close()
         subscriber = await asyncpg.connect(subscriber_url)
         try:
-            await subscriber.execute(_SUBSCRIBER_DDL)
+            await subscriber.execute(_subscriber_ddl(tables))
             user = logical_postgres.username
             password = logical_postgres.password
             conninfo = (
                 f"host=127.0.0.1 port={port} dbname={source_name} user={user} password={password}"
             )
             await subscriber.execute(
-                f"CREATE SUBSCRIPTION butlers_public_sub CONNECTION '{conninfo}' "
-                "PUBLICATION butlers_public_v1 "
-                "WITH (create_slot = false, slot_name = 'butlers_public_sub')"
+                f"CREATE SUBSCRIPTION {subscription_name} CONNECTION '{conninfo}' "
+                f"PUBLICATION {publication_name} "
+                f"WITH (create_slot = false, slot_name = '{subscription_name}')"
             )
+            # Initial copies have separate workers; only streaming tables share
+            # the commit-order guarantee used by Projection.caught_up().
+            async with asyncio.timeout(30):
+                while not await subscriber.fetchval(  # noqa: ASYNC110 -- external PostgreSQL table-sync state
+                    """
+                    SELECT count(*) = $2 AND bool_and(srsubstate = 'r')
+                    FROM pg_subscription_rel
+                    WHERE srsubid = (SELECT oid FROM pg_subscription WHERE subname = $1)
+                    """,
+                    subscription_name,
+                    len(tables),
+                ):
+                    await asyncio.sleep(0.05)
         finally:
             await subscriber.close()
 
-    asyncio.run(_connect())
-    built = Projection(source_url=source_url, subscriber_url=subscriber_url)
-    asyncio.run(built.caught_up())
-    yield built
-
-    async def _disconnect() -> None:
-        subscriber = await asyncpg.connect(subscriber_url)
+    async def disconnect() -> None:
+        if subscriber_created:
+            subscriber = await asyncpg.connect(subscriber_url)
+            try:
+                await subscriber.execute(f"DROP SUBSCRIPTION IF EXISTS {subscription_name}")
+            finally:
+                await subscriber.close()
+        source = await asyncpg.connect(source_url)
         try:
-            await subscriber.execute("DROP SUBSCRIPTION butlers_public_sub")
+            # Subscription setup can fail after creating its separately owned slot.
+            if slot_created:
+                await source.execute(
+                    "SELECT pg_drop_replication_slot($1) "
+                    "WHERE EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
+                    subscription_name,
+                )
+            await source.execute(f"DROP PUBLICATION IF EXISTS {publication_name}")
         finally:
-            await subscriber.close()
+            await source.close()
 
-    asyncio.run(_disconnect())
+    try:
+        asyncio.run(connect())
+        built = Projection(source_url=source_url, subscriber_url=subscriber_url)
+        asyncio.run(built.caught_up())
+        yield built
+    finally:
+        asyncio.run(disconnect())
 
 
 async def _entity(
