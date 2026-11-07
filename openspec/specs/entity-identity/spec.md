@@ -230,6 +230,13 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **THEN** it MUST refuse with an error naming that contact and MUST change nothing
 - **AND** the removed entity MUST stay removed
 
+#### Scenario: A forget or delete severs the entity's contact link
+
+- **WHEN** a forget or a memory entity delete removes an entity that a contact is bridged to
+- **THEN** the bridge row MUST be removed in the same transaction, under the entity lock, by one shared unlink
+- **AND** the contact MUST then read as not found
+- **AND** a delete refused or rolled back MUST leave the bridge row
+
 #### Scenario: A forget or delete cannot race a merge or rebind
 
 - **WHEN** a forget or memory entity delete overlaps a merge or rebind of that entity
