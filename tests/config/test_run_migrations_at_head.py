@@ -6,8 +6,10 @@ import asyncio
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
 import butlers.migrations as migrations
+from alembic import command
 from butlers.migrations import get_chain_head, run_migrations
 
 pytestmark = pytest.mark.integration
@@ -100,3 +102,92 @@ def test_at_head_check_sees_a_new_revision_file(fresh_db, upgrades, monkeypatch)
     # real files it is a no-op.
     asyncio.run(run_migrations(url, chain="core", schema="general"))
     assert upgrades == ["core@head"]
+
+
+@pytest.mark.parametrize("domain", ["finance", "health"])
+@pytest.mark.parametrize("order", ["cold", "populated"])
+def test_domain_projection_finishes_deferred_and_already_head_memory(
+    fresh_db,
+    upgrades,
+    domain,
+    order,
+) -> None:
+    """Real facts are present and accepted before an at-head finalizer must project them."""
+    schemas = {chain: domain for chain in ("core", domain, "memory")}
+    previous = "finance_019" if domain == "finance" else "health_006"
+    if order == "cold":
+        url = fresh_db("core", domain, schemas=schemas)
+        # Real memory migration, deliberately before the runner's post-memory
+        # callback, positions its already-at-head branch rather than faking it.
+        command.upgrade(migrations._build_alembic_config(url, target_schema=domain), "memory@head")
+    else:
+        url = fresh_db("core", domain, "memory", schemas=schemas, revisions={domain: previous})
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            fact = conn.execute(
+                text(f"""
+                INSERT INTO {domain}.facts(subject,predicate,content,metadata,sensitivity)
+                VALUES('other person','medication','accepted source',
+                    '{{"name":"Initial","notes":"must survive"}}','confidential') RETURNING id
+            """)
+            ).scalar_one()
+            if order == "cold":
+                assert (
+                    conn.execute(
+                        text(f"SELECT count(*) FROM {domain}.json_fields_public WHERE row_id=:id"),
+                        {"id": str(fact)},
+                    ).scalar_one()
+                    == 0
+                )
+        if order == "populated":
+            asyncio.run(run_migrations(url, chain=domain, schema=domain))
+        upgrades.clear()
+        asyncio.run(run_migrations(url, chain="memory", schema=domain))
+        assert upgrades == []
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        f"SELECT value_text FROM {domain}.json_fields_public "
+                        "WHERE row_id=:id AND path='metadata.notes'"
+                    ),
+                    {"id": str(fact)},
+                ).scalar_one_or_none()
+                == "must survive"
+            )
+            if domain == "health":
+                assert (
+                    conn.execute(
+                        text("SELECT name FROM health.medications_public WHERE id=:id"),
+                        {"id": fact},
+                    ).scalar_one()
+                    == "Initial"
+                )
+        # A correct boundary does not reacquire a source-table lock or rebackfill
+        # on every boot. A genuinely held exclusive lock positions that claim.
+        with engine.begin() as blocker:
+            blocker.execute(text(f"LOCK TABLE {domain}.facts IN ACCESS EXCLUSIVE MODE"))
+            asyncio.run(run_migrations(url, chain="memory", schema=domain))
+        assert upgrades == []
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {domain}.facts DISABLE TRIGGER trg_mcp_json_fields"))
+        with pytest.raises(DBAPIError):
+            asyncio.run(run_migrations(url, chain="memory", schema=domain))
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {domain}.facts ENABLE TRIGGER trg_mcp_json_fields"))
+        asyncio.run(run_migrations(url, chain="memory", schema=domain))
+        for missing in ("facts", "calendar_sources") if domain == "health" else ("facts",):
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {domain}.{missing} RENAME TO unavailable_source"))
+            try:
+                with pytest.raises(DBAPIError):
+                    asyncio.run(run_migrations(url, chain="memory", schema=domain))
+            finally:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(f"ALTER TABLE {domain}.unavailable_source RENAME TO {missing}")
+                    )
+            asyncio.run(run_migrations(url, chain="memory", schema=domain))
+    finally:
+        engine.dispose()

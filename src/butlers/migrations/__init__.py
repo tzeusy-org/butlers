@@ -494,3 +494,37 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
                 connection.execute(text("SELECT chronicler_memory_admin.finalize_interface()"))
         finally:
             engine.dispose()
+
+    # Finance/health run their owning butler chain before memory on a cold
+    # daemon. Finish their deferred facts boundary even when memory is at head.
+    # Flat public migrations remain supported by the existing reader fixtures.
+    if chain == "memory" and normalized_schema in (None, "public", "finance", "health"):
+        engine = create_engine(db_url)
+        try:
+            with engine.begin() as connection:
+                schema = normalized_schema or "public"
+                quoted = connection.dialect.identifier_preparer.quote(schema)
+                connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+                connection.execute(text("SET LOCAL statement_timeout = '60s'"))
+                for domain, first_revision in (("finance", 20), ("health", 7)):
+                    function = f"{quoted}.mcp_install_{domain}_projection"
+                    exists = connection.execute(
+                        text("SELECT to_regprocedure(:signature) IS NOT NULL"),
+                        {"signature": function + "(boolean)"},
+                    ).scalar_one()
+                    if exists:
+                        connection.execute(text(f"SELECT {function}(true)"))
+                    elif connection.execute(
+                        text(
+                            f"SELECT EXISTS(SELECT 1 FROM {quoted}.alembic_version "
+                            "WHERE CASE WHEN version_num ~ :pattern "
+                            "THEN split_part(version_num,'_',2)::integer >= :first "
+                            "ELSE false END)"
+                        ),
+                        {"pattern": f"^{domain}_[0-9]+$", "first": first_revision},
+                    ).scalar_one():
+                        raise RuntimeError(
+                            f"{domain} projection installer missing at applied revision"
+                        )
+        finally:
+            engine.dispose()

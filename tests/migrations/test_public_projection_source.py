@@ -16,6 +16,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import asyncpg
 import pytest
@@ -1365,6 +1366,808 @@ def test_core_318_backfills_existing_rows_once_and_downgrades_last(
                     )
                 ).scalar_one()
                 == 0
+            )
+    finally:
+        engine.dispose()
+
+
+def test_finance_overlay_backfill_and_writer_parity(fresh_db) -> None:
+    """A real accepted transaction must expose exactly the legacy reader overlay."""
+    url = fresh_db(
+        "core",
+        "finance",
+        schemas={"core": "finance", "finance": "finance"},
+        revisions={"finance": "finance_019"},
+    )
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            row = (
+                conn.execute(
+                    text("""
+                INSERT INTO finance.transactions
+                    (posted_at, merchant, amount, currency, direction, category, metadata)
+                VALUES (now(), 'RAW merchant', 12.30, 'USD', 'debit', 'groceries',
+                        '{"normalized_merchant":"Shown merchant","inferred_category":"shown"}')
+                RETURNING to_jsonb(transactions) AS source_row,
+                    COALESCE(metadata->>'normalized_merchant', merchant) AS expected_merchant,
+                    COALESCE(metadata->>'inferred_category', category) AS expected_category
+            """)
+                )
+                .mappings()
+                .one()
+            )
+            assert row["source_row"]["merchant"] == "RAW merchant"
+            assert row["expected_merchant"] == "Shown merchant"
+            before = row["source_row"]
+        asyncio.run(run_migrations(url, chain="finance", schema="finance"))
+        with engine.begin() as conn:
+            after = conn.execute(
+                text("SELECT to_jsonb(t) FROM finance.transactions t WHERE id=:id"),
+                {"id": before["id"]},
+            ).scalar_one()
+            assert after.get("display_merchant") == row["expected_merchant"]
+            assert after.get("display_category") == row["expected_category"]
+            assert {key: after[key] for key in before} == before
+            for metadata, merchant, category in (
+                ({}, "RAW merchant", "groceries"),
+                ({"normalized_merchant": "", "inferred_category": ""}, "", ""),
+                (
+                    {"normalized_merchant": None, "inferred_category": None},
+                    "RAW merchant",
+                    "groceries",
+                ),
+                (
+                    {"normalized_merchant": "Replaced", "inferred_category": "other"},
+                    "Replaced",
+                    "other",
+                ),
+            ):
+                current = conn.execute(
+                    text(
+                        "UPDATE finance.transactions SET metadata=CAST(:meta AS jsonb) "
+                        "WHERE id=:id RETURNING display_merchant,display_category"
+                    ),
+                    {"meta": json.dumps(metadata), "id": before["id"]},
+                ).one()
+                assert tuple(current) == (merchant, category)
+    finally:
+        engine.dispose()
+
+
+_C_KEYS = {
+    "finance": {
+        **dict.fromkeys(
+            (
+                "transactions",
+                "accounts",
+                "balance_snapshots",
+                "bills",
+                "subscriptions",
+                "budgets",
+                "categories",
+                "merchant_mappings",
+                "recurring_groups",
+                "obligation_ledger",
+                "transaction_corrections",
+                "payment_destinations",
+                "facts",
+                "json_fields_public",
+            ),
+            "id",
+        ),
+        "claim_match_bindings": "claim_id",
+    },
+    "health": {
+        **dict.fromkeys(
+            (
+                "facts",
+                "measurements_public",
+                "medications_public",
+                "conditions_public",
+                "json_fields_public",
+                "calendar_sources",
+                "calendar_events",
+                "calendar_event_instances",
+                "medications",
+                "medication_doses",
+                "conditions",
+                "meals",
+                "symptoms",
+                "research",
+            ),
+            "id",
+        ),
+        "visit_briefs": "event_id",
+    },
+}
+
+
+@pytest.fixture(scope="module")
+def finance_health_projection(logical_postgres: object) -> Iterator[Projection]:
+    """Cold daemon order, real roles, full non-JSON source columns and one shared subscriber."""
+    name = migration_db_name()
+    url = create_migration_db(logical_postgres, name)
+    for domain in _C_KEYS:
+        for chain in ("core", domain, "memory"):
+            asyncio.run(run_migrations(url, chain=chain, schema=domain))
+    asyncio.run(_seed_finance_health_json_sources(url))
+    engine = create_engine(url)
+    tables: dict[str, str] = {}
+    entries: list[str] = []
+    try:
+        with engine.connect() as conn:
+            for domain, source_map in _C_KEYS.items():
+                for table, key in source_map.items():
+                    columns = (
+                        conn.execute(
+                            text("""
+                        SELECT attname,format_type(atttypid,atttypmod) AS type
+                        FROM pg_attribute WHERE attrelid=to_regclass(:name) AND attnum>0
+                            AND NOT attisdropped AND atttypid<>'jsonb'::regtype
+                            AND attname<>'embedding'
+                            AND NOT public.mcp_json_credential(public.mcp_json_tokens(attname))
+                        ORDER BY attnum
+                    """),
+                            {"name": f"{domain}.{table}"},
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    assert columns and key in {col["attname"] for col in columns}
+                    tables[f"{domain}.{table}"] = ", ".join(
+                        f'"{col["attname"]}" {col["type"]}'
+                        + (" PRIMARY KEY" if col["attname"] == key else "")
+                        for col in columns
+                    )
+                    entry = (
+                        f"TABLE {domain}.{table} ("
+                        + ",".join(f'"{col["attname"]}"' for col in columns)
+                        + ")"
+                    )
+                    if table == "facts":
+                        entry += " WHERE (validity = 'active')"
+                    entries.append(entry)
+    finally:
+        engine.dispose()
+    publication = "CREATE PUBLICATION finance_health_public FOR " + ",".join(
+        [*entries, "TABLE public.projection_barrier"]
+    )
+    with replicated_projection(
+        logical_postgres,
+        name,
+        publication=publication,
+        publication_name="finance_health_public",
+        subscription_name="finance_health_sub",
+        subscriber_tables=tables,
+    ) as built:
+        yield built
+
+
+async def _health_fact(
+    conn: asyncpg.Connection, predicate: str, metadata: object, **values: object
+) -> uuid.UUID:
+    return await conn.fetchval(
+        """
+        INSERT INTO health.facts(subject,predicate,content,metadata,sensitivity,scope,valid_at)
+        VALUES ($6,$1,'Unchanged content',$2::jsonb,$3,$4,$5) RETURNING id
+    """,
+        predicate,
+        json.dumps(metadata),
+        values.get("sensitivity", "confidential"),
+        values.get("scope", "arbitrary"),
+        values.get("valid_at"),
+        "someone else " + uuid.uuid4().hex,
+    )
+
+
+async def _seed_finance_health_json_sources(url: str) -> None:
+    """Populate every actual D4 JSONB source before initial copy, using real schemas."""
+    source = await asyncpg.connect(url)
+    try:
+        account = await source.fetchval("""
+            INSERT INTO finance.accounts(institution,type,metadata)
+            VALUES('C fixture','checking','{"notes":"account"}') RETURNING id
+        """)
+        await source.execute(
+            """
+            INSERT INTO finance.balance_snapshots(account_id,balance,as_of_date,metadata)
+            VALUES($1,12.30,current_date,'{"notes":"balance"}')
+        """,
+            account,
+        )
+        await source.execute("""
+            INSERT INTO finance.bills(payee,amount,currency,due_date,frequency,status,metadata)
+            VALUES('C fixture',1,'USD',current_date,'one_time','pending','{"notes":"bill"}');
+            INSERT INTO finance.subscriptions(service,amount,currency,frequency,next_renewal,status,
+                metadata,field_claims)
+            VALUES('C fixture',1,'USD','monthly',current_date,'active','{"notes":"subscription"}',
+                '[{"field":"renewal","value":"2030-01-01","epoch":1,"resolved":true}]');
+            INSERT INTO finance.merchant_mappings(raw_pattern,normalized_merchant,category,metadata)
+            VALUES('C fixture','C fixture','groceries','{"notes":"merchant"}');
+            INSERT INTO finance.transactions(posted_at,merchant,amount,currency,direction,category,
+                metadata,raw_data)
+            VALUES(now(),'C fixture',1,'USD','debit','groceries','{"notes":"transaction"}',
+                '{"notes":"raw"}');
+            INSERT INTO finance.facts(subject,predicate,content,sensitivity,metadata,tags)
+            VALUES('not owner','contact_phone','C fixture','confidential','{"notes":"fact"}',
+                '["tag"]');
+            INSERT INTO health.medications(name,dosage,frequency,schedule)
+            VALUES('C fixture','1','daily','["08:00"]');
+            INSERT INTO health.meals(type,description,nutrition)
+            VALUES('lunch','C fixture','{"notes":"nutrition"}');
+            INSERT INTO health.research(title,content,tags)
+            VALUES('C fixture','content','["tag"]');
+            INSERT INTO health.visit_briefs(event_id,event_start,period_start,digest)
+            VALUES('text:key.\\value',now(),now(),'{"notes":"brief"}');
+        """)
+        calendar = await source.fetchval("""
+            INSERT INTO health.calendar_sources(source_key,source_kind,metadata)
+            VALUES('C fixture','calendar','{"notes":"source"}') RETURNING id
+        """)
+        event = await source.fetchval(
+            """
+            INSERT INTO health.calendar_events(source_id,origin_ref,title,timezone,starts_at,ends_at,
+                source_butler,metadata)
+            VALUES($1,'C fixture','Appointment','UTC',now(),now()+interval '1 hour','health',
+                '{"attendees":[{"email":"allowed@example.invalid"}]}') RETURNING id
+        """,
+            calendar,
+        )
+        await source.execute(
+            """
+            INSERT INTO health.calendar_event_instances(event_id,source_id,origin_instance_ref,
+                timezone,starts_at,ends_at,metadata)
+            VALUES($1,$2,'C fixture','UTC',now(),now()+interval '1 hour','{"notes":"instance"}')
+        """,
+            event,
+            calendar,
+        )
+        await _health_fact(source, "medication", {"name": "Initial", "notes": "initial copy"})
+        await source.execute("UPDATE health.facts SET tags='[\"initial tag\"]'")
+    finally:
+        await source.close()
+
+
+@pytest.mark.asyncio
+async def test_finance_health_catalog_and_initial_copy(
+    finance_health_projection: Projection,
+) -> None:
+    p = finance_health_projection
+    changed: dict[tuple[str, str, str], object] = {}
+    async with p.source() as source, p.subscriber() as subscriber:
+        for domain, tables in _C_KEYS.items():
+            for table, key in tables.items():
+                actual = await source.fetch(
+                    """
+                    SELECT a.attname FROM pg_constraint c
+                    CROSS JOIN LATERAL unnest(c.conkey) AS k(num)
+                    JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.num
+                    WHERE c.conrelid=$1::regclass AND c.contype='p'
+                """,
+                    f"{domain}.{table}",
+                )
+                assert [r["attname"] for r in actual] == [key]
+                json_columns = await source.fetch(
+                    """
+                    SELECT attname FROM pg_attribute WHERE attrelid=$1::regclass
+                    AND atttypid='jsonb'::regtype AND NOT attisdropped
+                """,
+                    f"{domain}.{table}",
+                )
+                triggers = await source.fetch(
+                    """
+                    SELECT tgargs,tgtype FROM pg_trigger WHERE tgrelid=$1::regclass
+                        AND tgname='trg_mcp_json_fields'
+                """,
+                    f"{domain}.{table}",
+                )
+                assert bool(triggers) == bool(json_columns)
+                if json_columns:
+                    assert len(triggers) == 1 and triggers[0]["tgtype"] == 29
+                    args = bytes(triggers[0]["tgargs"]).decode().rstrip("\0").split("\0")
+                    assert args[:2] == [key, str(table == "facts").lower()]
+                    assert set(args[2:]) == {row["attname"] for row in json_columns}
+                assert await subscriber.fetchval(f"SELECT count(*) FROM {domain}.{table}") == (
+                    await source.fetchval(
+                        f"SELECT count(*) FROM {domain}.{table}"
+                        + (" WHERE validity='active'" if table == "facts" else "")
+                    )
+                )
+            # Every actual JSONB column has an initial scalar leaf, not merely a
+            # registered trigger or an empty initial-copy table.
+            for row in await source.fetch(
+                """
+                SELECT c.relname,a.attname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                JOIN pg_attribute a ON a.attrelid=c.oid WHERE n.nspname=$1
+                AND c.relname=ANY($2::text[]) AND a.atttypid='jsonb'::regtype AND NOT a.attisdropped
+            """,
+                domain,
+                list(tables),
+            ):
+                assert await subscriber.fetchval(
+                    f"SELECT EXISTS(SELECT 1 FROM {domain}.json_fields_public "
+                    "WHERE source_table=$1 AND (path=$2 OR starts_with(path,$2||'.')))",
+                    f"{domain}.{row['relname']}",
+                    row["attname"],
+                )
+            assert await source.fetch(f"SELECT * FROM {domain}.json_fields_public ORDER BY id") == (
+                await subscriber.fetch(f"SELECT * FROM {domain}.json_fields_public ORDER BY id")
+            )
+        assert (
+            await source.fetchval("""
+            SELECT count(*) FROM pg_publication_tables p
+            CROSS JOIN LATERAL unnest(p.attnames) col
+            JOIN pg_attribute a ON a.attrelid=(quote_ident(p.schemaname)||'.'||
+                quote_ident(p.tablename))::regclass AND a.attname=col
+            WHERE pubname='finance_health_public' AND a.atttypid='jsonb'::regtype
+        """)
+            == 0
+        )
+        for domain, tables in _C_KEYS.items():
+            for table, key in tables.items():
+                columns = await source.fetch(
+                    "SELECT attname FROM pg_attribute "
+                    "WHERE attrelid=$1::regclass AND atttypid='jsonb'::regtype AND NOT attisdropped",
+                    f"{domain}.{table}",
+                )
+                for col in columns:
+                    column = col["attname"]
+                    row = await source.fetchrow(
+                        f"SELECT {key} AS key,{column} AS value FROM {domain}.{table} LIMIT 1"
+                    )
+                    assert row is not None
+                    value = json.loads(row["value"])
+                    marker = f"allowed:{domain}.{table}.{column}"
+                    if column == "field_claims":
+                        value.append(
+                            {"field": "renewal", "value": marker, "epoch": 2, "resolved": False}
+                        )
+                    elif isinstance(value, dict):
+                        value["round_trip"] = marker
+                    else:
+                        assert isinstance(value, list)
+                        value.append(marker)
+                    await source.execute(
+                        f"UPDATE {domain}.{table} SET {column}=$2::jsonb WHERE {key}=$1",
+                        row["key"],
+                        json.dumps(value),
+                    )
+                    assert await source.fetchval(
+                        f"SELECT EXISTS(SELECT 1 FROM {domain}.json_fields_public "
+                        "WHERE source_table=$1 AND row_id=$2 AND value_text=$3)",
+                        f"{domain}.{table}",
+                        str(row["key"]),
+                        marker,
+                    )
+                    changed[domain, table, key] = row["key"]
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        for domain in _C_KEYS:
+            assert await source.fetch(f"SELECT * FROM {domain}.json_fields_public ORDER BY id") == (
+                await subscriber.fetch(f"SELECT * FROM {domain}.json_fields_public ORDER BY id")
+            )
+        for (domain, table, key), identity in changed.items():
+            await source.execute(f"DELETE FROM {domain}.{table} WHERE {key}=$1", identity)
+    await p.caught_up()
+    async with p.subscriber() as subscriber:
+        for (domain, table, key), identity in changed.items():
+            assert not await subscriber.fetchval(
+                f"SELECT EXISTS(SELECT 1 FROM {domain}.json_fields_public "
+                "WHERE source_table=$1 AND row_id=$2)",
+                f"{domain}.{table}",
+                str(identity),
+            )
+            assert not await subscriber.fetchval(
+                f"SELECT EXISTS(SELECT 1 FROM {domain}.{table} WHERE {key}=$1)", identity
+            )
+
+
+@pytest.mark.asyncio
+async def test_finance_health_json_paths_credentials_and_lifecycle(
+    finance_health_projection: Projection,
+) -> None:
+    p = finance_health_projection
+    payload = {
+        "amount": 12.3,
+        "string": "12.30",
+        "truth": True,
+        "null": None,
+        "a.b": {"x\\y": [1, {"0": "object", "[0]": "literal"}]},
+        "a": {"b": "nested"},
+        "c.d": "literal collision",
+        "c": {"d": "nested collision"},
+        "": "empty",
+        "last_four": "4242",
+        "secretary": "allowed",
+        "tokenization": "allowed",
+        "contact": "allowed",
+        "accessToken": "omit",
+        "Client-Secret": {"neighbor": "omit"},
+        "api_key": "omit",
+        "simplefin_access_url": "omit",
+        "portal.password": "omit",
+        "api": {"key": "omit", "description": "allowed"},
+        "array": [{"auth": "omit", "notes": "allowed"}],
+    }
+    payload.update(
+        {
+            key: "omit"
+            for key in (
+                "secret",
+                "token",
+                "password",
+                "credential",
+                "otp",
+                "cvv",
+                "card",
+                "private_key",
+                "access_key",
+                "client_key",
+                "signing_key",
+                "passcode",
+                "passphrase",
+                "pin",
+                "bearer",
+                "cookie",
+                "auth",
+                "private key",
+                "access-key",
+            )
+        }
+    )
+    async with p.source() as source:
+        async with source.transaction():
+            await source.execute("SET LOCAL ROLE butler_finance_rw")
+            assert await source.fetchval("SELECT current_user") == "butler_finance_rw"
+            row = await source.fetchrow(
+                """
+                INSERT INTO finance.transactions(posted_at,merchant,amount,currency,direction,
+                    category,metadata,raw_data,deleted_at)
+                VALUES(now(),'Raw',12.30,'USD','debit','groceries',$1::jsonb,
+                    '{"amount":"other column"}',now()) RETURNING id,created_at,updated_at
+            """,
+                json.dumps(payload),
+            )
+            assert (
+                await source.fetchval(
+                    "SELECT display_merchant FROM finance.transactions WHERE id=$1", row["id"]
+                )
+                == "Raw"
+            )
+        fields = {
+            r["path"]: (r["value_text"], r["value_numeric"], r["value_type"])
+            for r in await source.fetch(
+                "SELECT * FROM finance.json_fields_public WHERE row_id=$1", str(row["id"])
+            )
+        }
+        expected_paths = {
+            "metadata.amount",
+            "metadata.string",
+            "metadata.truth",
+            "metadata.null",
+            r"metadata.a\.b.x\\y.[0]",
+            r"metadata.a\.b.x\\y.[1].0",
+            r"metadata.a\.b.x\\y.[1].\[0\]",
+            "metadata.a.b",
+            r"metadata.c\.d",
+            "metadata.c.d",
+            "metadata.",
+            "metadata.last_four",
+            "metadata.secretary",
+            "metadata.tokenization",
+            "metadata.contact",
+            "metadata.api.description",
+            "metadata.array.[0].notes",
+            "raw_data.amount",
+        }
+        assert set(fields) == expected_paths
+        assert fields["metadata.truth"] == ("true", None, "boolean")
+        assert fields["metadata.null"] == (None, None, "null")
+        assert str(fields["metadata.amount"][1]) == "12.3"
+        assert fields["metadata.string"] == ("12.30", None, "string")
+        assert fields["raw_data.amount"] == ("other column", None, "string")
+        assert await source.fetchval(
+            "SELECT bool_and(id=jsonb_build_array(source_table,row_id,path)::text)"
+            " FROM finance.json_fields_public WHERE row_id=$1",
+            str(row["id"]),
+        )
+        # Rollback restores both the source and its derived leaves.
+        transaction = source.transaction()
+        await transaction.start()
+        await source.execute("UPDATE finance.transactions SET metadata='{}' WHERE id=$1", row["id"])
+        assert not await source.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM finance.json_fields_public "
+            "WHERE row_id=$1 AND path='metadata.amount')",
+            str(row["id"]),
+        )
+        await transaction.rollback()
+        assert await source.fetchval(
+            "SELECT count(*) FROM finance.json_fields_public WHERE row_id=$1", str(row["id"])
+        ) == len(fields)
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        query = "SELECT * FROM finance.json_fields_public WHERE row_id=$1 ORDER BY path"
+        assert await source.fetch(query, str(row["id"])) == await subscriber.fetch(
+            query, str(row["id"])
+        )
+        new_id = uuid.uuid4()
+        await source.execute(
+            "UPDATE finance.transactions SET id=$2,metadata='[true,null,\"x\"]' WHERE id=$1",
+            row["id"],
+            new_id,
+        )
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        assert not await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM finance.json_fields_public WHERE row_id=$1)",
+            str(row["id"]),
+        )
+        assert await source.fetch(query, str(new_id)) == await subscriber.fetch(query, str(new_id))
+        assert (
+            await subscriber.fetchval(
+                "SELECT count(*) FROM finance.json_fields_public WHERE row_id=$1", str(new_id)
+            )
+            == 4
+        )
+        await source.execute("DELETE FROM finance.transactions WHERE id=$1", new_id)
+    await p.caught_up()
+    async with p.subscriber() as subscriber:
+        assert not await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM finance.json_fields_public WHERE row_id=$1)", str(new_id)
+        )
+
+
+@pytest.mark.asyncio
+async def test_health_typed_shapes_and_qualification(finance_health_projection: Projection) -> None:
+    p = finance_health_projection
+    async with p.source() as source:
+        async with source.transaction():
+            await source.execute("SET LOCAL ROLE butler_health_rw")
+            assert await source.fetchval("SELECT current_user") == "butler_health_rw"
+            measured = await _health_fact(
+                source,
+                "measurement_blood_pressure",
+                {
+                    "value": {
+                        "systolic": 120,
+                        "a:b.c": 80,
+                        "pin": 1234,
+                        "accessToken": 42,
+                        "bool": True,
+                        "null": None,
+                        "string": "81",
+                        "object": {"x": 1},
+                    },
+                    "notes": " measurement note ",
+                },
+            )
+            medication = await _health_fact(
+                source,
+                "medication",
+                {
+                    "name": "Med",
+                    "dosage": "5 mg",
+                    "frequency": "daily",
+                    "schedule": ["08:00", "", "08:00", None, False],
+                    "active": False,
+                    "notes": " note ",
+                },
+            )
+            condition = await _health_fact(
+                source,
+                "condition",
+                {
+                    "name": "Condition",
+                    "status": "managed",
+                    "diagnosed_at": "not a timestamp",
+                    "notes": " condition note ",
+                },
+                sensitivity="pii",
+            )
+            scalar = await _health_fact(
+                source,
+                "measurement_new_metric",
+                {"value": 1.25, "unit": None},
+                valid_at=datetime(2021, 1, 2, tzinfo=UTC),
+            )
+            defaults = await _health_fact(source, "medication", {})
+        readings = await source.fetch(
+            "SELECT * FROM health.measurements_public WHERE id LIKE $1 ORDER BY id",
+            str(measured) + "%",
+        )
+        assert {r["id"] for r in readings} == {
+            str(measured) + ":systolic",
+            str(measured) + ":a:b.c",
+        }
+        assert {r["metric"] for r in readings} == {
+            "measurement_blood_pressure.systolic",
+            "measurement_blood_pressure.a:b.c",
+        }
+        assert all(r["unit"] == "mmHg" and r["measured_at"] is None for r in readings)
+        assert (
+            await source.fetchval(
+                "SELECT unit FROM health.measurements_public WHERE id=$1", str(scalar)
+            )
+            is None
+        )
+        assert await source.fetchval(
+            "SELECT measured_at FROM health.measurements_public WHERE id=$1", str(scalar)
+        ) == datetime(2021, 1, 2, tzinfo=UTC)
+        med = await source.fetchrow(
+            "SELECT * FROM health.medications_public WHERE id=$1", medication
+        )
+        assert med["schedule"] == ["08:00", "", "08:00", None, None]
+        assert med["active"] is False and med["notes"] == " note "
+        assert med["recorded_at"] == await source.fetchval(
+            "SELECT created_at FROM health.facts WHERE id=$1", medication
+        )
+        assert (
+            await source.fetchval(
+                "SELECT diagnosed_at FROM health.conditions_public WHERE id=$1", condition
+            )
+            == "not a timestamp"
+        )
+        assert tuple(
+            await source.fetchrow(
+                "SELECT name,schedule,active FROM health.medications_public WHERE id=$1", defaults
+            )
+        ) == ("", [], True)
+        await source.execute(
+            "UPDATE health.facts SET metadata=$2::jsonb WHERE id=$1",
+            defaults,
+            json.dumps({"name": None, "schedule": None, "active": None, "notes": False}),
+        )
+        assert tuple(
+            await source.fetchrow(
+                "SELECT name,schedule,active,notes FROM health.medications_public WHERE id=$1",
+                defaults,
+            )
+        ) == (None, None, None, None)
+        # Full metadata breadth keeps even unsupported typed shapes as permitted leaves.
+        assert (
+            await source.fetchval(
+                "SELECT value_type FROM health.json_fields_public "
+                "WHERE row_id=$1 AND path='metadata.notes'",
+                str(defaults),
+            )
+            == "boolean"
+        )
+        await source.execute(
+            'UPDATE health.facts SET metadata=\'{"schedule":"09:00"}\' WHERE id=$1', defaults
+        )
+        assert await source.fetchval(
+            "SELECT schedule FROM health.medications_public WHERE id=$1", defaults
+        ) == ["09:00"]
+        await source.execute(
+            'UPDATE health.facts SET metadata=\'{"schedule":{},"active":"bad"}\' WHERE id=$1',
+            defaults,
+        )
+        assert tuple(
+            await source.fetchrow(
+                "SELECT schedule,active FROM health.medications_public WHERE id=$1", defaults
+            )
+        ) == (None, None)
+        trial = source.transaction()
+        await trial.start()
+        await source.execute("UPDATE health.facts SET validity='expired' WHERE id=$1", medication)
+        assert not await source.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.medications_public WHERE id=$1)", medication
+        )
+        await trial.rollback()
+        assert await source.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.medications_public WHERE id=$1)", medication
+        )
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        for table in (
+            "measurements_public",
+            "medications_public",
+            "conditions_public",
+            "json_fields_public",
+        ):
+            assert await source.fetch(f"SELECT * FROM health.{table} ORDER BY id") == (
+                await subscriber.fetch(f"SELECT * FROM health.{table} ORDER BY id")
+            )
+        await source.execute(
+            "UPDATE health.facts SET predicate='medication',metadata='{}' WHERE id=$1", measured
+        )
+        assert not await source.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.measurements_public WHERE id LIKE $1)",
+            str(measured) + "%",
+        )
+        assert await source.fetchval(
+            "SELECT active FROM health.medications_public WHERE id=$1", measured
+        )
+        await source.execute("UPDATE health.facts SET validity='fading' WHERE id=$1", medication)
+        await source.execute("DELETE FROM health.facts WHERE id=$1", condition)
+        new_id = uuid.uuid4()
+        await source.execute("UPDATE health.facts SET id=$2 WHERE id=$1", defaults, new_id)
+    await p.caught_up()
+    async with p.subscriber() as subscriber:
+        assert not await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.medications_public WHERE id=$1)", medication
+        )
+        assert not await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.conditions_public WHERE id=$1)", condition
+        )
+        assert not await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.json_fields_public WHERE row_id=$1)",
+            str(medication),
+        )
+        assert not await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.medications_public WHERE id=$1)", defaults
+        )
+        assert await subscriber.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM health.medications_public WHERE id=$1)", new_id
+        )
+
+
+def test_finance_health_peer_downgrade_preserves_other_domain(logical_postgres: object) -> None:
+    """Leaving one domain/core peer cannot remove the other domain's live boundary."""
+    url = create_migration_db(logical_postgres, migration_db_name())
+    for domain in ("finance", "health"):
+        for chain in ("core", domain, "memory"):
+            asyncio.run(run_migrations(url, chain=chain, schema=domain))
+
+    def downgrade(chain: str, schema: str, revision: str) -> None:
+        command.downgrade(_build_alembic_config(url, target_schema=schema), f"{chain}@{revision}")
+
+    engine = create_engine(url)
+    try:
+        # Core can leave first without cascading through live domain consumers.
+        downgrade("core", "finance", "core_319")
+        downgrade("finance", "finance", "finance_019")
+        with engine.begin() as conn:
+            assert (
+                conn.execute(text("SELECT to_regclass('finance.json_fields_public')")).scalar()
+                is None
+            )
+            assert conn.execute(
+                text("SELECT to_regprocedure('public.mcp_sync_json_fields()')")
+            ).scalar()
+            fact = conn.execute(
+                text("""
+                INSERT INTO health.facts(subject,predicate,content,metadata)
+                VALUES('peer survivor','medication','source','{"name":"Survives"}') RETURNING id
+            """)
+            ).scalar_one()
+            assert (
+                conn.execute(
+                    text("SELECT name FROM health.medications_public WHERE id=:id"), {"id": fact}
+                ).scalar_one()
+                == "Survives"
+            )
+        # Reupgrade the first peer while the second remains fully installed.
+        asyncio.run(run_migrations(url, chain="core", schema="finance"))
+        asyncio.run(run_migrations(url, chain="finance", schema="finance"))
+        downgrade("health", "health", "health_006")
+        downgrade("core", "health", "core_319")
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT to_regprocedure('public.mcp_sync_json_fields()')")
+            ).scalar()
+            assert (
+                conn.execute(text("SELECT count(*) FROM finance.json_fields_public")).scalar() == 0
+            )
+        downgrade("finance", "finance", "finance_019")
+        downgrade("core", "finance", "core_319")
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT to_regprocedure('public.mcp_sync_json_fields()')")
+                ).scalar()
+                is None
+            )
+        asyncio.run(run_migrations(url, chain="core", schema="health"))
+        asyncio.run(run_migrations(url, chain="health", schema="health"))
+        asyncio.run(run_migrations(url, chain="memory", schema="health"))
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT name FROM health.medications_public WHERE id=:id"), {"id": fact}
+                ).scalar_one()
+                == "Survives"
             )
     finally:
         engine.dispose()
