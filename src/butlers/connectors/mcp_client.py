@@ -21,6 +21,8 @@ import httpx
 from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
 
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
+
 logger = logging.getLogger(__name__)
 
 # Tool reply status for a transient server-side failure (e.g. the Switchboard ingest
@@ -143,6 +145,11 @@ async def wait_for_switchboard_ready(
     )
 
 
+def _describe(exc: BaseException) -> str:
+    """An exception's text, or its repr when it has none, as ``CancelledError`` does not."""
+    return str(exc) or repr(exc)
+
+
 class CachedMCPClient:
     """Lazy, reconnecting MCP client for connector-to-Switchboard calls.
 
@@ -187,7 +194,8 @@ class CachedMCPClient:
         if self._client_ctx is not None:
             try:
                 await self._client_ctx.__aexit__(None, None, None)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                raise_if_task_cancelled(exc)
                 logger.debug("Cancelled while closing MCP client for %s", self._client_name)
             except Exception:
                 logger.debug(
@@ -226,21 +234,23 @@ class CachedMCPClient:
             If the tool returns an MCP error result (fastmcp ``ToolError``);
             never retried.
         """
-        first_exc: Exception | None = None
+        first_exc: BaseException | None = None
 
         for reconnect in (False, True):
             async with self._lock:
                 if reconnect or self._client is None or not self.is_connected():
                     try:
                         await self._connect()
-                    except Exception as exc:
+                    except (Exception, asyncio.CancelledError) as exc:
+                        raise_if_task_cancelled(exc)
                         if first_exc is not None:
                             raise ConnectionError(
-                                f"Failed to connect to {self._endpoint_url} "
-                                f"for {tool_name}: {first_exc} (reconnect failed: {exc})"
+                                f"Failed to connect to {self._endpoint_url} for {tool_name}: "
+                                f"{_describe(first_exc)} (reconnect failed: {_describe(exc)})"
                             ) from exc
                         raise ConnectionError(
-                            f"Failed to connect to {self._endpoint_url} for {tool_name}: {exc}"
+                            f"Failed to connect to {self._endpoint_url} "
+                            f"for {tool_name}: {_describe(exc)}"
                         ) from exc
                 client = self._client
 
@@ -251,15 +261,19 @@ class CachedMCPClient:
                 # a reconnect would only repeat it. Surface it as RuntimeError,
                 # the documented contract callers already handle.
                 raise RuntimeError(str(exc) or f"Tool '{tool_name}' returned an error.") from exc
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
                 # Everything else is transport: fastmcp raises RuntimeError for a
                 # dropped session ("Server session was closed unexpectedly",
                 # "Session task completed unexpectedly", "Client is not
-                # connected"), alongside httpx/anyio/timeout errors.
+                # connected"), alongside httpx/anyio/timeout errors. When the session
+                # task is cancelled mid-call it re-raises that task's CancelledError
+                # into a caller nobody cancelled, and the connector loops calling this
+                # would treat that as their own shutdown.
+                raise_if_task_cancelled(exc)
                 if reconnect:
-                    msg = f"Failed to call {tool_name} on {self._endpoint_url}: {exc}"
+                    msg = f"Failed to call {tool_name} on {self._endpoint_url}: {_describe(exc)}"
                     if first_exc is not None:
-                        msg += f" (first attempt: {first_exc})"
+                        msg += f" (first attempt: {_describe(first_exc)})"
                     raise ConnectionError(msg) from exc
                 first_exc = exc
                 logger.info(
