@@ -181,3 +181,54 @@ class TestMergeResolvesSingleCardinalityDivergence:
             target_id,
         )
         assert {r["object"] for r in active} == {"carol@home.com", "carol@work.com"}
+
+
+class TestMergeLeavesTemporalSingleValuesForPeriodPolicy:
+    async def test_a_predicate_with_an_effective_period_is_repointed_not_collapsed(self, rel_pool):
+        """An occurrence with a period is not a rival value until bu-4ss0u defines the policy."""
+        merge_entities, MergeEntitiesRequest = _merge_handle(rel_pool)
+        await _insert_entity(rel_pool, name="Owner", roles=["owner"])
+        target_id = await _insert_entity(rel_pool, name="Alice (canonical)", roles=[])
+        source_id = await _insert_entity(rel_pool, name="Alice (duplicate)", roles=[])
+        await _add_fact(rel_pool, target_id, "has-birthday", "1990-01-01", conf=0.9)
+        await rel_pool.execute(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, conf,
+                 effective_from, effective_from_precision)
+            VALUES ($1, 'has-birthday', '1991-02-02', 'literal', 'test', 0.1,
+                    '2020-01-01T00:00:00Z', 'year')
+            """,
+            source_id,
+        )
+
+        body = MergeEntitiesRequest(entityA=target_id, entityB=source_id, keepAs="A")
+        await merge_entities(target_id, body, db=_db_with_pool(rel_pool))
+
+        rows = await rel_pool.fetch(
+            "SELECT object FROM relationship.entity_facts "
+            "WHERE subject = $1 AND predicate = 'has-birthday' AND validity = 'active'",
+            target_id,
+        )
+        assert {row["object"] for row in rows} == {"1990-01-01", "1991-02-02"}
+
+
+class TestMergeKeepsSingleValuedReadersWorking:
+    async def test_a_merge_leaves_one_active_preferred_channel(self, rel_pool):
+        """Notify's reader takes ``LIMIT 1`` with no order, so it relies on one row (not called)."""
+        merge_entities, MergeEntitiesRequest = _merge_handle(rel_pool)
+        await _insert_entity(rel_pool, name="Owner", roles=["owner"])
+        target_id = await _insert_entity(rel_pool, name="Alice (canonical)", roles=[])
+        source_id = await _insert_entity(rel_pool, name="Alice (duplicate)", roles=[])
+        await _add_fact(rel_pool, target_id, "prefers-channel", "email", conf=0.5)
+        await _add_fact(rel_pool, source_id, "prefers-channel", "telegram", conf=0.9)
+
+        body = MergeEntitiesRequest(entityA=target_id, entityB=source_id, keepAs="A")
+        await merge_entities(target_id, body, db=_db_with_pool(rel_pool))
+
+        rows = await rel_pool.fetch(
+            "SELECT object FROM relationship.entity_facts "
+            "WHERE subject = $1 AND predicate = 'prefers-channel' AND validity = 'active'",
+            target_id,
+        )
+        assert [row["object"] for row in rows] == ["telegram"]
