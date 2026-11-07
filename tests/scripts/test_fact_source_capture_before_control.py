@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import subprocess
@@ -2630,9 +2631,15 @@ def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acce
     from contextlib import asynccontextmanager
     from types import ModuleType, SimpleNamespace
 
-    source = subprocess.check_output(
-        ["git", "show", control.CANDIDATE + ":" + control.RUNTIME],
-        cwd=Path(__file__).resolve().parents[2],
+    # Exact immutable candidate bytes; hosted shallow checkouts need no historical Git object.
+    source = (
+        Path(__file__).parent / "fixtures/fact_source_capture_candidate_runtime.txt"
+    ).read_bytes()
+    assert hashlib.sha256(source).hexdigest() == (
+        "f438297121fe03f29d838eabd29ff3392f2d85d6b6b897ebd93c993aacb66bf1"
+    )
+    assert hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest() == (
+        "1f3287e7583f31eb969ffcdc6d3eeb3a5204d271"
     )
     runtime = tmp_path / control.RUNTIME
     runtime.parent.mkdir(parents=True)
