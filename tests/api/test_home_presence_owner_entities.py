@@ -252,7 +252,7 @@ async def test_get_put_cas_lifecycle_audit_and_privacy(
     changed = await client.put(_ROUTE, json=_put([_STALE], 1))
     assert changed.json()["data"] == {"configured": True, "owner_entities": [_STALE], "version": 2}
 
-    # The generic state path writes outside this capability's lock and CAS (REQ-002).
+    # The generic state path writes outside this capability's lock and CAS (REQ-home-presence-configuration-002).
     await state_set(presence_pool, _KEY, [_OWNER])
     generic = await client.put(_ROUTE, json=_put([_ROOM], 2))
     assert (generic.status_code, generic.json()["error"]["code"]) == (409, "VERSION_CONFLICT")

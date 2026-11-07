@@ -46,7 +46,7 @@ Baseline ratchet
 ----------------
 Today's unidentified blocks are frozen in ``requirement-trace-baseline.json``, keyed by
 ``change/capability/requirement`` and pinned to a sha256 of the normalized block.  The ratchet is
-content-addressed, like ``check_spec_overwrites.py``: editing a frozen block changes its digest,
+content-addressed: editing a frozen block changes its digest,
 so it leaves the baseline and must carry the lines.  Entries whose block is gone (for example
 because its change was archived) or now carries valid trace lines must be removed; stale entries
 fail the gate. ``--write-baseline`` explicitly drops them when freezing current debt.

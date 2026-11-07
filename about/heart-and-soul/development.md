@@ -14,21 +14,27 @@ carry a reproducing test before the fix.
 
 ## Spec Before Code, RFC Before Exception
 
-Significant work starts from an OpenSpec change (proposal, delta specs and
-tasks): new modules, changes
-to core infrastructure (state store, scheduler, spawner, session log), new
-roster entries, cross-butler protocol changes, and schema changes that cross
-butlers. Bug fixes, behavior-preserving refactors, documentation, tests, and
-single-butler tool additions inside a module boundary do not need one. An
-implementation that changes observable behavior amends its governing spec in
-the same change.
+Significant work starts from an OpenSpec change with a proposal and
+tasks: new modules, changes to core infrastructure (state store, scheduler,
+spawner, session log), new roster entries, cross-butler protocol changes, and
+schema changes that cross butlers. New standalone work uses the eligible
+`single-butler` or `living-specs` workflow without local delta specs. New
+multi-PR programs may carry local requirement deltas using `spec-driven`.
+All existing legacy programs keep their resolved schemas, metadata, content
+and local deltas unchanged until verified completion. The
+canonical requirements remain in `openspec/specs/`, and an implementation that
+changes observable behavior updates its governing canonical spec in the same
+source change. Bug fixes, behavior-preserving refactors, documentation, tests,
+and single-butler tool additions inside a module boundary do not need an
+OpenSpec change unless they change required behavior.
 
-For a single-butler change, `proposal.md`, delta specs and `tasks.md` suffice;
+For an eligible single-butler change, `proposal.md` and `tasks.md` suffice;
 `design.md` is optional. It is required when the change alters a cross-butler
 contract, a schema shared across butlers, or a security boundary. Classify the
 actual change, not just its directory: a change inside one butler can still
-alter one of these boundaries. Keep and read existing designs; this rule does
-not delete design documents, RFCs or archived changes. Spec approval, source
+alter one of these boundaries. Keep and read existing designs. Retained
+spec-driven delta programs keep their local requirements; this rule does not
+delete design documents, RFCs or archived changes. Spec approval, source
 references, implementation review and verification requirements still apply.
 
 The architectural constraints in [vision.md](vision.md) are non-negotiable by
@@ -50,9 +56,13 @@ does not ship.
 
 All work tracking is `bd` (beads): dependency-aware, Dolt-backed, agent
 readable. Not markdown TODOs, inline TODOs, or external trackers. Work that is
-not in beads does not exist for planning. An epic closes only after its shipped
-OpenSpec change is archived (`/opsx:archive` runs before `bd close`) and the
-affected specs are synced, in the same delivery.
+not in beads does not exist for planning. An epic closes only after its whole
+OpenSpec program is verified implemented and shipped, its affected canonical requirements are updated through reviewed
+semantic diffs, and its completed change directory is deleted through the
+normal PR workflow (`/opsx:archive` performs completion cleanup before
+`bd close`). Git history preserves completed programs. Artifact readiness alone
+is not completion; unfinished or unshipped programs and existing archives
+remain intact.
 
 ## Anti-Patterns
 

@@ -308,7 +308,7 @@ class TestScopeOfTheSweep:
 
 
 # ---------------------------------------------------------------------------
-# REQ-commitment-lifecycle-004/-005 — the confidence band
+# REQ-commitment-lifecycle-004 and REQ-commitment-lifecycle-005 — the confidence band
 # ---------------------------------------------------------------------------
 
 
@@ -970,7 +970,7 @@ class TestAttentionLedgerRecording:
         producing it would mean changing both the attention ledger's vocabulary
         and the insight engine, which the same requirement forbids in the very
         next clause ("No changes to the insight engine itself", criterion 10).
-        The two halves of REQ-005 contradict each other, and this is the half
+        The two halves of REQ-commitment-lifecycle-005 contradict each other, and this is the half
         that can hold.
 
         What survives is the substance: ``source`` says the delivery came

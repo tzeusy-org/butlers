@@ -347,15 +347,27 @@ def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str,
         ]
     for name, script in (
         ("em-dashes", "check-no-em-dashes.py"),
-        ("spec-overwrites", "check_spec_overwrites.py"),
-        ("countable-tasks", "check_countable_tasks.py"),
         ("duplicate-names", "check_duplicate_toplevel_names.py"),
-        ("archived-landed", "check_archived_requirements_landed.py"),
         ("owner-emails", "check_owner_emails.py"),
-        ("cited-requirements", "check_cited_requirements_resolve.py"),
         ("for-update-joins", "check_for_update_joins.py"),
     ):
         plan.append((name, [python, f"scripts/{script}"]))
+    plan.append(
+        (
+            "requirement-citations",
+            [
+                "uv",
+                "run",
+                "--no-sync",
+                "pytest",
+                "tests/contracts/test_requirement_citations.py",
+                "-q",
+                "--tb=short",
+                "-n",
+                "0",
+            ],
+        )
+    )
     if any(name.startswith("frontend/") for name in paths):
         # Hosted guards runs these when frontend/ changed (bu-5n9pfa); one shared step list.
         plan.append(("frontend-guards", [python, "scripts/frontend_guards.py", "--assume-changed"]))

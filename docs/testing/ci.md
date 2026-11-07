@@ -360,14 +360,18 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
 - CI guards have narrower predicates than their names suggest:
   - `check-no-em-dashes.py` scans only `about/{heart-and-soul,lay-and-land,craft-and-care}/**` and
     `roster/*/{MANIFESTO,AGENTS}.md`.
-  - `spec-overwrite-guard` reads only `## MODIFIED` blocks in `openspec/changes/`: it is blind to
-    direct baseline edits and to `## REMOVED` blocks.
+  - Strict OpenSpec validation checks canonical specs and active local deltas. New no-delta
+    `single-butler`/`living-specs` changes retain their schema metadata and use `skip_specs: true`;
+    the marker is not for existing changes or retained delta programs.
   - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
     `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
     A modified heading keeps its existing canonical ID, including an already-synced rename;
     otherwise same-delta `RENAMED` FROM/TO chains resolve its canonical ancestor. A newly minted
     replacement ID fails, and an unanchored rename cycle fails rather than looping.
-  - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
+  - `test_requirement_citations.py` runs in the unit lane, `make check-guards`, and the local
+    pre-push plan. It scans qualified IDs in tests and roster tests, preferring canonical specs and
+    falling back only to complete retained `ADDED`/`MODIFIED` requirements; archives, prose mentions,
+    incomplete changes and `REMOVED` blocks do not resolve.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
     merge of two branches adding the same helper produces.

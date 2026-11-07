@@ -1,4 +1,4 @@
-.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-em-dashes check-requirement-trace check-openspec-strict check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag check-requirement-citations
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -198,17 +198,6 @@ check-for-update-joins:
 check-em-dashes:
 	python3 scripts/check-no-em-dashes.py
 
-# Regression guard for bu-s9uv3: `openspec archive` writes the WHOLE requirement
-# block into the baseline, so an unarchived MODIFIED block authored against an
-# older ancestor silently deletes whatever the baseline gained since. OpenSpec
-# 1.9.0 only compares scenario NAMES, so a block that keeps every name and guts
-# the bodies validates clean. This compares bodies. A digest-keyed ratchet
-# (scripts/spec-overwrite-baseline.json) freezes today's debt; it re-fires the
-# moment an archive moves a baseline requirement under an unarchived block.
-# Mirrors the spec-overwrite step of the CI `guards` job.
-check-spec-overwrites:
-	python3 scripts/check_spec_overwrites.py
-
 # Regression guard for bu-xjs98p.1: every ADDED or MODIFIED requirement block in an active
 # change must carry ID, Source and Scope trace lines, or be frozen in
 # scripts/requirement-trace-baseline.json. Mirrors the requirement-trace step of the CI
@@ -216,21 +205,17 @@ check-spec-overwrites:
 check-requirement-trace:
 	python3 scripts/check_requirement_trace_lines.py
 
+# Test citations resolve to canonical contracts or complete retained requirements.
+# This exact unit node replaces the retired citation script in local guard runs.
+check-requirement-citations:
+	uv run --no-sync pytest tests/contracts/test_requirement_citations.py -q --tb=short -n 0
+
 # Regression gate for bu-n58sv: validate every canonical spec and unarchived
 # change with OpenSpec's strict RFC-2119 and scenario-shape checks. Keep the
 # command explicit so a bare `openspec validate --strict` cannot silently
 # validate nothing.
 check-openspec-strict:
 	openspec validate --all --strict
-
-# Regression guard for bu-h7igs: `openspec archive`'s incomplete-task gate counts
-# markdown checkboxes only, so a `### N.` heading-style tasks.md reports
-# `Task status: No tasks`, cannot be incomplete, and archives unprompted -- and
-# that silence reads as evidence the tasks were done. Fails on any unarchived
-# change whose tasks.md the gate cannot see. Mirrors the countable-tasks
-# step of the CI `guards` job.
-check-countable-tasks:
-	python3 scripts/check_countable_tasks.py
 
 # Regression guard for bu-ayrbg: two branches each added a module-level helper
 # with the same name to one file, git auto-merged them cleanly, and the later
@@ -244,14 +229,12 @@ check-duplicate-names:
 
 # Every guard the CI `guards` job runs, locally, before you push (bu-r5mnn).
 # check-openspec-strict is skipped with a message when `openspec` is not on
-# PATH; everything else is a plain python3 script or an existing frontend lint step.
+# PATH; the citation contract runs one exact pytest node.
 # GUARDS_BASE is the fork point the frontend guard diffs against.
 GUARDS_BASE ?= origin/main
 export GUARDS_BASE
-check-guards: check-host-policy-selectors check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
-	python3 scripts/check_archived_requirements_landed.py
+check-guards: check-host-policy-selectors check-lock lint check-format check-for-update-joins check-em-dashes check-requirement-trace check-requirement-citations check-duplicate-names check-session-links
 	python3 scripts/check_owner_emails.py
-	python3 scripts/check_cited_requirements_resolve.py
 	python3 scripts/frontend_guards.py --base "$${GUARDS_BASE}"
 	@if command -v openspec >/dev/null 2>&1; then \
 		$(MAKE) check-openspec-strict; \

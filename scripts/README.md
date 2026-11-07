@@ -242,15 +242,12 @@ changes infrastructure or historical data.
 | Script | Caller | Purpose |
 | --- | --- | --- |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
-| [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | `ci.yml`, Make, `pre_push.py` | Confirms archived OpenSpec requirements reached their canonical specs, honouring `archived-capability-homes.json`. |
-| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition, and that no ID names two different requirement headings. |
-| [`check_countable_tasks.py`](check_countable_tasks.py) | `ci.yml`, `make check-countable-tasks`, `pre_push.py` | Fails when an unarchived change's tasks cannot be counted by the archive gate. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
 | [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |
 | [`check_for_update_joins.py`](check_for_update_joins.py) | `make check-for-update-joins`, `pre_push.py` | Statically rejects `FOR UPDATE` on nullable outer-join sides. |
 | [`check_owner_emails.py`](check_owner_emails.py) | `ci.yml`, Make, `pre_push.py` | Fails when a tracked file contains a blocked deployment-owner email address. |
 | [`check_requirement_trace_lines.py`](check_requirement_trace_lines.py) | `ci.yml`, `make check-requirement-trace` | Requires ID, Source and Scope lines on ADDED/MODIFIED requirement blocks; today's debt is frozen in `requirement-trace-baseline.json`. |
-| [`check_spec_overwrites.py`](check_spec_overwrites.py) | `ci.yml`, `make check-spec-overwrites`, `pre_push.py` | Compares active OpenSpec MODIFIED blocks against current canonical bodies. |
+| `tests/contracts/test_requirement_citations.py` | CI unit/guards, `make check-requirement-citations`, `pre_push.py` | Resolves qualified test citations from canonical specs or complete retained ADDED/MODIFIED requirements. |
 | [`check_pyright_baseline.py`](check_pyright_baseline.py) | `pyright_runtime.py`, `make typecheck` | Strict diagnostic JSON and shrinking error-Counter comparison. |
 | [`check_test_db_fixtures.py`](check_test_db_fixtures.py) | `tests/scripts/test_check_test_db_fixtures.py` (unit lane) | Ratchet against per-file `pool`/`migrated_db_url` fixtures and hand-written `CREATE TABLE` in tests (`test-db-fixtures-baseline.json`). |
 | [`check_test_kit_copies.py`](check_test_kit_copies.py) | `tests/scripts/test_check_test_kit_copies.py` (unit lane) | Ratchet against per-file copies of the `src/butlers/testing/` kit (`_make_row`, `_FakePool`, `_load_migration`, ...) frozen in `test-kit-copies-baseline.json`. |

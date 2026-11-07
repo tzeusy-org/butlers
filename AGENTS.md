@@ -214,8 +214,8 @@ check you write or read:
     PR as settled.
   - Every event runs the same job set; judge completeness by the required `alls-green` check.
 - CI topology (fan-out, the fail-closed `alls-green` fan-in, `always()` rules) and the narrower-than-named
-  guard predicates (`check-no-em-dashes.py`, `spec-overwrite-guard`, `requirement-trace`,
-  `cited-requirements-guard`, `duplicate-name-guard`) are in
+  guard predicates (`check-no-em-dashes.py`, `requirement-trace`, `requirement-citations`,
+  `duplicate-name-guard`) are in
   [CI and test scope](docs/testing/ci.md#ci-fan-out-and-guard-predicates). About eight concurrent CI
   runs saturate the runners: sequence PRs that append to the same file.
 
