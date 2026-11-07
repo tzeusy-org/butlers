@@ -117,6 +117,89 @@ def test_domain_projection_defers_only_initial_historical_core(fresh_db, domain)
                         "WHERE version_num='core_unknown'"
                     )
                 )
+        # Shared helpers have global core owners, including a genuine third schema.
+        peer = "projection_peer"
+        asyncio.run(run_migrations(url, chain="core", schema=peer))
+        assert _applied(url, peer) == {get_chain_head("core")}
+        renamed = []
+        try:
+            pending = []
+            with engine.begin() as conn:
+                for signature in signatures:
+                    name, arguments = signature.split("(", 1)
+                    conn.execute(
+                        text(f"ALTER FUNCTION public.{signature} RENAME TO unavailable_{name}")
+                    )
+                    pending.append((name, arguments))
+            renamed = pending
+            with engine.connect() as conn:
+                assert all(
+                    conn.execute(
+                        text("SELECT to_regprocedure(:signature) IS NULL"),
+                        {"signature": f"public.{signature}"},
+                    ).scalar_one()
+                    for signature in signatures
+                )
+            with pytest.raises(DBAPIError, match="projection shared core prerequisite missing"):
+                with engine.begin() as conn:
+                    conn.execute(text(f"SELECT {installer}(false)"))
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        f"UPDATE {peer}.alembic_version SET version_num='core_unknown' "
+                        "WHERE version_num=:head"
+                    ),
+                    {"head": get_chain_head("core")},
+                )
+            try:
+                with pytest.raises(DBAPIError, match="projection shared core prerequisite missing"):
+                    with engine.begin() as conn:
+                        conn.execute(text(f"SELECT {installer}(false)"))
+            finally:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            f"UPDATE {peer}.alembic_version SET version_num=:head "
+                            "WHERE version_num='core_unknown'"
+                        ),
+                        {"head": get_chain_head("core")},
+                    )
+        finally:
+            with engine.begin() as conn:
+                for name, arguments in reversed(renamed):
+                    conn.execute(
+                        text(
+                            f"ALTER FUNCTION public.unavailable_{name}({arguments} RENAME TO {name}"
+                        )
+                    )
+        # Real peer downgrade leaves only historical owners and removes the globals.
+        command.downgrade(
+            migrations._build_alembic_config(url, chains=["core"], target_schema=peer),
+            "core_319",
+        )
+        assert _applied(url, peer) == {"core_319"}
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT to_regprocedure('public.mcp_sync_json_fields()') IS NULL")
+            ).scalar_one()
+            conn.execute(text(f"SELECT {installer}(false)"))
+        # A historical peer alone cannot grant an unrecorded caller eligibility.
+        with engine.begin() as conn:
+            conn.execute(text(f"DELETE FROM {domain}.alembic_version WHERE version_num='core_319'"))
+            assert conn.execute(
+                text("SELECT to_regclass('public.alembic_version') IS NULL")
+            ).scalar_one()
+        try:
+            with pytest.raises(DBAPIError, match="projection shared core prerequisite missing"):
+                with engine.begin() as conn:
+                    conn.execute(text(f"SELECT {installer}(false)"))
+        finally:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f"INSERT INTO {domain}.alembic_version(version_num) VALUES('core_319')")
+                )
+        with engine.begin() as conn:
+            conn.execute(text(f"SELECT {installer}(false)"))
         # This is the caller's explicit core upgrade, outside the domain/finalizer.
         asyncio.run(run_migrations(url, chain="core", schema=domain))
         asyncio.run(run_migrations(url, chain="memory", schema=domain))

@@ -179,15 +179,20 @@ def upgrade() -> None:
                 IF present_helpers <> 0 THEN
                     RAISE EXCEPTION 'projection shared helper catalog incomplete';
                 END IF;
-                FOREACH version_schema IN ARRAY ARRAY[source_schema,'public'] LOOP
-                    IF to_regclass(format('%I.alembic_version',version_schema)) IS NULL THEN
-                        CONTINUE;
-                    END IF;
+                -- Shared helpers belong to every canonical core registry. Only
+                -- the caller's own/public history can grant initial deferral.
+                FOR version_schema IN
+                    SELECT n.nspname FROM pg_class c
+                    JOIN pg_namespace n ON n.oid=c.relnamespace
+                    WHERE c.relname='alembic_version' AND c.relkind IN ('r','p')
+                        AND left(n.nspname,3)<>'pg_' AND n.nspname<>'information_schema'
+                LOOP
                     FOR core_revision IN EXECUTE format(
                         'SELECT version_num FROM %I.alembic_version',version_schema) LOOP
                         IF core_revision ~ '^core_[0-9]+$' THEN
                             historical_core := historical_core OR
-                                substring(core_revision FROM 6)::numeric < 320;
+                                (version_schema IN (source_schema,'public') AND
+                                 substring(core_revision FROM 6)::numeric < 320);
                             current_core := current_core OR
                                 substring(core_revision FROM 6)::numeric >= 320;
                         ELSIF starts_with(core_revision,'core_') THEN

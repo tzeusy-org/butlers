@@ -527,7 +527,9 @@ same kind uses the same pattern:
   Independent historical callers with a recorded pre-core320 core and no shared
   helpers may install the domain tables/overlays while deferring its projection.
   Partial shared catalogs refuse; missing helpers with an unknown or recorded
-  current core also refuse. Post-memory completion refuses until the
+  current core in any non-system canonical version registry also refuse. Only
+  the caller's own/public historical core can grant deferral; an old peer cannot.
+  Post-memory completion refuses until the
   caller explicitly upgrades core; ordinary finalization then installs/backfills
   the deferred boundary. No domain migration upgrades core implicitly.
 - **Graph publish key and withheld counts.** [Observed] Every fact with an
