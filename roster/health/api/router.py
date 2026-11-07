@@ -30,7 +30,10 @@ from butlers.core.general_settings import load_general_settings, resolve_general
 from butlers.core.health_baseline_metrics import METRICS as BASELINE_METRICS
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
-from butlers.modules.memory.storage import StaleSupersessionTargetError
+from butlers.modules.memory.storage import (
+    OwnerAuthoredSupersessionError,
+    StaleSupersessionTargetError,
+)
 from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
@@ -87,6 +90,14 @@ def _stale_edit_conflict() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail="The record changed since it was read. Reload it and apply the edit again.",
+    )
+
+
+def _owner_authored_conflict() -> HTTPException:
+    """409 for an edit that would replace an owner-authored record with a non-owner one."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This record was authored by the owner and cannot be replaced by this edit.",
     )
 
 
@@ -931,7 +942,7 @@ async def update_medication(
     Only the supplied (non-null) fields are merged into the existing medication
     fact; a new property fact is written under the same subject key so the prior
     fact is superseded.  Returns 404 if the medication does not exist, 409 if it changed
-    since it was read, and 422 if no updatable fields were provided.
+    since it was read or is owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import medication_update
 
@@ -946,6 +957,8 @@ async def update_medication(
         result = await medication_update(pool, medication_id, **updates)
     except StaleSupersessionTargetError as exc:
         raise _stale_edit_conflict() from exc
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _medication_response(result)
@@ -1098,8 +1111,8 @@ async def update_condition(
 
     Only the supplied (non-null) fields are merged into the existing condition
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the condition does not exist, 409 if it changed since it was
-    read, and 422 if no updatable fields were provided.
+    fact is superseded.  Returns 404 if the condition does not exist, 409 if it changed
+    since it was read or is owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import condition_update
 
@@ -1114,6 +1127,8 @@ async def update_condition(
         result = await condition_update(pool, condition_id, **updates)
     except StaleSupersessionTargetError as exc:
         raise _stale_edit_conflict() from exc
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _condition_response(result)
@@ -1738,8 +1753,8 @@ async def update_research(
 
     Only the supplied (non-null) fields are merged into the existing research
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the note does not exist and 422 if no
-    updatable fields were provided.
+    fact is superseded.  Returns 404 if the note does not exist, 409 if it is
+    owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import research_update
 
@@ -1752,6 +1767,8 @@ async def update_research(
         )
     try:
         result = await research_update(pool, research_id, **updates)
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _research_response(result)
