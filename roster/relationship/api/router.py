@@ -5744,23 +5744,16 @@ async def forget_entity(
             # orphaned on the tombstoned entity (bu-j820n.2). Delegate to the
             # canonical memory helper so the retraction semantics match the rest of
             # the memory module while running inside THIS transaction.
-            from butlers.modules.memory.tools.entities import _retract_facts_on_conn
+            from butlers.modules.memory.tools.entities import (
+                _retract_facts_on_conn,
+                _unlink_contacts_on_conn,
+            )
 
             await _retract_facts_on_conn(conn, entity_id)
 
-            # Remove contact_entity_map rows for any contact linked to this
-            # entity. A contact is bound to exactly one entity; on forget the link
-            # must be severed or CRM contact lookups will return stale rows for the
-            # tombstoned entity. contact_entity_map lives in the ``relationship``
-            # schema — unqualified for search_path resolution, consistent with
-            # _entity_resolve.py.
-            await conn.execute(
-                """
-                DELETE FROM contact_entity_map
-                WHERE entity_id = $1
-                """,
-                entity_id,
-            )
+            # Sever the contact link so no CRM lookup reaches the tombstoned
+            # entity. The memory entity delete uses this same helper.
+            await _unlink_contacts_on_conn(conn, entity_id)
             # Tombstone the entity row.
             await conn.execute(
                 """

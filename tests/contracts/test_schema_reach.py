@@ -1031,6 +1031,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "concierge.v_fleet_spend",
     ): "sanctioned:RFC-0030: fleet session/spend views and exact source/grant fixtures",
     (
+        "src/butlers/modules/memory/tools/entities.py",
+        "relationship.contact_entity_map",
+    ): "sanctioned:owner-decision-bu-dhloi1.124: a memory entity delete severs the deleted entity's contact bridge row in its own transaction, as forget does; one fixed DELETE, no other Relationship access",
+    (
         "src/butlers/modules/memory/ann_observability.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed local memory tier tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",

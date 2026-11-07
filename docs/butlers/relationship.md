@@ -74,9 +74,10 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   packet. `contact_merge` does every write in one transaction that starts with the entity merge
   authority, the only writer of the entities' facts. It therefore has the authority's locks,
   refusals, graph edge repair and audit row, its facts never move without the source's
-  `merged_into`, and a refused entity merge refuses the contact merge. A contact on a removed entity
-  gets a `ValueError` naming it, and nothing moves; a route to merge such a contact is an open owner
-  decision (bu-dhloi1.124). It re-points the contact's `important_dates`, `relationships`,
+  `merged_into`, and a refused entity merge refuses the contact merge. A forget and a memory
+  entity delete both remove the entity's `contact_entity_map` row in their own transaction, so that
+  contact reads as not found. A contact still bridged to a removed entity (a delete from before that
+  unlink, or a merged-away entity) gets a `ValueError` naming it, and nothing moves. It re-points the contact's `important_dates`, `relationships`,
   `group_members`, `contact_labels`, `addresses`, `tasks` and `life_events`, dropping a group or
   label row the target already has. A date both contacts hold under one label, month and day merges
   to one row keeping any known year; two different known years stay as two rows. Only the rebind
