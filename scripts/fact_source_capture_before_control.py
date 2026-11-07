@@ -410,6 +410,7 @@ DIAGNOSTIC_OPERATIONS = {
     "unknown",
     "capture-snapshot",
     "capture-owner-lookup",
+    "capture-lock-context",
     "capture-lock-read",
     "capture-source-check",
     "capture-report-build",

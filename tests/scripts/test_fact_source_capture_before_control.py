@@ -2658,7 +2658,15 @@ def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acce
 
     routing.resolve_routing_target = unavailable_route
     monkeypatch.setitem(sys.modules, routing.__name__, routing)
-    cases = ("healthy", "suppressed", "snapshot-error", "private-class", "preexisting")
+    cases = (
+        "healthy",
+        "suppressed",
+        "snapshot-error",
+        "lock-read",
+        "transaction-exit",
+        "private-class",
+        "preexisting",
+    )
     selected = os.environ.get("FACT_CAPTURE_DIAGNOSTIC_CASE")
     assert selected is None or selected in cases
     if selected:
@@ -2670,11 +2678,13 @@ def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acce
         route_failure = (
             type("PRIVATE_CLASS", (Exception,), {}) if case == "private-class" else ValueError
         )
-        inboxes, owned = [uuid.uuid4() for _ in range(3)], []
+        inboxes, owned, writes = [uuid.uuid4() for _ in range(3)], [], []
         stored = module.FactWriteContext("owner").to_record()
         context = {"source_channel": "email", "source_sender_identity": "PRIVATE_ID"}
-        if case == "healthy":
+        if case in {"healthy", "lock-read"}:
             context["_fact_source_report"] = stored
+        if case == "transaction-exit":
+            context["source_sender_identity"] = None
         row = {
             "request_context": context,
             "raw_payload": {},
@@ -2690,11 +2700,18 @@ def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acce
             @asynccontextmanager
             async def transaction(self):
                 yield
+                if case == "transaction-exit":
+                    raise RuntimeError("PRIVATE_COMMIT_FAILURE")
 
             async def fetchrow(self, query, *args):
                 if case == "snapshot-error":
                     raise KeyError("PRIVATE_SQL_KEY")
+                if case == "lock-read" and "FOR UPDATE" in query:
+                    raise KeyError("PRIVATE_LOCKED_SQL_KEY")
                 return dict(row)
+
+            async def execute(self, query, *args):
+                writes.append(True)
 
         issuer = module.FactSourceContextRegistry(Pool())
         binding = {"nonce": "a" * 64}
@@ -2724,12 +2741,16 @@ def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acce
 
         clone_probe = foreign_source_probe if case == "suppressed" else None
         assert observer.DIAGNOSTIC is not None, "actual pinned code must bind"
-        namespace = {"asyncio": asyncio, "owned": owned}
+        namespace = {
+            "asyncio": asyncio,
+            "owned": owned,
+            "resolved_entity": None if case == "transaction-exit" else inboxes[0],
+        }
         target = control.NODE.split("::")[1]
         exec(
             compile(
                 f"async def {target}(issuer,inboxes):\n"
-                " tasks=[asyncio.create_task(issuer.capture_accepted_report(i,inboxes[0])) for i in inboxes]\n"
+                " tasks=[asyncio.create_task(issuer.capture_accepted_report(i,resolved_entity)) for i in inboxes]\n"
                 " owned.extend(tasks)\n"
                 " await asyncio.gather(*tasks)\n",
                 str(tmp_path / control.NODE.split("::")[0]),
@@ -2780,6 +2801,20 @@ def test_after_diagnostic_observes_bound_suppressed_errors_without_changing_acce
                     "category": "key-error",
                     "operation": "capture-snapshot",
                 }
+                assert result["resolver_errors"] == []
+            elif case == "lock-read":
+                assert type(failure) is KeyError and writes == []
+                assert result["call_error"] == {
+                    "category": "key-error",
+                    "operation": "capture-lock-read",
+                }
+                assert result["resolver_errors"] == []
+            elif case == "transaction-exit":
+                assert type(failure) is RuntimeError and len(writes) == 3
+                assert result["call_error"] == {
+                    "category": "runtime-error",
+                    "operation": "capture-lock-context",
+                }, "context-exit errors after writes must not claim a locked-row read failure"
                 assert result["resolver_errors"] == []
             else:
                 assert type(failure) is ValueError

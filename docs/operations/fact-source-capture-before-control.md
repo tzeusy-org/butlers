@@ -54,6 +54,8 @@ unique observations and eight aggregate records are retained in RAM; overflow or
 sites are explicitly truncated. Normal coroutine protocol events are excluded. No dynamic
 class/module names, messages, arguments, `failure_class`, SQLSTATE, locals, identifiers or
 raw tracebacks leave the private process. Missing binding or a preexisting tracer is unavailable.
+Context statement labels cover both entry and exit; a transaction-context observation does
+not imply a locked-row read failed, even when the context exits after a report write.
 
 The producer reads at most 8192 bytes from a private regular nonsymlink file, validates exact
 keys/types/enums/counts/binding and reconstructs the annex before retaining a failed AFTER

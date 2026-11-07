@@ -33,7 +33,8 @@ DIAGNOSTIC_SITES = {
     "capture_accepted_report": (
         (270, 278, "capture-snapshot"),
         (279, 298, "capture-owner-lookup"),
-        (299, 310, "capture-lock-read"),
+        (299, 303, "capture-lock-context"),
+        (304, 310, "capture-lock-read"),
         (311, 326, "capture-source-check"),
         (327, 383, "capture-report-build"),
         (384, 389, "capture-report-write"),
