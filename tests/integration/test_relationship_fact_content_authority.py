@@ -16,7 +16,7 @@ import inspect
 import socket
 import sys
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -79,6 +79,11 @@ async def _tcp(app):
     server = uvicorn.Server(
         uvicorn.Config(app, access_log=False, log_level="warning", timeout_graceful_shutdown=2)
     )
+    # These listeners are embedded in pytest, which owns process signals.
+    # SSE's thread-wide watcher otherwise binds to this disposable server and
+    # mistakes its ordinary teardown for process shutdown, draining later MCP.
+    # Keep the real SSE policy and programmatic should_exit/join cleanup intact.
+    server.capture_signals = nullcontext
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         async with asyncio.timeout(5):
