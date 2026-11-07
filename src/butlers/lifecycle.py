@@ -58,6 +58,9 @@ from butlers.storage import BlobStorageStartupError, S3BlobStore
 
 logger = logging.getLogger(__name__)
 
+# How long a tick has to act on its cancel once the shutdown budget has run out.
+_TICK_CANCEL_GRACE_S = 5.0
+
 
 async def _sync_toml_schedules(daemon: Any, pool: Any, credential_store: Any) -> None:
     """Sync the butler's TOML schedules, with each schedule's timezone and the quiet policy."""
@@ -887,6 +890,31 @@ async def _run_shutdown(daemon: Any) -> None:
             raise retirement_error
 
 
+async def _stop_scheduler_loop(daemon: Any, deadline: float) -> None:
+    """Let an in-progress tick finish until ``deadline``, then cancel it.
+
+    A job still running at the deadline is abandoned: its ``next_run_at`` already advanced,
+    so that occurrence is lost, as it would be if the pod were killed. A tick that ignores
+    its cancel is left behind so it cannot hold shutdown.
+    """
+    task = daemon._scheduler_loop_task
+    if task is None:
+        return
+    daemon._scheduler_loop_task = None
+    task.cancel()
+    remaining = deadline - asyncio.get_running_loop().time()
+    done, _ = await asyncio.wait({task}, timeout=max(0, remaining))
+    if not done:
+        logger.warning("Scheduler tick still running at the shutdown deadline; cancelling it")
+        # The first cancel only told the loop to wait; this one reaches the tick.
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=_TICK_CANCEL_GRACE_S)
+    if not done:
+        logger.error("Scheduler tick ignored cancellation; shutdown continues without it")
+    elif not task.cancelled() and task.exception() is not None:
+        logger.error("Scheduler loop failed before shutdown", exc_info=task.exception())
+
+
 async def _shutdown_resources(daemon: Any) -> None:
     """Existing resource teardown, also reached after catalog close refusal."""
 
@@ -949,17 +977,12 @@ async def _shutdown_resources(daemon: Any) -> None:
             pass
         daemon._switchboard_heartbeat_task = None
 
-    # 5. Close Switchboard MCP client
-    await daemon._disconnect_switchboard()
+    # 5. Stop the scheduler loop before closing the client: a job-mode job runs inside the
+    # tick, not in the spawner's in-flight set, so draining did not wait for it.
+    await _stop_scheduler_loop(daemon, deadline)
 
-    # 5b. Cancel internal scheduler loop and wait for any in-progress tick() to finish
-    if daemon._scheduler_loop_task is not None:
-        daemon._scheduler_loop_task.cancel()
-        try:
-            await daemon._scheduler_loop_task
-        except asyncio.CancelledError:
-            pass
-        daemon._scheduler_loop_task = None
+    # 5b. Close Switchboard MCP client
+    await daemon._disconnect_switchboard()
 
     # 5c. Cancel route_inbox recovery task
     if daemon._route_inbox_recovery_task is not None:
