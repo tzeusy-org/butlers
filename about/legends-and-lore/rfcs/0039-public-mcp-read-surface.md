@@ -471,6 +471,67 @@ same kind uses the same pattern:
   the finance tools take a free-form JSON `metadata` string from the model
   (`roster/finance/modules/tools.py:69,89`), so the split is what keeps a
   camelCase or kebab-case credential key out.
+
+  **Source representation (Package C).** Paths start with the JSONB column name.
+  Object keys escape backslash, dot, `[` and `]` with a backslash; array steps
+  are zero-based unescaped `[0]` segments. Thus `metadata.a\.b` and
+  `metadata.a.b`, an object key `0` and an array `[0]`, and the same leaf in
+  `metadata` and `raw_data` are distinct. Empty keys retain an empty segment;
+  a scalar JSONB root uses the column path itself. Credential matching uses
+  the original key tokens through all ancestors, before encoding, including
+  compound tokens across nested keys. A denied ancestor omits its subtree.
+  Permitted neighbors such as `secretary`, `tokenization` and `last_four`
+  remain; no value scanning or additional privacy filter is introduced.
+
+  The natural key remains `UNIQUE(source_table,row_id,path)`. An ordinary TEXT
+  `id` primary key stores `jsonb_build_array(source_table,row_id,path)::text`,
+  a reversible tuple encoding for the single-key records interface, not a
+  generated column or lossy hash. `value_numeric` holds actual JSON numbers
+  only. `value_text` holds string contents, number text or `true`/`false`, and
+  SQL NULL for JSON null; ordinary TEXT `value_type` distinguishes `string`,
+  `number`, `boolean` and `null`. A null leaf is a row, distinct from absence.
+  Empty containers have no scalar leaves. Every actual JSONB column of the
+  D4 tables is covered; finance008 removed `recurring_groups.metadata` on
+  upgrade (its downgrade restores it), so the current table needs no JSON hook.
+
+  Health measurement IDs are TEXT: the source UUID for a scalar, UUID plus
+  `:` plus the exact key for a dict reading. Metrics retain the full predicate,
+  with `.<key>` for dict readings. Only numeric immediate values qualify;
+  credential-named dict paths are omitted by the same JSON credential rule,
+  including from the typed table. `measured_at` copies `valid_at`, NULL
+  included. A present unit wins (explicit null remains NULL); an omitted unit
+  uses the existing measurement/wellness writer unit map, otherwise NULL.
+  Medication and condition IDs remain source UUIDs. Medication `recorded_at`
+  copies source `created_at`. Missing medication name/dosage/frequency default
+  to empty strings, missing active to true, and missing schedule to empty
+  TEXT[], as existing readers do. Explicit null remains NULL; schedule strings
+  become one-element arrays and arrays preserve order, duplicates and empty
+  strings, with NULL slots for unsupported elements. Condition name falls back
+  to content only when absent, status defaults to `active` only when absent,
+  and `diagnosed_at` is TEXT copied from the stored string without date guessing.
+  Notes copy strings exactly. Unsupported optional typed shapes yield NULL
+  without rejecting an otherwise valid fact; permitted raw leaves still reach
+  `json_fields_public`. No scope, subject, sensitivity or clinical filter is added.
+
+  The shared core chain owns one invoker JSON trigger and extraction primitives;
+  each domain owns its tables, fixed key/column map and installer. Butler chains
+  run before memory on fresh startup, so the migration runner invokes the domain
+  installer after memory, even at head, using its existing finalizer mechanism.
+  A populated upgrade installs immediately. Correct catalog definitions/arguments
+  return without DDL or a boot-time backfill; inconsistent boundaries refuse.
+  Backfill and trigger installation share a transaction and bounded source locks;
+  JSON backfill does not UPDATE source rows. Finance backfill changes only its
+  new display columns. Downgrades preserve other schema consumers and never
+  cascade through another domain. This does not install a publication or reconcile
+  a manifest; those remain the separate manifest package's responsibility.
+  Independent historical callers with a recorded pre-core320 core and no shared
+  helpers may install the domain tables/overlays while deferring its projection.
+  Partial shared catalogs refuse; missing helpers with an unknown or recorded
+  current core in any non-system canonical version registry also refuse. Only
+  the caller's own/public historical core can grant deferral; an old peer cannot.
+  Post-memory completion refuses until the
+  caller explicitly upgrades core; ordinary finalization then installs/backfills
+  the deferred boundary. No domain migration upgrades core implicitly.
 - **Graph publish key and withheld counts.** [Observed] Every fact with an
   object entity projects one row into `public.entity_graph_edges`, from every
   memory schema (`src/butlers/modules/memory/storage.py:2066-2080`), from
@@ -1072,7 +1133,7 @@ identity and credential line under OD21).**
 | relationship | `public.entities`; `relationship.entity_facts`; memory `facts` in `relationship` (OD21); `public.entity_graph_edges`; `public.entity_graph_withheld_counts` | entity `id, canonical_name, entity_type, aliases, roles, merged_into` plus the filter columns `deleted`, `unidentified` and `placeholder_name`, which no `mcp_read` view returns, filtered to `deleted = false AND unidentified = false AND placeholder_name = false` (D2 entity flags, S1); `entity_facts` of every relational-kind predicate, family-kind ones (`family-of`, `partner-of`, `parent-of`, `child-of`) included (OD21); `relationship` memory facts under the knowledge columns and filters, so interactions, life events, contact notes, activities, gifts, loans, contact tasks and reminders are published (OD21); edges `id, subject_entity_id, predicate, object_entity_id, sensitivity, created_at` plus the filter key `publish_key`, filtered to `sensitivity = 'normal'` and the D2 literal key list; withheld counts `entity_id, source_key, withheld`, filtered to the same fact sources (D2) | `entities.metadata`; `entity_info`; edge `source_schema`, `source_table`, `source_id` and `withheld_reason`; every non-normal edge, and every edge whose fact source or predicate the facts do not publish (D2); contact-kind predicates (`has-email`, `has-phone`, `has-handle`, `has-address`, `has-birthday`, `has-website`) and the memory contact- and identity-kind predicates of the knowledge row; override-kind (`dunbar_tier_override`, `prefers-channel`) |
 | time | `chronicler.episodes_public`, `chronicler.rollups_public` | as listed in D2: `normal` and `sensitive` episodes (health, exercise and home presence) that are not tombstoned | `restricted` episodes; `overrides`, episode payloads, point events, raw activity, location |
 | finance | Every domain table in schema `finance`: `transactions`, `accounts`, `balance_snapshots`, `bills`, `subscriptions`, `budgets`, `categories`, `merchant_mappings`, `recurring_groups`, `obligation_ledger`, `transaction_corrections`, `payment_destinations` and `claim_match_bindings`; the finance memory-fact layer `finance.facts`; `finance.json_fields_public` (D2) | Every column of those tables that is not JSONB and not on the credential tier (OD17). That includes account `name` and `last_four`, balances, transaction `description`, `notes`, `payment_method`, `receipt_url`, `external_ref`, `source_message_id` and `tags`, `cancellation_url`, and the D2 `display_merchant` and `display_category`. `deleted_at` is nullable, so it is not a row filter; the `mcp_read` view hides soft-deleted rows. Facts: every column except `embedding` and JSONB, filtered to `validity = 'active'` only, so every predicate and every sensitivity is published. The scalar leaves of every JSONB column (`metadata`, `raw_data`, `field_claims`) arrive as `json_fields_public` rows | Credential-tier columns and JSON paths (none exist in finance today [Observed: `roster/finance/migrations/001` to `019`; `payment_destinations.fingerprint` is an HMAC digest, not a credential, `roster/finance/tools/payment_destinations.py:131-137`]); JSONB columns as columns; `embedding`; facts that are not `active`; the butler infrastructure every schema carries (`butler_secrets`, `state`, `sessions`, `session_process_logs`, `scheduled_tasks`, `route_inbox`, `corrections`, and the memory module's tables other than `facts`, such as `episodes` and `rules`) |
-| health | Every domain table in schema `health`: the memory-fact layer `health.facts` (measurements, medications and doses, conditions, symptoms, meals, workouts, allergies, providers such as `doctor_name`, `doctor_primary_care` and `pharmacy`, and research); the typed `measurements_public`, `medications_public` and `conditions_public` (D2); `health.json_fields_public` (D2); `visit_briefs`; Health's calendar tables `calendar_sources`, `calendar_events` and `calendar_event_instances`, which hold its appointments [Inferred: per-butler calendar tables, `alembic/versions/core/core_003_calendar.py:9`]; and the health migration 001 tables still present (`medications`, `medication_doses`, `conditions`, `meals`, `symptoms`, `research`) | Every column that is not JSONB and not on the credential tier (OD17), notes, descriptions and locations included. Facts: every column except `embedding` and JSONB, filtered to `validity = 'active'` only. Typed tables: measurements `id, metric, value_numeric, unit, measured_at` (a dict-valued reading yields one row per numeric key, named `<predicate>.<key>`); medications `id, name, dosage, frequency, schedule, active, notes, recorded_at`; conditions `id, name, status, diagnosed_at, notes`. JSONB leaves (fact `metadata` and `tags`, `visit_briefs.digest`, calendar `metadata`) arrive as `json_fields_public` rows | Credential-tier columns and JSON paths, so `calendar_sync_cursors` (its `sync_token`); JSONB columns as columns; `embedding`; facts that are not `active`; the same butler infrastructure as finance, plus the calendar module's `calendar_action_log` |
+| health | Every domain table in schema `health`: the memory-fact layer `health.facts` (measurements, medications and doses, conditions, symptoms, meals, workouts, allergies, providers such as `doctor_name`, `doctor_primary_care` and `pharmacy`, and research); the typed `measurements_public`, `medications_public` and `conditions_public` (D2); `health.json_fields_public` (D2); `visit_briefs`; Health's calendar tables `calendar_sources`, `calendar_events` and `calendar_event_instances`, which hold its appointments [Inferred: per-butler calendar tables, `alembic/versions/core/core_003_calendar.py:9`]; and the health migration 001 tables still present (`medications`, `medication_doses`, `conditions`, `meals`, `symptoms`, `research`) | Every column that is not JSONB and not on the credential tier (OD17), notes, descriptions and locations included. Facts: every column except `embedding` and JSONB, filtered to `validity = 'active'` only. Typed tables: measurements `id, metric, value_numeric, unit, measured_at` (a dict-valued reading yields one row per numeric key, named `<predicate>.<key>`); medications `id, name, dosage, frequency, schedule, active, notes, recorded_at`; conditions `id, name, status, diagnosed_at, notes`. JSONB leaves (fact `metadata` and `tags`, `visit_briefs.digest`, calendar `metadata`, legacy `medications.schedule`, `meals.nutrition` and `research.tags`) arrive as `json_fields_public` rows | Credential-tier columns and JSON paths, so `calendar_sync_cursors` (its `sync_token`); JSONB columns as columns; `embedding`; facts that are not `active`; the same butler infrastructure as finance, plus the calendar module's `calendar_action_log` |
 | proposals | `relationship.external_fact_proposals` | `proposal_id, state, decided_at` | payload, note, evidence URL, submitter ids |
 | (surface) | `mcp_surface.controls`, `mcp_surface.manifest_state` | controls `domain, state, changed_at` (`domain` is `all` or a domain name); manifest state `digest` | the actor of a change |
 

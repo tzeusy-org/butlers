@@ -1048,7 +1048,7 @@
   "counts": {
     "direct": 81,
     "direct_files": 37,
-    "container": 90,
+    "container": 91,
     "supplementary": 42,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 54,
@@ -1056,7 +1056,7 @@
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 26,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
-      "SCHEMA_OWNERSHIP": 11
+      "SCHEMA_OWNERSHIP": 12
     },
     "direct_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 36,
@@ -4350,6 +4350,32 @@
       "purpose": "Refuse the explicit Chronicler memory-preparation command unless the loaded configuration has the canonical Chronicler identity.",
       "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
       "symbol": "_prepare_chronicler_memory"
+    },
+    {
+      "id": "aa2338aae8ba30b5c5fb4bd3b74f9e8c8db9c6575fce7d5a60ce726794ba3a0d",
+      "path": "src/butlers/migrations/__init__.py",
+      "symbol": "run_migrations",
+      "kind": "compare",
+      "expression": "normalized_schema in (None, 'public', 'finance', 'health')",
+      "occurrence": 1,
+      "line": 501,
+      "direct": false,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Finalize only Finance/Health domain-owned projection installers in their canonical schemas, retaining existing flat public migration callers.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-state/spec.md",
+          "requirement": "Per-Butler Schema Isolation"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Migration Chains"
+        }
+      ],
+      "baseline_ids": [],
+      "public_source_commit": "bcdd75bd24ebfe3b68974a7bf157882eae1ebfc3",
+      "reason": "bu-y66o00.3 Package C: this source-introducing commit is local until normal publication of this PR. The selector restricts domain-owned post-memory finalization, including retained flat fixtures; it is schema ownership, not configurable host policy."
     }
   ],
   "retired": [
