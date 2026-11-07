@@ -135,10 +135,10 @@ namespace is failure, not skip. A local non-strict skip is not evidence. See
 [CI native policy](../testing/ci.md#session-host-native-proof).
 
 The network namespace currently denies all connectivity. Allowed broker/provider
-reachability is unimplemented. No real runtime CLI or model was launched and no
-built-in or provider-hosted tool denial proof is claimed. Exact runtime/model/image/
-settings tuples still need adversarial tool inventory and provider-wire proofs;
-provider-hosted tools cannot be disabled by host network isolation alone.
+reachability is unimplemented. No real model was called. Only the Codex tuple has an
+adversarial tool-inventory proof (see [below](#codex-adapter-proof-dark-tuple-not-eligible));
+other tuples have none. Provider-hosted tools cannot be disabled by host network
+isolation alone.
 
 The scoped CI-host profile experiment is specific to Noble ABI4 and does not
 establish production deployment policy. It uses Canonical's purpose-built
@@ -206,11 +206,65 @@ Permission refusal is not by itself proof that a tool is absent from the actual
 model-visible catalog, and no parser/provider-wire conformance is claimed. The
 synthetic native transport consumer proves neither OpenCode nor model behavior.
 The landed Dashboard CLI closure generator is not a goal image per-file proof.
-Pinned Codex0.159.2 can register ApplyPatchHandler for models advertising it even
-with shell features disabled; no supported complete disablement is established
-here, so no Codex tuple is configured. The full image, restricted-network, runtime
-conformance, credential-retargeting and tool-less-function acceptance criteria
-remain unfinished.
+The full image, restricted-network, runtime conformance, credential-retargeting
+and tool-less-function acceptance criteria remain unfinished.
+
+## Codex adapter proof (dark, tuple not eligible)
+
+`CodexSettings` is the closed preset for `codex` on `gpt-6-sol`: Codex 0.159.2, API
+key auth, no bypass flag, a generated config, and a private one-model catalog.
+`Profile` refuses a bypass argument in any runtime's command. The live adapters
+are unchanged and keep their flags until the switch release.
+
+The proof runs the real binary through the production `BubblewrapDomain`, with
+`--unshare-net`, against a fake provider and a fake broker. A helper joins the
+sandbox's network namespace from outside and hands back a loopback listener, so
+nothing else is reachable. The only proof-only delta is the `openai_base_url` line
+and the broker origin. The fake provider sends hostile tool calls, and the checker
+reads the tools the runtime offered and how it answered, over both WebSocket and
+HTTP. Software tests run in CI. The native ones need the pinned binary:
+
+```bash
+npm install --ignore-scripts --prefix "$DIR" @openai/codex@0.159.2
+export BUTLERS_CODEX_PROOF_BINARY="$DIR/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+uv run pytest tests/session_host/test_codex_adapter_proof.py -n 0
+```
+
+Without that variable they skip, and a skip is no evidence. Hosted CI does not set
+it yet. A hash test pins the settings, so changing one needs a fresh native run.
+
+What the pinned CLI taught us, each now a test:
+
+- `tools: []` is not proof. On `gpt-6-sol`'s bundled catalog the real list, shell
+  included, travels inside `input` as `additional_tools`. The checker walks the
+  whole body.
+- Feature flags cannot remove `apply_patch`. Model metadata registers it, which is
+  why the private catalog exists. `read-only` refuses a patch that the bypass flag
+  lets through.
+- Without a bypass flag, `approval_policy=never` also refuses every MCP call, so a
+  denial-only proof would pass a runtime that cannot reach the broker. The broker
+  server is explicitly approved, and a broker call must complete for the proof to
+  pass.
+- The binary is 274 MiB, over the old 256 MiB image limit. The limit is now 384 MiB,
+  and each launch holds a sealed copy, which is a sizing input for the host.
+
+Each enforcing setting has a native row that removes it and requires failure.
+Settings in `codex.py` marked unmeasured changed nothing this proof could see, so
+they claim nothing.
+
+The tuple stays ineligible. `ReviewedProfile` requires 13 checks. The proof measures
+nine and reports the other four as `unproven`, which admission refuses:
+
+| Check | What remains | Who can run it |
+| --- | --- | --- |
+| `restricted_egress` | The domain has no route out, so a real launch cannot reach a provider or broker yet. Needs the gateway and the dev network proof (`bu-kiuh8v.4`). | Dev deployment |
+| `filesystem_isolation`, `process_isolation` | Native tests cover synthetic payloads, not this runtime in the installed image. | Exact-image run (Docker denied on agent hosts) |
+| `catalog_conformance` | RFC 0027 gate at the real catalog size, with native discovery (`bu-r980fk`). | Broker work |
+
+Also unproven: a real provider honoring the request (no real calls were made, so
+server-side behavior is outside this proof), and the bundled TLS trust path. Three
+MCP resource tools remain offered because the pinned CLI has no switch for them.
+They can only reach configured MCP servers, so the broker must answer them safely.
 
 
 ## Installed-image evidence export (build only)

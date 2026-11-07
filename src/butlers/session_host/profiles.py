@@ -14,8 +14,22 @@ import re
 from dataclasses import dataclass
 
 from .bubblewrap import BubblewrapDomain, ImageFile
+from .codex import CodexSettings
 from .contracts import Refused
 from .opencode import OpenCodeSettings
+
+# RFC 0038 D3: no session-host command may carry a permission or sandbox bypass.
+_BYPASS_ARGUMENTS = frozenset(
+    {
+        "bypassPermissions",
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--sandbox=false",
+        "--yolo",
+    }
+)
 
 _CHECKS = frozenset(
     {
@@ -44,6 +58,26 @@ def _hash(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
+
+
+def _settings(runtime: str, model: str) -> OpenCodeSettings | CodexSettings | None:
+    if runtime == "opencode":
+        return OpenCodeSettings(model)
+    if runtime == "codex":
+        return CodexSettings(model)
+    return None
+
+
+def _domain(
+    image: tuple[ImageFile, ...], command: tuple[str, ...], runtime: str, model: str
+) -> BubblewrapDomain:
+    settings = _settings(runtime, model)
+    return BubblewrapDomain(
+        image=image,
+        command=command,
+        opencode=settings if isinstance(settings, OpenCodeSettings) else None,
+        codex=settings if isinstance(settings, CodexSettings) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -79,11 +113,13 @@ class Profile:
             raise Refused("invalid_runtime_profile")
         # Reuse the actual backend's inert profile validation. It opens nothing
         # and starts nothing; immutable inputs are rechecked/snapshotted at use.
-        settings = OpenCodeSettings(self.model) if self.runtime == "opencode" else None
-        BubblewrapDomain(image=self.image, command=self.command, opencode=settings)
+        _domain(self.image, self.command, self.runtime, self.model)
+        if not _BYPASS_ARGUMENTS.isdisjoint(self.command):
+            raise Refused("invalid_runtime_profile")
 
     @property
     def subject(self) -> dict[str, str]:
+        settings = _settings(self.runtime, self.model)
         return {
             "runtime": self.runtime,
             "model": self.model,
@@ -91,16 +127,12 @@ class Profile:
                 sorted((entry.destination, entry.sha256) for entry in self.image)
             ),
             # Pin arguments and the exact selected material/pointer contract.
-            # OpenCode adds its native template and stdin/env roles; changing
+            # Native adapters add their templates and stdin/env roles; changing
             # any of those requires a freshly reviewed report subject.
             "settings_sha256": _hash(
                 {
                     "command": self.command,
-                    "material_contract": (
-                        OpenCodeSettings(self.model).identity
-                        if self.runtime == "opencode"
-                        else "broker-only-v1"
-                    ),
+                    "material_contract": settings.identity if settings else "broker-only-v1",
                 }
             ),
         }
@@ -181,11 +213,5 @@ class ProfileFactory:
         for reviewed in self._profiles:
             profile = reviewed.profile
             if (runtime, model) == (profile.runtime, profile.model):
-                return BubblewrapDomain(
-                    image=profile.image,
-                    command=profile.command,
-                    opencode=(
-                        OpenCodeSettings(profile.model) if profile.runtime == "opencode" else None
-                    ),
-                )
+                return _domain(profile.image, profile.command, profile.runtime, profile.model)
         raise Refused("runtime_ineligible")

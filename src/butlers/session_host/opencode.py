@@ -24,6 +24,28 @@ _ENVIRONMENT = (
 )
 
 
+def api_key_text(credential: bytes, *, refusal: str) -> str:
+    """API-key text-format validation only.
+
+    The host must select the correct credential mode; opaque token shape never
+    attests authority.
+    """
+    if type(credential) is not bytes:
+        raise Refused(refusal)
+    try:
+        text = credential.decode("utf-8")
+    except UnicodeError:
+        raise Refused(refusal) from None
+    if (
+        not 0 < len(credential) <= 65536
+        or text != text.strip()
+        or any(char in text for char in ("\0", "\r", "\n"))
+        or text.startswith(("{", "["))
+    ):
+        raise Refused(refusal)
+    return text
+
+
 @dataclass(frozen=True)
 class OpenCodeSettings:
     """Server-selected preset; no arbitrary options, paths, providers or env."""
@@ -106,19 +128,7 @@ class OpenCodeSettings:
         ).encode()
 
     def render(self, binding: BrokerBinding, credential: bytes) -> bytes:
-        if type(binding) is not BrokerBinding or type(credential) is not bytes:
+        if type(binding) is not BrokerBinding:
             raise Refused("unsupported_opencode_credential")
-        try:
-            text = credential.decode("utf-8")
-        except UnicodeError:
-            raise Refused("unsupported_opencode_credential") from None
-        # This is only API-key text-format validation. The host must select the
-        # correct credential mode; opaque token shape never attests authority.
-        if (
-            not 0 < len(credential) <= 65536
-            or text != text.strip()
-            or any(char in text for char in ("\0", "\r", "\n"))
-            or text.startswith(("{", "["))
-        ):
-            raise Refused("unsupported_opencode_credential")
+        api_key_text(credential, refusal="unsupported_opencode_credential")
         return self._bytes(binding.endpoint, binding.token)

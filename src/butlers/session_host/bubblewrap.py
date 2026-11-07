@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from .codex import CODEX_HOME, NATIVE_FILES, CodexSettings
 from .contracts import Refused
 from .material import InvocationMaterial
 from .opencode import CONFIG_NAME, OpenCodeSettings
@@ -30,6 +31,8 @@ from .opencode import CONFIG_NAME, OpenCodeSettings
 _READY = b"BUTLERS_RUNTIME_CLI_SANDBOX_READY\n"
 _MAX_OUTPUT = 1024 * 1024
 _SETUP_SECONDS = 5.0
+# The pinned Codex static binary is 274 MiB. Each launch holds a sealed copy.
+_MAX_IMAGE_FILE = 384 * 1024 * 1024
 # Linux UAPI <linux/fcntl.h>. Some supported CPython builds omit these names
 # although their memfd_create syscall supports sealing. Unsupported kernels
 # still refuse the actual operation; there is no unsealed fallback.
@@ -136,11 +139,11 @@ class ImageFile:
                 or metadata.st_uid not in (0, os.geteuid())
                 or metadata.st_mode & 0o7222
                 or metadata.st_nlink != 1
-                or not 0 < metadata.st_size <= 256 * 1024 * 1024
+                or not 0 < metadata.st_size <= _MAX_IMAGE_FILE
             ):
                 raise Refused("invalid_image_input")
             return _snapshot(
-                descriptor, expected=self.sha256, maximum=256 * 1024 * 1024, observed=metadata
+                descriptor, expected=self.sha256, maximum=_MAX_IMAGE_FILE, observed=metadata
             )
         finally:
             os.close(descriptor)
@@ -162,6 +165,7 @@ class BubblewrapDomain:
         shim: str = "/runtime/init",
         bwrap: Path = Path("/usr/bin/bwrap"),
         opencode: OpenCodeSettings | None = None,
+        codex: CodexSettings | None = None,
     ) -> None:
         destinations = {entry.destination for entry in image}
         if (
@@ -177,7 +181,12 @@ class BubblewrapDomain:
             type(opencode) is not OpenCodeSettings or command != opencode.command
         ):
             raise Refused("invalid_domain_profile")
+        if codex is not None and (
+            type(codex) is not CodexSettings or opencode is not None or command != codex.command
+        ):
+            raise Refused("invalid_domain_profile")
         self._opencode = opencode
+        self._codex = codex
         self._stdin: int | None = None
         self._image = image
         self._command = command
@@ -243,11 +252,16 @@ class BubblewrapDomain:
             break
         raise Refused("namespace_receipt_missing")
 
+    def _prepare_native(self, material: InvocationMaterial) -> None:
+        if self._opencode is not None:
+            material.prepare_opencode(self._opencode)
+        if self._codex is not None:
+            material.prepare_codex(self._codex)
+
     def _plan(
         self, material: InvocationMaterial
     ) -> tuple[list[str], tuple[int, ...], int, int, int]:
-        if self._opencode is not None:
-            material.prepare_opencode(self._opencode)
+        self._prepare_native(material)
         metadata = self._bwrap.stat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
             raise Refused("bubblewrap_unavailable")
@@ -309,19 +323,26 @@ class BubblewrapDomain:
             self._fds.add(descriptor)
             inherited.append(descriptor)
             argv.extend(("--perms", "0555", "--ro-bind-data", str(descriptor), entry.destination))
-        if self._opencode is not None:
+        native = self._opencode or self._codex
+        if native is not None:
             # Replace only the fixed non-adapter env block. Never accept a
             # caller mapping or inherit the host HOME/config/credential stores.
             start = argv.index("--setenv")
             end = argv.index("--tmpfs")
             argv[start:end] = [
-                item
-                for key, value in self._opencode.environment
-                for item in ("--setenv", key, value)
+                item for key, value in native.environment for item in ("--setenv", key, value)
             ]
         names = ("model-credential", "prompt", "mcp.json")
+        mounts = {name: f"/invocation/{name}" for name in names}
         if self._opencode is not None:
             names += (CONFIG_NAME,)
+            mounts[CONFIG_NAME] = f"/invocation/{CONFIG_NAME}"
+        if self._codex is not None:
+            # Codex keeps its config beside writable runtime state, so its home
+            # is fresh tmpfs scratch with these files mounted read-only inside.
+            argv.extend(("--dir", CODEX_HOME))
+            names += tuple(name for name, _ in NATIVE_FILES)
+            mounts.update(NATIVE_FILES)
         for name in names:
             descriptor = _open_source(material.directory / name)
             metadata = os.fstat(descriptor)
@@ -344,7 +365,7 @@ class BubblewrapDomain:
             finally:
                 os.close(descriptor)
             self._fds.add(snapshot)
-            if self._opencode is not None and name == "prompt":
+            if native is not None and name == "prompt":
                 # --ro-bind-data consumes snapshot's current offset. dup() or
                 # subprocess stdin=snapshot would share that offset and leave
                 # the CLI at EOF. Reopen the owned sealed memfd to obtain an
@@ -359,7 +380,7 @@ class BubblewrapDomain:
                     raise Refused("invalid_prompt_input")
                 self._stdin = stdin
             inherited.append(snapshot)
-            argv.extend(("--perms", "0400", "--ro-bind-data", str(snapshot), f"/invocation/{name}"))
+            argv.extend(("--perms", "0400", "--ro-bind-data", str(snapshot), mounts[name]))
         argv.extend(
             (
                 "--info-fd",
@@ -384,14 +405,13 @@ class BubblewrapDomain:
         self._used = True
         try:
             argv, inherited, info_read, block_write, gate_write = self._plan(material)
-            if self._opencode is not None and self._stdin is None:
+            native = self._opencode or self._codex
+            if native is not None and self._stdin is None:
                 raise Refused("prompt_input_missing")
             self._spawn = self._task(
                 asyncio.create_subprocess_exec(
                     *argv,
-                    stdin=(
-                        self._stdin if self._opencode is not None else asyncio.subprocess.DEVNULL
-                    ),
+                    stdin=self._stdin if native is not None else asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                     env={},
