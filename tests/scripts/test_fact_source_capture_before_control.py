@@ -45,6 +45,7 @@ def phase(name):
         "memory_partial_reports": 0 if name == "before" else None,
         "process_cleanup": True,
         "process_cleanup_basis": control.SETTLEMENT_BASIS,
+        "process_cancelled": False,
         "sentinel_preserved": True,
         "pytest_exit": 1 if name == "before" else 0,
         "terminal": True,
@@ -80,6 +81,7 @@ def test_only_executing_old_red_and_paired_green_with_complete_cleanup_qualify()
         ("memory_partial_reports", 1),
         ("process_cleanup", False),
         ("process_cleanup_basis", "UNKNOWN"),
+        ("process_cancelled", True),
         ("sentinel_preserved", False),
         ("terminal", False),
         ("pytest_exit", 0),
@@ -507,7 +509,7 @@ def run():
                            all_child_wait_pending=closure['all_child_wait_pending'],
                            omitted_discoveries=closure['omitted_discoveries'],
                            adopted_count=closure['adopted_count'],
-                           kernel_domain_basis=s.get('basis'))
+                           kernel_domain_basis=s.get('basis'), supervisor_cancelled=s.get('cancelled'))
                 if case in ('parent-loss', 'reader-loss'):
                     assert active.returncode == 2 and s['complete'] is False
                     assert closure['ECHILD'] and closure['adopted_descendant_reaped']
@@ -519,8 +521,9 @@ def run():
                     assert active.returncode == 2 and s['complete'] is False, 'pending child must refuse'
                     assert d['reason'] == 'settlement_deadline'
                 else:
-                    assert active.returncode == 0 and s['complete'], 'positive kernel settlement required'
-                    assert s['basis'] == 'linux-subreaper-all-child-v1'
+                    assert active.returncode == 3 and s['complete'], 'positive kernel settlement after cancellation required'
+                    assert s['cancelled'] is True
+                    assert s['basis'] == 'linux-subreaper-all-child-v2'
                     assert closure['ECHILD'] and closure['adopted_descendant_reaped']
                     assert closure['adopted_count'] >= 2
                     assert closure['descendant_absent'] and sentinel.poll() is None
@@ -1376,6 +1379,8 @@ def test_terminal_cancellation_revokes_witness_after_owned_cleanup(tmp_path, mon
         "summary-write-after",
         "success-announcement",
         "after-main-return",
+        "supervisor-phase",
+        "supervisor-terminal-latch",
     ):
         parent = tmp_path / seam
         root = parent / "controller"
@@ -1403,7 +1408,7 @@ def test_terminal_cancellation_revokes_witness_after_owned_cleanup(tmp_path, mon
                 cancel_at("private-cleanup")
                 return result
 
-        def own(command, environment, seconds, **kwargs):
+        def own(command, environment, seconds, *, seam=seam, **kwargs):
             code = 0
             if command[-1] == "--phase-child":
                 config = json.loads(Path(environment["FACT_CAPTURE_CONTROL_CONFIG"]).read_text())
@@ -1415,13 +1420,16 @@ def test_terminal_cancellation_revokes_witness_after_owned_cleanup(tmp_path, mon
                 "exit": code,
                 "cleanup_complete": True,
                 "timed_out": False,
-                "cancelled": False,
+                "cancelled": seam == "supervisor-phase" and command[-1] == "--phase-child",
                 "observation": {"completion_basis": control.SETTLEMENT_BASIS},
             }
 
-        def witness(*args):
+        def witness(*args, seam=seam):
             cancel_at("summary-validation")
-            return real_witness(*args)
+            result = real_witness(*args)
+            if seam == "supervisor-terminal-latch":
+                control.CANCELLED.append("supervisor")
+            return result
 
         def atomic(path, value):
             if path.name == "summary.json":
@@ -1478,7 +1486,7 @@ def test_terminal_cancellation_revokes_witness_after_owned_cleanup(tmp_path, mon
                         assert control.CANCELLED and not summary.exists()
                 else:
                     assert result == 2, seam
-                    assert control.CANCELLED
+                    assert control.CANCELLED or seam == "supervisor-phase"
                     assert not summary.exists() and not summary.with_suffix(".pending").exists()
                     data = json.loads(refusal.read_text())
                     assert data["control_verdict"] == "UNKNOWN" and data["complete"] is False
@@ -1571,14 +1579,21 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
         assert cwd.name == "workload" and command[-1] == "--prepare-child"
         assert Path(environment["FACT_CAPTURE_PREPARE_CONFIG"]).parent == cwd.parent
         return {
-            "exit": 2,
+            "exit": 0 if label == "environment-cancelled" else 2,
             "cleanup_complete": True,
             "timed_out": False,
-            "observation": control.lifecycle_observation([], 0, False, False, False),
+            "cancelled": label == "environment-cancelled",
+            "observation": control.lifecycle_observation(
+                [], 0, False, label == "environment-cancelled", False
+            ),
         }
 
-    for stage in ("uv-install", "environment-prepare"):
-        directory = tmp_path / ("real-" + stage)
+    for label, stage in (
+        ("uv-install", "uv-install"),
+        ("environment-prepare", "environment-prepare"),
+        ("environment-cancelled", "environment-prepare"),
+    ):
+        directory = tmp_path / ("real-" + label)
         directory.mkdir()
         root = directory / "controller"
         (root / "scripts").mkdir(parents=True)
@@ -2025,7 +2040,8 @@ def test_kernel_domain_settlement_survives_retirement_and_rejects_omitted_childr
         result, closed = _kernel_domain_case(tmp_path, case, control.SUPERVISOR, case)
         assert result["exit"] == 0 and closed["exception_class"] is None, closed
         row = closed["result"]["cases"][0]
-        assert row["settled_complete"] is True and row["exit"] == 0
+        assert row["settled_complete"] is True and row["exit"] == 3
+        assert row["supervisor_cancelled"] is True
         assert row["kernel_domain_basis"] == control.SETTLEMENT_BASIS
         assert row["foreign_task_scans"] == 0
         assert row["real_ECHILD"] and row["adopted_descendant_reaped"]
@@ -2245,6 +2261,7 @@ def test_kernel_domain_protocol_refuses_unknown_ownership_and_malformed_proof(
             "all_child_echild": True,
             "held_children": 0,
             "root_outcome": True,
+            "cancelled": False,
         },
     ]
     assert control.kernel_settlement_complete(events, 0)
@@ -2258,6 +2275,8 @@ def test_kernel_domain_protocol_refuses_unknown_ownership_and_malformed_proof(
         ("held_children", False),
         ("root_outcome", False),
         ("complete", 1),
+        ("cancelled", True),
+        ("cancelled", 0),
     ):
         bad = copy.deepcopy(events)
         bad[3][key] = value
@@ -2302,6 +2321,112 @@ def _terminal_outcome_supervisor():
         + repr(dict.fromkeys(control.REFUSAL_COUNTS, 0))
         + ",'counts_saturated':False,'first_scan_refusal':None,'first_task_scan':None,"
         "'owned_remaining':0,'direct_remaining':0,'kernel_children_closed':True})\n"
-        "emit({'event':'settled','complete':True,'basis':'linux-subreaper-all-child-v1',"
-        "'all_child_echild':True,'held_children':0,'root_outcome':True})\n"
+        "emit({'event':'settled','complete':True,'basis':'linux-subreaper-all-child-v2',"
+        "'all_child_echild':True,'held_children':0,'root_outcome':True,'cancelled':False})\n"
     )
+
+
+def _supervisor_cancellation_fixture():
+    return r'''"""Actual supervisor handlers under no-workload stdlib stand-ins."""
+import importlib.machinery
+import importlib.util
+import os
+import signal
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader('cancelled_supervisor', os.environ['CANCELLATION_SOURCE'])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+supervisor = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(supervisor)
+seam = os.environ['CANCELLATION_SEAM']
+assert seam in {'positive', 'ready', 'before-settled', 'after-settled', 'after-main', 'default-handler'}
+waits = iter((None, (37, 0), None))
+def wait(pid, flags):
+    assert pid == -1 and flags == supervisor.WAIT_FLAGS
+    result = next(waits)
+    if result is None:
+        raise ChildProcessError()
+    return result
+original_emit = supervisor.emit
+def emit(value):
+    if seam == 'before-settled' and value['event'] == 'settled':
+        os.kill(os.getpid(), signal.SIGTERM)
+    accepted = original_emit(value)
+    if (seam == 'ready' and value['event'] == 'ready'
+            or seam == 'after-settled' and value['event'] == 'settled'):
+        os.kill(os.getpid(), signal.SIGTERM)
+    return accepted
+class Poll:
+    def register(self, *args):
+        pass
+    def poll(self, *args):
+        return []
+status = 2
+with (patch.object(sys, 'argv', ['supervisor', str(os.getppid()), '101', 'unused']),
+      patch.object(supervisor, 'process', lambda pid: (101, 'S')),
+      patch.object(supervisor.os, 'listdir', lambda path: [str(os.getpid())]),
+      patch.object(supervisor.os, 'waitpid', wait),
+      patch.object(supervisor.os, 'waitid', lambda *args: (_ for _ in ()).throw(ChildProcessError())),
+      patch.object(supervisor.ctypes, 'CDLL', lambda *a, **k: SimpleNamespace(prctl=lambda *a: 0)),
+      patch.object(supervisor.subprocess, 'Popen', lambda *a, **k: SimpleNamespace(pid=37)),
+      patch.object(supervisor.select, 'poll', Poll), patch.object(supervisor, 'emit', emit)):
+    try:
+        status = supervisor.main()
+        if seam == 'after-main':
+            os.kill(os.getpid(), signal.SIGTERM)
+        if seam == 'default-handler':
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGTERM)
+    except SystemExit as stopped:
+        status = stopped.code
+raise SystemExit(status)
+'''
+
+
+def test_supervisor_cancellation_propagates_without_erasing_process_cleanup(tmp_path, monkeypatch):
+    """Actual early/terminal signals veto evidence independently of closed cleanup."""
+    fixture = tmp_path / "supervisor-cancellation.py"
+    fixture.write_text(_supervisor_cancellation_fixture())
+    rows = []
+    for seam in (
+        "positive",
+        "ready",
+        "before-settled",
+        "after-settled",
+        "after-main",
+        "default-handler",
+    ):
+        with monkeypatch.context() as context:
+            context.setattr(control, "SUPERVISOR", fixture)
+            context.setattr(control, "CANCELLED", [])
+            result = control.run_owned(
+                [sys.executable, "unused"],
+                {
+                    **os.environ,
+                    "CANCELLATION_SOURCE": str(
+                        Path(__file__).resolve().parents[2]
+                        / "scripts/fact_source_capture_before_supervisor.py"
+                    ),
+                    "CANCELLATION_SEAM": seam,
+                },
+                2,
+            )
+            assert result["exit"] == 0 and not result["timed_out"], result
+            assert result["cancelled"] is (seam != "positive"), result
+            assert result["observation"]["cancelled"] is (seam != "positive")
+            assert bool(control.CANCELLED) is (seam != "positive")
+            assert result["cleanup_complete"] is (seam != "before-settled"), result
+            assert result["observation"]["supervisor_exit"] == (
+                0 if seam == "positive" else -15 if seam == "default-handler" else 3
+            )
+            rows.append(
+                {
+                    "seam": seam,
+                    "result": result,
+                    "aggregate_cancelled": bool(control.CANCELLED),
+                    "no_workload_native_or_install": True,
+                }
+            )
+    (tmp_path / "supervisor-cancellation-results.json").write_text(json.dumps(rows, indent=2))

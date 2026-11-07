@@ -83,7 +83,8 @@ def process(pid):
 # Its availability is tested with both wait APIs before creating the workload.
 ALL_CHILDREN = 0x40000000
 WAIT_FLAGS = os.WNOHANG | ALL_CHILDREN
-SETTLEMENT_BASIS = "linux-subreaper-all-child-v1"
+SETTLEMENT_BASIS = "linux-subreaper-all-child-v2"
+CANCELLED_EXIT = 3
 
 
 def direct_children(diagnostics):
@@ -192,10 +193,15 @@ def main():
     if libc.prctl(36, 1, 0, 0, 0) != 0:
         return 2
     cancelling = []
+    terminal = False
 
     def cancel(signum, frame):
         if not cancelling:
             cancelling.append(signum)
+        if terminal:
+            # Cleanup is closed. Keep cancellation parent-visible even after
+            # the proof object is built/written and after main returns.
+            raise SystemExit(CANCELLED_EXIT)
 
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
@@ -283,6 +289,7 @@ def main():
             # pre-exec subreaper; exiting parents adopt before becoming reapable.
             elapsed = time.monotonic() - stopping_at
             if no_children and outcome is not None and not held:
+                terminal = True
                 complete = not fatal and elapsed < SETTLEMENT_BOUND
                 reason = "settled" if complete else "latched_refusal"
                 if not emit(
@@ -304,10 +311,11 @@ def main():
                         "all_child_echild": True,
                         "held_children": len(held),
                         "root_outcome": True,
+                        "cancelled": bool(cancelling),
                     }
                 ):
                     return 2
-                return 0 if complete else 2
+                return (CANCELLED_EXIT if cancelling else 0) if complete else 2
             if elapsed >= SETTLEMENT_BOUND:
                 emit(
                     {
@@ -327,6 +335,7 @@ def main():
                         "all_child_echild": no_children,
                         "held_children": len(held),
                         "root_outcome": outcome is not None,
+                        "cancelled": bool(cancelling),
                     }
                 )
                 return 2

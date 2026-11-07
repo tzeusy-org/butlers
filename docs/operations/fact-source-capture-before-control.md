@@ -47,7 +47,7 @@ It uses default SIGCHLD zombie retention, one waiter and validated Linux all-chi
 (`__WALL`); unsupported flags refuse before exec. It never calls `Popen.poll` or `wait`
 as a competing reaper. The retired shared action remains absent.
 
-The versioned process-settlement basis is `linux-subreaper-all-child-v1`. Live reads of
+The versioned process-settlement basis is `linux-subreaper-all-child-v2`. Live reads of
 only the supervisor's own direct-child relation discover signal targets; they do not
 prove that a census is complete or empty. A non-consuming all-child `waitid(WNOWAIT)`
 proves each signal target is a direct/adopted child held unreaped by this sole waiter.
@@ -58,11 +58,23 @@ grace and 1.5-second settlement deadline. Wait0 means children remain pending.
 
 Only the exact root outcome followed by genuine all-child ECHILD and no held child,
 hard failure, overflow or expired settlement bound qualifies process cleanup. The producer
-requires exactly one ordered ready/outcome/diagnostic/settled sequence, successful supervisor,
-zero refusal counts and the versioned positive kernel proof. Each accepted phase receipt
-includes `process_cleanup_basis`; missing, old or malformed proof refuses. Proper process
-cleanup after a cancellation can be observed, but cancellation or a phase/aggregate deadline
-still cannot produce a witness. Parent or control-reader loss remains a fatal refusal.
+requires exactly one ordered ready/outcome/diagnostic/settled sequence, zero refusal counts
+and the versioned positive kernel proof. Normal uncancelled supervisor exit is additionally
+required for a witness. Each accepted phase receipt
+includes `process_cleanup_basis` and strict `process_cancelled`; missing, old or malformed
+proof refuses. Physical process cleanup after cancellation can remain positively observed.
+The v2 settlement independently exports cancellation; reserved exit3 preserves its visibility
+if a signal arrives after the proof is built/written or main returns. The terminal handler
+stays armed through CLI exit. TERM/INT termination during interpreter teardown is also
+classified as cancellation, while cleanup remains provable only with the complete valid
+kernel record sequence. Missing records still leave cleanup UNKNOWN.
+
+The producer combines supervisor and local cancellation in `run_owned.cancelled` and its
+closed observation. Unexpected supervisor cancellation also latches aggregate cancellation.
+Installer and environment admission reject the flag; a phase records `process_cancelled`
+and refuses a cancelled lifecycle even with physical cleanup, child0 and otherwise healthy
+observations. Final summary sealing checks the aggregate latch. Cancellation or a
+phase/aggregate deadline therefore cannot produce a witness. Parent or control-reader loss remains a fatal refusal.
 
 This proof assumes a trusted closed rooted workload: no external daemon launch, external
 ptrace/reparenting interference or ancestry escape. It is process settlement, not hostile-code

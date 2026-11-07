@@ -58,7 +58,8 @@ NODE = (
     "test_capacity_one_registered_owner_capture_and_concurrent_sources"
 )
 SUPERVISOR = Path(__file__).resolve().with_name("fact_source_capture_before_supervisor.py")
-SETTLEMENT_BASIS = "linux-subreaper-all-child-v1"
+SETTLEMENT_BASIS = "linux-subreaper-all-child-v2"
+SUPERVISOR_CANCELLED_EXIT = 3
 PHASE_KEYS = {
     "schema",
     "binding",
@@ -79,6 +80,7 @@ PHASE_KEYS = {
     "memory_partial_reports",
     "process_cleanup",
     "process_cleanup_basis",
+    "process_cancelled",
     "sentinel_preserved",
     "pytest_exit",
     "terminal",
@@ -410,6 +412,7 @@ def safe_phase(data, name, binding):
         "capture_tasks_settled",
         "pool_reacquired",
         "process_cleanup",
+        "process_cancelled",
         "sentinel_preserved",
         "terminal",
     ):
@@ -444,6 +447,8 @@ def require_phase(data, name, binding):
         "sentinel_preserved",
         "terminal",
     ]
+    if data["process_cancelled"] is not False:
+        raise ValueError("control-cancelled")
     if data["process_cleanup_basis"] != SETTLEMENT_BASIS:
         raise ValueError("cleanup-basis")
     if any(data[k] is not True for k in needed):
@@ -656,7 +661,12 @@ def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protoco
 
 def kernel_settlement_complete(events, supervisor_exit):
     """Accept only the versioned kernel-domain proof, never a census or root0."""
-    if type(supervisor_exit) is not int or supervisor_exit != 0:
+    if type(supervisor_exit) is not int or supervisor_exit not in (
+        0,
+        SUPERVISOR_CANCELLED_EXIT,
+        -signal.SIGTERM,
+        -signal.SIGINT,
+    ):
         return False
     if [x.get("event") for x in events] != ["ready", "outcome", "diagnostic", "settled"]:
         return False
@@ -687,6 +697,7 @@ def kernel_settlement_complete(events, supervisor_exit):
         "all_child_echild",
         "held_children",
         "root_outcome",
+        "cancelled",
     }:
         return False
     if not (
@@ -696,6 +707,8 @@ def kernel_settlement_complete(events, supervisor_exit):
         and type(settled["held_children"]) is int
         and settled["held_children"] == 0
         and settled["root_outcome"] is True
+        and type(settled["cancelled"]) is bool
+        and (supervisor_exit != 0 or settled["cancelled"] is False)
     ):
         return False
     if set(diagnostic) != {
@@ -724,6 +737,13 @@ def kernel_settlement_complete(events, supervisor_exit):
         and diagnostic["owned_remaining"] == 0
         and type(diagnostic.get("direct_remaining")) is int
         and diagnostic["direct_remaining"] == 0
+    )
+
+
+def supervisor_was_cancelled(events, supervisor_exit):
+    """Cancellation is separate from physical kernel settlement, including late signals."""
+    return supervisor_exit in (SUPERVISOR_CANCELLED_EXIT, -signal.SIGTERM, -signal.SIGINT) or any(
+        x.get("event") == "settled" and x.get("cancelled") is True for x in events
     )
 
 
@@ -808,14 +828,20 @@ def run_owned(command, environment, seconds, *, cwd=None):
     outcomes = [x for x in events if x.get("event") == "outcome"]
     complete = not overflow and not wire and kernel_settlement_complete(events, process.returncode)
     code = outcomes[0].get("code") if len(outcomes) == 1 else None
+    supervisor_cancelled = supervisor_was_cancelled(events, process.returncode)
+    if supervisor_cancelled and not timed_out and not CANCELLED:
+        # Unexpected domain cancellation must reach aggregate/terminal sealing
+        # even if an intermediate caller were to ignore the returned flag.
+        CANCELLED.append("supervisor")
+    cancelled = bool(CANCELLED) or supervisor_cancelled
     return {
         "exit": code,
         "cleanup_complete": complete,
         "timed_out": timed_out,
-        "cancelled": bool(CANCELLED),
+        "cancelled": cancelled,
         "elapsed_s": time.monotonic() - started,
         "observation": lifecycle_observation(
-            events, process.returncode, timed_out, CANCELLED, overflow
+            events, process.returncode, timed_out, cancelled, overflow
         ),
     }
 
@@ -1026,7 +1052,12 @@ def execute(root, output, progress=None):
             "lifecycle": prepared["observation"],
             "helper": preparation_observation(private / "prepare-observation.json"),
         }
-        if prepared["exit"] != 0 or not prepared["cleanup_complete"] or prepared["timed_out"]:
+        if (
+            prepared["exit"] != 0
+            or not prepared["cleanup_complete"]
+            or prepared["timed_out"]
+            or prepared["cancelled"]
+        ):
             raise ValueError("environment-prepare")
         progress["stage"] = "sentinel-start"
         sentinel = subprocess.Popen(
@@ -1067,6 +1098,7 @@ def execute(root, output, progress=None):
                 data = json.loads(Path(config["output"]).read_text())
                 data.update(
                     process_cleanup=lifecycle["cleanup_complete"],
+                    process_cancelled=lifecycle["cancelled"],
                     process_cleanup_basis=(
                         lifecycle["observation"].get("completion_basis", "UNKNOWN")
                         if lifecycle["cleanup_complete"]
