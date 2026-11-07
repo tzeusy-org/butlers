@@ -628,11 +628,11 @@ OP PUT /api/chronicler/location-retention 7603b4dfff84
 OP PUT /api/cli-auth/{provider}/api-key ab21c009e83a
 OP PUT /api/education/mind-maps/{mind_map_id}/status 8e9578f3bc34
 OP PUT /api/general/projects/{project_id}/charter 7a07ef974e12
-OP PUT /api/health/conditions/{condition_id} 61260248dc48
+OP PUT /api/health/conditions/{condition_id} 3dcc83c67daa
 OP PUT /api/health/meals/{meal_id} 9ccf0018821b
 OP PUT /api/health/measurements/{measurement_id} aacd1fd2e7ef
-OP PUT /api/health/medications/{medication_id} b75dec229f76
-OP PUT /api/health/research/{research_id} 7dda678096a4
+OP PUT /api/health/medications/{medication_id} 46c496e9bffd
+OP PUT /api/health/research/{research_id} f2ca9af23103
 OP PUT /api/health/symptoms/{symptom_id} c75b6bc0bd80
 OP PUT /api/home/places/{place_id} ef4960199b00
 OP PUT /api/home/safety-watch 38d220541c78

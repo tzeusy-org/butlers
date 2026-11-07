@@ -52,6 +52,10 @@ class StaleSupersessionTargetError(ValueError):
     """Raised when an optimistic supersession target is no longer current."""
 
 
+class OwnerAuthoredSupersessionError(ValueError):
+    """Raised when a non-owner-authored fact would supersede an owner-authored one."""
+
+
 def subject_keyed_guard(row: Mapping[str, Any]) -> dict[str, Any]:
     """``store_fact`` arguments for an edit of ``row`` stored under its subject alone.
 
@@ -2051,7 +2055,7 @@ async def store_fact(
                         "third_party",
                         "mixed",
                     ):
-                        raise ValueError(
+                        raise OwnerAuthoredSupersessionError(
                             "A non-owner-authored fact cannot supersede an owner-authored fact; "
                             "store it under a distinct predicate or entity as an attributed report."
                         )

@@ -17,7 +17,10 @@ import pytest
 import butlers.tools.health as health_tools
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.modules.memory.storage import StaleSupersessionTargetError
+from butlers.modules.memory.storage import (
+    OwnerAuthoredSupersessionError,
+    StaleSupersessionTargetError,
+)
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -30,6 +33,10 @@ _health_get_db_manager = get_db
 _ROUTES = [
     ("medications", "medication_update", {"dosage": "20mg"}),
     ("conditions", "condition_update", {"status": "managed"}),
+]
+_ROUTES_THAT_CAN_REFUSE_AN_OWNER_FACT = [
+    *_ROUTES,
+    ("research", "research_update", {"title": "Revised"}),
 ]
 
 
@@ -62,3 +69,17 @@ async def test_a_missing_record_is_still_a_404(monkeypatch, collection, tool, bo
         resp = await client.put(f"/api/health/{collection}/{uuid.uuid4()}", json=body)
 
     assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("collection,tool,body", _ROUTES_THAT_CAN_REFUSE_AN_OWNER_FACT)
+async def test_an_owner_authored_refusal_is_its_own_conflict(monkeypatch, collection, tool, body):
+    refused = OwnerAuthoredSupersessionError("cannot supersede, whatever the wording")
+    monkeypatch.setattr(health_tools, tool, AsyncMock(side_effect=refused))
+
+    async with _client() as client:
+        resp = await client.put(f"/api/health/{collection}/{uuid.uuid4()}", json=body)
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "authored by the owner" in detail
+    assert "changed since it was read" not in detail
