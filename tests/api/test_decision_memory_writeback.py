@@ -57,3 +57,66 @@ def test_dashboard_writer_uses_configured_embedding_model(monkeypatch) -> None:
     assert writer is not None
     assert writer._embedding_engine_provider() is expected_engine
     assert requested_models == ["custom-decision-memory-model"]
+
+
+async def test_dashboard_writer_does_not_block_the_decision_on_slow_writeback(monkeypatch) -> None:
+    """A cold embedding-model load must not hold the HTTP decision response [bu-dhloi1.160]."""
+    import asyncio
+
+    settings = approvals._DecisionMemorySettings(
+        memory_schema=None, embedding_model="m", tool_metadata={}
+    )
+    monkeypatch.setattr(approvals, "_decision_memory_settings_for", lambda _name: settings)
+    db_mgr = SimpleNamespace(butlers_with_module=lambda module_name: ["home"])
+    writer = approvals._decision_memory_writer_for(db_mgr, "home", object())
+    assert writer is not None
+
+    release = asyncio.Event()
+    finished: list[str] = []
+
+    async def _slow_terminal(self, action, outcome):
+        await release.wait()
+        finished.append(f"{action}:{outcome}")
+
+    async def _slow_rule(self, rule, *, active):
+        await release.wait()
+        finished.append(f"{rule}:{active}")
+
+    monkeypatch.setattr(approvals.DecisionMemoryWriter, "record_terminal_decision", _slow_terminal)
+    monkeypatch.setattr(approvals.DecisionMemoryWriter, "record_standing_rule", _slow_rule)
+
+    await asyncio.wait_for(writer.record_terminal_decision("a1", "rejected"), timeout=1)
+    await asyncio.wait_for(writer.record_standing_rule("r1", active=False), timeout=1)
+    assert finished == []
+
+    release.set()
+    for _ in range(50):
+        if len(finished) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert sorted(finished) == ["a1:rejected", "r1:False"]
+
+
+async def test_dashboard_writer_background_failure_is_logged_not_raised(
+    monkeypatch, caplog
+) -> None:
+    import asyncio
+
+    settings = approvals._DecisionMemorySettings(
+        memory_schema=None, embedding_model="m", tool_metadata={}
+    )
+    monkeypatch.setattr(approvals, "_decision_memory_settings_for", lambda _name: settings)
+    db_mgr = SimpleNamespace(butlers_with_module=lambda module_name: ["home"])
+    writer = approvals._decision_memory_writer_for(db_mgr, "home", object())
+
+    async def _boom(self, action, outcome):
+        raise RuntimeError("model load failed")
+
+    monkeypatch.setattr(approvals.DecisionMemoryWriter, "record_terminal_decision", _boom)
+    with caplog.at_level("WARNING"):
+        await writer.record_terminal_decision("a1", "rejected")
+        for _ in range(50):
+            if any("background" in r.getMessage() for r in caplog.records):
+                break
+            await asyncio.sleep(0.01)
+    assert any("background" in r.getMessage() for r in caplog.records)

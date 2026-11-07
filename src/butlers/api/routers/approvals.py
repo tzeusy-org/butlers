@@ -353,6 +353,46 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
         return None
 
 
+_BACKGROUND_WRITEBACKS: set[asyncio.Task[None]] = set()
+
+
+def _detach_writeback(label: str, coro: Any) -> None:
+    """Run a fail-open writeback after the HTTP response path, logging failures."""
+
+    async def _run() -> None:
+        try:
+            await coro
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- writeback must never affect a decision
+            logger.warning("Decision-memory background writeback failed: %s", label, exc_info=True)
+
+    task = asyncio.get_running_loop().create_task(_run())
+    _BACKGROUND_WRITEBACKS.add(task)
+    task.add_done_callback(_BACKGROUND_WRITEBACKS.discard)
+
+
+class _DetachedDecisionMemoryWriter(DecisionMemoryWriter):
+    """Dashboard writer whose writes run in the background.
+
+    Writeback cold-loads the embedding model, which can take longer than the
+    dashboard's request timeout. The decision is already committed when these
+    hooks are called and the writer is fail-open, so the response need not wait.
+    """
+
+    async def record_terminal_decision(self, action: Any, outcome: str) -> None:
+        _detach_writeback(
+            f"terminal decision {getattr(action, 'id', 'unknown')}",
+            super().record_terminal_decision(action, outcome),
+        )
+
+    async def record_standing_rule(self, rule: Any, *, active: bool) -> None:
+        _detach_writeback(
+            f"standing rule {getattr(rule, 'id', 'unknown')}",
+            super().record_standing_rule(rule, active=active),
+        )
+
+
 def _decision_memory_writer_for(
     db_mgr: DatabaseManager,
     butler_name: str,
@@ -381,7 +421,7 @@ def _decision_memory_writer_for(
 
         return get_embedding_engine(settings.embedding_model)
 
-    return DecisionMemoryWriter(
+    return _DetachedDecisionMemoryWriter(
         butler_name=butler_name,
         memory_pool_provider=lambda: memory_pool,
         resolution_pool_provider=lambda: pool,
