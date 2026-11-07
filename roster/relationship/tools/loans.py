@@ -221,13 +221,17 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     async with pool.acquire() as conn, conn.transaction():
         # Lock order: the entity before the loan row. The successor insert takes the entity
         # for its foreign key, which with the loan row held is a cycle with a forget. A merge
-        # that moved the loan during this wait leaves the insert to take the new entity.
-        await conn.execute(
-            "SELECT id FROM public.entities WHERE id = "
+        # commits first and moves facts afterwards, so a successor written on a merged-away
+        # entity could miss that move for good: refuse until the loan has moved. Past this
+        # check the entity is live and held, so no merge can start moving the row.
+        locked = await conn.fetchrow(
+            "SELECT metadata->>'merged_into' AS merged_into FROM public.entities WHERE id = "
             "(SELECT entity_id FROM facts WHERE id = $1 AND scope = 'relationship') "
             "FOR KEY SHARE",
             loan_id,
         )
+        if locked is not None and locked["merged_into"] is not None:
+            raise ValueError(f"Loan {loan_id} is moving to a merged contact; retry shortly.")
         row = await conn.fetchrow(
             "SELECT id, subject, content, metadata, entity_id, content_authority,"
             " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"

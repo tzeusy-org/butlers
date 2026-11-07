@@ -98,9 +98,11 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   (`promote_entity`'s `initial_facts`) takes all of their entities in one ascending batch
   (`_lock_fact_entities_batch`) before the first, so the order holds across calls too, and likewise
   takes the union of their identity slots once, after the entities. `loan_settle` takes the loan's
-  entity before the loan row, because its successor insert needs that entity's foreign key.
-  Retract/verify-only paths write no FK column and take no entity lock. A write that waits out
-  a merge still lands on the tombstoned source; whether the writer refuses or follows
+  entity before the loan row, because its successor insert needs that entity's foreign key, and
+  refuses while that entity has `merged_into` set, because a merge moves `facts` after its commit
+  and would miss a successor written during that move.
+  Retract/verify-only paths write no FK column and take no entity lock. Any other write that waits
+  out a merge still lands on the tombstoned source; whether those writers refuse or follow
   `merged_into` is open (bu-gm93xc).
 
 ## Meeting debrief

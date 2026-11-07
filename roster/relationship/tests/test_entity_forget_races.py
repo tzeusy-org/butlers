@@ -664,26 +664,45 @@ async def test_a_loan_settle_waits_for_a_forget_and_finds_the_loan_gone(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_loan_moved_while_settle_waited_settles_on_its_new_entity(
+async def test_a_settle_that_waited_out_a_merge_strands_nothing_on_the_source(
     rel_pool, loan_engine
 ) -> None:
-    """Settle waits on the entity it read; a merge may have moved the loan by then."""
+    """A merge moves facts after its commit, so a settle that passes the wait must refuse.
+
+    Unchecked, settle holds the loan row while the rebind selects it, then inserts a successor
+    the rebind never saw: an active loan on a merged-away entity, for good.
+    """
     source = await _entity(rel_pool, "Source")
     target = await _entity(rel_pool, "Target")
     loan = await _loan(rel_pool, source)
+    rebinding: list[asyncio.Task] = []
 
-    async with rel_pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT id FROM public.entities WHERE id = $1 FOR UPDATE", source)
-        settling = asyncio.create_task(_settle(rel_pool, loan))
-        await _settled_or_lock_waiting(rel_pool, settling)
-        await conn.execute("UPDATE facts SET entity_id = $1 WHERE id = $2", target, loan)
+    async def store_fact_as_the_rebind_arrives(*args: Any, **kwargs: Any) -> Any:
+        rebinding.append(asyncio.create_task(entity_merge.settle_entity_merge(rel_pool, merge)))
+        await _settled_or_lock_waiting(rel_pool, rebinding[0])
+        return await store_fact(*args, **kwargs)
 
-    settled = await asyncio.wait_for(settling, timeout=20)
+    with patch.object(memory_storage, "store_fact", store_fact_as_the_rebind_arrives):
+        async with rel_pool.acquire() as conn, conn.transaction():
+            merge = await entity_merge.merge_entity_pair_in_transaction(
+                conn, source_entity_id=source, target_entity_id=target
+            )
+            settling = asyncio.create_task(_settle(rel_pool, loan))
+            await _settled_or_lock_waiting(rel_pool, settling)
 
-    assert (
-        await rel_pool.fetchval("SELECT entity_id FROM facts WHERE id = $1", settled["id"])
-        == target
-    )
+        settled = await asyncio.wait_for(
+            asyncio.gather(settling, return_exceptions=True), timeout=20
+        )
+
+    if rebinding:
+        await asyncio.wait_for(rebinding[0], timeout=20)
+    else:
+        await entity_merge.settle_entity_merge(rel_pool, merge)
+
+    assert await _loan_rows(rel_pool, source) == []
+    assert await _loan_rows(rel_pool, target) == ["active"]
+    assert isinstance(settled[0], ValueError)
+    assert "merged" in str(settled[0])
 
 
 @pytest.mark.asyncio(loop_scope="session")
