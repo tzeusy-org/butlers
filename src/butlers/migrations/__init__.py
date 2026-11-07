@@ -398,6 +398,23 @@ def _chain_at_head(db_url: str, chain: str, schema: str | None) -> bool:
     return applied & revisions == set(heads)
 
 
+def chain_has_applied_revision(db_url: str, chain: str, schema: str | None) -> bool:
+    """Whether the schema's version table already records any revision of *chain*.
+
+    Read-only. An absent version table is simply ``False``; an unreadable one raises, so a
+    caller deciding whether a schema is already installed never mistakes a failed read for a
+    fresh database.
+    """
+    chain_dir = _resolve_chain_dir(chain)
+    if chain_dir is None:
+        raise ValueError(f"Unknown migration chain: {chain!r}")
+    _, revisions = _chain_heads(chain, chain_dir)
+    applied = _applied_revisions(db_url, _normalize_schema(schema))
+    if applied is None:
+        raise RuntimeError(f"Could not read the migration version table (schema={schema!r}).")
+    return bool(applied & revisions)
+
+
 def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:
     """Upgrade a single chain to head and emit contextual logs."""
     logger.info(

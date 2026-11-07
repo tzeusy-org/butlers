@@ -3373,7 +3373,8 @@ memory_schema = "chronicler_mem"
         ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)],
     )
     assert prepared_again.exit_code == 0, prepared_again.output
-    assert calls == [("core", "chronicler_mem"), ("memory", "chronicler_mem")]
+    # Installed private schema: core is never replayed through chronicler_mem (bu-dhloi1.157).
+    assert calls == [("memory", "chronicler_mem")]
 
     calls.clear()
     migrated_again = runner.invoke(

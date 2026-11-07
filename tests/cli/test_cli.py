@@ -233,10 +233,64 @@ class TestChroniclerMemoryPreparation:
             },
         )
         monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+        monkeypatch.setattr(
+            "butlers.migrations.chain_has_applied_revision", lambda *args, **kwargs: False
+        )
         result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
         assert result.exit_code == 0, result.output
         assert calls == [("core", "chronicler_mem"), ("memory", "chronicler_mem")]
         assert "private-password" not in result.output
+
+    def test_prepare_skips_core_when_the_private_schema_is_already_installed(
+        self, runner, tmp_path, monkeypatch
+    ):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+        calls = []
+
+        async def record_migration(db_url, chain="core", schema=None):
+            del db_url
+            calls.append((chain, schema))
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {"user": "user", "password": "pw", "host": "localhost", "port": 5432},
+        )
+        monkeypatch.setattr("butlers.migrations.run_migrations", record_migration)
+        monkeypatch.setattr(
+            "butlers.migrations.chain_has_applied_revision", lambda *args, **kwargs: True
+        )
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code == 0, result.output
+        assert calls == [("memory", "chronicler_mem")]
+
+    def test_prepare_failure_reports_inner_class_and_sqlstate_without_content(
+        self, runner, tmp_path, monkeypatch
+    ):
+        butlers_dir = self._write_config(tmp_path / "butlers")
+
+        class InsufficientPrivilege(Exception):
+            pgcode = "42501"
+
+        async def failing_migration(db_url, chain="core", schema=None):
+            del db_url, chain, schema
+            from sqlalchemy.exc import ProgrammingError
+
+            raise ProgrammingError(
+                "UPDATE secret-row-content", {}, InsufficientPrivilege("secret-row-content")
+            )
+
+        monkeypatch.setattr(
+            "butlers.db.db_params_from_env",
+            lambda: {"user": "user", "password": "pw", "host": "localhost", "port": 5432},
+        )
+        monkeypatch.setattr("butlers.migrations.run_migrations", failing_migration)
+        monkeypatch.setattr(
+            "butlers.migrations.chain_has_applied_revision", lambda *args, **kwargs: False
+        )
+        result = runner.invoke(cli, ["db", "prepare-chronicler-memory", "--dir", str(butlers_dir)])
+        assert result.exit_code != 0
+        assert "ProgrammingError, inner=InsufficientPrivilege, sqlstate=42501" in result.output
+        assert "secret-row-content" not in result.output
 
     def test_prepare_dry_run_does_not_connect(self, runner, tmp_path, monkeypatch):
         butlers_dir = self._write_config(tmp_path / "butlers")

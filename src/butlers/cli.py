@@ -606,15 +606,31 @@ def prepare_chronicler_memory(butlers_dir: Path, dry_run: bool) -> None:
     Run this before the ordinary migration command on a fresh installation.
     It applies the core and memory chains to chronicler_mem only; the normal
     core → domain → modules order remains owned by db migrate and daemon startup.
+    Once chronicler_mem records memory revisions, only the memory chain runs.
     """
     try:
         asyncio.run(_prepare_chronicler_memory(butlers_dir, dry_run=dry_run))
     except click.ClickException:
         raise
     except Exception as exc:
+        # Class names and the SQLSTATE only: the driver message can carry row content.
+        detail = _exception_diagnostic(exc)
+        logger.error("Chronicler private-memory preparation failed (%s)", detail)
         raise click.ClickException(
-            f"Chronicler private-memory preparation failed ({type(exc).__name__})."
+            f"Chronicler private-memory preparation failed ({detail})."
         ) from exc
+
+
+def _exception_diagnostic(exc: BaseException) -> str:
+    """Content-blind description: wrapper class, driver class and SQLSTATE if any."""
+    parts = [type(exc).__name__]
+    inner = getattr(exc, "orig", None) or exc.__cause__
+    if inner is not None:
+        parts.append(f"inner={type(inner).__name__}")
+        sqlstate = getattr(inner, "pgcode", None) or getattr(inner, "sqlstate", None)
+        if isinstance(sqlstate, str) and len(sqlstate) == 5:
+            parts.append(f"sqlstate={sqlstate}")
+    return ", ".join(parts)
 
 
 @db.command()
@@ -756,8 +772,18 @@ async def _prepare_chronicler_memory(butlers_dir: Path, *, dry_run: bool) -> Non
         db_name=config.db_name or "butlers",
         schema=memory_schema,
     )
+    from butlers.migrations import chain_has_applied_revision
+
+    # An installed private schema (its version table already records memory revisions) never
+    # replays core: core migrations write public.*, which the ordinary core run owns, and the
+    # memory chain needs no core table inside chronicler_mem. Decided from database state.
+    chains = (memory_chain,)
+    if not chain_has_applied_revision(db_url, memory_chain, memory_schema):
+        chains = ("core", memory_chain)
     click.echo("Preparing Chronicler private memory schema (chronicler_mem)...")
-    for chain in ("core", memory_chain):
+    if len(chains) == 1:
+        click.echo("  core skipped: private schema already installed")
+    for chain in chains:
         click.echo(f"  {chain} (schema=chronicler_mem)...", nl=False)
         await run_migrations(db_url, chain=chain, schema=memory_schema)
         click.echo(" done")

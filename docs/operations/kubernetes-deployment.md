@@ -44,7 +44,10 @@ Service names match the compose service names, so in-cluster URLs (`http://butle
 The dashboard-api migrations initContainer first runs `db prepare-chronicler-memory` against
 Chronicler's explicit `memory_schema`, then runs ordinary migrations. `butlers-up` already waits for
 the dashboard API health endpoint, so the private-schema prerequisite completes before daemon
-startup without changing the normal core → domain → modules order.
+startup without changing the normal core → domain → modules order. On a database whose
+`chronicler_mem` version table already records memory revisions the prerequisite runs only the memory
+chain: core migrations write `public.*` and belong to the ordinary core run, so they are never
+replayed through the private schema. A fresh database still gets core, then memory.
 
 Dev source temporarily selects one cohosted `butlers-up` including Switchboard,
 with five shared session slots (`butlersControl.enabled=false`, owner decision
