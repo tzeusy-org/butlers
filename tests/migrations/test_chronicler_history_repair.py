@@ -3273,7 +3273,12 @@ memory_schema = "chronicler_mem"
     )  # pinned-revision: selected 029-to-030 prerequisite/refusal and migration-order boundary, not the evolving chain head
     initial_core_versions = {version for version in initial_versions if version.startswith("core_")}
     assert initial_core_versions
-    expected_versions_after_success = (initial_versions - {"chronicler_029"}) | {"chronicler_030"}
+    chronicler_head = (
+        ScriptDirectory.from_config(_build_alembic_config(url, chains=["chronicler"]))
+        .get_revision("chronicler@head")
+        .revision
+    )
+    expected_versions_after_success = (initial_versions - {"chronicler_029"}) | {chronicler_head}
 
     def assert_preparation_not_applied() -> None:
         engine = create_engine(url)

@@ -224,7 +224,7 @@ Scope: v1-mandatory
 - **THEN** the edge's `publish_key` SHALL become empty and the edge SHALL be absent from the projection after replication catches up
 
 ### Requirement: Chronicler corrected visibility is published, not raw episodes
-Chronicler episodes and rollups SHALL be published only through source-owned tables (`chronicler.episodes_public`, `chronicler.rollups_public`) that deterministic Chronicler code keeps equal to the corrected view, with one difference: `effective_privacy` SHALL fold an episode's privacy overrides oldest first, where an override whose `submitted_by` is `'owner'` (the passkey dashboard route) sets the value and any other override, such as one written through the LLM-callable `chronicler_submit_correction` tool, can only raise it in the order `normal` < `sensitive` < `restricted`. A model-chosen label therefore SHALL only narrow what the surface publishes, never widen it. Each privacy or tombstone override SHALL update the tables in the same transaction as the override write, and a sweep at least every 15 minutes SHALL repair any drift. The manifest SHALL filter them to `effective_privacy IN ('normal', 'sensitive') AND tombstoned = false`, so only `restricted` and tombstoned episodes are withheld. Raw `episodes`, episode payloads, point events and `overrides` SHALL never be published.
+Chronicler episodes and rollups SHALL be published only through source-owned tables (`chronicler.episodes_public`, `chronicler.rollups_public`) that deterministic Chronicler code keeps equal to the corrected view, with one difference: `effective_privacy` SHALL fold an episode's privacy overrides oldest first, where an override whose `submitted_by` is `'owner'` (the passkey dashboard route) sets the value and any other override, such as one written through the LLM-callable `chronicler_submit_correction` tool, can only raise it in the order `normal` < `sensitive` < `restricted`. A model-chosen label therefore SHALL only narrow what the surface publishes, never widen it. Two further rules only withhold more: `tombstoned` SHALL stay true once any override has tombstoned the episode or a redaction names it for any reason but `source_privacy`, and a calendar title built from the event's location or description SHALL be replaced by a fixed label unless an override corrected it, because people who invite the owner write that text. Evidence-layer episodes SHALL have no row. Each privacy or tombstone override SHALL update the tables in the same transaction as the override write, and a sweep at least every 15 minutes SHALL repair any drift. The manifest SHALL filter them to `effective_privacy IN ('normal', 'sensitive') AND tombstoned = false`, so only `restricted` and tombstoned episodes are withheld. Raw `episodes`, episode payloads, point events and `overrides` SHALL never be published.
 
 ID: REQ-public-mcp-projection-006
 Source: RFC 0039 D2 (Chronicler exception; what `sensitive` covers; labels only narrow) and D4 (time row); owner decisions OD17 and OD21; [Observed] src/butlers/chronicler/rollups.py:55-56 (Chronicler's own default shows `normal` and `sensitive`); [Observed] roster/chronicler/modules/__init__.py:376-421 and roster/chronicler/api/router.py:518-523 (`submitted_by` is `'user'` from the tool and `'owner'` from the dashboard)
@@ -250,6 +250,14 @@ Scope: v1-mandatory
 #### Scenario: Tombstoned episode leaves the projection
 - **WHEN** the owner tombstones an episode
 - **THEN** it SHALL be absent from the projection and from `timeline` and `time_use`
+
+#### Scenario: A later correction cannot undo a tombstone
+- **WHEN** an episode is tombstoned through an override and a later override only adds a note
+- **THEN** its `episodes_public` row SHALL stay tombstoned, although `v_episodes_corrected` reads only the latest override
+
+#### Scenario: A calendar title from free text is withheld
+- **WHEN** a calendar event has no summary, so its Chronicler title falls back to its location or description
+- **THEN** its `episodes_public` title SHALL be the fixed label, and the episode SHALL keep its times and kind
 
 #### Scenario: Sweep repairs drift
 - **WHEN** an `episodes_public` row disagrees with the corrected view and the override fold
