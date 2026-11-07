@@ -19,8 +19,6 @@ import pytest
 from butlers.chronicler.adapters.google_health import GoogleHealthSleepAdapter
 from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -47,24 +45,15 @@ CREATE TRIGGER fail_owner_link BEFORE INSERT ON episode_entities
 _RESTORE_LINK = "DROP TRIGGER IF EXISTS fail_owner_link ON episode_entities"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "chronicler"]
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=2, max_size=5, init=register_jsonb_codec
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    p = await open_prepared_chronicler_pool(
+        db, fresh_db, "core", "chronicler", min_size=2, max_size=5
     )
-    await p.execute(_RESTORE_LINK)
-    await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.execute(_RESTORE_LINK)
-    await p.close()
+    return p
 
 
 async def _owner(pool: asyncpg.Pool):
@@ -101,39 +90,41 @@ async def _episode_state(pool: asyncpg.Pool, source: str) -> list[tuple]:
 
 
 async def test_google_health_sleep_owner_link_failure_leaves_no_new_or_updated_episode(
-    pool: asyncpg.Pool,
+    chronicler_pool: asyncpg.Pool,
 ) -> None:
-    owner = await _owner(pool)
+    owner = await _owner(chronicler_pool)
     adapter = GoogleHealthSleepAdapter()
 
     # A failing link must not leave a new episode behind.
-    await pool.execute(_FAIL_LINK)
+    await chronicler_pool.execute(_FAIL_LINK)
     with pytest.raises(asyncpg.PostgresError, match="owner link refused"):
-        await adapter._project_row(pool, _sleep_row(efficiency=0.80), entity_id=owner)
-    assert await _episode_state(pool, adapter.source_name) == []
+        await adapter._project_row(chronicler_pool, _sleep_row(efficiency=0.80), entity_id=owner)
+    assert await _episode_state(chronicler_pool, adapter.source_name) == []
 
     # An existing episode must not be updated when the link write fails.
-    await pool.execute(_RESTORE_LINK)
-    await adapter._project_row(pool, _sleep_row(efficiency=0.80), entity_id=owner)
-    before = await _episode_state(pool, adapter.source_name)
+    await chronicler_pool.execute(_RESTORE_LINK)
+    await adapter._project_row(chronicler_pool, _sleep_row(efficiency=0.80), entity_id=owner)
+    before = await _episode_state(chronicler_pool, adapter.source_name)
     assert len(before) == 1
-    assert await pool.fetchval("SELECT count(*) FROM episode_entities") == 1
+    assert await chronicler_pool.fetchval("SELECT count(*) FROM episode_entities") == 1
 
-    await pool.execute("DELETE FROM episode_entities")
-    await pool.execute(_FAIL_LINK)
+    await chronicler_pool.execute("DELETE FROM episode_entities")
+    await chronicler_pool.execute(_FAIL_LINK)
     with pytest.raises(asyncpg.PostgresError, match="owner link refused"):
-        await adapter._project_row(pool, _sleep_row(efficiency=0.55), entity_id=owner)
-    assert await _episode_state(pool, adapter.source_name) == before
+        await adapter._project_row(chronicler_pool, _sleep_row(efficiency=0.55), entity_id=owner)
+    assert await _episode_state(chronicler_pool, adapter.source_name) == before
 
 
-async def test_sessions_adapter_nests_and_rolls_back_the_pair(pool: asyncpg.Pool) -> None:
+async def test_sessions_adapter_nests_and_rolls_back_the_pair(
+    chronicler_pool: asyncpg.Pool,
+) -> None:
     """Sessions already opens its own transaction; the helper nests as a savepoint."""
-    await _owner(pool)
+    await _owner(chronicler_pool)
     schema = "atomicity_butler"
     now = datetime.now(UTC)
-    await pool.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-    await pool.execute(_inline_ddl.make_sessions_table_ddl(schema))
-    await pool.execute(
+    await chronicler_pool.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    await chronicler_pool.execute(_inline_ddl.make_sessions_table_ddl(schema))
+    await chronicler_pool.execute(
         f"""
         INSERT INTO "{schema}".sessions (
             id, prompt, trigger_source, request_id, started_at, completed_at
@@ -145,12 +136,12 @@ async def test_sessions_adapter_nests_and_rolls_back_the_pair(pool: asyncpg.Pool
     )
     adapter = CoreSessionsAdapter(butler_schemas=(schema,))
 
-    await pool.execute(_FAIL_LINK)
-    await adapter.run(pool=pool, chronicler_pool=pool)
-    assert await _episode_state(pool, "core.sessions") == []
+    await chronicler_pool.execute(_FAIL_LINK)
+    await adapter.run(pool=chronicler_pool, chronicler_pool=chronicler_pool)
+    assert await _episode_state(chronicler_pool, "core.sessions") == []
 
-    await pool.execute(_RESTORE_LINK)
-    result = await adapter.run(pool=pool, chronicler_pool=pool)
+    await chronicler_pool.execute(_RESTORE_LINK)
+    result = await adapter.run(pool=chronicler_pool, chronicler_pool=chronicler_pool)
     assert result.success
-    assert len(await _episode_state(pool, "core.sessions")) == 1
-    assert await pool.fetchval("SELECT count(*) FROM episode_entities") == 1
+    assert len(await _episode_state(chronicler_pool, "core.sessions")) == 1
+    assert await chronicler_pool.fetchval("SELECT count(*) FROM episode_entities") == 1

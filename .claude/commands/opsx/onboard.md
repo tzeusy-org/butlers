@@ -37,9 +37,9 @@ I'll walk you through a complete change cycle—from idea to implementation—us
 1. Pick a small, real task in your codebase
 2. Explore the problem briefly
 3. Create a change (the container for our work)
-4. Build proposal → specs → tasks, adding design when required or chosen
+4. Build proposal → tasks, proposal → design → tasks, or the retained spec-driven artifact graph
 5. Implement the tasks
-6. Archive the completed change
+6. Verify delivery and delete only the completed change directory
 
 **Time:** ~15-20 minutes
 
@@ -157,32 +157,39 @@ Now let's create a change to hold our work.
 ```
 ## Creating a Change
 
-A "change" in OpenSpec holds the proposal, delta specs and tasks. A single-butler change needs no design unless it alters a cross-butler contract, a schema shared across butlers, or a security boundary; existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
+OpenSpec keeps canonical requirements in `openspec/specs/`. New single-butler work with no local deltas uses proposal and tasks; `living-specs` adds a required design. Both preserve the generated schema/created metadata and use `skip_specs: true`. New multi-PR programs may use spec-driven local deltas. All existing legacy programs keep their resolved schemas, metadata, content and deltas unchanged until verified completion. Existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
 
 Let me create one for our task.
 ```
 
 **DO:** Create the change with a derived kebab-case name:
-Classify the actual scope first. Add `--schema single-butler` for an eligible
-single-butler exercise omitting design; use the default `spec-driven` schema
-when design is required or chosen. Existing spec/review/verification and
-owner-approval gates remain; schema readiness alone does not authorize work.
+Classify the actual scope and whether this is new standalone work, a new multi-PR program, or continuation of an existing legacy program. Use
+`--schema single-butler` for eligible new single-butler work without local deltas; use
+`--schema living-specs` for new standalone work when design is required; new multi-PR
+programs may use `--schema spec-driven` local deltas. Preserve every existing legacy
+program under its resolved schema unchanged until verified completion. New no-delta changes preserve their generated
+schema/created metadata and add `skip_specs: true`. Verify those fields and the marker before
+continuing; if they are missing or malformed, correct the new change first. Existing
+spec/review/verification and owner-approval gates remain; schema readiness alone does not authorize work.
 ```bash
-openspec new change "<derived-name>"
+openspec new change "<derived-name>" --schema <selected-schema>
 ```
 
 **SHOW:**
 ```
 Created: `openspec/changes/<name>/`
 
-The folder structure:
+The generated folder depends on the selected schema:
 ```
 openspec/changes/<name>/
+├── .openspec.yaml ← Keep schema/created; add skip_specs: true only for new no-delta schemas
 ├── proposal.md    ← Why we're doing this (empty, we'll fill it)
-├── design.md      ← How we'll build it (only when required or chosen)
-├── specs/         ← Detailed requirements (empty)
+├── design.md      ← Present for living-specs or when otherwise required/chosen
+├── specs/         ← Present only for spec-driven local-delta programs
 └── tasks.md       ← Implementation checklist (empty)
 ```
+Single-butler and living-specs intentionally have no `specs/` directory. Update an affected
+canonical requirement in the source change when required behavior changes.
 
 Now let's fill in the first artifact—the proposal.
 ```
@@ -215,13 +222,14 @@ Here's a draft proposal:
 
 [Bullet points of what will be different]
 
-## Capabilities
+## Canonical Contract Impact
 
-### New Capabilities
+- `openspec/specs/<capability>/spec.md`: [unchanged, updated in this change, or not applicable]
+
+## Local Delta Specs
+
+<!-- Required only for a resolved spec-driven program; new no-delta schemas do not create these. -->
 - `<capability-name>`: [brief description]
-
-### Modified Capabilities
-<!-- If modifying existing behavior -->
 
 ## Impact
 
@@ -244,7 +252,9 @@ Then write the content to `openspec/changes/<name>/proposal.md`.
 ```
 Proposal saved. This is your "why" document—you can always come back and refine it as understanding evolves.
 
-Next up: specs.
+Next, follow the resolved schema: `single-butler` goes to tasks (design may be added),
+`living-specs` goes to design, and `spec-driven` goes to its local delta specs. Do not create
+placeholder specs for either no-delta schema.
 ```
 
 ---
@@ -255,51 +265,25 @@ Next up: specs.
 ```
 ## Specs
 
-Specs define **what** we're building in precise, testable terms. They use a requirement/scenario format that makes expected behavior crystal clear.
+This phase applies only when the resolved schema is `spec-driven` and its proposal declares local
+deltas. Preserve the complete retained multi-PR program and author its actual ADDED/MODIFIED/
+REMOVED/RENAMED requirements with scenarios and trace lines.
 
-For a small task like this, we might only need one spec file.
-```
+For a new `single-butler` or `living-specs` change, skip this phase: those schemas have no
+change-local specs and use the canonical files under `openspec/specs/` as the maintained contract.
+When required behavior changes, update the affected canonical requirement in the same source change.
+Do not add an empty `specs/` directory or use `skip_specs` on a retained delta program.
 
-**DO:** Create the spec file:
-```bash
-mkdir -p openspec/changes/<name>/specs/<capability-name>
-```
-
-Draft the spec content:
-
-```
-Here's the spec:
-
----
-
-## ADDED Requirements
-
-### Requirement: <Name>
-
-<Description of what the system should do>
-
-#### Scenario: <Scenario name>
-
-- **WHEN** <trigger condition>
-- **THEN** <expected outcome>
-- **AND** <additional outcome if needed>
-
----
-
-This format—WHEN/THEN/AND—makes requirements testable. You can literally read them as test cases.
-```
-
-Save to `openspec/changes/<name>/specs/<capability>/spec.md`.
 
 ---
 
 ## Phase 7: Design
 
-For an eligible single-butler change with no design, explain the scope evidence
-and proceed to Phase 8 without creating a placeholder. If the change alters
-a cross-butler contract, shared-across-butlers schema or security boundary,
-complete this phase using `spec-driven`. Read any existing design in either
-case. This omits only the document, not technical judgment or verification.
+For an eligible single-butler change, design is optional. If a new standalone change crosses
+a cross-butler contract, shared schema or security boundary and has no local delta specs, use
+`living-specs` and complete this phase. Retained multi-PR delta programs stay spec-driven. Read any
+existing design in every case; choosing no local deltas does not omit technical judgment or
+verification.
 
 **EXPLAIN:**
 ```
@@ -355,7 +339,8 @@ Finally, we break the work into implementation tasks—checkboxes that drive the
 These should be small, clear, and in logical order.
 ```
 
-**DO:** Generate tasks based on specs and design:
+**DO:** Generate tasks from the proposal and resolved schema. Read the design when present and
+read affected canonical specs for no-delta schemas; read local specs for a spec-driven program:
 
 ```
 Here are the implementation tasks:
@@ -388,7 +373,7 @@ Save to `openspec/changes/<name>/tasks.md`.
 ```
 ## Implementation
 
-Now we implement each task, checking them off as we go. I'll announce each one and occasionally note how the specs/design informed the approach.
+Now we implement each task, checking them off as we go. I'll announce each one and note how the canonical contract, local deltas when present, and design inform the approach.
 ```
 
 **DO:** For each task:
@@ -411,33 +396,49 @@ All tasks done:
 - [x] Task 2
 - [x] ...
 
-The change is implemented! One more step—let's archive it.
+Implementation tasks are complete. Verify the code and whole-program delivery before cleanup.
 ```
 
 ---
 
-## Phase 10: Archive
+## Phase 10: Verify Delivery and Clean Up
 
 **EXPLAIN:**
 ```
-## Archiving
+## Completion Cleanup
 
-When a change is complete, we archive it. This moves it from `openspec/changes/` to `openspec/changes/archive/YYYY-MM-DD-<name>/`.
-
-Archived changes become your project's decision history—you can always find them later to understand why something was built a certain way.
+`/opsx:archive` keeps its familiar name, but verified completed change directories
+are deleted. Git history preserves the proposal, design, tasks and metadata.
+Artifact readiness and checked tasks do not prove implementation or shipment.
+Existing archives and unfinished programs remain intact.
 ```
 
 **DO:**
+Follow `/opsx:verify <name>` and the `/opsx:archive <name>` instructions. Confirm the
+whole program is implemented and shipped, required source PRs have merged, and
+implementation review, executing verification and required runtime evidence are
+complete. For retained deltas, fold delivered intent into canonical requirements
+through `/opsx:sync` and review the semantic diff; for no-delta work, verify its
+delivered canonical updates. Run populated `openspec validate --all --strict`.
+Only after these checks, validate the exact active tracked path and delete it with:
+
 ```bash
-openspec archive "<name>"
+git rm -r -- openspec/changes/<name>
 ```
+
+Publish cleanup through the normal PR workflow before closing Beads work. If the
+program has not shipped, stop this phase and preserve the directory; do not use
+`openspec archive` or move it into a dated archive.
 
 **SHOW:**
 ```
-Archived to: `openspec/changes/archive/YYYY-MM-DD-<name>/`
-
-The change is now part of your project's history. The code is in your codebase, the decision record is preserved.
+Deleted after verified delivery: openspec/changes/<name>/
+History: preserved in Git
+Evidence: <merged source PRs, verification and reviewed canonical diff>
 ```
+
+If completion is unverified, show the remaining work and report the directory as
+preserved. Never remove an unfinished multi-PR program or an existing archive.
 
 ---
 
@@ -455,7 +456,7 @@ You just completed a full OpenSpec cycle:
 5. **Design** - Decided HOW
 6. **Tasks** - Broke it into steps
 7. **Apply** - Implemented the work
-8. **Archive** - Preserved the record
+8. **Completion cleanup** - Verified shipment, deleted the completed directory; Git retains history
 
 This same rhythm works for any size change—a small fix or a major feature.
 
@@ -471,7 +472,7 @@ This same rhythm works for any size change—a small fix or a major feature.
 | `/opsx:continue` | Continue working on an existing change |
 | `/opsx:apply` | Implement tasks from a change |
 | `/opsx:verify` | Verify implementation matches artifacts |
-| `/opsx:archive` | Archive a completed change |
+| `/opsx:archive` | Verify delivery and delete a completed change directory |
 
 ---
 
@@ -515,7 +516,7 @@ If the user says they just want to see the commands or skip the tutorial:
 | `/opsx:continue <name>` | Continue an existing change |
 | `/opsx:apply <name>` | Implement tasks |
 | `/opsx:verify <name>` | Verify implementation |
-| `/opsx:archive <name>` | Archive when done |
+| `/opsx:archive <name>` | Clean up only after verified delivery |
 
 Try `/opsx:new` to start your first change, or `/opsx:ff` if you want to move fast.
 ```
@@ -526,7 +527,7 @@ Exit gracefully.
 
 ## Guardrails
 
-- **Follow the EXPLAIN → DO → SHOW → PAUSE pattern** at key transitions (after explore, after proposal draft, after tasks, after archive)
+- **Follow the EXPLAIN → DO → SHOW → PAUSE pattern** at key transitions (after explore, after proposal draft, after tasks, after completion cleanup)
 - **Keep narration light** during implementation—teach without lecturing
 - **Don't skip phases** even if the change is small—the goal is teaching the workflow
 - **Pause for acknowledgment** at marked points, but don't over-pause

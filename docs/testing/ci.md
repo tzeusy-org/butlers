@@ -85,16 +85,13 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `smoke`, `check-totals`, both Vitest children, `frontend-assurance`, Playwright
    `frontend-e2e` and `go-bridge`. There is no path routing and no scoped mode
    (bu-29wkwj.3). The single required check, `alls-green`, needs every one of
-   those jobs and fails unless each reports success. Until the owner switches the
-   ruleset to `alls-green` alone, its legacy `check` and `frontend` contexts are
-   thin jobs that only mirror `alls-green`.
+   those jobs and fails unless each reports success; the ruleset requires it alone.
    `smoke` takes one fresh `--collect-only` count per lane while the groups run;
    `check-totals` then requires the sum of that lane's pytest-split group counts to match
-   it, and smoke checks the same count against the per-lane
-   collected-test budget in `scripts/test-budget-baseline.json`: a PR that
-   pushes a lane over budget condenses tests in the same PR, or raises the
-   budget with `--update-baseline` and states the net test delta
-   (`Tests: +a ~b -c`) and why in the PR body. `make check-guards` runs every
+   it. There is no collected-test cap (owner decision 2026-11-03); test growth is governed by
+   the CI duration targets in the
+   [testing doctrine](../../about/craft-and-care/testing-and-verification.md#five-minute-routine-lane-target).
+   `make check-guards` runs every
    `guards` step locally before you push, except the hosted-only `knip`, `build`, and node
    `--test` tooling contract. When this branch changed `frontend/` since its fork from the base
    it also runs the hosted frontend lint steps (`npm run lint`, `lint:emdash`,
@@ -150,6 +147,45 @@ No local gate command matches CI's scope; check which command produced a number.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
   The CI lane groups pass `-rs`, so every skip reason (for example a real-PG node's
   "Docker not available") appears in the group log; the group's junit evidence records it too.
+- The integration lane guarantees Docker, so `scripts/ci_lanes.py` sets `BUTLERS_REQUIRE_DOCKER=1`
+  for it and the root `conftest.py` turns a "Docker not available" skip into a failure there.
+  Local runs leave the flag unset, so Docker-less hosts keep skipping real-PG tests.
+
+### Session-host native proof
+
+The existing unit groups install Bubblewrap, static C build prerequisites and OpenSSL,
+and set `BUTLERS_REQUIRE_SESSION_HOST_NATIVE=1`. The dark session-host tests compile
+synthetic static payloads and execute real filesystem/PID namespace isolation and
+cleanup proofs; their local TLS tests use generated synthetic certificates.
+Missing Bubblewrap or a denied namespace preflight fails under hosted `CI=true` or
+that strict flag. A local non-strict skip is setup information, never native evidence.
+The unit jobs pin Ubuntu24.04 and run a bounded CI-host-only AppArmor experiment.
+The global userns restriction stays1. The helper verifies the published Noble
+`apparmor-profiles` package and purpose-built ABI4 Bubblewrap member by pinned
+SHA256, extracts only that member, and refuses preloaded/conflicting or local
+policy overrides. It applies the exact two-header `mediate_deleted` transform from
+AppArmor MR1272, verifies a separate derived SHA256, and preserves every rule byte.
+Both load receipts and cleanup bind to that derived policy. It loads the
+`/usr/bin/bwrap` policy with its inseparable
+child-capability-deny companion, never a generic unconfined profile. The exact
+unprivileged synthetic preflight must change from a recognized refusal to payload
+exit31 while generic map-root `unshare` remains denied. The exact observed
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` line (including its
+terminal newline) admits only this bounded experiment; the before-profile error
+does not establish AppArmor as its cause. Near misses remain refused. Cleanup runs
+with `always()` and removal is observed. An unproven/partial load is quarantined
+as NONPASS rather than removing policy whose ownership is uncertain.
+No global sysctl relaxation, disabled AppArmor/seccomp, privileged fallback or
+hosted skip is permitted. Package/profile verification, setup or cleanup failure
+fails the job; no production policy is installed. Native fixture diagnostics expose
+fixed failure categories and a stderr digest. The CI prerequisite additionally logs
+at most the first 512 stderr bytes from its fixed synthetic preflight, preserving
+printable ASCII and replacing control/non-ASCII bytes with question marks. That
+command receives no invocation or provider material. The primary sources and separate
+integration disk-exhaustion limitation are recorded in the session-host page.
+The unit JUnit evidence must include passing native and TLS cases; no new CI job or
+second broad lane is introduced. The private API and remaining production gates are in
+[session host](../runtime/session-host.md).
 
 ## Removing or weakening tests
 
@@ -165,7 +201,7 @@ governing requirement changes in the same PR. Reviewers refuse a missing
 `Tests:` line, an invented survivor, or a protected-check loss with neither. The
 rule and its rationale live in
 [testing doctrine](../../about/craft-and-care/testing-and-verification.md#removing-or-weakening-tests)
-and REQ-testing-053; the test budget is unchanged by it.
+and REQ-testing-053.
 
 ## Gate verdicts and long runs
 
@@ -191,6 +227,12 @@ and REQ-testing-053; the test budget is unchanged by it.
   `node --test` commands also have a 300-second bound; existing Vitest/Playwright defaults stay.
   A timeout is a named non-pass. Collection, worker startup and session finalization need the
   owning job watchdog, and an incomplete receipt is UNKNOWN.
+- A backend lane group has its own deadline in `scripts/ci_lanes.py`, below the job timeout. A
+  job timeout does not run the `if: always()` upload steps, so the deadline has to end the step
+  itself. At the deadline, or when available memory stays under 256 MB, the runner dumps every
+  pytest process's stacks twice, records the process table and each worker's last-started test
+  in `hang-evidence/` in the group's test-evidence artifact, kills the lane's processes and
+  fails.
 - Keep every workflow job in `scripts/ci-job-timeouts.json`, including explicitly provisional
   rare-job/setup values. Current p95 and the full two-week long-tail audit require actual named
   receipts; source caps alone are not calibration. Preserve faketime's provisional
@@ -267,7 +309,6 @@ guidance. The required twenty-natural-push p95 below 30 seconds remains unearned
 ## Cheap standing pre-push checks
 
 ```bash
-make check-test-budget        # fresh collect-only count per lane against scripts/test-budget-baseline.json
 make check-guards             # every `guards` CI step (dashes, spec, names, frontend lint, ...)
 ```
 
@@ -319,11 +360,162 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
 - CI guards have narrower predicates than their names suggest:
   - `check-no-em-dashes.py` scans only `about/{heart-and-soul,lay-and-land,craft-and-care}/**` and
     `roster/*/{MANIFESTO,AGENTS}.md`.
-  - `spec-overwrite-guard` reads only `## MODIFIED` blocks in `openspec/changes/`: it is blind to
-    direct baseline edits and to `## REMOVED` blocks.
+  - Strict OpenSpec validation checks canonical specs and active local deltas. New no-delta
+    `single-butler`/`living-specs` changes retain their schema metadata and use `skip_specs: true`;
+    the marker is not for existing changes or retained delta programs.
   - `requirement-trace` (`make check-requirement-trace`) reads `ADDED`/`MODIFIED` blocks in
     `openspec/changes/` only and needs `ID:`/`Source:`/`Scope:` lines unless frozen in its baseline.
-  - `cited-requirements-guard` reads qualified `REQ-<capability>-<NNN>` ids from test files only.
+    A modified heading keeps its existing canonical ID, including an already-synced rename;
+    otherwise same-delta `RENAMED` FROM/TO chains resolve its canonical ancestor. A newly minted
+    replacement ID fails, and an unanchored rename cycle fails rather than looping.
+  - `test_requirement_citations.py` runs in the unit lane, `make check-guards`, and the local
+    pre-push plan. It scans qualified IDs in tests and roster tests, preferring canonical specs and
+    falling back only to complete retained `ADDED`/`MODIFIED` requirements; archives, prose mentions,
+    incomplete changes and `REMOVED` blocks do not resolve.
   - `duplicate-name-guard` (`make check-duplicate-names`) exists because ruff F811 misses a
     duplicate top-level name when the first definition is used in between, which is exactly what a
     merge of two branches adding the same helper produces.
+
+## Route and OpenAPI snapshot
+
+`tests/api/test_router_registry.py` compares the live FastAPI app with
+`tests/api/route_snapshot.txt`: one sorted line per route, OpenAPI operation and component
+schema (short content hash), plus the middleware stack. Adding a route adds lines, so
+independent PRs merge cleanly; unintended drift fails with a line diff. Route table order is
+not pinned; instead the test asserts the frontend mount is last and that no API route is
+shadowed by an earlier route with a different path.
+
+Refresh after an intentional route or schema change, then commit the snapshot:
+
+```bash
+BUTLERS_UPDATE_ROUTE_SNAPSHOT=1 uv run pytest tests/api/test_router_registry.py -n 0 -q
+```
+
+On a merge conflict in the snapshot, rerun the refresh instead of hand-editing hashes.
+
+
+### Integration-six storage measurements
+
+Hosted integration group 6 opts into closed storage metadata via
+`BUTLERS_TEST_STORAGE_EVIDENCE=1`; ordinary pytest runs and the other shards do not.
+`butlers.testing.storage` records root and Docker bytes/inodes immediately before and after the
+existing runner cleanup, then samples each shared session-fixture PostgreSQL server every 30 seconds and
+before its existing teardown. Exact factory create counters and aggregate database/prefix-bucket sizes, WAL bytes and
+cumulative PostgreSQL temporary bytes accompany the owned server identity; database names,
+credentials, SQL rows and raw command errors are excluded. Temporary bytes are a lifetime counter,
+not currently allocated temporary space. `test_named_*` includes fresh migration-subject and legacy
+databases as well as clones; `template_named_*` is also a naming bucket. Current actual clone
+bytes remain explicitly UNKNOWN (`unknown_untracked`), not inferred from a name or create count. Docker sizes are rounded CLI aggregates, not exact
+per-layer physical allocation. PGDATA `df` measures its containing filesystem, not directory size.
+
+Each worker has at most 73 samples and a 128 KiB atomic receipt. The always-run inventory binds the
+expected workers and both host phases to the checkout/run/attempt and records UNKNOWN for missing,
+truncated, unavailable or mismatched evidence. The default three workers plus host/inventory
+receipts use at most 768 KiB. The fixed global bound is 35 files (32 admitted worker identities,
+two host phases and the inventory), or 4,587,520 bytes (4.375 MiB). Invalid expected worker counts
+or extra known worker files yield UNKNOWN; the sampler never changes actual worker selection. Diagnostic
+failures never replace pytest's verdict. These measurements do not change clone retention,
+container teardown, workers, selection, disk cleanup or the 30 GiB runner free-space floor.
+Separately started legacy containers have no individual PGDATA/database sample; Docker totals
+include them, so this increment does not yet attribute every byte of the full job.
+
+The initial instrumentation provides attribution data, not a demonstrated DiskFull fix. Compare
+source- and attempt-bound failing and successful hosted samples before changing resource policy;
+keep the complete real-PostgreSQL population and repeated normal-load source/protected gates.
+
+Actual observer overhead must be measured from natural hosted execution; no speed or capacity
+improvement is claimed from adding these diagnostics.
+
+
+The storage-query native positive owns one additional function-scoped
+`pgvector/pgvector:pg17` server and one tiny test-named database. The image is the same
+major-tagged image as the session fixture, not a digest pin. It exercises the actual bounded,
+read-only aggregate on a controlled census rather than requiring a loaded worker's entire
+retained database population to finish inside two seconds. A `finally` stops that proof-only
+server, including after failed startup; ordinary server ownership and cleanup remain unchanged.
+This adds one server startup/stop in the lane selecting that test; its hosted cost is not yet
+measured. A separate timeout control verifies closed UNKNOWN and preservation of the original
+pytest exception. Diagnostic directory/CLI startup failures likewise produce fixed UNKNOWN notices without
+replacing cleanup or pytest verdicts. Factory failure counters cover owned template creation,
+migration and finalization once, including SQLSTATE 53100, without retrying or reclaiming resources.
+
+
+Closed probe steps identify Docker `system_df`/`root_info` and PostgreSQL
+`url`/`connect`/`readonly`/`database_sizes`/`wal`/`temp`/`dispose`. Each reached step
+records only its fixed stage, safe outcome category and bounded elapsed milliseconds;
+worker rows also record completion against their existing monotonic origin.
+Driver SQLSTATE is mapped only to connection, permission, disk-full, query-canceled
+or other categories; no SQL, DSN, exception text or argument is recorded. Query-canceled
+does not distinguish the configured statement timeout from explicit cancellation.
+Invalid or missing timing is null/UNKNOWN, never zero or complete evidence. Only
+all successful, ordered, finite steps qualify for a complete inventory.
+
+These are durations of actual probe work, not measured incremental CI overhead.
+The existing 3-second/8192-byte child limits, 2-second connection/statement and
+1-second lock settings remain unchanged; separate per-step settings are not a
+whole-function wall deadline. Sampling waits 30 seconds after the previous sample,
+so its cadence also includes probe/flush/scheduling time. No capacity or causal fix
+is claimed. Disable the existing opt-in observer to roll back its measurements;
+test/fixture lifetimes, resource policy and real-PostgreSQL coverage are unchanged.
+
+
+### Exact-owned allocated database measurement
+
+The opt-in hosted integration-6 storage observer records trusted database creation
+intent, physical creation and readiness on its own existing server. These hooks
+only update bounded in-process metadata; they do not change roles, migrations,
+ACL replay, cache lifetimes, pools, cleanup, workers or pytest outcomes. A partial
+creation remains pending. Disabled observers perform no measurement or registry
+work. The 4096-identity measurement bound refuses completeness on overflow; it
+never limits database creation.
+
+Periodic and create-error slots with registered databases use four fixed readonly
+SQL statements (readonly check, before/after OID metadata and combined WAL/temp)
+and one compound owned-container filesystem scan in place of the two legacy df
+execs. Every known OID is included, including the last clone; there is no rotating
+subset and no per-database size query. Internal names, URLs and per-OID sizes stay
+inside the driver/container. Output is a bounded closed aggregate by trusted
+fresh/template/clone/pending class, plus unmapped OID/path allocation. The physical
+server digest includes run/attempt/container identity and excludes worker name.
+
+The command retains the 3-second/8192-byte capture bounds. SQL retains 2-second
+connect and per-statement bounds with 1-second lock timeout; these are not a
+2-second whole-sample guarantee. Before/after metadata and registry generations
+must agree, all registered databases must map, and none may be pending before
+`cohort_complete` is true. Missing/truncated/duplicate output, unavailable GNU
+`du -l -x -B1`, unsupported tools, symlinks, tablespaces, OID races or overflow
+produce UNKNOWN. No tool installation or fallback broadens the scan.
+
+`owned_allocation` measures allocated namespace bytes from filesystem blocks,
+not logical database size or unique physical sectors. Sparse files differ from
+logical length; hardlinks are counted per namespace, and reflink/CoW/dedup can
+make sums differ from physical usage. Root and PGDATA inode capacities remain
+separate; no per-class inode claim is made. WAL/temp are separately named and
+pg_global/logs/other residual attribution remains unknown. Legacy
+`database_totals` numeric logical/prefix-only API is unchanged; allocation slots
+explicitly mark logical sizes unsampled and cannot turn an incomplete overall
+inventory into sampled evidence.
+
+The 600-directory software fixture proves full-cohort aggregation and refusal
+logic only. Actual pgvector image tool support, loaded Docker/PG execution,
+sampler elapsed cost and complete failing/successful-run attribution require
+hosted evidence. This instrumentation is not a storage fix: the original cause,
+durable correction, repeated normal-load verification and net cost remain open.
+
+The owned-allocation observer retains independently validated PGDATA capacity and
+raw namespace allocation when a later metadata recheck, WAL/temp query, or engine
+disposal fails. Such a partial scan does not establish a current complete cohort:
+its allocation remains UNKNOWN with `cohort_complete=false`, and unavailable SQL
+metrics remain UNKNOWN. It does not retry or perform another scan. Direct probe
+callers still receive the original exception; the observer's safe boundary keeps
+the test verdict unchanged.
+
+The storage inventory decodes both the legacy prefix/logical report and the current
+owned-allocation report. A current complete cohort requires the fixed successful
+probe sequence, matching class/OID counts, stable physical-server identity and
+complete host/worker lifecycle evidence. Its logical database sizes remain
+`logical_sizes_not_sampled`; sampled allocated namespaces do not establish logical
+bytes or unique physical extents. Valid partial or racing observations are recorded
+as `unknown_partial_observer`, separately from missing/malformed reports, and keep
+the overall inventory UNKNOWN. No query, scan, timeout or observer lifetime is added
+by decoding. Actual net CI overhead remains unmeasured.

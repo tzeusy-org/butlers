@@ -17,7 +17,7 @@ import pytest
 from butlers.core.healing.tracking import get_recent_attempt
 from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
 from butlers.core.qa.relay import QaRelay
-from tests.core.qa.test_dispatch import _make_finding, _make_pool, _make_triaged
+from tests.core.qa.test_dispatch import _make_finding, _make_triaged, _qa_pool
 
 pytestmark = pytest.mark.unit
 
@@ -67,7 +67,7 @@ async def test_qa_dispatch_refuses_a_held_lineage_at_the_cooldown_gate():
         patch("butlers.core.qa.dispatch.delete_orphaned_attempt", new_callable=AsyncMock) as drop,
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(_make_finding(severity=1)),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),

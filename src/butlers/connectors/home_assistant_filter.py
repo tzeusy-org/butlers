@@ -77,7 +77,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.home_assistant_scrub import HABearerScrubError, scrub_ha_envelope
 

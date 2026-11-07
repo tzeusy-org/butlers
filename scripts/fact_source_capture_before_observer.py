@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,56 @@ from fact_source_capture_before_control import NODE, RUNTIME, atomic
 STATE = None
 CONFIG = None
 REFERENCES = None
+
+
+def test_frame_references(frame, root):
+    """Retain only this immutable node's issuer and three synthetic inboxes in RAM."""
+    code = frame.f_code
+    if Path(code.co_filename) != root / NODE.split("::")[0] or code.co_name != NODE.split("::")[1]:
+        return None
+    issuer = frame.f_locals.get("issuer")
+    inboxes = frame.f_locals.get("inboxes")
+    if (
+        issuer is not None
+        and type(inboxes) is list
+        and len(inboxes) == 3
+        and all(type(value) is uuid.UUID for value in inboxes)
+        and len(set(inboxes)) == 3
+    ):
+        return issuer, inboxes
+    return None
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Observe exact test-frame references for both outcomes without changing its calls."""
+    global REFERENCES
+    REFERENCES = None
+    # Preserve any existing tracer; unavailable observation remains UNKNOWN.
+    if item.nodeid != NODE or sys.gettrace() is not None:
+        yield
+        return
+    root = Path(CONFIG["root"])
+
+    def trace(frame, event, arg):
+        global REFERENCES
+        code = frame.f_code
+        if (
+            Path(code.co_filename) == root / NODE.split("::")[0]
+            and code.co_name == NODE.split("::")[1]
+        ):
+            if event == "return":
+                refs = test_frame_references(frame, root)
+                if refs is not None:
+                    REFERENCES = refs
+            return trace
+        return None
+
+    sys.settrace(trace)
+    try:
+        yield
+    finally:
+        sys.settrace(None)
 
 
 def exception_facts(error, root):
@@ -38,11 +90,9 @@ def exception_facts(error, root):
             frame = trace.tb_frame
             code = frame.f_code
             filename = Path(code.co_filename)
-            if filename == root / NODE.split("::")[0] and code.co_name == NODE.split("::")[1]:
-                issuer = frame.f_locals.get("issuer")
-                inboxes = frame.f_locals.get("inboxes")
-                if issuer is not None and isinstance(inboxes, list) and len(inboxes) == 3:
-                    refs = (issuer, inboxes)
+            observed = test_frame_references(frame, root)
+            if observed is not None:
+                refs = observed
             if filename == root / RUNTIME and code.co_name == "capture_accepted_report":
                 facts["owner_frame"] = True
             if filename.parts[-2:] == ("asyncpg", "pool.py") and code.co_name == "_acquire":
@@ -55,7 +105,8 @@ def exception_facts(error, root):
 
 
 def pytest_configure(config):
-    global CONFIG, STATE
+    global CONFIG, STATE, REFERENCES
+    REFERENCES = None
     value = json.loads(Path(os.environ["FACT_CAPTURE_CONTROL_CONFIG"]).read_text())
     CONFIG = value
     STATE = {
@@ -136,14 +187,6 @@ async def observe_registered_context(request, authority_env, single_slot_pool):
         STATE["registered_mcp"] = isinstance(endpoint, str) and endpoint.startswith(
             "http://127.0.0.1:"
         )
-        previous = {
-            row["id"]
-            for row in await authority_env.sw.fetch(
-                "SELECT id FROM switchboard.message_inbox LIMIT 10001"
-            )
-        }
-    if len(previous) > 10000:
-        pytest.fail("witness source population bound")
     try:
         yield
     finally:
@@ -161,24 +204,28 @@ async def observe_registered_context(request, authority_env, single_slot_pool):
                     not connection.is_in_transaction()
                     and await connection.fetchval("SELECT 1") == 1
                 )
-            rows = await authority_env.sw.fetch(
-                "SELECT id,request_context->'_fact_source_report' AS report "
-                "FROM switchboard.message_inbox LIMIT 10001"
-            )
-            created = [row for row in rows if row["id"] not in previous]
-            if len(created) == 3:
-                stored = sum(row["report"] is not None for row in created)
-                STATE["durable_partial_reports"] = (
-                    stored if CONFIG["phase"] == "before" else 3 - stored
-                )
-            if CONFIG["phase"] == "before" and REFERENCES is not None:
+            if REFERENCES is not None:
                 issuer, inboxes = REFERENCES
                 if (
                     type(issuer) is fact_authority.FactSourceContextRegistry
-                    and set(inboxes) == {row["id"] for row in created}
-                    and isinstance(issuer._reports, dict)
+                    and type(inboxes) is list
+                    and len(inboxes) == 3
+                    and all(type(value) is uuid.UUID for value in inboxes)
+                    and len(set(inboxes)) == 3
                 ):
-                    STATE["memory_partial_reports"] = len(issuer._reports)
+                    # Never enumerate unrelated inboxes or read their reports.
+                    rows = await authority_env.sw.fetch(
+                        "SELECT id,request_context->'_fact_source_report' AS report "
+                        "FROM switchboard.message_inbox WHERE id = ANY($1::uuid[])",
+                        inboxes,
+                    )
+                    if len(rows) == 3 and {row["id"] for row in rows} == set(inboxes):
+                        stored = sum(row["report"] is not None for row in rows)
+                        STATE["durable_partial_reports"] = (
+                            stored if CONFIG["phase"] == "before" else 3 - stored
+                        )
+                        if CONFIG["phase"] == "before" and isinstance(issuer._reports, dict):
+                            STATE["memory_partial_reports"] = len(issuer._reports)
 
 
 def pytest_sessionfinish(session, exitstatus):

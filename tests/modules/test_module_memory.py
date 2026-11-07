@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import Client
 from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
 
@@ -482,6 +483,7 @@ class TestLifecycle:
             enable_shared_catalog=True,
             source_schema="private_memory",
             retry_failed=True,
+            memory_schema=None,
         )
 
     async def test_consolidation_hook_excludes_private_memory_from_failed_recovery(
@@ -951,6 +953,56 @@ class TestRegisterTools:
         )
         assert set(array_variant["items"]["enum"]) == {"episode", "fact", "rule"}
 
+    async def test_unknown_filters_are_tool_errors_before_policy_or_embeddings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """REQ-module-memory-015: registered tools refuse typos before any read."""
+        from butlers.modules.memory import search as memory_search
+
+        for tool, query_arg in (("memory_search", "query"), ("memory_recall", "topic")):
+            mod = MemoryModule()
+            runtime_mcp = RuntimeFastMCP("test-memory-filters")
+            pool = AsyncMock()
+            pool.fetch.return_value = []
+            accessor = AsyncMock(return_value=SimpleNamespace(catalog_read_sensitivity="normal"))
+            fake_db = SimpleNamespace(
+                pool=pool,
+                schema="test-butler",
+                runtime_config_accessor=SimpleNamespace(get=accessor),
+            )
+            engine = make_embedding_engine_mock(mod._config.embedding_model)
+            factory = MagicMock(return_value=engine)
+            monkeypatch.setattr(mod, "_get_embedding_engine", factory)
+            await mod.register_tools(
+                mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler"
+            )
+
+            async with Client(runtime_mcp) as client:
+                refused = await client.call_tool(
+                    tool,
+                    {query_arg: "work", "filters": {"entity_idd": "typo"}},
+                    raise_on_error=False,
+                )
+                assert refused.is_error
+                message = "\n".join(block.text for block in refused.content if block.type == "text")
+                assert "entity_idd" in message
+                for allowed in memory_search._KNOWN_FILTER_KEYS:
+                    assert allowed in message
+                accessor.assert_not_awaited()
+                for method in (pool.fetch, pool.fetchrow, pool.fetchval, pool.execute):
+                    method.assert_not_awaited()
+                factory.assert_not_called()
+                engine.embed.assert_not_called()
+
+                accepted = await client.call_tool(
+                    tool, {query_arg: "work", "filters": {"predicate": "works_at"}}
+                )
+                assert not accepted.is_error
+                accessor.assert_awaited_once_with()
+                factory.assert_called_once_with()
+                engine.embed.assert_called_once_with("work")
+                pool.fetch.assert_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Tool delegation — verify closures call underlying impls correctly
@@ -1163,6 +1215,7 @@ class TestToolDelegation:
             min_confidence=0.2,
             filters=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1189,6 +1242,7 @@ class TestToolDelegation:
             filters=None,
             request_context=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1211,6 +1265,7 @@ class TestToolDelegation:
             "fact",
             "550e8400-e29b-41d4-a716-446655440000",
             read_policy=held_policy,
+            memory_schema=None,
         )
 
     @pytest.mark.parametrize(

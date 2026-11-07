@@ -11,7 +11,6 @@ exercise the full path from adapter output → API response, not to test live SQ
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
@@ -21,7 +20,9 @@ import pytest
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.chronicler.adapters.spotify import SOURCE_NAME, SpotifySessionAdapter
-from butlers.chronicler.models import Episode, Precision
+from butlers.chronicler.models import Episode, Layer, Precision
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -33,19 +34,6 @@ _EPISODE_ID = UUID("00000000-0000-0000-0000-000000000042")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """asyncpg.Record-like dict subclass."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
 
 
 def _session_row(
@@ -76,9 +64,9 @@ def _episode_db_row(
     source_name: str = SOURCE_NAME,
     episode_type: str = "listening_episode",
     episode_id: UUID = _EPISODE_ID,
-) -> _Row:
+) -> Record:
     """Build a row that mimics what ``v_episodes_corrected`` returns."""
-    return _Row(
+    return Record(
         {
             "id": episode_id,
             "source_name": source_name,
@@ -112,17 +100,6 @@ def _episode_db_row(
     )
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 class _NullCtx:
     async def __aenter__(self) -> None:
         return None
@@ -151,13 +128,13 @@ async def test_adapter_projects_spotify_session_to_listening_episode() -> None:
     source_conn.fetchval = AsyncMock(return_value=True)  # table exists
     source_conn.fetch = AsyncMock(return_value=[mock_row])
     source_pool = AsyncMock()
-    source_pool.acquire = MagicMock(return_value=_AsyncCtx(source_conn))
+    source_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(source_conn))
 
     chronicler_conn = AsyncMock()
     chronicler_conn.transaction = MagicMock(return_value=_NullCtx())
     chronicler_conn.fetchrow = AsyncMock(return_value=None)
     chronicler_pool = AsyncMock()
-    chronicler_pool.acquire = MagicMock(return_value=_AsyncCtx(chronicler_conn))
+    chronicler_pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(chronicler_conn))
 
     upserted: list[Episode] = []
 
@@ -181,6 +158,7 @@ async def test_adapter_projects_spotify_session_to_listening_episode() -> None:
     assert ep.source_name == SOURCE_NAME
     assert ep.episode_type == "listening_episode"
     assert ep.precision == Precision.EXACT
+    assert ep.layer == Layer.EVIDENCE
     assert ep.source_ref == "connectors.spotify_listening_sessions:spotify:ep:session:1711447200000"
     assert ep.payload["context_name"] == "Deep Focus"
 
@@ -190,7 +168,7 @@ async def test_adapter_projects_spotify_session_to_listening_episode() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_app_with_episodes(rows: list[_Row]):
+def _build_app_with_episodes(rows: list[Record]):
     """Build a test app whose chronicler pool returns the given episode rows."""
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=rows)
@@ -236,8 +214,25 @@ async def test_api_returns_spotify_episodes_by_source_name() -> None:
     ep = body["data"][0]
     assert ep["source_name"] == SOURCE_NAME
     assert ep["episode_type"] == "listening_episode"
-    # Music folds into the Play Activity lane (IEA reframe).
-    assert ep["category"] == "play"
+    # Listening evidence remains visible without counting as Play.
+    assert ep["category"] == "other"
+
+    play_source = "chronicler.situation_inferred"
+    play_app, _ = _build_app_with_episodes(
+        [_episode_db_row(source_name=play_source, episode_type="play_block")]
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=play_app), base_url="http://test"
+    ) as client:
+        play_response = await client.get(
+            "/api/chronicler/episodes", params={"source_name": play_source}
+        )
+    assert play_response.status_code == 200, play_response.text
+    play_rows = play_response.json()["data"]
+    assert len(play_rows) == 1
+    assert play_rows[0]["source_name"] == play_source
+    assert play_rows[0]["episode_type"] == "play_block"
+    assert play_rows[0]["category"] == "play"
 
 
 @pytest.mark.asyncio
@@ -262,4 +257,4 @@ async def test_api_returns_multiple_spotify_sessions_projected() -> None:
     body = resp.json()
     assert len(body["data"]) == 3
     assert all(ep["source_name"] == SOURCE_NAME for ep in body["data"])
-    assert all(ep["category"] == "play" for ep in body["data"])
+    assert all(ep["category"] == "other" for ep in body["data"])

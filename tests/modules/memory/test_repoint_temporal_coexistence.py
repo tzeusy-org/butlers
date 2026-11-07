@@ -35,26 +35,17 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Minimal narrative ``facts`` table surface used by _repoint_facts_on_pool."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=8) as p:
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                entity_id        UUID,
-                object_entity_id UUID,
-                predicate        TEXT        NOT NULL,
-                content          TEXT,
-                confidence       FLOAT       NOT NULL DEFAULT 1.0,
-                scope            TEXT        NOT NULL DEFAULT 'global',
-                valid_at         TIMESTAMPTZ,
-                validity         TEXT        NOT NULL DEFAULT 'active',
-                supersedes_id    UUID,
-                created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        yield p
+async def facts_pool(db):
+    """``facts`` from the real memory chain; entities from the core chain."""
+    return await db("core", "memory", min_size=2, max_size=8)
+
+
+async def _add_entity(pool: asyncpg.Pool) -> uuid.UUID:
+    """facts.entity_id references public.entities."""
+    return await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
+        f"entity-{uuid.uuid4().hex[:8]}",
+    )
 
 
 async def _add_fact(
@@ -69,8 +60,8 @@ async def _add_fact(
 ) -> uuid.UUID:
     return await pool.fetchval(
         """
-        INSERT INTO facts (entity_id, predicate, content, confidence, scope, valid_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO facts (entity_id, subject, predicate, content, confidence, scope, valid_at)
+        VALUES ($1, 'entity', $2, $3, $4, $5, $6)
         RETURNING id
         """,
         entity_id,
@@ -83,12 +74,13 @@ async def _add_fact(
 
 
 class TestRepointTemporalCoexistence:
-    async def test_temporal_facts_coexist_not_collapsed(self, pool):
+    async def test_temporal_facts_coexist_not_collapsed(self, facts_pool):
+        pool = facts_pool
         """Source + target each hold a temporal fact for the same
         (scope, predicate) but DIFFERENT valid_at — both must remain active
         after merge (coexistence), not collapse to one."""
-        src = uuid.uuid4()
-        tgt = uuid.uuid4()
+        src = await _add_entity(pool)
+        tgt = await _add_entity(pool)
 
         # Target already holds a temporal "lived_in" fact for 2010.
         await _add_fact(
@@ -128,11 +120,12 @@ class TestRepointTemporalCoexistence:
         assert counts["facts_superseded"] == 0
         assert counts["facts_repointed"] == 1
 
-    async def test_property_facts_still_supersede_by_confidence(self, pool):
+    async def test_property_facts_still_supersede_by_confidence(self, facts_pool):
+        pool = facts_pool
         """Property facts (valid_at IS NULL) for the same (scope, predicate) still
         resolve by confidence — higher-conf source wins, target superseded."""
-        src = uuid.uuid4()
-        tgt = uuid.uuid4()
+        src = await _add_entity(pool)
+        tgt = await _add_entity(pool)
 
         await _add_fact(
             pool, entity_id=tgt, predicate="job_title", content="Engineer", confidence=0.5
@@ -154,12 +147,13 @@ class TestRepointTemporalCoexistence:
         assert active[0]["content"] == "Manager"
         assert counts["facts_superseded"] == 1
 
-    async def test_property_target_temporal_source_coexist(self, pool):
+    async def test_property_target_temporal_source_coexist(self, facts_pool):
+        pool = facts_pool
         """A source TEMPORAL fact must coexist with a target PROPERTY fact of the
         same (scope, predicate) — store_fact never lets temporal facts supersede
         property facts (or vice versa)."""
-        src = uuid.uuid4()
-        tgt = uuid.uuid4()
+        src = await _add_entity(pool)
+        tgt = await _add_entity(pool)
 
         await _add_fact(pool, entity_id=tgt, predicate="title", content="current", confidence=0.9)
         await _add_fact(

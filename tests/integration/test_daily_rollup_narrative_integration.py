@@ -43,8 +43,6 @@ from butlers.chronicler.storage import (
     upsert_daily_rollup_flag,
     upsert_episode,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -53,6 +51,27 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
+
+@pytest.fixture
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
+    # These tests hand-seed completed rollups, not a replay workload. Establish
+    # the same fixed control state before any evidence rows or producer calls.
+    assert await pool.fetchval("SELECT count(*) FROM daily_repair_days") == 0
+    control = await pool.fetchrow("SELECT blocked_reason FROM daily_repair_control WHERE singleton")
+    assert control is not None and control["blocked_reason"] is None
+    await pool.execute(
+        "UPDATE daily_repair_control SET timezone=$1, closed_through=$2, "
+        "replay_ack=replay_epoch WHERE singleton",
+        "Asia/Singapore",
+        _OTHER_DATE,
+    )
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
 _TZ = ZoneInfo("Asia/Singapore")
 _LOCAL_DATE = date(2026, 7, 1)
 _OTHER_DATE = date(2026, 7, 2)
@@ -60,28 +79,6 @@ _OTHER_DATE = date(2026, 7, 2)
 
 def _local(d: date, hour: int, minute: int = 0) -> datetime:
     return datetime(d.year, d.month, d.day, hour, minute, tzinfo=_TZ).astimezone(UTC)
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE daily_rollup_flags, daily_rollups CASCADE")
-    await p.execute("TRUNCATE TABLE episodes, point_events CASCADE")
-    await p.execute("TRUNCATE TABLE source_adapter_state, projection_checkpoints CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
 
 
 async def _mark_all_healthy(pool, *, now: datetime) -> None:
@@ -101,111 +98,134 @@ async def _mark_all_healthy(pool, *, now: datetime) -> None:
         )
 
 
-async def test_narrative_columns_default_to_null(pool) -> None:
+async def test_narrative_columns_default_to_null(chronicler_pool) -> None:
     await upsert_daily_rollup(
-        pool, local_date=_LOCAL_DATE, lane="sleep", seconds=0, episode_count=0
+        chronicler_pool, local_date=_LOCAL_DATE, lane="sleep", seconds=0, episode_count=0
     )
     await upsert_daily_rollup_flag(
-        pool, local_date=_LOCAL_DATE, flag_type=FLAG_SLEEP_MISSING, severity="warning", detail={}
+        chronicler_pool,
+        local_date=_LOCAL_DATE,
+        flag_type=FLAG_SLEEP_MISSING,
+        severity="warning",
+        detail={},
     )
 
-    rollups = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
-    flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    rollups = await list_daily_rollups(chronicler_pool, local_date=_LOCAL_DATE)
+    flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
 
     assert rollups[0].narrative is None
     assert flags[0].narrative is None
 
 
-async def test_set_day_narrative_writes_every_lane_row_for_the_date_only(pool) -> None:
+async def test_set_day_narrative_writes_every_lane_row_for_the_date_only(chronicler_pool) -> None:
     await upsert_daily_rollup(
-        pool, local_date=_LOCAL_DATE, lane="sleep", seconds=0, episode_count=0
+        chronicler_pool, local_date=_LOCAL_DATE, lane="sleep", seconds=0, episode_count=0
     )
     await upsert_daily_rollup(
-        pool, local_date=_LOCAL_DATE, lane="work", seconds=100, episode_count=1
+        chronicler_pool, local_date=_LOCAL_DATE, lane="work", seconds=100, episode_count=1
     )
     await upsert_daily_rollup(
-        pool, local_date=_OTHER_DATE, lane="sleep", seconds=0, episode_count=0
+        chronicler_pool, local_date=_OTHER_DATE, lane="sleep", seconds=0, episode_count=0
     )
 
     rows_updated = await set_daily_rollup_day_narrative(
-        pool, local_date=_LOCAL_DATE, narrative="A quiet day."
+        chronicler_pool, local_date=_LOCAL_DATE, narrative="A quiet day."
     )
     assert rows_updated == 2
 
-    same_day_rows = await list_daily_rollups(pool, local_date=_LOCAL_DATE)
+    same_day_rows = await list_daily_rollups(chronicler_pool, local_date=_LOCAL_DATE)
     assert {r.narrative for r in same_day_rows} == {"A quiet day."}
 
-    other_day_rows = await list_daily_rollups(pool, local_date=_OTHER_DATE)
+    other_day_rows = await list_daily_rollups(chronicler_pool, local_date=_OTHER_DATE)
     assert other_day_rows[0].narrative is None
 
 
-async def test_set_flag_narrative_targets_only_the_named_flag(pool) -> None:
+async def test_set_flag_narrative_targets_only_the_named_flag(chronicler_pool) -> None:
     await upsert_daily_rollup_flag(
-        pool, local_date=_LOCAL_DATE, flag_type=FLAG_SLEEP_MISSING, severity="warning", detail={}
+        chronicler_pool,
+        local_date=_LOCAL_DATE,
+        flag_type=FLAG_SLEEP_MISSING,
+        severity="warning",
+        detail={},
     )
     await upsert_daily_rollup_flag(
-        pool, local_date=_LOCAL_DATE, flag_type="routine_break", severity="info", detail={}
+        chronicler_pool,
+        local_date=_LOCAL_DATE,
+        flag_type="routine_break",
+        severity="info",
+        detail={},
     )
 
     updated = await set_daily_rollup_flag_narrative(
-        pool, local_date=_LOCAL_DATE, flag_type=FLAG_SLEEP_MISSING, narrative="No sleep logged."
+        chronicler_pool,
+        local_date=_LOCAL_DATE,
+        flag_type=FLAG_SLEEP_MISSING,
+        narrative="No sleep logged.",
     )
     assert updated is not None
     assert updated.narrative == "No sleep logged."
 
     flags_by_type = {
-        f.flag_type: f for f in await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+        f.flag_type: f
+        for f in await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     }
     assert flags_by_type[FLAG_SLEEP_MISSING].narrative == "No sleep logged."
     assert flags_by_type["routine_break"].narrative is None
 
 
-async def test_set_flag_narrative_is_noop_for_nonexistent_flag(pool) -> None:
+async def test_set_flag_narrative_is_noop_for_nonexistent_flag(chronicler_pool) -> None:
     result = await set_daily_rollup_flag_narrative(
-        pool, local_date=_LOCAL_DATE, flag_type="lane_share_outlier", narrative="whatever"
+        chronicler_pool,
+        local_date=_LOCAL_DATE,
+        flag_type="lane_share_outlier",
+        narrative="whatever",
     )
     assert result is None
 
 
-async def test_flag_narrative_survives_flag_reevaluation(pool) -> None:
+async def test_flag_narrative_survives_flag_reevaluation(chronicler_pool) -> None:
     """The central design guarantee: `flags.py`'s hourly reconciliation must
     never wipe a label written to the dedicated `narrative` column, even
     though it fully overwrites `detail` on every run for a flag that still
     holds."""
     now = _local(_LOCAL_DATE, 23, 0)
-    await _mark_all_healthy(pool, now=now)
+    await _mark_all_healthy(chronicler_pool, now=now)
 
     # Zero sleep, healthy sources -> sleep_missing holds.
     await upsert_daily_rollup(
-        pool, local_date=_LOCAL_DATE, lane="sleep", seconds=0, episode_count=0
+        chronicler_pool, local_date=_LOCAL_DATE, lane="sleep", seconds=0, episode_count=0
     )
     result = await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=now
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=now
     )
     assert result["flags"][FLAG_SLEEP_MISSING] is True
 
     await set_daily_rollup_flag_narrative(
-        pool, local_date=_LOCAL_DATE, flag_type=FLAG_SLEEP_MISSING, narrative="No sleep logged."
+        chronicler_pool,
+        local_date=_LOCAL_DATE,
+        flag_type=FLAG_SLEEP_MISSING,
+        narrative="No sleep logged.",
     )
 
     # Re-run the deterministic evaluator again (same conditions still hold,
     # mirroring the hourly chronicler_rollup_daily re-evaluation).
     result_again = await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=now
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=now
     )
     assert result_again["flags"][FLAG_SLEEP_MISSING] is True
 
     flags_by_type = {
-        f.flag_type: f for f in await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+        f.flag_type: f
+        for f in await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     }
     assert flags_by_type[FLAG_SLEEP_MISSING].narrative == "No sleep logged."
 
 
-async def test_day_narrative_survives_rollup_rematerialization(pool) -> None:
+async def test_day_narrative_survives_rollup_rematerialization(chronicler_pool) -> None:
     """Same guarantee, for `rollups.py`'s upsert against `daily_rollups`."""
     d = _LOCAL_DATE
     await upsert_episode(
-        pool,
+        chronicler_pool,
         Episode(
             source_name="steam.play_history",
             source_ref="narration-it-gaming-1",
@@ -217,28 +237,38 @@ async def test_day_narrative_survives_rollup_rematerialization(pool) -> None:
     )
     now = _local(d + timedelta(days=1), 1, 0)
 
-    await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
+    await materialize_daily_rollups(
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
+    )
     await set_daily_rollup_day_narrative(
-        pool, local_date=d, narrative="Played games in the evening."
+        chronicler_pool, local_date=d, narrative="Played games in the evening."
     )
 
     # Re-run the materializer (idempotent re-run over the same trailing window).
-    await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
+    await materialize_daily_rollups(
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
+    )
 
-    rows = await list_daily_rollups(pool, local_date=d)
+    rows = await list_daily_rollups(chronicler_pool, local_date=d)
     assert {r.narrative for r in rows} == {"Played games in the evening."}
 
 
-async def test_narrate_daily_rollup_end_to_end_against_real_rows(pool, monkeypatch) -> None:
+async def test_narrate_daily_rollup_end_to_end_against_real_rows(
+    chronicler_pool, monkeypatch
+) -> None:
     """Exercises the real DB reads/writes of the orchestrator end-to-end;
     the LLM call itself is stubbed (no real network/model dependency in
     integration tests)."""
     d = _LOCAL_DATE
     now = _local(d + timedelta(days=1), 1, 0)
 
-    await _mark_all_healthy(pool, now=now)
-    await materialize_daily_rollups(pool, timezone="Asia/Singapore", lookback_days=3, now=now)
-    await evaluate_and_write_daily_flags(pool, local_date=d, timezone="Asia/Singapore", now=now)
+    await _mark_all_healthy(chronicler_pool, now=now)
+    await materialize_daily_rollups(
+        chronicler_pool, timezone="Asia/Singapore", lookback_days=3, now=now
+    )
+    await evaluate_and_write_daily_flags(
+        chronicler_pool, local_date=d, timezone="Asia/Singapore", now=now
+    )
 
     class _StubDispatcher:
         def __init__(self, *args, **kwargs) -> None:
@@ -249,8 +279,8 @@ async def test_narrate_daily_rollup_end_to_end_against_real_rows(pool, monkeypat
 
     monkeypatch.setattr("butlers.chronicler.narration.DiscretionDispatcher", _StubDispatcher)
 
-    result = await narrate_daily_rollup(pool, local_date=d, timezone="Asia/Singapore")
+    result = await narrate_daily_rollup(chronicler_pool, local_date=d, timezone="Asia/Singapore")
 
     assert result["status"] == "labeled"
-    rows = await list_daily_rollups(pool, local_date=d)
+    rows = await list_daily_rollups(chronicler_pool, local_date=d)
     assert {r.narrative for r in rows} == {"An ordinary day."}

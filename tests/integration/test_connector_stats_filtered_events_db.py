@@ -30,7 +30,6 @@ import asyncio
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -41,8 +40,7 @@ from fastapi import FastAPI
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.routers import ingestion_connectors
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db_manager import db_manager
 from butlers.tools.switchboard.connector.lifecycle import connector_disconnect
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -54,14 +52,12 @@ pytestmark = [
 ]
 
 
-class _RealPoolDB:
-    """Fake DatabaseManager whose pool() returns the real asyncpg pool."""
-
-    def __init__(self, pool: Any):
-        self._pool = pool
-
-    def pool(self, name: str) -> Any:
-        return self._pool
+@pytest.fixture
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """The real core + Switchboard chains for canonical route SQL."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+    )
 
 
 class _GatedStatsConnection:
@@ -131,38 +127,11 @@ class _GatedStatsPool:
         return _GatedStatsAcquire(self._pool, self._history_started, self._release_history)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the real core + Switchboard chains for canonical route SQL."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
-    )
-    await p.execute("TRUNCATE TABLE public.ingestion_events CASCADE")
-    await p.execute("TRUNCATE TABLE connectors.filtered_events CASCADE")
-    await p.execute("TRUNCATE TABLE switchboard.connector_registry")
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-def app(pool: asyncpg.Pool) -> FastAPI:
+def app(switchboard_pool: asyncpg.Pool) -> FastAPI:
     """Wire the canonical connector routes to the migrated Switchboard pool."""
     db = MagicMock(spec=DatabaseManager)
-    db.pool.return_value = pool
+    db.pool.return_value = switchboard_pool
     application = create_app()
     application.dependency_overrides[get_db] = lambda: db
     return application
@@ -200,6 +169,28 @@ async def _seed_registry(
 async def _ensure_filtered_partition(pool: asyncpg.Pool, reference_ts: datetime) -> None:
     await pool.fetchval(
         "SELECT connectors.connectors_filtered_events_ensure_partition($1)", reference_ts
+    )
+
+
+async def _seed_heartbeat(
+    pool: asyncpg.Pool,
+    *,
+    received_at: datetime,
+    connector_type: str,
+    endpoint_identity: str,
+) -> None:
+    await pool.execute(
+        "SELECT switchboard_connector_heartbeat_log_ensure_partition($1)", received_at
+    )
+    await pool.execute(
+        """
+        INSERT INTO switchboard.connector_heartbeat_log (
+            connector_type, endpoint_identity, state, received_at
+        ) VALUES ($1, $2, 'healthy', $3)
+        """,
+        connector_type,
+        endpoint_identity,
+        received_at,
     )
 
 
@@ -265,7 +256,7 @@ async def _seed_filtered_event(
 
 
 async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A 100%-skip-routed connector (zero ingestion_events rows) still surfaces
     its filtered volume via the real UNION ALL query, distinct from ingested."""
@@ -273,7 +264,7 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
 
     for _ in range(4):
         await _seed_filtered_event(
-            pool,
+            switchboard_pool,
             received_at=now,
             connector_type="home_assistant",
             endpoint_identity="default",
@@ -283,7 +274,7 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
         connector_type="home_assistant",
         endpoint_identity="default",
         period="24h",
-        db=_RealPoolDB(pool),
+        db=db_manager({"switchboard": switchboard_pool}),
     )
 
     assert result.meta.hourly_events_available is True
@@ -294,7 +285,7 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
 
 
 async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Ingested and filtered counts in the SAME hour never bleed into each other,
     and every bucket is keyed to its real hour in a dense 24-slot window.
@@ -302,32 +293,59 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     Events planted 21h and 3h before the current hour land at slots 2 and 20 by
     ``hour``; the sparse response this replaces returned only occupied hours,
     which the detail histogram then right-justified into the wrong slots.
+
+    Heartbeats in every closed hour but slots 5-7 make those three ``deaf``;
+    the open current hour, with no heartbeat yet, stays ``unknown``.
     """
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     for offset_h in (21, 3):
         await _seed_ingestion_event(
-            pool,
+            switchboard_pool,
             received_at=now - timedelta(hours=offset_h),
             connector_type="gmail",
             endpoint_identity="user@example.com",
         )
 
     await _seed_ingestion_event(
-        pool, received_at=now, connector_type="gmail", endpoint_identity="user@example.com"
+        switchboard_pool,
+        received_at=now,
+        connector_type="gmail",
+        endpoint_identity="user@example.com",
     )
     await _seed_ingestion_event(
-        pool, received_at=now, connector_type="gmail", endpoint_identity="user@example.com"
+        switchboard_pool,
+        received_at=now,
+        connector_type="gmail",
+        endpoint_identity="user@example.com",
     )
     for _ in range(3):
         await _seed_filtered_event(
-            pool, received_at=now, connector_type="gmail", endpoint_identity="user@example.com"
+            switchboard_pool,
+            received_at=now,
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
         )
+    heartbeat_offsets = [30] + [23 - slot for slot in range(23) if slot not in (5, 6, 7)]
+    for offset_h in heartbeat_offsets:
+        await _seed_heartbeat(
+            switchboard_pool,
+            received_at=now - timedelta(hours=offset_h, minutes=-10),
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
+        )
+    # A sibling endpoint's heartbeats never stand in for this one's.
+    await _seed_heartbeat(
+        switchboard_pool,
+        received_at=now - timedelta(hours=17, minutes=-10),
+        connector_type="gmail",
+        endpoint_identity="sibling@example.com",
+    )
 
     result = await ingestion_connectors._connector_stats_from_db(
         connector_type="gmail",
         endpoint_identity="user@example.com",
         period="24h",
-        db=_RealPoolDB(pool),
+        db=db_manager({"switchboard": switchboard_pool}),
     )
 
     # 24 dense buckets, oldest first, each keyed to its real UTC hour.
@@ -338,10 +356,14 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     # The current hour keeps the two series DISTINCT.
     assert result.data[23].messages_filtered == 3
     assert sum(r.messages_filtered for r in result.data) == 3
+    assert [r.listening for r in result.data] == (
+        ["live"] * 5 + ["deaf"] * 3 + ["live"] * 15 + ["unknown"]
+    )
+    assert result.meta.listening_available is True
 
 
 async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """The 7d window yields seven exact UTC-day buckets whatever the session zone.
 
@@ -352,7 +374,7 @@ async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
     server clock so the faketime legs agree), so the boundary is always inside
     the window.
     """
-    today = await pool.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
+    today = await switchboard_pool.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
     # POSIX ``Jn`` counts 1..365 ignoring Feb 29; a one-day drift stays in-window.
     dst_start = (today - timedelta(days=3)).timetuple().tm_yday
     dst_start = min(dst_start, 365)
@@ -362,13 +384,13 @@ async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
     days = [today - timedelta(days=6 - i) for i in range(7)]
     for day in days:
         await _seed_ingestion_event(
-            pool,
+            switchboard_pool,
             received_at=datetime(day.year, day.month, day.day, 12, tzinfo=UTC),
             connector_type="gmail",
             endpoint_identity="dst@example.com",
         )
 
-    async with pool.acquire() as connection:
+    async with switchboard_pool.acquire() as connection:
         await connection.execute(f"SET TIME ZONE '{session_zone}'")
         try:
             # The rule really changes the offset inside the window.
@@ -383,7 +405,7 @@ async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
                 connector_type="gmail",
                 endpoint_identity="dst@example.com",
                 period="7d",
-                db=_RealPoolDB(pool),
+                db=db_manager({"switchboard": switchboard_pool}),
                 connection=connection,
             )
         finally:
@@ -395,7 +417,7 @@ async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
 
 
 async def test_stats_matches_websocket_connector_stored_under_source_provider(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A websocket connector whose type lives in source_provider (not
     source_channel) is matched via COALESCE(source_provider, source_channel)."""
@@ -404,14 +426,17 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
     # _seed_ingestion_event writes both source_channel and source_provider to the
     # connector_type, so COALESCE resolves correctly regardless.
     await _seed_ingestion_event(
-        pool, received_at=now, connector_type="home_assistant", endpoint_identity="ws://ha:8123"
+        switchboard_pool,
+        received_at=now,
+        connector_type="home_assistant",
+        endpoint_identity="ws://ha:8123",
     )
 
     result = await ingestion_connectors._connector_stats_from_db(
         connector_type="home_assistant",
         endpoint_identity="ws://ha:8123",
         period="24h",
-        db=_RealPoolDB(pool),
+        db=db_manager({"switchboard": switchboard_pool}),
     )
 
     assert sum(r.messages_ingested for r in result.data) == 1
@@ -420,7 +445,7 @@ async def test_stats_matches_websocket_connector_stored_under_source_provider(
 # Relies on a PostgreSQL lock_timeout firing; it never fires in the faketime legs' shifted server.
 @pytest.mark.faketime_fragile
 async def test_stats_row_lock_prevents_disconnect_until_history_read_completes(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A real soft-delete cannot interleave after the live-row check.
 
@@ -432,26 +457,26 @@ async def test_stats_row_lock_prevents_disconnect_until_history_read_completes(
     connector_type = "gmail"
     endpoint_identity = "lock-test@example.invalid"
     await _seed_registry(
-        pool,
+        switchboard_pool,
         connector_type=connector_type,
         endpoint_identity=endpoint_identity,
     )
 
     history_started = asyncio.Event()
     release_history = asyncio.Event()
-    gated_pool = _GatedStatsPool(pool, history_started, release_history)
+    gated_pool = _GatedStatsPool(switchboard_pool, history_started, release_history)
     stats_task = asyncio.create_task(
         ingestion_connectors.get_connector_stats(
             connector_type,
             endpoint_identity,
             period="24h",
-            db=_RealPoolDB(gated_pool),
+            db=db_manager({"switchboard": gated_pool}),
         )
     )
 
     try:
         await asyncio.wait_for(history_started.wait(), timeout=2)
-        async with pool.acquire() as disconnect_connection:
+        async with switchboard_pool.acquire() as disconnect_connection:
             await disconnect_connection.execute("SET lock_timeout = '250ms'")
             try:
                 with pytest.raises(asyncpg.exceptions.LockNotAvailableError):
@@ -467,9 +492,9 @@ async def test_stats_row_lock_prevents_disconnect_until_history_read_completes(
         stats = await stats_task
 
     assert stats.meta.hourly_events_available is True
-    disconnect = await connector_disconnect(pool, connector_type, endpoint_identity)
+    disconnect = await connector_disconnect(switchboard_pool, connector_type, endpoint_identity)
     assert disconnect["status"] == "disconnected"
-    deleted_at = await pool.fetchval(
+    deleted_at = await switchboard_pool.fetchval(
         "SELECT deleted_at FROM connector_registry "
         "WHERE connector_type = $1 AND endpoint_identity = $2",
         connector_type,
@@ -480,7 +505,7 @@ async def test_stats_row_lock_prevents_disconnect_until_history_read_completes(
 
 async def test_settings_patch_shallow_merges_real_registry_jsonb(
     app: FastAPI,
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """The canonical PATCH retains unrelated persisted settings on the real row."""
     connector_type = "telegram_user_client"
@@ -490,7 +515,7 @@ async def test_settings_patch_shallow_merges_real_registry_jsonb(
         "nested": {"retained": True},
     }
     await _seed_registry(
-        pool,
+        switchboard_pool,
         connector_type=connector_type,
         endpoint_identity=endpoint_identity,
         settings=existing_settings,
@@ -513,7 +538,7 @@ async def test_settings_patch_shallow_merges_real_registry_jsonb(
         **existing_settings,
         "flush_interval_s": 300,
     }
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT settings FROM connector_registry "
         "WHERE connector_type = $1 AND endpoint_identity = $2",
         connector_type,

@@ -61,30 +61,56 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   occurrences or refuses first. Until then, rollback is: drain the transition writer, restore
   the old one, optionally downgrade `rel_035` (facts and rel_034 evidence, coverage and approval
   context survive). The downgrade refuses once the legacy index is gone or any temporal value
-  exists; after cutover, recovery rolls forward. The proof and enforcement that cutover must
-  require (signed receipt, lifecycle fence, gated rel036) are drafted in the
-  [effective-time cutover packet](../operations/relationship-effective-time-cutover.md).
+  exists; after cutover, recovery rolls forward. The cutover is a plain hard cutover: every
+  database client is stopped and G refuses while any other client is connected, as drafted in
+  the [effective-time cutover notes](../operations/relationship-effective-time-cutover.md).
 - **Mutator fences.** Entity merge locks and plans every affected fact first, repoints rows with
   their packets and evidence intact, and refuses `temporal_occurrence_collision` before any write
-  rather than collapse an occurrence that carries effective time. Legacy `contact_merge`,
-  hash-addressed contact routes, SPO retraction and `prefers-channel` refuse
-  (`temporal_mutator_unsupported` / `temporal_occurrence_ambiguous`) whenever they would have to
-  choose between occurrences or drop a packet. `contact_merge` does every Relationship write in
-  one transaction that locks both entity rows and every affected fact, re-runs its fence under
-  those locks, and commits whole or writes nothing; the memory entity merge runs only after that
-  commit. A contact value edit re-locks its hash-selected row before retracting it and refuses
+  rather than collapse an occurrence that carries effective time. An exact collision between
+  unknown defaults keeps the source's row only if it alone is verified, and otherwise the target's,
+  whatever the confidence of either; the survivor receives the other row's evidence. Hash-addressed
+  contact routes, SPO retraction and `prefers-channel` refuse (`temporal_mutator_unsupported` /
+  `temporal_occurrence_ambiguous`) whenever they would have to choose between occurrences or drop a
+  packet. `contact_merge` does every write in one transaction that starts with the entity merge
+  authority, the only writer of the entities' facts. It therefore has the authority's locks,
+  refusals, graph edge repair and audit row, its facts never move without the source's
+  `merged_into`, and a refused entity merge refuses the contact merge. A contact on a removed entity
+  gets a `ValueError` naming it, and nothing moves; a route to merge such a contact is an open owner
+  decision (bu-dhloi1.124). It re-points the contact's `important_dates`, `relationships`,
+  `group_members`, `contact_labels`, `addresses`, `tasks` and `life_events`, dropping a group or
+  label row the target already has. A date both contacts hold under one label, month and day merges
+  to one row keeping any known year; two different known years stay as two rows. Only the rebind
+  settlement
+  runs after commit. The rebind ledger recovers a missed settlement, because each daemon's idle sweep
+  settles pending receipts and retries failed ones. `contact_merge` logs a failed receipt only for
+  Relationship's own schema, the one it settles itself; every other schema is still `pending` when
+  it returns. Two contacts of one entity collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
   `contact_fact_changed` (409) if the row was retracted or re-valued meanwhile. Entity forget
-  retracts every occurrence as-is and removes their graph edges; Google/Steam hard deletes keep
-  their all-version cascade.
+  retracts every occurrence as-is and removes their graph edges, and a forgotten or deleted entity
+  cannot then be merged on either side. Forget and `DELETE /api/memory/entities/{id}` hold the entity
+  row `FOR UPDATE` until their marker commits, so a merge or rebind either finishes first and has
+  its references retired too, or waits and refuses. The memory delete retires facts across pools
+  before its marker, so a crash can leave retired facts on an unmarked entity, which a retry
+  completes; Google/Steam hard deletes keep their all-version cascade. The email enrichment reap
+  takes the same lock per placeholder, skipping any another transaction holds for its next run, and
+  repeats its no-references check under that lock. The route runs one delete
+  at a time per process, because each holds a pool connection while its fan-out takes others.
+  A memory `store_fact` property write takes its entities `FOR KEY SHARE`, in ascending id order,
+  before its first fact lock, and a Dunbar tier pin (tool or route) does the same before retracting
+  the old override, so either racing a forget or delete waits instead of deadlocking.
 - **Lock order.** Every `entity_facts` write locks `public.entities` rows before fact rows,
   each set in ascending id order. Both merges take their entities `FOR UPDATE` first; the central
   writer (and the contact value edit that calls it) takes the subject and any entity object
   `FOR KEY SHARE` (`_lock_fact_entities`) before its first fact lock, so a correction racing a
   merge waits instead of deadlocking. A caller that makes several writer calls in one transaction
   (`promote_entity`'s `initial_facts`) takes all of their entities in one ascending batch
-  (`_lock_fact_entities_batch`) before the first, so the order holds across calls too.
-  Retract/verify-only paths write no FK column and take no entity lock. A write that waits out
-  a merge still lands on the tombstoned source; whether the writer refuses or follows
+  (`_lock_fact_entities_batch`) before the first, so the order holds across calls too, and likewise
+  takes the union of their identity slots once, after the entities. `loan_settle` takes the loan's
+  entity before the loan row, because its successor insert needs that entity's foreign key, and
+  refuses while that entity has `merged_into` set, because a merge moves `facts` after its commit
+  and would miss a successor written during that move.
+  Retract/verify-only paths write no FK column and take no entity lock. Any other write that waits
+  out a merge still lands on the tombstoned source; whether those writers refuse or follow
   `merged_into` is open (bu-gm93xc).
 
 ## Meeting debrief
@@ -115,6 +141,62 @@ never an empty list). A reply from the card is sent as `"<number>: <text>"` to t
 pinned dashboard conversation, so it reaches the `meeting-debrief` skill without classification.
 Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
 endpoint custody.
+
+## Owner anchor-address geocoding
+
+Chronicler needs to know where the owner's home and work are; Relationship owns the address
+facts, so it converts them (bu-r3fmja.3; openspec change `chronicler-situational-inference`).
+The deterministic hourly `relationship_geocode_owner_addresses` job (no session, no model;
+`roster/relationship/tools/owner_address_geocoding.py`) geocodes **only** the owner's anchor
+addresses:
+active literal `has-address` facts on
+
+1. the owner entity (`'owner' = ANY(public.entities.roles)`);
+2. an entity the owner has an active `works-at` edge to;
+3. a `place` entity the owner has an active `rental-location` or `lives-at` edge to.
+
+No contact's address and no location trail is ever sent to a geocoder. Merged or deleted
+entities are skipped.
+
+**Registering a work address.** Tell Relationship "I work at Acme; Acme's address is 1 Example
+Way, Singapore 012345". That records an owner `works-at` edge to the Acme organization entity
+and a `has-address` fact on Acme (not on the owner). The next run geocodes it.
+
+**Providers.**
+
+- Singapore addresses (the text names Singapore, ends in country code `SG`, or carries a 6-digit
+  postal code and names no other country) go to OneMap search
+  (`https://www.onemap.gov.sg/api/common/elastic/search`, first result's `LATITUDE`/`LONGITUDE`,
+  confidence 0.9). An empty OneMap result falls back to Nominatim.
+- Everything else goes to Nominatim (`https://nominatim.openstreetmap.org/search?format=json&limit=1`,
+  confidence 0.7) with the fixed User-Agent `butlers-relationship-geocoder/1.0` and at least one
+  second between requests.
+- OneMap credentials are optional. To search with a bearer token from OneMap's `getToken`
+  endpoint, open `/secrets` in the dashboard, choose **Add credential**, then **System secret**,
+  and add keys `ONEMAP_EMAIL` and `ONEMAP_PASSWORD` with target `relationship`. Without them, or
+  when the token request fails, search runs unauthenticated. They are resolved through
+  `CredentialStore` from the database only, never from the environment.
+- Outbound HTTPS needs no extra declaration: butler pods already have public egress (only
+  private ranges are fenced).
+
+**`relationship.address_geocodes`** (rel_038) holds one row per anchor `has-address` fact:
+`fact_id` (PK, FK to `entity_facts`, cascades on delete), `address_sha256` (SHA-256 of the
+stripped fact text), `status` (`resolved` / `not_found` / `failed`), `lat NUMERIC(7,5)` and
+`lon NUMERIC(8,5)` (present exactly when resolved), `provider` (`onemap` / `nominatim`),
+`confidence`, `attempts`, `geocoded_at` and `next_attempt_at`. A geocode is current only when its
+`address_sha256` matches the fact's text; Chronicler must ignore stale or unresolved rows.
+Beyond Relationship, only `butler_chronicler_rw` can read it (SELECT only).
+
+**When a fact is geocoded.** A fact is due when it has no row, its text hash changed, or a
+`not_found`/`failed` retry is due. HTTP 429/5xx, other non-2xx responses, timeouts and malformed
+bodies are `failed`; an empty result is `not_found`. Both back off 1 h, 6 h, 24 h, then doubling
+up to 7 days. A run handles at most 20 facts (new or changed text first), is serialised by an
+advisory lock, and deletes the rows of facts that are no longer anchors (for example after the
+owner leaves a job). A `resolved` row is never re-queried until its text changes.
+
+**Privacy.** The job never logs or returns address text or coordinates: log lines carry fact
+ids, statuses and providers, httpx's own request log line is suppressed for these calls (its URL
+contains the address), and the job returns counts only.
 
 ## Entity life-graph reads
 

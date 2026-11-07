@@ -780,11 +780,67 @@ Scope: v1-mandatory
 - **WHEN** a goal calls a capability whose catalog entry declares no selection-bound parameter
 - **THEN** its grant and resource scope behave as they would with no selection records at all
 
+### Requirement: The public read surface stays outside the goal runtime
+The public read surface of RFC 0039 SHALL NOT admit a goal, start an invocation or hold an invocation token, and neither its requests nor its inbox proposals SHALL be admission input. It SHALL NOT hold, receive or mint a broker assertion, and a domain SHALL refuse its Worker-signed request assertion, or any other non-broker assertion, in place of a broker assertion. It SHALL read only its replicated projection and SHALL call no domain capability; any future read through domain capabilities requires a new owner decision and an amendment to RFC 0039 and vision.md Rule 3. `external_mcp` SHALL be a fact-provenance origin only, and the D5 admission origins SHALL remain `owner`, `obligation`, `third_party` and `staffer` (the D13 `legacy` marker is unchanged).
+
+ID: REQ-capability-authorization-022
+Source: RFC 0038, D5 and D7 (public read surface amendment, later owner decision 2026-11-04); RFC 0039, D1, D7 and D14
+Scope: v1-mandatory
+
+#### Scenario: An outside AI client reads through the public surface
+- **WHEN** the owner's outside AI client calls a read tool on the public read surface
+- **THEN** the answer comes from the replicated projection, and no goal, invocation, broker call or domain call is recorded for it
+
+#### Scenario: An outside proposal arrives
+- **WHEN** the public read surface stores a `propose_fact` proposal in its inbox
+- **THEN** no goal is admitted and no ingest envelope, obligation or schedule is created from it
+
+#### Scenario: A public-surface assertion reaches a domain
+- **WHEN** a model-reachable domain tool receives a call carrying the public surface's Worker-signed assertion or hop bearer instead of a broker assertion
+- **THEN** the domain refuses the call before its handler runs
+
+#### Scenario: Admission sees outside provenance
+- **WHEN** admission records a goal whose input includes a record with `external_mcp` fact provenance
+- **THEN** the goal's origin is one of the four D5 admission origins, never `external_mcp`, and the record's third-party stamp exposes the goal under the existing exposure rules
+
+### Requirement: Outside proposals park per event and keep third-party authority
+The proposal importer of RFC 0039, a deterministic domain job that is not a goal, SHALL be able to park pending actions for its own domain's tools after the switch without a goal, invocation, broker grant or assertion, and SHALL run no model and execute nothing itself; the parking path SHALL NOT be LLM-presentable or grantable. Such an action SHALL record no goal origin (NULL lineage). No standing rule SHALL match, approve or be derived from an action the importer parked, and the action SHALL execute only after the owner's per-event approval, with the owner's approve call reaching the domain through the dashboard service-plane path. A fact applied from such an action SHALL carry `content_authority = third_party` and origin `external_mcp` in its fact provenance, both set server-side at park time; the owner's approval SHALL confirm the fact without changing that stamp, the approvals module's producer `origin` SHALL remain unchanged, and reads SHALL return the fact stamped as non-owner authority.
+
+ID: REQ-capability-authorization-023
+Source: RFC 0038, D6, D7 and D13 (public read surface amendment, later owner decision 2026-11-04); RFC 0039, D13
+Scope: v1-mandatory
+
+#### Scenario: The importer parks a proposal after the switch
+- **WHEN** domain verification is switched on and the importer parks a valid outside proposal
+- **THEN** a pending action exists with no goal lineage (no goal origin) and no assertion, and nothing executes until the owner approves it
+
+#### Scenario: A standing rule would match an outside proposal
+- **WHEN** an active standing rule for the parked tool matches the arguments of an action the importer parked
+- **THEN** the rule does not approve it, its use count is unchanged, and the action waits for the owner's per-event approval
+
+#### Scenario: Approving outside proposals derives no rule
+- **WHEN** the owner approves several importer-parked actions of the same shape
+- **THEN** no standing rule or rule suggestion is derived from them
+
+#### Scenario: The owner approves an outside proposal
+- **WHEN** the owner approves an action the importer parked
+- **THEN** the exact stored call executes once and stores the fact with `content_authority = third_party` and `external_mcp` fact provenance
+- **AND** the fact is confirmed by the owner, and the pending action's producer `origin` is not `external_mcp`
+
+#### Scenario: A goal reads an applied outside fact
+- **WHEN** an unexposed owner goal's invocation receives an applied outside fact from a stamped read
+- **THEN** the invocation and its goal become exposed, and the fact is never treated as a rule or owner-profile fact
+
+#### Scenario: A session tries the importer's parking path
+- **WHEN** a lead or child searches its catalog for, or calls, the importer's parking path
+- **THEN** no such tool is listed or callable, and nothing is parked
+
 ## Source References
 
 - Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
 - Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
 - Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
-- `about/heart-and-soul/security.md`, Goal and Delegation Authority; Session Sandboxing; Approval Gates
+- `about/heart-and-soul/security.md`, Goal and Delegation Authority; Session Sandboxing; Approval Gates; Public Read Surface
 - RFC 0038 (goal runtime and capability authorization)
+- RFC 0039 (public MCP read surface)
 - RFC 0017 (owner-routing safety), RFC 0021 (approvals), RFC 0027 (tool discovery), RFC 0028 (physical actuation), RFC 0037 (private custody)

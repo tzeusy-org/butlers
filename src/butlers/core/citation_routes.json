@@ -30,6 +30,7 @@
     {"path": "/health/research"},
     {"path": "/settings/permissions"},
     {"path": "/settings/models"},
+    {"path": "/settings/projections"},
     {"path": "/entities/index", "query": {"has": {"values": ["contact"]}}},
     {"path": "/entities/concentration"},
     {"path": "/entities/circles"},

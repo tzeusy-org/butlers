@@ -60,28 +60,31 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
     DiscretionEvaluator,
     classify_ignore_kind,
 )
-from butlers.connectors.discretion_dispatcher import (
-    PURPOSE_LANE_PRIVATE_CONTENT,
-    DiscretionDispatcher,
-)
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
-from butlers.connectors.owner_outbound_events import record_owner_outbound_point
+from butlers.connectors.owner_outbound_events import (
+    record_owner_outbound_point,
+    resolve_dedup_key,
+)
 from butlers.connectors.telegram_spans import telethon_in_reply_to_ref, telethon_message_spans
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
 )
 from butlers.conversation_identity import telegram_conversation_id
+from butlers.core.discretion_dispatcher import (
+    PURPOSE_LANE_PRIVATE_CONTENT,
+    DiscretionDispatcher,
+)
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -2825,6 +2828,10 @@ async def run_telegram_user_client_connector() -> None:
             codex_authority=codex_auth_authority,
             context="telegram_user_client",
         )
+
+        # Owner-outbound point events need the keyed dedup HMAC; without it they
+        # are not recorded at all (bu-szrvwu). Warns once, never raises.
+        await resolve_dedup_key(CredentialStore(cursor_pool))
 
         health_task = asyncio.create_task(
             _run_health_server(config.health_port, connector),

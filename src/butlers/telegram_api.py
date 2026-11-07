@@ -189,6 +189,43 @@ def validate_telegram_reply_markup(
     return reply_markup
 
 
+_MESSAGE_NOT_MODIFIED = frozenset(
+    {
+        "Bad Request: message is not modified",
+        "Bad Request: message is not modified: specified new message content and reply "
+        "markup are exactly the same as a current content and reply markup of the message",
+    }
+)
+
+
+def telegram_outage_status(status_code: int) -> bool:
+    """Whether a Bot API status says the bot or provider failed, not the one message.
+
+    Telegram refuses a specific message with 400 or 403. 401 and 404 mean the token or API
+    path was rejected, 429 means slow down, and 5xx is the provider itself.
+    """
+    return status_code in (401, 404, 429) or status_code >= 500
+
+
+def telegram_message_not_modified(response: httpx.Response) -> bool:
+    """Whether Telegram refused an edit because the message already looks that way.
+
+    For an edit that sets a known end state, this is the end state, not a failure.
+    """
+    if response.status_code != 400:
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("ok") is False
+        and data.get("error_code") == 400
+        and data.get("description") in _MESSAGE_NOT_MODIFIED
+    )
+
+
 async def edit_telegram_message_text(
     client: httpx.AsyncClient,
     api_base_url: str,
@@ -235,5 +272,6 @@ __all__ = [
     "TelegramReplyMarkupValidationError",
     "edit_telegram_message_text",
     "remove_telegram_inline_keyboard",
+    "telegram_message_not_modified",
     "validate_telegram_reply_markup",
 ]

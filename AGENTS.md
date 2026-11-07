@@ -29,8 +29,9 @@ The full ladder, scope table, removal rule, gate-verdict rules and CI topology l
   `UNKNOWN`, never a pass; only exit 0 passes. Launch long runs detached.
 - **Removing or weakening a test** needs a `Tests: +a ~m -d` PR line and a named survivor
   (`Survivor: <old> -> <new>`) for protected checks; review is the only deletion gate.
-- **Test budget:** a PR that pushes a lane over `scripts/test-budget-baseline.json` condenses tests in
-  the same PR or states the net delta and why. `make check-guards` runs the hosted `guards` steps
+- **No test-count cap:** owner decision 2026-11-03 removed the per-lane test budget; test growth is
+  governed by CI duration targets (see testing doctrine, Five-Minute Routine-Lane Target).
+  `make check-guards` runs the hosted `guards` steps
   locally before you push, except hosted-only `knip`, `build`, and node `--test` tooling checks.
 
 <!-- bv-agent-instructions-v1 -->
@@ -213,8 +214,8 @@ check you write or read:
     PR as settled.
   - Every event runs the same job set; judge completeness by the required `alls-green` check.
 - CI topology (fan-out, the fail-closed `alls-green` fan-in, `always()` rules) and the narrower-than-named
-  guard predicates (`check-no-em-dashes.py`, `spec-overwrite-guard`, `requirement-trace`,
-  `cited-requirements-guard`, `duplicate-name-guard`) are in
+  guard predicates (`check-no-em-dashes.py`, `requirement-trace`, `requirement-citations`,
+  `duplicate-name-guard`) are in
   [CI and test scope](docs/testing/ci.md#ci-fan-out-and-guard-predicates). About eight concurrent CI
   runs saturate the runners: sequence PRs that append to the same file.
 

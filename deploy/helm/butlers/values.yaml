@@ -75,7 +75,6 @@ publicUrl:
 
 # Restrict the NodePort-exposed pods to host-originated traffic.
 hostIngress:
-  restrict: true
   # Source address of host-originated traffic on single-node k3s (cni0).
   nodeSourceCidr: 10.42.0.1/32
 
@@ -97,8 +96,8 @@ dashboardAuth:
 commonEnv:
   # OTLP/HTTP (4318). The BWS value used by compose (:4317) never connected.
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel.invalid:4318  # override in values.local.yaml
-  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "0"
-  BUTLERS_FLEET_CONDITION_HANDOFF: "0"
+  BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "1"
 
 # Dev-only opt-in to a key-absent topology. No signing configuration exists.
 butlersControl:
@@ -213,11 +212,9 @@ connectorMetrics:
     enabled: false
     interval: 30s
     labels: {}
-  # NetworkPolicy peers admitted to the metrics port on pods the chart already
-  # isolates (hostIngress.restrict covers connector-owntracks). Empty admits
-  # any source to that port only; set a namespaceSelector for the LGTM namespace
-  # to narrow it.
-  allowFrom: []
+  # The cluster scraper's namespace, the only outside source admitted to the
+  # metrics port. Required while enabled; the public MCP namespaces are refused.
+  sourceNamespace: lgtm
   resources:
     requests: {cpu: 5m, memory: 24Mi}
     limits: {memory: 64Mi}
@@ -242,6 +239,7 @@ connectors:
     logSubdir: telegram_user
     provider: telegram
     channel: telegram_user_client
+    healthPort: 40080
   whatsapp-user:
     module: whatsapp_user_client
     logSubdir: whatsapp_user

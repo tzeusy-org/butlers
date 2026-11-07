@@ -37,31 +37,9 @@ from butlers.jobs.secrets_lifecycle import (
     _last_notified_state,
     run_secrets_lifecycle_check,
 )
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
-
-
-class _FakeDatabaseManager:
-    """Minimal stand-in for DatabaseManager: butler_names / pool / credential_shared_pool."""
-
-    def __init__(self, *, butler_pools: dict[str, object], shared_pool: object | None):
-        self._butler_pools = butler_pools
-        self._shared_pool = shared_pool
-
-    @property
-    def butler_names(self) -> list[str]:
-        return list(self._butler_pools)
-
-    def pool(self, name: str):
-        try:
-            return self._butler_pools[name]
-        except KeyError:
-            raise KeyError(name) from None
-
-    def credential_shared_pool(self):
-        if self._shared_pool is None:
-            raise KeyError("shared_pool")
-        return self._shared_pool
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +50,7 @@ class _FakeDatabaseManager:
 async def test_collect_snapshots_aggregates_all_families_with_canonical_keys():
     finance_pool = object()
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"finance": finance_pool}, shared_pool=shared_pool)
+    db = db_manager({"finance": finance_pool}, credential_pool=shared_pool)
 
     async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
         if pool is finance_pool:
@@ -129,7 +107,7 @@ async def test_collect_snapshots_aggregates_all_families_with_canonical_keys():
 async def test_collect_snapshots_excludes_spotify_system_credentials():
     lifestyle_pool = object()
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"lifestyle": lifestyle_pool}, shared_pool=shared_pool)
+    db = db_manager({"lifestyle": lifestyle_pool}, credential_pool=shared_pool)
 
     async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
         if pool is lifestyle_pool:
@@ -179,7 +157,7 @@ async def test_collect_snapshots_excludes_spotify_system_credentials():
 
 async def test_collect_snapshots_returns_system_only_when_no_shared_pool():
     finance_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"finance": finance_pool}, shared_pool=None)
+    db = db_manager({"finance": finance_pool}, credential_pool=None)
 
     async def fake_fetch_system_secrets(pool, butler_name, **kwargs):
         return [SystemSecret(key="FINANCE_KEY", state="ok", butler="finance")]
@@ -198,9 +176,9 @@ async def test_collect_snapshots_continues_after_per_butler_failure_and_tracks_s
     broken_pool = object()
     healthy_pool = object()
     shared_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"broken": broken_pool, "healthy": healthy_pool},
-        shared_pool=shared_pool,
+    db = db_manager(
+        {"broken": broken_pool, "healthy": healthy_pool},
+        credential_pool=shared_pool,
     )
     tracker = DegradedSources(logging.getLogger(__name__))
 
@@ -358,6 +336,21 @@ def test_compose_message_embeds_no_api_url():
     assert "https://host.example/butlers-dev/secrets?focus=u%3Aspotify" in message
 
 
+def test_compose_message_without_dashboard_origin_keeps_the_supersede_marker():
+    """No origin: no URL, but the focus fragment stays a whole line so retry supersession matches."""
+    snapshot = CredentialSnapshot(
+        key="u:google", family="user", label="Google", state="expired", provider="google"
+    )
+    message = _compose_message(snapshot, None)
+    assert "http" not in message
+    assert "has expired" in message
+    assert "Re-authorize from the credential card" in message
+    # The predicate cancel_pending_notifications_matching_line applies.
+    marker = _focus_fragment(snapshot.key)
+    assert marker + "\n" in message or message.endswith(marker)
+    assert message.splitlines()[1] == marker
+
+
 def test_compose_message_omits_reauthorize_for_non_oauth():
     snapshot = CredentialSnapshot(
         key="c:claude-cli-token", family="cli", label="claude-cli-token", state="failing"
@@ -375,7 +368,7 @@ def test_compose_message_omits_reauthorize_for_non_oauth():
 async def test_run_secrets_lifecycle_check_debounces_same_state():
     """No delivery and no ledger write when the current state matches the last-notified one."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    db = db_manager({}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
 
     with (
@@ -403,10 +396,11 @@ async def test_run_secrets_lifecycle_check_debounces_same_state():
     }
 
 
-async def test_run_secrets_lifecycle_check_delivers_on_new_transition():
+async def test_run_secrets_lifecycle_check_delivers_on_new_transition(monkeypatch):
     """A genuinely new transition delivers, records the ledger, and writes the debounce marker."""
+    monkeypatch.setenv("DASHBOARD_URL", "https://dash.example")
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    db = db_manager({}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="u:google", family="user", label="Google", state="expiring", provider="google"
     )
@@ -469,7 +463,7 @@ async def test_run_secrets_lifecycle_check_suppressed_does_not_write_debounce_ma
     """A quiet-hours-suppressed attempt records 'suppressed' but leaves no debounce marker,
     so the next scan retries once quiet hours end."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    db = db_manager({}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SOME_KEY", family="system", label="SOME_KEY", state="failing"
     )
@@ -516,7 +510,7 @@ async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marke
     attention-ledger row (not go silent, or the outage reads as quiet-hours
     discipline) while still leaving no debounce marker so the next scan retries."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    db = db_manager({}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SOME_KEY", family="system", label="SOME_KEY", state="expired"
     )
@@ -569,9 +563,7 @@ async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enq
     gets redelivered instead of silently expiring."""
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SPOTIFY_ACCESS_TOKEN", family="system", label="SPOTIFY_ACCESS_TOKEN", state="failing"
     )
@@ -642,9 +634,7 @@ async def test_run_secrets_lifecycle_check_delivery_error_supersedes_prior_pendi
     (latest-state-wins supersede)."""
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SPOTIFY_ACCESS_TOKEN", family="system", label="SPOTIFY_ACCESS_TOKEN", state="failing"
     )
@@ -711,9 +701,7 @@ async def test_run_secrets_lifecycle_check_direct_delivery_cancels_leftover_pend
     ALSO redeliver it — the common recovery path, giving exactly one delivery."""
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="u:google", family="user", label="Google", state="expiring", provider="google"
     )
@@ -772,7 +760,7 @@ async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
     must not go silent — it is a genuine delivery failure and has to be
     recorded, or an outage impersonates quiet-hours discipline in the ledger."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    db = db_manager({}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SOME_KEY", family="system", label="SOME_KEY", state="expired"
     )
@@ -816,7 +804,7 @@ async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
 
 
 async def test_run_secrets_lifecycle_check_no_shared_pool_is_a_clean_noop():
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=None)
+    db = db_manager({}, credential_pool=None)
     summary = await run_secrets_lifecycle_check(db)
     assert summary == {
         "scanned": 0,
@@ -830,7 +818,7 @@ async def test_run_secrets_lifecycle_check_no_shared_pool_is_a_clean_noop():
 
 async def test_run_secrets_lifecycle_check_reports_degraded_collection_sources():
     """A partial collection must not produce a clean lifecycle summary."""
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=object())
+    db = db_manager({}, credential_pool=object())
 
     async def fake_collect(_db, *, tracker):
         tracker.mark("broken")
@@ -856,7 +844,7 @@ async def test_run_secrets_lifecycle_check_reports_degraded_collection_sources()
 async def test_run_secrets_lifecycle_check_ignores_non_attention_states():
     """A credential in 'ok'/'warn' never reaches the debounce/notify path at all."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
+    db = db_manager({}, credential_pool=shared_pool)
     snapshots = [
         CredentialSnapshot(key="s:A", family="system", label="A", state="ok"),
         CredentialSnapshot(key="s:B", family="system", label="B", state="warn"),
@@ -894,7 +882,7 @@ async def test_delivery_preferences_deferral_defers_in_quiet_hours():
     """Prefs present + should_defer True -> returns the computed batch deliver_at,
     keyed on the 'switchboard' identity."""
     switchboard_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"switchboard": switchboard_pool}, shared_pool=object())
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=object())
 
     with (
         patch(
@@ -920,7 +908,7 @@ async def test_delivery_preferences_deferral_defers_in_quiet_hours():
 
 async def test_delivery_preferences_deferral_none_outside_quiet_hours():
     """Prefs present but should_defer False -> None (deliver now)."""
-    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=object())
+    db = db_manager({"switchboard": object()}, credential_pool=object())
     with (
         patch(
             "butlers.jobs.secrets_lifecycle.get_delivery_preferences",
@@ -934,7 +922,7 @@ async def test_delivery_preferences_deferral_none_outside_quiet_hours():
 
 async def test_delivery_preferences_deferral_none_when_no_prefs_row():
     """No delivery_preferences row for switchboard -> None (passthrough)."""
-    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=object())
+    db = db_manager({"switchboard": object()}, credential_pool=object())
     with patch(
         "butlers.jobs.secrets_lifecycle.get_delivery_preferences",
         new=AsyncMock(return_value=None),
@@ -945,7 +933,7 @@ async def test_delivery_preferences_deferral_none_when_no_prefs_row():
 
 async def test_delivery_preferences_deferral_none_when_no_switchboard_pool():
     """No switchboard pool -> None (fail-open), never raises."""
-    db = _FakeDatabaseManager(butler_pools={}, shared_pool=object())
+    db = db_manager({}, credential_pool=object())
     result = await _delivery_preferences_deferral(db, channel="telegram", priority="medium")
     assert result is None
 
@@ -962,9 +950,7 @@ async def test_run_secrets_lifecycle_check_deferred_enqueues_envelope_not_delive
     resolves)."""
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
 
     with (
@@ -1039,9 +1025,7 @@ async def test_run_secrets_lifecycle_check_defer_queue_failure_records_retryable
     """
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
 
     with (
@@ -1108,7 +1092,7 @@ async def test_run_secrets_lifecycle_check_delivers_when_delivery_preferences_pa
     """Gate 1 returns None (no prefs row / outside quiet hours) -> the credential
     is delivered directly through the normal path."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=shared_pool)
+    db = db_manager({"switchboard": object()}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(key="u:google", family="user", label="Google", state="expiring")
 
     with (
@@ -1161,7 +1145,7 @@ async def test_run_secrets_lifecycle_check_defer_without_recipient_records_faile
     """Defer window but no owner recipient: the deferred envelope would be
     undeliverable, so this is a genuine failure (recorded, not enqueued)."""
     shared_pool = object()
-    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=shared_pool)
+    db = db_manager({"switchboard": object()}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(key="s:K", family="system", label="K", state="expired")
 
     with (
@@ -1217,9 +1201,7 @@ async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enq
     debounce marker is NOT advanced."""
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SPOTIFY_ACCESS_TOKEN", family="system", label="SPOTIFY_ACCESS_TOKEN", state="failing"
     )
@@ -1290,9 +1272,7 @@ async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no
     envelope."""
     shared_pool = object()
     switchboard_pool = object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="s:SOME_KEY", family="system", label="SOME_KEY", state="expired"
     )
@@ -1338,9 +1318,7 @@ async def test_partial_transition_never_enqueues_or_resends_after_terminal_marke
     from butlers.jobs import secrets_lifecycle as lifecycle
 
     shared_pool, switchboard_pool = object(), object()
-    db = _FakeDatabaseManager(
-        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
-    )
+    db = db_manager({"switchboard": switchboard_pool}, credential_pool=shared_pool)
     snapshot = CredentialSnapshot(
         key="u:controlled", family="user", label="Controlled", state="expiring"
     )
@@ -1444,7 +1422,7 @@ async def test_settled_terminal_transition_stays_closed_on_actual_audit_lookup_e
             return {"note": marker[args[0]]} if args[0] in marker else None
 
     shared = SharedPool()
-    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=shared)
+    db = db_manager({"switchboard": object()}, credential_pool=shared)
     old = CredentialSnapshot(
         key="u:controlled", family="user", label="Controlled", state="expiring"
     )

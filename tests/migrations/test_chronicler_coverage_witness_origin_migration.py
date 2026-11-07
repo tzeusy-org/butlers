@@ -275,7 +275,9 @@ async def test_upgrade_classifies_historic_coverage_by_local_proof(
 
     command.upgrade(
         _build_alembic_config(pre_origin_chronicler_db_url, chains=["chronicler"]),
-        "chronicler@head",
+        # Exercise the selected historical classification revision; 030 has
+        # separate private-memory prerequisites, unrelated to this 028 proof.
+        "chronicler@chronicler_028",
     )
 
     pool = await asyncpg.create_pool(pre_origin_chronicler_db_url, min_size=1, max_size=2)

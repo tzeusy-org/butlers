@@ -108,6 +108,11 @@ The owner can save, edit, inspect and revoke typed standing-reply template draft
   `approval_rules` and no `active` field (requests carrying one are refused with 422).
   Activation, broker enforcement, per-window limits and receipts belong to bu-jv1moa.28.
 
+The dashboard's `/approvals` page carries the editor (the "Standing-reply drafts" section,
+`frontend/src/components/approvals/reply-template-drafts-panel.tsx`): author, edit, inspect,
+revoke (explicit confirm) and preview. Every preview shows `authority: none`, and the
+section has no activation control.
+
 Every route requires the owner's verified dashboard session; API-key, connector-callback and
 runtime callers get 403 `owner_dashboard_session_required`, and no MCP tool exposes drafts.
 Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); edits have no
@@ -129,10 +134,32 @@ permanently (owner decision bu-bup68v); other tools are refused as unsupported.
 Valid status transitions:
 
 ```
-pending -> approved | rejected | expired
+pending -> approved | rejected | expired | cancelled
 approved -> executed | abandoned
-rejected, expired, executed, abandoned -> (terminal)
+rejected, expired, executed, abandoned, cancelled -> (terminal)
 ```
+
+`cancelled` applies only to actions with RFC 0038 goal lineage: when a goal is
+stopped, `goal_park.cancel_goal_effects` takes exactly the actions whose broker
+effects were cancelled (never one already dispatched) and cancels the pending ones through
+`transition_pending_action` (an `action_cancelled` event; owner prompts are
+fenced with the `action_rejected` delivery reason code) and abandons its
+approved, never-executed actions (`action_abandoned`). The dashboard's decided-history
+filter includes it. Goal lineage (`goal_id`, `goal_invocation_id`,
+`goal_depth`, `goal_exposed`, `goal_origin`, migration `approvals_020`) is set
+only by the capability broker's park path
+([Capability Broker](../architecture/capability-broker.md)); `goal_origin` is
+separate from the producer `origin`, and `legacy` is reserved for actions
+created before the cutover. Approving an action whose lineage is exposed never
+counts toward standing-rule promotion.
+
+The owner decides a goal action on the usual surfaces (dashboard approve, the
+module `approve_action` tool, `operations.approve_action`): the decision is
+recorded and the result carries `execution_code: goal_effect_requires_broker`,
+but nothing runs it there; the capability broker reads the decision and runs
+the effect. An edit to a goal action's arguments is refused with that code.
+Every legacy run path (the shared executor, dispatch-by-id, both retry routes)
+refuses a goal action with the same typed code.
 
 All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
 
@@ -166,6 +193,18 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   Protected peer admission and the owning source's durable presentation proof
   are separate prerequisites. Ordinary TCP or caller correlation cannot enable
   recovery, and constructing the opt-in transport does not activate rollout.
+- The recovery worker reports each scan/claim/handoff outcome on
+  `approval_delivery_worker_outcomes_total{schema,stage,outcome,reason}` and a matching log
+  line. Labels come only from the closed vocabularies in
+  `src/butlers/core/approval_delivery_worker.py` (`OBSERVATION_OUTCOMES`, `SAFE_REASON_CODES`);
+  identifiers, recipients, callback material, provider references and exception text never
+  appear. A handoff outcome is recorded only after its repository write commits; a refused
+  compare-and-set records `start_refused`/`write_refused`, and a failed transaction records only
+  `scan/failed`. Observer failures are swallowed and never change the action or presentation.
+- Only `transition_pending_action` (`delivery_lifecycle.py`) may move an action out of
+  `pending`. `tests/contracts/test_relationship_pending_actions_choke_point.py` pins the full
+  inventory of `UPDATE pending_actions SET status` writers; the other writers move `approved` to
+  `executed`/`abandoned` and must bind `ActionStatus.APPROVED` as their guard.
 
 - Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
   (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
@@ -193,6 +232,23 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
+- Dashboard approval and Retry dispatch stored `notify` calls through Switchboard `deliver`
+  using a `notify.v1` envelope. The approved intent and delivery fields stay inside `delivery`,
+  with `request_context` on the envelope; the owning action schema supplies both `origin_butler`
+  and `source_butler`. The adapter never resolves or substitutes a recipient. This handoff runs
+  inside the shared executor's row lock, and failed envelope validation or delivery leaves the
+  action `approved` with a null execution result.
+- Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
+  `src/butlers/modules/calendar_approval.py`) first checks the requested tool name and argument
+  digest against the locked approved row; a mismatch refuses before dispatch. The executor then
+  dispatches, and binds the execution context to, the canonical public call built from the stored
+  row. Rows parked before bu-svqpzo.1 carry a literal `_approval_bypass: true` marker (and, for
+  `calendar_update_event_instance`, `clear_entity_ids: false`); only those exact values are dropped.
+  Any other value or unknown key refuses before effect. The marker is never forwarded and grants
+  nothing; delete this retirement once no pending calendar row carries it.
+  A row for a tool that takes `calendar_id` must bind it concretely: rows parked before bu-eio2my
+  with `calendar_id: null` are refused before effect (the owner never saw the calendar a replay
+  would resolve to) and must be re-requested.
 - `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
   tool handlers when an approved action's
   `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
@@ -269,6 +325,15 @@ No raw secret-field fallback or truncated preview earns an Approve button.
 Rows presented before migration 018 carry no digest and are not checked.
 Migration 018's downgrade refuses while any presentation carries a digest.
 
+## Canonical owner delivery (dark)
+
+With `public.owner_delivery_rollout.enabled`, a single card carries single-use `od1` tokens
+instead of `apr1` HMAC tokens, bound to one owner-delivery subject per action; a decision on
+any surface (or by any other path through `transition_pending_action`) stales every other
+card's buttons and queues them for retraction. See
+[Owner delivery](../api_and_protocols/owner-delivery.md). Default off; nothing changes
+until it is enabled.
+
 ## Related Pages
 
 - [Module System](module-system.md)
@@ -294,3 +359,19 @@ with exact persisted arguments, no edits and `create_rule=False`. An already
 approved command may recover through that same owning dispatch; its independent
 committed attempt fence prevents a repeated provider write. RFC 0023 recovery
 remains notification-only and retains its default-off authority boundary.
+
+### Domain producers without unrelated generic gates
+
+`[modules.approvals].enabled` continues to control generic `gated_tools`
+wrapping and its mandatory reverse coverage for declared write tools. The
+optional typed `domain_producers` list accepts only `calendar` and
+`google_drive`, without duplicates, and defaults to empty. It enables only
+those modules' own pending-action producers while leaving unrelated gates and
+standing-rule policy unchanged. The owning approvals module, queue pool and
+already-wired executor must all be active; configuration alone is insufficient.
+
+For example, a calendar owner can load actions with `enabled=false` and
+`domain_producers=["calendar"]`. This preserves its existing Spotify and other
+module behavior while giving guest invitations the same-owner approval path.
+A producer flag and the descriptive catalog marker grant no execution authority:
+only an authenticated owner decision and exact stored-call executor context do.

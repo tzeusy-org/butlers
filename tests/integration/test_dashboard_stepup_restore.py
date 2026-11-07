@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -18,12 +19,26 @@ from butlers.core.dashboard_stepup import dashboard_stepup_proof
 from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import operations
 from butlers.testing.migration import migration_bootstrap_db_url
+from scripts.ci_test_images import prepare_alias_on_hosted_runner
 from tests.integration.test_dashboard_stepup import authority as authority
-from tests.integration.test_dashboard_stepup import migrated_db_url as migrated_db_url
+from tests.integration.test_dashboard_stepup import authority_db_url as authority_db_url
 from tests.integration.test_dashboard_stepup import proof_for
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _timeout_capture_summary(output: bytes | str | None) -> dict[str, bool | int | str]:
+    """Report only closed observations; empty capture cannot establish execution stage."""
+    if output is None:
+        return {"captured": False, "size": 0, "unit": "absent", "backup_start_observed": False}
+    start_marker = b"[backup] start:" if isinstance(output, bytes) else "[backup] start:"
+    return {
+        "captured": True,
+        "size": len(output),
+        "unit": "bytes" if isinstance(output, bytes) else "characters",
+        "backup_start_observed": start_marker in output,
+    }
 
 
 def client(container, shell, password, mounts=(), **environment):
@@ -41,6 +56,9 @@ def client(container, shell, password, mounts=(), **environment):
     for name in ("SYNTHETIC_PASSWORD", *environment):
         command += ["-e", name]
     command += ["postgres:17", "bash", "-c", shell]
+    # Acquire the image outside the run's own timeout: a cold pull on a busy
+    # runner can otherwise consume the whole budget before pg_dump starts.
+    prepare_alias_on_hosted_runner("postgres:17")
     try:
         return subprocess.run(
             command,
@@ -50,7 +68,20 @@ def client(container, shell, password, mounts=(), **environment):
             timeout=120,
             check=False,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as timeout:
+        # Captured output can contain backup data or credentials. Record only
+        # closed observations; neither empty capture nor a marker proves a stage.
+        timeout.add_note(
+            "client timeout diagnostics: "
+            + json.dumps(
+                {
+                    "execution_stage": "unknown",
+                    "stdout": _timeout_capture_summary(timeout.stdout),
+                    "stderr": _timeout_capture_summary(timeout.stderr),
+                },
+                sort_keys=True,
+            )
+        )
         # Killing only the Docker CLI can leave its owned container running.
         # Cleanup cannot turn the original timeout into a successful owner.
         try:
@@ -61,11 +92,11 @@ def client(container, shell, password, mounts=(), **environment):
                 check=False,
             )
         finally:
-            raise
+            raise timeout from None
 
 
 async def test_ordinary_dump_privileged_restore_preserves_receipts_owners_and_acl(
-    authority, migrated_db_url, postgres_container, tmp_path
+    authority, authority_db_url, postgres_container, tmp_path
 ):
     pool, _, _, _, _, _ = authority
     parameters = dict(
@@ -85,7 +116,7 @@ async def test_ordinary_dump_privileged_restore_preserves_receipts_owners_and_ac
     before = await pool.fetch(
         "SELECT to_jsonb(b) AS value FROM dashboard_stepup.bindings b ORDER BY id"
     )
-    source = urlparse(migrated_db_url)
+    source = urlparse(authority_db_url)
     backup = await asyncio.to_thread(
         client,
         postgres_container,

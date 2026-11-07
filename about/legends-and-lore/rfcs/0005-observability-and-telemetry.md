@@ -173,13 +173,21 @@ The `ButlerMetrics` class (`src/butlers/core/metrics.py`) provides a per-butler 
 
 | Instrument | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `butlers.domain_event.delivery_failed_permanent_total` | Counter | `source_butler`, `destination_butler`, `reason` (`non_retryable`/`attempts_exhausted`) | New durable `failed_permanent` delivery transitions only |
+| `butlers.domain_event.delivery_failed_permanent_total` | Counter | `emitter_butler`, `source_butler`, `destination_butler`, `reason` (`non_retryable`/`attempts_exhausted`) | New durable `failed_permanent` delivery transitions only |
 
-The domain-event counter MUST be recorded only after `mark_delivery_failed()` has successfully returned `failed_permanent`. It is deliberately best-effort after the durable ledger write: exporter failure MUST NOT roll back, replace, or otherwise alter the delivery outcome. Event IDs, types, payloads, exception text, and timestamps are forbidden attributes.
+The domain-event counter MUST be recorded only after `mark_delivery_failed()` has successfully returned `failed_permanent`. It is deliberately best-effort after the durable ledger write: exporter failure MUST NOT roll back, replace, or otherwise alter the delivery outcome. Event IDs, types, payloads, exception text, and timestamps are forbidden attributes. `emitter_butler` names the recording daemon (the publisher for fan-out, `switchboard` for the reconciliation sweep), so two daemons recording the same route never share a cumulative series. Each daemon SHALL create the route series it can emit at zero on startup, so `increase()` observes a route's first failure.
+
+#### Memory Knowledge-Gap Metrics
+
+| Instrument | Type | Labels | Description |
+|------------|------|--------|-------------|
+| `butlers.memory.knowledge_gap_closure_failures_total` | Counter | `butler` (registered name, or `unknown` outside a butler context), `stage` (`closure`, `reservation`) | Knowledge-gap closure and pair-reservation failures swallowed so the fact write could commit |
+
+The counter is best-effort and recorded after the failure is logged: an emission failure MUST NOT fail the fact write. Entity, predicate and fact identifiers and exception text are forbidden attributes.
 
 ### Cardinality Discipline
 
-All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`.
+All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `emitter_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, `closure` or `reservation`; an unsupported value is rejected before emission).
 
 The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 

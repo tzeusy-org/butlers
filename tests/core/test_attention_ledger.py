@@ -19,6 +19,7 @@ from butlers.core.attention_ledger import (
     URGENT_PRIORITY_THRESHOLD,
     attention_event_recorded_since,
     count_attention_events_since,
+    failed_attempts,
     find_notify_dispatch_for_session,
     get_suppressing_context,
     get_suppressing_context_signal,
@@ -311,6 +312,19 @@ class TestAttentionEventRecordedSince:
             pool, dedup_key="fleet_case:health:owner:x", since=datetime.now(UTC)
         )
         assert result is False
+
+
+class TestFailedAttempts:
+    """bu-jv1moa.54: ledger trouble never blocks a retrying send (real-PG counting lives in
+    tests/integration/test_attention_ledger_roundtrip.py)."""
+
+    @pytest.mark.parametrize("broken", ["no_pool", "query_error"])
+    async def test_fails_open_to_no_failures(self, broken):
+        pool = None
+        if broken == "query_error":
+            pool = AsyncMock()
+            pool.fetchrow = AsyncMock(side_effect=Exception("boom"))
+        assert await failed_attempts(pool, dedup_key="job:k") == (0, None)
 
 
 class TestGetSuppressingContextSignal:

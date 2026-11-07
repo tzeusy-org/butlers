@@ -50,6 +50,7 @@ class CandidateNameUnavailable(Exception):
 
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
+_SYNC_METADATA_KEYS = ("profile", "sources")
 # A loss greater than half the active links is suspect; equality is accepted.
 # Empty full lists are always refused, independently of this limit.
 DEFAULT_MAX_SHRINK_FRACTION = 0.5
@@ -73,6 +74,17 @@ def _parse_jsonb(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _owned_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """The top-level metadata keys a sync writes, as a patch for ``metadata || $n``.
+
+    Patching only these keeps any other key as the row holds it at the UPDATE: a
+    merge's ``merged_into``, or a flag that a promote removed after the sync's read.
+    ``profile`` and ``sources`` are whole sub-documents from that read, which suits a new
+    row (``create_contact``); ``update_contact`` patches their leaves instead.
+    """
+    return {key: metadata[key] for key in _SYNC_METADATA_KEYS if key in metadata}
 
 
 def _deep_set(d: dict[str, Any], dotted_key: str, value: Any) -> None:
@@ -364,7 +376,7 @@ class ContactBackfillWriter:
         # inside a Postgres transaction aborts it even when Python catches it, so any
         # reads needed before the atomic commit must happen outside that transaction.
         if duplicate_candidate:
-            metadata: dict[str, Any] = {"duplicate_candidate": True}
+            metadata: dict[str, Any] = {}
         else:
             existing_row = await self._pool.fetchrow(
                 "SELECT metadata FROM public.entities WHERE id = $1", entity_id
@@ -386,11 +398,15 @@ class ContactBackfillWriter:
         self._stamp_provenance(metadata, contact)
 
         db = executor or self._pool
-        # Pass the full merged dict directly: the pool's registered JSONB codec encodes it
+        # Pass the dict directly: the pool's registered JSONB codec encodes it
         # (json.dumps once). Wrapping in json.dumps here would double-encode.
         await db.execute(
-            "UPDATE public.entities SET metadata = $1, updated_at = now() WHERE id = $2",
-            metadata,
+            "UPDATE public.entities SET metadata = COALESCE(metadata, '{}'::jsonb) || $1::jsonb, "
+            "updated_at = now() WHERE id = $2",
+            {
+                **_owned_metadata(metadata),
+                **({"duplicate_candidate": True} if duplicate_candidate else {}),
+            },
             entity_id,
         )
 
@@ -612,10 +628,40 @@ class ContactBackfillWriter:
             _deep_set(existing_meta, "profile.avatar_url", updates["avatar_url"])
         self._stamp_provenance(existing_meta, contact)
 
-        # Pass the dict directly: the registered JSONB codec encodes it once.
-        set_clauses: list[str] = ["metadata = metadata || $2::jsonb", "updated_at = now()"]
-        params: list[Any] = [local_id, existing_meta]
-        idx = 3
+        # Patch only the leaves this sync wrote, merged into the sub-documents as the row
+        # holds them at the UPDATE. Writing ``profile`` and ``sources`` whole from the read
+        # would drop a profile key that ``contact_merge``'s reconcile or an owner edit
+        # committed after it. Pass dicts directly: the registered JSONB codec encodes once.
+        profile_patch = {
+            key: updates[key]
+            for key in ("first_name", "last_name", "nickname", "company", "job_title", "avatar_url")
+            if key in updates
+        }
+        provenance = existing_meta["sources"]["contacts"][self._provider]
+        params: list[Any] = [local_id]
+        merged = []
+        if profile_patch:
+            params.append(profile_patch)
+            merged.append(
+                "'profile', COALESCE(metadata -> 'profile', '{}'::jsonb) || "
+                f"${len(params)}::jsonb"
+            )
+        params.extend([self._provider, provenance])
+        provider_param, provenance_param = f"${len(params) - 1}", f"${len(params)}"
+        merged.append(
+            "'sources', COALESCE(metadata -> 'sources', '{}'::jsonb) || jsonb_build_object("
+            "'contacts', COALESCE(metadata -> 'sources' -> 'contacts', '{}'::jsonb) || "
+            f"jsonb_build_object({provider_param}::text, "
+            f"COALESCE(metadata -> 'sources' -> 'contacts' -> {provider_param}::text, "
+            f"'{{}}'::jsonb) || {provenance_param}::jsonb))"
+        )
+        set_clauses: list[str] = [
+            "metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object("
+            + ", ".join(merged)
+            + ")",
+            "updated_at = now()",
+        ]
+        idx = len(params) + 1
 
         if "canonical_name" in updates:
             set_clauses.append(f"canonical_name = ${idx}")
@@ -1198,7 +1244,12 @@ class ContactBackfillEngine:
         )
 
     async def _reappearing_anchor(self, contact: CanonicalContact) -> uuid.UUID | None:
-        """A positive Telegram reappearance resumes only its exact inactive local anchor."""
+        """A positive reappearance resumes only its exact inactive local anchor.
+
+        Keyed on (provider, account, external id), so it holds for every provider. Whether a
+        provider (e.g. Google) ever restores the same external id is unconfirmed; if it does not,
+        this never matches and is a no-op.
+        """
         row = await self._pool.fetchrow(
             "SELECT sl.local_entity_id, EXISTS(SELECT 1 FROM public.entities e "
             "WHERE e.id=sl.local_entity_id AND e.entity_type='person' "
@@ -1230,11 +1281,7 @@ class ContactBackfillEngine:
             raise
 
     async def _apply(self, contact: CanonicalContact) -> None:
-        reappearing = (
-            await self._reappearing_anchor(contact)
-            if self._provider == "telegram" and not contact.deleted
-            else None
-        )
+        reappearing = None if contact.deleted else await self._reappearing_anchor(contact)
         if reappearing is not None:
             local_id, strategy = reappearing, "source_link"
         else:

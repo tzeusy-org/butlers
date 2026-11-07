@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.discretion import DiscretionEvaluator
-from butlers.connectors.discretion_dispatcher import (
+from butlers.core.discretion_dispatcher import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     DiscretionDispatcher,
 )
@@ -38,7 +38,7 @@ from butlers.core.model_routing import (
 
 pytestmark = pytest.mark.unit
 
-_MODULE = "butlers.connectors.discretion_dispatcher"
+_MODULE = "butlers.core.discretion_dispatcher"
 _KERNEL = "butlers.core.model_call"
 
 

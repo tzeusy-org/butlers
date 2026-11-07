@@ -7,7 +7,7 @@ startup (type='home_assistant_token'). Credentials are never logged in full.
 Transport layer:
 - REST: httpx.AsyncClient with Bearer token, Content-Type: application/json
 - WebSocket: aiohttp.ClientSession for the HA WebSocket API
-  - Auth flow: auth_required → auth → auth_ok
+  - Auth flow: server greeting → auth → auth_ok
   - Background message loop dispatching event/result/pong
   - Keepalive ping task with missed-pong detection
   - Auto-reconnect with exponential backoff (1s → 60s, with jitter)
@@ -18,7 +18,6 @@ Transport layer:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import random
 import re
@@ -31,14 +30,20 @@ from urllib.parse import quote
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
-from butlers.connectors.home_assistant_statistics import (
-    VALID_STATISTICS_PERIODS,
-    HAStatisticsClient,
-)
 from butlers.core import approvals_hooks
 from butlers.core.tool_call_capture import (
     get_current_approval_push_runtime,
     get_current_runtime_session_id,
+)
+from butlers.home_assistant_client import (
+    VALID_STATISTICS_PERIODS,
+    HAAuthInvalidError,
+    HAHandshakeProtocolError,
+    HAStatisticsClient,
+    authenticate,
+    decode_ws_text,
+    rest_client,
+    ws_url,
 )
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import get_approval_execution_context
@@ -314,7 +319,9 @@ class HomeAssistantModule(Module):
         if self._config and self._config.read_only:
             return {}
         return {
-            "ha_call_service": ToolMeta(arg_sensitivities={"domain": True, "service": True}),
+            "ha_call_service": ToolMeta(
+                arg_sensitivities={"domain": True, "service": True, "target": True, "data": True}
+            ),
         }
 
     def wire_runtime(
@@ -399,13 +406,8 @@ class HomeAssistantModule(Module):
         )
 
         # --- Create HTTP client ---
-        self._client = httpx.AsyncClient(
-            base_url=self._url,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            verify=self._config.verify_ssl,
+        self._client = rest_client(
+            self._url, token, verify_ssl=self._config.verify_ssl, timeout=httpx.Timeout(5.0)
         )
 
         # --- Connect WebSocket and seed entity cache ---
@@ -806,19 +808,9 @@ class HomeAssistantModule(Module):
     # ------------------------------------------------------------------
 
     def _ws_url(self) -> str:
-        """Derive the WebSocket URL from the configured HA base URL.
-
-        ``http://`` → ``ws://``, ``https://`` → ``wss://``.
-        """
+        """Return the shared HA WebSocket endpoint."""
         assert self._url is not None
-        url = self._url.rstrip("/")
-        if url.startswith("https://"):
-            ws_url = "wss://" + url[len("https://") :]
-        elif url.startswith("http://"):
-            ws_url = "ws://" + url[len("http://") :]
-        else:
-            ws_url = url  # already ws:// or wss://
-        return ws_url + "/api/websocket"
+        return ws_url(self._url)
 
     async def _ws_connect_and_seed(self) -> None:
         """Connect WebSocket, authenticate, seed caches, start background tasks.
@@ -882,7 +874,7 @@ class HomeAssistantModule(Module):
         """Open WebSocket connection and complete the HA auth handshake.
 
         HA WebSocket auth flow:
-        1. Server sends: ``{"type": "auth_required", "ha_version": "..."}``
+        1. Server sends: the server greeting
         2. Client sends: ``{"type": "auth", "access_token": "..."}``
         3. Server replies: ``{"type": "auth_ok"}`` or ``{"type": "auth_invalid"}``
 
@@ -913,30 +905,17 @@ class HomeAssistantModule(Module):
         )
 
         try:
-            # Step 1: expect auth_required
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            if msg.get("type") != "auth_required":
-                raise RuntimeError(
-                    f"HomeAssistantModule: expected auth_required, got: {msg.get('type')!r}"
-                )
-
-            # Step 2: send auth
-            await self._ws_connection.send_json({"type": "auth", "access_token": self._token})
-
-            # Step 3: expect auth_ok or auth_invalid
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            msg_type = msg.get("type")
-            if msg_type == "auth_invalid":
-                raise RuntimeError(
-                    "HomeAssistantModule: WebSocket authentication failed (auth_invalid). "
-                    "Check the home_assistant_token in owner entity_info."
-                )
-            if msg_type != "auth_ok":
-                raise RuntimeError(
-                    f"HomeAssistantModule: unexpected auth response type: {msg_type!r}"
-                )
-        except Exception:
-            # Close the dangling connection before propagating to callers.
+            msg = await authenticate(self._ws_connection, self._token)
+        except HAAuthInvalidError:
+            await self._ws_close()
+            raise RuntimeError(
+                "HomeAssistantModule: authentication failed (auth_invalid). "
+                "Check the home_assistant_token in owner entity_info."
+            ) from None
+        except HAHandshakeProtocolError:
+            await self._ws_close()
+            raise RuntimeError("HomeAssistantModule: unexpected authentication response") from None
+        except (Exception, asyncio.CancelledError):
             await self._ws_close()
             raise
 
@@ -1003,21 +982,14 @@ class HomeAssistantModule(Module):
                 except TimeoutError:
                     continue
 
-                if raw.type == aiohttp.WSMsgType.TEXT:
+                if raw.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                     try:
-                        msg: dict[str, Any] = json.loads(raw.data)
-                    except json.JSONDecodeError:
-                        logger.warning("HomeAssistantModule: invalid JSON from WS: %r", raw.data)
+                        messages = decode_ws_text(raw.data)
+                    except ValueError:
+                        logger.warning("HomeAssistantModule: invalid WebSocket JSON withheld")
                         continue
-                    await self._dispatch_ws_payload(msg)
-
-                elif raw.type == aiohttp.WSMsgType.BINARY:
-                    try:
-                        msg = json.loads(raw.data)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        logger.warning("HomeAssistantModule: invalid binary WS message")
-                        continue
-                    await self._dispatch_ws_payload(msg)
+                    for msg in messages:
+                        await self._dispatch_ws_message(msg)
 
                 elif raw.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -1875,6 +1847,13 @@ class HomeAssistantModule(Module):
         }
         effective = effective_actuation_risk(domain, service, target, data, temperature_units=units)
         risk = effective.risk
+        from butlers.modules.party_approval import parties_are_owner
+
+        from .actuation import communication_parties
+
+        communicates, parties = communication_parties(domain, service, target, data)
+        owner_only = await parties_are_owner(pool, parties) if communicates else True
+        communication = {"effect_class": "communicate", "owner_only": owner_only}
         approval_context = get_approval_execution_context(
             tool_name="ha_call_service",
             tool_args={"domain": domain, "service": service, "target": target, "data": data},
@@ -1885,7 +1864,7 @@ class HomeAssistantModule(Module):
             else get_current_runtime_session_id()
         )
 
-        if risk.requires_approval and approval_context is None:
+        if (risk.requires_approval or not owner_only) and approval_context is None:
             action_id = await self._park_actuation_for_approval(
                 pool=pool,
                 domain=domain,
@@ -1894,12 +1873,17 @@ class HomeAssistantModule(Module):
                 data=data,
                 risk=risk,
                 session_id=session_id,
-                why=effective.approval_reason,
+                why=(
+                    "non-owner communication requires owner approval; physical risk: " + risk.value
+                    if not owner_only
+                    else effective.approval_reason
+                ),
             )
             return {
                 "status": "pending_approval",
                 "action_id": str(action_id),
                 "risk": risk.value,
+                **({"communication": communication} if communicates else {}),
                 "message": f"{domain}.{service} requires explicit owner approval",
             }
 
@@ -2774,7 +2758,7 @@ class HomeAssistantModule(Module):
             logger.debug("HomeAssistantModule: entity cache empty; skipping snapshot.")
             return
 
-        rows: list[tuple[str, str, str, str | None]] = []
+        rows: list[tuple[str, str, str, str | None, str | None]] = []
         for e in entities:
             # Merge registry-derived area data into the persisted attributes so
             # the dashboard/job area filters work against the snapshot table.
@@ -2790,23 +2774,25 @@ class HomeAssistantModule(Module):
                     e.state,
                     _json.dumps(attrs),
                     e.last_updated or None,
+                    e.last_changed or None,
                 )
             )
 
         await pool.executemany(
             """
             INSERT INTO ha_entity_snapshot
-                (entity_id, state, attributes, last_updated, captured_at)
-            -- $3/$4 are bound as text and cast in-SQL.  ``attributes`` is sent as
+                (entity_id, state, attributes, last_updated, last_changed, captured_at)
+            -- $3/$4/$5 are bound as text and cast in-SQL.  ``attributes`` is sent as
             -- a JSON string and cast text->jsonb (binding it as jsonb would route
             -- through the connection's jsonb codec and double-encode the string).
-            -- ``last_updated`` is an ISO 8601 string; binding it as timestamptz
-            -- would make asyncpg's executemany reject the str.
-            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, now())
+            -- ``last_updated`` and ``last_changed`` are ISO 8601 strings; binding them as
+            -- timestamptz would make asyncpg's executemany reject the str.
+            VALUES ($1, $2, $3::text::jsonb, $4::text::timestamptz, $5::text::timestamptz, now())
             ON CONFLICT (entity_id) DO UPDATE SET
                 state        = EXCLUDED.state,
                 attributes   = EXCLUDED.attributes,
                 last_updated = EXCLUDED.last_updated,
+                last_changed = EXCLUDED.last_changed,
                 captured_at  = now()
             """,
             rows,

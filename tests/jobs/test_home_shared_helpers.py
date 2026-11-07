@@ -37,6 +37,7 @@ from butlers.jobs.home import (
     _require_ha_source_healthy,
     _send_notify,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import row
 
 pytestmark = pytest.mark.unit
@@ -56,26 +57,23 @@ def _healthy_row() -> dict[str, Any]:
     }
 
 
-def _make_pool(
+def _home_pool(
     *,
     fetchval_return: Any = None,
     fetchrow_return: Any = "__default__",
     fetch_return: list[Any] | None = None,
-) -> MagicMock:
-    """Mocked asyncpg pool.
+) -> FakePool:
+    """Kit pool whose ``fetchrow`` defaults to a healthy ``ha_source_health`` row.
 
-    ``fetchrow_return`` defaults to a healthy ``ha_source_health`` row so
-    tests unrelated to source-health gating are unaffected; pass ``None`` or
+    Tests unrelated to source-health gating are unaffected; pass ``None`` or
     an error-status row explicitly to exercise the unmeasurable path.
     """
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=fetchval_return)
-    pool.fetchrow = AsyncMock(
-        return_value=_healthy_row() if fetchrow_return == "__default__" else fetchrow_return
+    return fake_pool(
+        fetchval=fetchval_return,
+        fetchrow=_healthy_row() if fetchrow_return == "__default__" else fetchrow_return,
+        fetch=fetch_return or [],
+        execute=None,
     )
-    pool.fetch = AsyncMock(return_value=fetch_return or [])
-    pool.execute = AsyncMock()
-    return pool
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +83,7 @@ def _make_pool(
 
 async def test_home_job_context_create():
     """create() populates credentials from contact info; None when absent."""
-    pool = _make_pool()
+    pool = _home_pool()
 
     async def _resolve(pool: Any, info_type: str) -> str | None:
         return {"home_assistant_url": "http://ha.local:8123", "home_assistant_token": "secret"}[
@@ -114,6 +112,8 @@ async def test_home_job_context_lifecycle():
     async with ctx as c:
         assert c is ctx
         assert isinstance(c.client, httpx.AsyncClient)
+        assert c.client.timeout == httpx.Timeout(30.0, connect=10.0)
+        assert str(c.client.base_url) == "http://ha.local:8123"
         merged = {k.lower(): v for k, v in c.client.headers.items()}
         assert "authorization" in merged
         assert "Bearer mytoken" in merged.get("authorization", merged.get("Authorization", ""))
@@ -143,7 +143,7 @@ async def test_home_job_context_lifecycle():
 
 async def test_load_thresholds_stored_and_fallbacks():
     """Returns stored values when present; falls back to defaults on missing/non-dict key."""
-    pool = _make_pool()
+    pool = _home_pool()
 
     with patch(
         "butlers.jobs.home.state_get",
@@ -164,7 +164,7 @@ async def test_load_thresholds_stored_and_fallbacks():
 
 async def test_load_thresholds_per_key_fallback_and_type_casting():
     """Per-key bad values use defaults; strings cast to correct numeric type; extra keys ignored."""
-    pool = _make_pool()
+    pool = _home_pool()
 
     # Per-key invalid
     with patch(
@@ -217,21 +217,21 @@ async def test_read_entity_snapshot():
         row(**{"entity_id": "sensor.temp", "state": "72", "attributes": {}, "last_updated": None}),
         row(**{"entity_id": "light.living", "state": "on", "attributes": {}, "last_updated": None}),
     ]
-    pool = _make_pool(fetch_return=rows)
+    pool = _home_pool(fetch_return=rows)
     result = await _read_entity_snapshot(pool)
     assert len(result) == 2
 
-    pool2 = _make_pool(fetch_return=rows[:1])
+    pool2 = _home_pool(fetch_return=rows[:1])
     result2 = await _read_entity_snapshot(pool2, domain_filter="sensor")
     assert len(result2) == 1
     assert "LIKE" in pool2.fetch.call_args[0][0]
     assert pool2.fetch.call_args[0][1] == "sensor.%"
 
-    pool3 = _make_pool(fetch_return=[])
+    pool3 = _home_pool(fetch_return=[])
     with pytest.raises(EmptyEntitySnapshotError):
         await _read_entity_snapshot(pool3)
 
-    pool4 = _make_pool(fetch_return=[])
+    pool4 = _home_pool(fetch_return=[])
     with pytest.raises(EmptyEntitySnapshotError, match="sensor"):
         await _read_entity_snapshot(pool4, domain_filter="sensor")
 
@@ -244,7 +244,7 @@ async def test_read_entity_snapshot_unmeasurable_on_outage():
 
     # Simulated outage: an explicit error status short-circuits before the
     # snapshot table (which may well have rows) is even queried.
-    pool = _make_pool(
+    pool = _home_pool(
         fetchrow_return={"status": "error", "last_success_at": None}, fetch_return=rows
     )
     with pytest.raises(HASourceUnmeasurableError):
@@ -252,7 +252,7 @@ async def test_read_entity_snapshot_unmeasurable_on_outage():
     pool.fetch.assert_not_called()
 
     # No health record at all (never contacted) fails closed the same way.
-    pool2 = _make_pool(fetchrow_return=None, fetch_return=rows)
+    pool2 = _home_pool(fetchrow_return=None, fetch_return=rows)
     with pytest.raises(HASourceUnmeasurableError):
         await _read_entity_snapshot(pool2)
     pool2.fetch.assert_not_called()
@@ -265,7 +265,7 @@ async def test_read_entity_snapshot_unmeasurable_on_outage():
 
 async def test_require_ha_source_healthy_happy_path():
     """Only a recent healthy status row passes without raising."""
-    pool = _make_pool(
+    pool = _home_pool(
         fetchrow_return={
             "status": "healthy",
             "last_success_at": datetime.now(UTC),
@@ -277,7 +277,7 @@ async def test_require_ha_source_healthy_happy_path():
     assert pool.fetchrow.await_args.args[2] == 5
 
     for last_success_at in (None, datetime.now(UTC) - timedelta(minutes=6)):
-        stale_pool = _make_pool(
+        stale_pool = _home_pool(
             fetchrow_return={
                 "status": "healthy",
                 "last_success_at": last_success_at,
@@ -291,7 +291,7 @@ async def test_require_ha_source_healthy_happy_path():
 async def test_require_ha_source_healthy_outage_carries_last_good_timestamp():
     """An error-status row raises HASourceUnmeasurableError with the last-good timestamp."""
     last_good = datetime(2026, 9, 1, 12, 0, 0, tzinfo=UTC)
-    pool = _make_pool(fetchrow_return={"status": "error", "last_success_at": last_good})
+    pool = _home_pool(fetchrow_return={"status": "error", "last_success_at": last_good})
     with pytest.raises(HASourceUnmeasurableError) as exc_info:
         await _require_ha_source_healthy(pool)
     assert exc_info.value.last_success_at == last_good
@@ -299,7 +299,7 @@ async def test_require_ha_source_healthy_outage_carries_last_good_timestamp():
 
 async def test_require_ha_source_healthy_missing_row_fails_closed():
     """No ha_source_health row at all (never contacted) is treated as unmeasurable."""
-    pool = _make_pool(fetchrow_return=None)
+    pool = _home_pool(fetchrow_return=None)
     with pytest.raises(HASourceUnmeasurableError) as exc_info:
         await _require_ha_source_healthy(pool)
     assert exc_info.value.last_success_at is None
@@ -328,7 +328,7 @@ def _patch_no_suppression():
 
 async def test_send_notify_suppressed_by_quiet_hours():
     """Quiet-hours suppression skips delivery and records a suppressed ledger row."""
-    pool = _make_pool()
+    pool = _home_pool()
 
     with (
         patch(
@@ -354,7 +354,7 @@ async def test_send_notify_suppressed_by_quiet_hours():
 
 async def test_send_notify_no_recipient_configured():
     """No telegram recipient configured: skip delivery, record a failed ledger row."""
-    pool = _make_pool()
+    pool = _home_pool()
     p1, p2 = _patch_no_suppression()
 
     with (
@@ -377,7 +377,7 @@ async def test_send_notify_no_recipient_configured():
 
 async def test_send_notify_no_switchboard_client():
     """Switchboard client unavailable: skip delivery, record a failed ledger row."""
-    pool = _make_pool()
+    pool = _home_pool()
     p1, p2 = _patch_no_suppression()
 
     with (
@@ -399,7 +399,7 @@ async def test_send_notify_no_switchboard_client():
 
 async def test_send_notify_delivers_via_deliver_mcp_tool():
     """Happy path: builds a notify.v1 envelope and calls deliver() over the MCP client."""
-    pool = _make_pool()
+    pool = _home_pool()
     p1, p2 = _patch_no_suppression()
 
     mock_client = MagicMock()
@@ -440,7 +440,7 @@ async def test_send_notify_delivers_via_deliver_mcp_tool():
 
 async def test_send_notify_deliver_failure_recorded_as_failed():
     """deliver() reporting status=failed is recorded as a failed ledger row, not raised."""
-    pool = _make_pool()
+    pool = _home_pool()
     p1, p2 = _patch_no_suppression()
 
     mock_client = MagicMock()

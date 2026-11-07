@@ -17,7 +17,6 @@ import pytest
 from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_close_cache_tuple
 from butlers.chronicler.day_close_recovery import RecoveryRefused, apply_recovery, plan_recovery
 from butlers.chronicler.storage import upsert_tier2_cache
-from butlers.testing.migration import create_migrated_test_pool
 from tests.chronicler.test_day_close_narration_selection import notification
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -25,29 +24,22 @@ DAY = date(2026, 4, 24)
 MESSAGE = "The day settled into focused reading and an evening walk."
 
 
-@pytest.fixture(scope="module")
-async def pool(postgres_container):
-    value = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "chronicler"],
-        schemas={"core": "chronicler", "chronicler": "chronicler"},
+@pytest.fixture
+async def chronicler_pool(db, fresh_db):
+    """Core and chronicler both in chronicler; private memory is prepared explicitly."""
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    return await open_prepared_chronicler_pool(
+        db,
+        fresh_db,
+        "core",
+        "chronicler",
+        domain_schema="chronicler",
         pool_schema="chronicler",
-        min_pool_size=2,
-        max_pool_size=5,
+        schemas={"core": "chronicler", "chronicler": "chronicler"},
+        min_size=2,
+        max_size=5,
     )
-    yield value
-    await value.close()
-
-
-@pytest.fixture(autouse=True)
-async def clean(pool):
-    await pool.execute("DROP TRIGGER IF EXISTS recovery_control ON tier2_cache")
-    await pool.execute(
-        "TRUNCATE tier2_cache, day_close_cache_locks, sessions, deferred_notifications CASCADE"
-    )
-    await pool.execute("DELETE FROM public.attention_ledger WHERE origin_butler = 'chronicler'")
-    yield
-    await pool.execute("DROP TRIGGER IF EXISTS recovery_control ON tier2_cache")
 
 
 async def seed(pool, day=DAY):
@@ -119,35 +111,37 @@ async def readback(pool):
     return [dict(row) for row in await pool.fetch("SELECT * FROM tier2_cache ORDER BY cache_key")]
 
 
-async def test_migrated_exact_recovery_is_idempotent_and_source_drift_refuses(pool):
-    notification_id = await seed(pool)
-    plan = await plan_recovery(pool, start=DAY, end=DAY, timezone="UTC")
+async def test_migrated_exact_recovery_is_idempotent_and_source_drift_refuses(chronicler_pool):
+    notification_id = await seed(chronicler_pool)
+    plan = await plan_recovery(chronicler_pool, start=DAY, end=DAY, timezone="UTC")
     assert plan.entries[0].reason == "eligible"
-    assert (await apply_recovery(pool, plan))[0].reason == "applied"
-    before = deepcopy(await readback(pool))
+    assert (await apply_recovery(chronicler_pool, plan))[0].reason == "applied"
+    before = deepcopy(await readback(chronicler_pool))
     assert before[0]["prose"] == MESSAGE
-    assert (await apply_recovery(pool, plan))[0].reason == "already_applied"
-    assert await readback(pool) == before  # includes original build time/provenance
-    await pool.execute(
+    assert (await apply_recovery(chronicler_pool, plan))[0].reason == "already_applied"
+    assert await readback(chronicler_pool) == before  # includes original build time/provenance
+    await chronicler_pool.execute(
         "UPDATE deferred_notifications SET status = 'cancelled' WHERE id = $1", notification_id
     )
     with pytest.raises(RecoveryRefused, match="source_drift"):
-        await apply_recovery(pool, plan)
-    assert await readback(pool) == before
+        await apply_recovery(chronicler_pool, plan)
+    assert await readback(chronicler_pool) == before
 
 
-async def test_legacy_scalar_tool_calls_row_does_not_abort_planning(pool):
+async def test_legacy_scalar_tool_calls_row_does_not_abort_planning(chronicler_pool):
     """A day-close session whose tool_calls JSONB is a double-encoded string (legacy
     rows exist on dev) is no source for any day; it must not fail the whole plan."""
-    await seed(pool)
-    await pool.execute(
+    await seed(chronicler_pool)
+    await chronicler_pool.execute(
         "INSERT INTO sessions (id, prompt, trigger_source, request_id, success, completed_at, tool_calls)"
         " VALUES ($1, 'fixture', 'schedule:chronicler_day_close', $2, true, now(), to_jsonb($3::text))",
         uuid4(),
         str(uuid4()),
         "[]",
     )
-    plan = await plan_recovery(pool, start=DAY - timedelta(days=1), end=DAY, timezone="UTC")
+    plan = await plan_recovery(
+        chronicler_pool, start=DAY - timedelta(days=1), end=DAY, timezone="UTC"
+    )
     assert [entry.reason for entry in plan.entries] == ["missing_source", "eligible"]
 
 
@@ -162,23 +156,25 @@ async def wait_for_lock(pool, table):
             await asyncio.sleep(0.01)
 
 
-async def test_concurrent_normal_refresh_wins_and_serializable_recovery_cannot_clobber(pool):
-    await seed(pool)
-    plan = await plan_recovery(pool, start=DAY, end=DAY, timezone="UTC")
+async def test_concurrent_normal_refresh_wins_and_serializable_recovery_cannot_clobber(
+    chronicler_pool,
+):
+    await seed(chronicler_pool)
+    plan = await plan_recovery(chronicler_pool, start=DAY, end=DAY, timezone="UTC")
     # Establish the registry row before both transactions take their snapshots.
-    async with pool.acquire() as conn, conn.transaction():
+    async with chronicler_pool.acquire() as conn, conn.transaction():
         await lock_day_close_cache_tuple(conn, DAY, "UTC")
     task = None
     try:
-        async with pool.acquire() as normal, normal.transaction():
+        async with chronicler_pool.acquire() as normal, normal.transaction():
             await lock_day_close_cache_tuple(normal, DAY, "UTC")
             await destination(normal, "A newer genuine normal-refresh retrospective.")
-            task = asyncio.create_task(apply_recovery(pool, plan))
-            await wait_for_lock(pool, "day_close_cache_locks")
+            task = asyncio.create_task(apply_recovery(chronicler_pool, plan))
+            await wait_for_lock(chronicler_pool, "day_close_cache_locks")
         # The old snapshot cannot replace a cache committed after its lock attempt.
         with pytest.raises(asyncpg.SerializationError):
             await task
-        rows = await readback(pool)
+        rows = await readback(chronicler_pool)
         assert len(rows) == 1
         assert rows[0]["prose"] == "A newer genuine normal-refresh retrospective."
     finally:
@@ -188,10 +184,14 @@ async def test_concurrent_normal_refresh_wins_and_serializable_recovery_cannot_c
 
 
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_later_tuple_failure_or_cancellation_rolls_back_the_whole_batch(pool, cancel):
-    await seed(pool)
-    await seed(pool, DAY + timedelta(days=1))
-    plan = await plan_recovery(pool, start=DAY, end=DAY + timedelta(days=1), timezone="UTC")
+async def test_later_tuple_failure_or_cancellation_rolls_back_the_whole_batch(
+    chronicler_pool, cancel
+):
+    await seed(chronicler_pool)
+    await seed(chronicler_pool, DAY + timedelta(days=1))
+    plan = await plan_recovery(
+        chronicler_pool, start=DAY, end=DAY + timedelta(days=1), timezone="UTC"
+    )
     assert all(entry.reason == "eligible" for entry in plan.entries)
     # Only disposable fixture DDL injects the failure; all actual writes use the
     # production recovery implementation and fully migrated tables.
@@ -200,7 +200,7 @@ async def test_later_tuple_failure_or_cancellation_rolls_back_the_whole_batch(po
         if cancel
         else ("RAISE EXCEPTION 'fixture recovery write refused';")
     )
-    await pool.execute(
+    await chronicler_pool.execute(
         "CREATE OR REPLACE FUNCTION recovery_control() RETURNS trigger LANGUAGE plpgsql AS $$"
         " BEGIN IF NEW.date_label = '2026-04-25' THEN " + operation + " END IF; RETURN NEW; END $$;"
         " CREATE TRIGGER recovery_control BEFORE INSERT OR UPDATE ON tier2_cache"
@@ -208,19 +208,19 @@ async def test_later_tuple_failure_or_cancellation_rolls_back_the_whole_batch(po
     )
     task = None
     try:
-        async with pool.acquire() as blocker:
+        async with chronicler_pool.acquire() as blocker:
             try:
                 if cancel:
                     await blocker.execute("SELECT pg_advisory_lock(80424)")
-                    task = asyncio.create_task(apply_recovery(pool, plan))
-                    await wait_for_lock(pool, "INSERT INTO tier2_cache")
+                    task = asyncio.create_task(apply_recovery(chronicler_pool, plan))
+                    await wait_for_lock(chronicler_pool, "INSERT INTO tier2_cache")
                     task.cancel()
                     with pytest.raises(asyncio.CancelledError):
                         await task
                 else:
                     with pytest.raises(asyncpg.RaiseError, match="fixture recovery write refused"):
-                        await apply_recovery(pool, plan)
-                assert await readback(pool) == []
+                        await apply_recovery(chronicler_pool, plan)
+                assert await readback(chronicler_pool) == []
             finally:
                 if cancel:
                     await blocker.execute("SELECT pg_advisory_unlock(80424)")

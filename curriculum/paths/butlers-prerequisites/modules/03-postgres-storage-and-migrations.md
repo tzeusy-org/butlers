@@ -70,7 +70,7 @@ Serialization boundaries matter. A Python dict, a JSON string, and a PostgreSQL 
 
 - `docs/architecture/database-design.md`
 - `docs/data_and_storage/state-store.md`
-- `src/butlers/core/scheduler.py`
+- `src/butlers/core/scheduler/`
 - `src/butlers/modules/approvals/models.py`
 - `tests/modules/test_calendar_reminder_integration.py`
 
@@ -108,7 +108,7 @@ Guarded DDL checks whether a table, schema, index, or column exists before opera
 ### Where It Appears In The Repo
 
 - `docs/data_and_storage/migration-patterns.md`
-- `src/butlers/migrations.py`
+- `src/butlers/migrations/__init__.py`
 - `alembic/versions/core/`
 - `src/butlers/modules/*/migrations/`
 - `roster/*/migrations/`

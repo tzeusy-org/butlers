@@ -15,10 +15,12 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -143,40 +145,30 @@ class TestAttachmentPolicyEnforcement:
 class TestBackfillLifecycleStateMachine:
     def _make_job_row(
         self, status: str = "pending", job_id: str = "00000000-0000-0000-0000-000000000001"
-    ) -> MagicMock:
+    ) -> Record:
         import json
         from datetime import date
 
-        row = MagicMock()
-        data: dict[str, Any] = {
-            "id": job_id,
-            "connector_type": "gmail",
-            "endpoint_identity": "user@example.com",
-            "target_categories": json.dumps(["finance"]),
-            "date_from": date(2023, 1, 1),
-            "date_to": date(2023, 12, 31),
-            "rate_limit_per_hour": 100,
-            "daily_cost_cap_cents": 500,
-            "status": status,
-            "rows_processed": 0,
-            "rows_skipped": 0,
-            "cost_spent_cents": 0,
-            "error": None,
-            "created_at": None,
-            "started_at": None,
-            "completed_at": None,
-            "updated_at": None,
-            "cursor": None,
-        }
-        row.__getitem__ = lambda s, k: data[k]
-        return row
-
-    def _make_pool(self, fetchrow_return: Any = None, fetch_return: Any = None) -> AsyncMock:
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value=fetchrow_return)
-        pool.fetch = AsyncMock(return_value=fetch_return or [])
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-        return pool
+        return row(
+            id=job_id,
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
+            target_categories=json.dumps(["finance"]),
+            date_from=date(2023, 1, 1),
+            date_to=date(2023, 12, 31),
+            rate_limit_per_hour=100,
+            daily_cost_cap_cents=500,
+            status=status,
+            rows_processed=0,
+            rows_skipped=0,
+            cost_spent_cents=0,
+            error=None,
+            created_at=None,
+            started_at=None,
+            completed_at=None,
+            updated_at=None,
+            cursor=None,
+        )
 
     @pytest.mark.asyncio
     async def test_create_and_poll(self) -> None:
@@ -186,18 +178,9 @@ class TestBackfillLifecycleStateMachine:
         from butlers.tools.switchboard.backfill.connector import backfill_poll
         from butlers.tools.switchboard.backfill.controls import create_backfill_job
 
-        connector_row = MagicMock()
-        connector_row.__getitem__ = lambda s, k: {
-            "connector_type": "gmail",
-            "endpoint_identity": "user@example.com",
-        }[k]
-        result_row = MagicMock()
-        result_row.__getitem__ = lambda s, k: {
-            "id": "00000000-0000-0000-0000-000000000005",
-            "status": "pending",
-        }[k]
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(side_effect=[connector_row, result_row])
+        connector_row = row(connector_type="gmail", endpoint_identity="user@example.com")
+        result_row = row(id="00000000-0000-0000-0000-000000000005", status="pending")
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[connector_row, result_row]))
 
         result = await create_backfill_job(
             pool,
@@ -210,22 +193,21 @@ class TestBackfillLifecycleStateMachine:
         assert result["status"] == "pending"
 
         # Poll: active row
-        active_row = MagicMock()
-        active_row.__getitem__ = lambda s, k: {
-            "id": "00000000-0000-0000-0000-000000000005",
-            "target_categories": '["finance"]',
-            "date_from": date(2023, 1, 1),
-            "date_to": date(2023, 12, 31),
-            "rate_limit_per_hour": 100,
-            "daily_cost_cap_cents": 500,
-            "cursor": None,
-        }[k]
-        pool2 = self._make_pool(fetchrow_return=active_row)
+        active_row = row(
+            id="00000000-0000-0000-0000-000000000005",
+            target_categories='["finance"]',
+            date_from=date(2023, 1, 1),
+            date_to=date(2023, 12, 31),
+            rate_limit_per_hour=100,
+            daily_cost_cap_cents=500,
+            cursor=None,
+        )
+        pool2 = fake_pool(fetchrow=active_row)
         r = await backfill_poll(pool2, connector_type="gmail", endpoint_identity="user@example.com")
         assert r is not None
 
         # Poll: None when no pending
-        pool3 = self._make_pool(fetchrow_return=None)
+        pool3 = fake_pool(fetchrow=None)
         r2 = await backfill_poll(
             pool3, connector_type="gmail", endpoint_identity="user@example.com"
         )
@@ -241,31 +223,25 @@ class TestBackfillLifecycleStateMachine:
         )
 
         # Pause
-        paused_result = MagicMock()
-        paused_result.__getitem__ = lambda s, k: {"id": "id-2", "status": "paused"}[k]
-        pool_pause = AsyncMock()
-        pool_pause.fetchrow = AsyncMock(
-            side_effect=[self._make_job_row(status="active"), paused_result]
+        paused_result = row(id="id-2", status="paused")
+        pool_pause = fake_pool(
+            fetchrow=AsyncMock(side_effect=[self._make_job_row(status="active"), paused_result])
         )
         r = await backfill_pause(pool_pause, job_id="00000000-0000-0000-0000-000000000002")
         assert r["status"] == "paused"
 
         # Cancel pending
-        cancelled_result = MagicMock()
-        cancelled_result.__getitem__ = lambda s, k: {"id": "id-3", "status": "cancelled"}[k]
-        pool_cancel = AsyncMock()
-        pool_cancel.fetchrow = AsyncMock(
-            side_effect=[self._make_job_row(status="pending"), cancelled_result]
+        cancelled_result = row(id="id-3", status="cancelled")
+        pool_cancel = fake_pool(
+            fetchrow=AsyncMock(side_effect=[self._make_job_row(status="pending"), cancelled_result])
         )
         r2 = await backfill_cancel(pool_cancel, job_id="00000000-0000-0000-0000-000000000003")
         assert r2["status"] == "cancelled"
 
         # Resume paused
-        pending_result = MagicMock()
-        pending_result.__getitem__ = lambda s, k: {"id": "id-4", "status": "pending"}[k]
-        pool_resume = AsyncMock()
-        pool_resume.fetchrow = AsyncMock(
-            side_effect=[self._make_job_row(status="paused"), pending_result]
+        pending_result = row(id="id-4", status="pending")
+        pool_resume = fake_pool(
+            fetchrow=AsyncMock(side_effect=[self._make_job_row(status="paused"), pending_result])
         )
         r3 = await backfill_resume(pool_resume, job_id="00000000-0000-0000-0000-000000000004")
         assert r3["status"] == "pending"
@@ -280,11 +256,11 @@ class TestBackfillLifecycleStateMachine:
         completed_row = self._make_job_row(
             status="completed", job_id="00000000-0000-0000-0000-000000000006"
         )
-        pool = self._make_pool(fetchrow_return=completed_row)
+        pool = fake_pool(fetchrow=completed_row)
         with pytest.raises(ValueError, match="terminal"):
             await backfill_cancel(pool, job_id="00000000-0000-0000-0000-000000000006")
 
-        pool2 = self._make_pool()
+        pool2 = fake_pool()  # the date check fires before any query
         with pytest.raises(ValueError, match="date_from"):
             await create_backfill_job(
                 pool2,
@@ -304,14 +280,17 @@ class TestBackfillLifecycleStateMachine:
 class TestIngestionPageSmoke:
     def test_all_backend_modules_importable(self) -> None:
         """All /ingestion backend API modules are importable with expected attributes."""
-        import importlib
-
+        from butlers.api.router_discovery import _DEFAULT_ROSTER_DIR, _load_router_module
         from butlers.tools.switchboard.triage.thread_affinity import (
             AffinityOutcome,
             lookup_thread_affinity,
         )
 
-        mod = importlib.import_module("switchboard_api_router")
+        # Load the router the way production discovery does, so the test does not depend on
+        # another test having registered it in sys.modules; a broken import raises here.
+        mod = _load_router_module(
+            _DEFAULT_ROSTER_DIR / "switchboard" / "api" / "router.py", "switchboard_api_router"
+        )
         assert hasattr(mod, "router")
 
         from butlers.tools.switchboard.backfill import connector, controls

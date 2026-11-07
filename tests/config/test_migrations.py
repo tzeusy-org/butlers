@@ -1707,7 +1707,8 @@ def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(post
     """Real QA policy reads and scheduler tick work without granting foreign writes."""
     import asyncpg
 
-    from butlers.core.scheduler import QaSchedulePolicy, read_qa_schedule_policy, tick
+    from butlers.core.scheduler.claim import QaSchedulePolicy, read_qa_schedule_policy
+    from butlers.core.scheduler.dispatch import tick
     from butlers.db import register_jsonb_codec
 
     db_name = migration_db_name()

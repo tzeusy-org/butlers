@@ -184,7 +184,7 @@ Connector authentication uses bearer tokens issued by the Switchboard. Token sco
 ## Available Connectors
 
 Static discovery and buffered-preview fallback labels derive from the frozen data
-in `src/butlers/connectors/catalog.py`. `GET /api/ingestion/connectors/available`
+in `src/butlers/connector_catalog.py`. `GET /api/ingestion/connectors/available`
 returns exactly `connector_type`, `channel`, `provider` and `display_name` for each
 framework-deployable connector, independently of registered instances. Its
 channel/provider fields use the connector's canonical emitted identity, including
@@ -249,6 +249,11 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
 
 ## Implementation Notes
 
+- WhatsApp socket HTTP is implemented once in `butlers.whatsapp_bridge_client`;
+  the manager remains the connector-owned subprocess supervisor. Module and API
+  callers never acquire bridge ownership. ACK raw-byte limits apply before HTTP
+  parsing; SSE deadlines cover complete lines, not individual network chunks.
+
 - WhatsApp `pair_required` is a waiting state, not a failure. `BridgeSubprocessManager`
   (`src/butlers/connectors/bridge_manager.py`) treats it as startup-ready unconditionally, and
   `WhatsAppUserClientConnector._sse_event_loop` checks `is_awaiting_pairing` before its generic
@@ -283,7 +288,7 @@ curl -s "http://localhost:9090/api/v1/query?query=connector_ingest_submissions_t
   key: the `connector.heartbeat` tool (one row per process) and `cursor_store.save_cursor` (one row
   per checkpoint). Since sw_031 the role is persisted in `operational_role` (`runtime_instance`,
   `checkpoint`, `unknown`) with `parent_endpoint_identity`; the vocabulary is
-  `butlers.connectors.registry_roles`. Only `runtime_instance` rows carry liveness authority;
+  `butlers.core.connector_registry_roles`. Only `runtime_instance` rows carry liveness authority;
   heartbeat promotion is one-way; `save_cursor` stamps `checkpoint` on INSERT only, never in its
   `ON CONFLICT` branch. Never derive the role from the identity string, surface `unknown` as
   `unclassified`, and make every new writer declare a role and every new consumer filter by it.
@@ -361,9 +366,9 @@ or extended. Backdated rows inserted behind a cursor by an old writer require a 
 A dry run is not a stable-snapshot or applied-repair claim.
 
 Evidence stores follow the same rule: OwnTracks `raw_payload` strings, Google Drive cached file
-names and the ActivityWatch `window_title` column are scrubbed before the write, and a detector
-failure skips that evidence write instead of storing raw text. One gap remains: ActivityWatch
-`raw_payload` still stores the raw window title, URL and tab title until `bu-506glj` lands.
+names, and the ActivityWatch `window_title` column and `raw_payload` (window title, web URL and
+tab title) are scrubbed before the write, and a detector failure skips that evidence write instead
+of storing raw text.
 
 ## Related Pages
 
@@ -422,3 +427,16 @@ preserving each entrypoint's boolean rules and validation order; per-account
 metadata, DB-resolved credentials and account health port zero are unchanged.
 Spotify no longer carries its two unused identity settings. S4 health-kit,
 service/bind and deployment work remains required and unfinished.
+
+### Google account supervision
+
+Gmail, Calendar and Drive use source adapters over `GoogleAccountFleet` for
+account reconciliation, periodic rescans, SIGHUP/manual reload, and owned
+shutdown. Each adapter retains its scope filter, account configuration, cursor
+and health/heartbeat behavior; Calendar still restarts dead account loops.
+Reconciliation is serialized so manual reload cannot race the timer. Startup
+errors and cancellation close already-owned loops and source resources.
+
+The Gmail, Calendar, Drive and Health processes remain four separate Deployments.
+Combining those Deployments is deferred; shared token or fleet code does not
+change their deployment, consent, database or credential boundaries.

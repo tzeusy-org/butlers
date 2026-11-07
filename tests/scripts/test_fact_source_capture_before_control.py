@@ -166,7 +166,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
     sentinel = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(30)"])
     try:
         healthy = control.run_owned([sys.executable, "-c", "pass"], os.environ.copy(), 5)
-        assert healthy["exit"] == 0 and healthy["cleanup_complete"]
+        assert healthy["exit"] == 0 and healthy["cleanup_complete"], healthy["observation"]
         assert healthy["observation"]["child_exit"] == 0
         assert healthy["observation"]["supervisor_exit"] == 0
         assert healthy["observation"]["settled_complete"] is True
@@ -176,7 +176,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
             os.environ.copy(),
             5,
         )
-        assert refused["exit"] == 7 and refused["cleanup_complete"]
+        assert refused["exit"] == 7 and refused["cleanup_complete"], refused["observation"]
         assert refused["observation"]["child_exit"] == 7
         assert refused["observation"]["reason"] == "settled"
         diagnostic = control.refusal(
@@ -196,7 +196,9 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
             "signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(30)"
         )
         hung = control.run_owned([sys.executable, "-c", code], os.environ.copy(), 2)
-        assert hung["timed_out"] and hung["cleanup_complete"] and hung["exit"] != 0
+        assert hung["timed_out"] and hung["cleanup_complete"] and hung["exit"] != 0, hung[
+            "observation"
+        ]
         assert hung["observation"]["timed_out"] is True
         assert hung["observation"]["child_signal"] == "SIGKILL"
         assert hung["observation"]["kernel_children_closed"] is True
@@ -479,7 +481,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                 },
                 10,
             )
-            assert timeout_result["cleanup_complete"] is True
+            assert timeout_result["cleanup_complete"] is True, timeout_result["observation"]
             assert timeout_result["timed_out"] is False and timeout_result["cancelled"] is False
             timeout_facts = json.loads(timeout_closed.read_text())
             assert timeout_facts["sentinel_reaped"] is True
@@ -627,7 +629,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
             },
             10,
         )
-        assert kernel_result["cleanup_complete"] is True
+        assert kernel_result["cleanup_complete"] is True, kernel_result["observation"]
         assert stat.S_IMODE(kernel_projection.stat().st_mode) == 0o600
         raw_projection = kernel_projection.read_bytes()
         assert len(raw_projection) <= 16384
@@ -693,7 +695,7 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                 5,
                 cwd=workload,
             )
-        assert prepared["exit"] == 0 and prepared["cleanup_complete"]
+        assert prepared["exit"] == 0 and prepared["cleanup_complete"], prepared["observation"]
         assert (workload / "prepared").read_text() == "software-only"
         assert sorted(p.name for p in controller.iterdir()) == ["original"]
         assert original.read_text() == "unchanged" and sentinel.poll() is None
@@ -728,7 +730,9 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         sentinel.wait(timeout=5)
 
 
-def test_exception_observation_discards_values_and_never_infers_missing_old_await(tmp_path):
+def test_exception_observation_discards_values_and_never_infers_missing_old_await(
+    tmp_path, monkeypatch
+):
     issuer = type("Issuer", (), {"_reports": {}})()
     inboxes = [uuid.uuid4() for _ in range(3)]
     namespace = {"issuer": issuer, "inboxes": inboxes}
@@ -787,6 +791,147 @@ def test_exception_observation_discards_values_and_never_infers_missing_old_awai
     assert facts["nested_acquire"] and facts["owner_frame"] and refs[0] is issuer
     facts, refs = observer.exception_facts(ValueError("PRIVATE_DATA"), tmp_path)
     assert facts["exception"] == "other" and refs is None
+
+    # Exercise the existing observer-fixture SQL boundary with software-only pool
+    # probes. These controls do not execute or claim a PostgreSQL/MCP witness.
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import asyncpg
+
+    from butlers.core import fact_authority
+
+    observed_ids = [uuid.uuid4() for _ in range(3)]
+    reads = []
+    report_rows = [{"id": key, "report": None} for key in observed_ids]
+
+    class ProbePool(asyncpg.Pool):
+        def __init__(self):
+            pass
+
+        def get_max_size(self):
+            return 1
+
+        async def fetchval(self, query):
+            assert query == "SELECT current_user"
+            return "butler_switchboard_rw"
+
+        @asynccontextmanager
+        async def acquire(self, **kwargs):
+            class Connection:
+                def is_in_transaction(self):
+                    return False
+
+                async def fetchval(self, query):
+                    assert query == "SELECT 1"
+                    return 1
+
+            yield Connection()
+
+    class Reports:
+        async def fetch(self, query, *args):
+            assert "WHERE id = ANY($1::uuid[])" in query, "unscoped inbox read"
+            assert len(args) == 1 and set(args[0]) == set(observed_ids)
+            reads.append(tuple(args[0]))
+            return list(report_rows)
+
+    probe_pool = ProbePool()
+    registry = fact_authority.FactSourceContextRegistry(probe_pool)
+    runtime = Path(fact_authority.__file__).resolve()
+    env = SimpleNamespace(sw=Reports(), _registered_endpoint="http://127.0.0.1:1")
+    request = SimpleNamespace(node=SimpleNamespace(nodeid=control.NODE))
+    config = {
+        "phase": "before",
+        "root": str(runtime.parents[3]),
+        "runtime_sha256": __import__("hashlib").sha256(runtime.read_bytes()).hexdigest(),
+    }
+
+    async def observe(refs):
+        monkeypatch.setattr(observer, "CONFIG", config)
+        state = phase(config["phase"])
+        state.update(durable_partial_reports=None, memory_partial_reports=None)
+        monkeypatch.setattr(observer, "STATE", state)
+        monkeypatch.setattr(observer, "REFERENCES", refs)
+        fixture = observer.observe_registered_context.__wrapped__(request, env, probe_pool)
+        await anext(fixture)
+        with pytest.raises(StopAsyncIteration):
+            await anext(fixture)
+
+    asyncio.run(observe((registry, observed_ids)))
+    assert len(reads) == 1 and observer.STATE["durable_partial_reports"] == 0
+    assert observer.STATE["memory_partial_reports"] == 0
+    reads.clear()
+    for missing in (None, (registry, observed_ids[:2]), (registry, observed_ids[:1] * 3)):
+        asyncio.run(observe(missing))
+        assert reads == []
+        assert observer.STATE["durable_partial_reports"] is None
+        assert observer.STATE["memory_partial_reports"] is None
+    report_rows.pop()
+    asyncio.run(observe((registry, observed_ids)))
+    assert observer.STATE["durable_partial_reports"] is None
+    assert observer.STATE["memory_partial_reports"] is None
+    report_rows[:] = [{"id": key, "report": {}} for key in observed_ids]
+    config["phase"] = "after"
+    asyncio.run(observe((registry, observed_ids)))
+    assert observer.STATE["durable_partial_reports"] == 0
+    assert observer.STATE["memory_partial_reports"] is None
+
+    # The narrow call observer retains only this node's references on success or
+    # failure and restores tracing. Foreign frames and an existing tracer stay opaque.
+    monkeypatch.setattr(observer, "CONFIG", {"root": str(tmp_path)})
+    target = "test_capacity_one_registered_owner_capture_and_concurrent_sources"
+    for filename, outcome in (
+        (control.NODE.split("::")[0], "passed"),
+        (control.NODE.split("::")[0], "failed"),
+        ("unrelated.py", "passed"),
+    ):
+        namespace = {}
+        exec(
+            compile(
+                f"def {target}(issuer, inboxes):\n"
+                + (" raise ValueError('PRIVATE_BODY')\n" if outcome == "failed" else " return 1\n"),
+                str(tmp_path / filename),
+                "exec",
+            ),
+            namespace,
+        )
+        previous_trace = sys.gettrace()
+        sys.settrace(None)
+        hook = observer.pytest_runtest_call(SimpleNamespace(nodeid=control.NODE))
+        try:
+            next(hook)
+            if outcome == "failed":
+                with pytest.raises(ValueError, match="PRIVATE_BODY"):
+                    namespace[target](registry, observed_ids)
+                with pytest.raises(ValueError, match="PRIVATE_BODY"):
+                    hook.throw(ValueError("PRIVATE_BODY"))
+            else:
+                assert namespace[target](registry, observed_ids) == 1
+                with pytest.raises(StopIteration):
+                    next(hook)
+            assert sys.gettrace() is None
+            if filename == "unrelated.py":
+                assert observer.REFERENCES is None
+            else:
+                assert observer.REFERENCES == (registry, observed_ids)
+        finally:
+            hook.close()
+            sys.settrace(previous_trace)
+
+    def ambient_trace(frame, event, arg):
+        return None
+
+    previous_trace = sys.gettrace()
+    sys.settrace(ambient_trace)
+    try:
+        hook = observer.pytest_runtest_call(SimpleNamespace(nodeid=control.NODE))
+        next(hook)
+        assert sys.gettrace() is ambient_trace
+        with pytest.raises(StopIteration):
+            next(hook)
+        assert sys.gettrace() is ambient_trace and observer.REFERENCES is None
+    finally:
+        sys.settrace(previous_trace)
 
 
 def test_real_pytest_observer_records_setup_refusal_without_claiming_pg(tmp_path):
@@ -1141,6 +1286,9 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
     import py_compile
     from types import ModuleType, SimpleNamespace
 
+    ambient_helper = ModuleType("ci_environment")
+    monkeypatch.setitem(sys.modules, "ci_environment", ambient_helper)
+
     for mode in ("preloaded", "wrong-origin", "missing-spec", "cache", "cache-symlink", "legacy"):
         parent = tmp_path / ("import-" + mode)
         helper = parent / "workload/scripts/ci_environment.py"
@@ -1184,6 +1332,7 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
                     context.setitem(sys.modules, "ci_environment", ModuleType("ci_environment"))
                     expected = "prepare-helper-preloaded"
                 else:
+                    context.delitem(sys.modules, "ci_environment", raising=False)
                     context.setattr(
                         control.util,
                         "find_spec",
@@ -1202,6 +1351,7 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
                 with pytest.raises(ValueError, match=expected):
                     control.preparation_child()
                 assert not marker.exists()
+        assert sys.modules["ci_environment"] is ambient_helper
 
     # Exercise actual prepare_uv through real execute; malformed private values
     # cannot escape its diagnostic, and no failed installer may reach PG.

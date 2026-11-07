@@ -18,7 +18,7 @@ import asyncpg
 import pytest
 
 from butlers.core.attention_urgency import AttentionOrigin, evaluate_interruption
-from butlers.core.scheduler import tick
+from butlers.core.scheduler.dispatch import tick
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import migration_bootstrap_db_url
 from tests.integration.test_dashboard_stepup_restore import client
@@ -29,11 +29,11 @@ from tests.integration.test_owner_creation_attention import (
     authority as authority,
 )
 from tests.integration.test_owner_creation_attention import (
-    create,
-    issue,
+    authority_db_url as authority_db_url,
 )
 from tests.integration.test_owner_creation_attention import (
-    migrated_db_url as migrated_db_url,
+    create,
+    issue,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
-    attention_env, migrated_db_url, postgres_container, tmp_path
+    attention_env, authority_db_url, postgres_container, tmp_path
 ):
     env = attention_env
     _, claim = await issue(env, {"name": "durable"})
@@ -62,11 +62,11 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
     raw = {"name": "durable_final_" + uuid4().hex}
     _, final_claim = await issue(env, raw)
     from butlers.core.owner_creation import _pending
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     token = _pending.set(final_claim)
     try:
-        with patch("butlers.core.scheduler._next_run", return_value=due):
+        with patch("butlers.core.scheduler.crud._next_run", return_value=due):
             final_task = await schedule_create(
                 env.domain,
                 raw["name"],
@@ -82,7 +82,8 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
         return {"status": "ok"}
 
     with patch(
-        "butlers.core.scheduler._next_run", return_value=datetime.now(UTC) + timedelta(days=1)
+        "butlers.core.scheduler.dispatch._next_run",
+        return_value=datetime.now(UTC) + timedelta(days=1),
     ):
         assert await tick(env.domain, dispatched, stagger_key="general") >= 1
     assert await env.migration.fetchval(
@@ -117,7 +118,7 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
         for table in tables
     }
     assert all(before.values())
-    source = urlparse(migrated_db_url)
+    source = urlparse(authority_db_url)
     backup = await asyncio.to_thread(
         client,
         postgres_container,

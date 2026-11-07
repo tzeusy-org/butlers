@@ -46,6 +46,7 @@ from butlers.chronicler.adapters.sessions import CoreSessionsAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.adapters.steam import SteamPlayAdapter
 from butlers.chronicler.models import Episode, PointEvent
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
 _OWNER_ENTITY_ID = uuid4()
@@ -56,19 +57,6 @@ _OWNER_ENTITY_ID = uuid4()
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCtx:
-    """Async context manager that yields obj."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 def _make_pool_with_fetchrow(row_value: object) -> AsyncMock:
     """Pool whose conn.fetchrow returns row_value."""
     conn = AsyncMock()
@@ -76,7 +64,7 @@ def _make_pool_with_fetchrow(row_value: object) -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=True)  # table-exists checks
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -96,10 +84,10 @@ def _chronicler_pool_tracked() -> tuple[AsyncMock, AsyncMock]:
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
     conn.executemany = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool, conn
 
 
@@ -107,10 +95,10 @@ def _chronicler_pool_simple() -> AsyncMock:
     """Minimal chronicler pool for upsert calls that do not need tracking."""
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -168,7 +156,7 @@ async def test_resolve_owner_entity_id_returns_none_on_db_error() -> None:
     conn = AsyncMock()
     conn.fetchrow = AsyncMock(side_effect=asyncpg.PostgresError())
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     result = await resolve_owner_entity_id(pool)
     assert result is None
 
@@ -328,7 +316,7 @@ async def test_spotify_adapter_stamps_entity_id_on_episode() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     spotify_row = MagicMock()
     spotify_row.__getitem__ = MagicMock(
@@ -382,11 +370,12 @@ async def test_steam_adapter_stamps_entity_id_on_episode() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     steam_row = MagicMock()
     steam_row.__getitem__ = MagicMock(
         side_effect=lambda k: {
+            "id": "00000000-0000-0000-0000-000000000001",
             "steam_id": "12345",
             "steam_account_id": None,
             "app_id": "730",
@@ -429,7 +418,7 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     point_row = {
         "id": uuid4(),
@@ -455,7 +444,11 @@ async def test_owntracks_movement_episode_stamps_entity_id() -> None:
 
     adapter = OwnTracksPointAdapter()
     with (
-        patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[point_row, second_row])),
+        patch.object(
+            adapter,
+            "_fetch_points",
+            new=AsyncMock(return_value=([point_row, second_row], None)),
+        ),
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event", new=AsyncMock()),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_upsert),
         patch(
@@ -492,7 +485,7 @@ async def test_reading_calendar_row_stamps_entity_id() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     cal_row = MagicMock()
     cal_row.__getitem__ = MagicMock(
@@ -542,7 +535,7 @@ async def test_google_health_sleep_adapter_stamps_entity_id() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     sleep_row = MagicMock()
     sleep_row.__getitem__ = MagicMock(
@@ -598,7 +591,7 @@ async def test_google_health_workout_adapter_stamps_entity_id() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     workout_row = MagicMock()
     workout_row.__getitem__ = MagicMock(
@@ -649,7 +642,7 @@ async def test_sessions_adapter_stamps_entity_id_on_work_episode() -> None:
 
     cp, conn = _chronicler_pool_tracked()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     session_row = MagicMock()
     session_row.__getitem__ = MagicMock(
@@ -718,7 +711,7 @@ async def test_meals_adapter_stamps_entity_id_on_point_event() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     meal_row = MagicMock()
     meal_row.__getitem__ = MagicMock(
@@ -762,7 +755,7 @@ async def test_meals_adapter_no_owner_fallback_for_point_event() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     meal_row = MagicMock()
     meal_row.__getitem__ = MagicMock(
@@ -803,7 +796,7 @@ async def test_steps_adapter_stamps_entity_id_on_point_event() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     steps_row = MagicMock()
     steps_row.__getitem__ = MagicMock(
@@ -852,7 +845,7 @@ async def test_heart_rate_adapter_stamps_entity_id_on_point_event() -> None:
 
     cp = _chronicler_pool_simple()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(AsyncMock()))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(AsyncMock()))
 
     hr_row = MagicMock()
     hr_row.__getitem__ = MagicMock(

@@ -67,7 +67,7 @@ from butlers.config import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
@@ -79,6 +79,7 @@ from butlers.core.tool_catalog import (
     ToolCatalog,
     ToolCatalogError,
     build_tool_catalog,
+    declared_approval_mode,
     validate_tool_metadata,
 )
 from butlers.core.utils import generate_uuid7_string
@@ -1168,7 +1169,16 @@ class ButlerDaemon:
                 if memory_engine is not None and memory_pool is not None:
                     from butlers.chronicler.writeback import build_chronicler_fact_writer
 
-                    store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
+                    memory_schema = (memory_module._config.memory_schema or "").strip()
+                    if memory_schema:
+                        store_fact_fn = build_chronicler_fact_writer(
+                            memory_pool, memory_engine, memory_schema=memory_schema
+                        )
+                    else:
+                        logger.warning(
+                            "Chronicler fact write-back disabled because its memory module "
+                            "does not configure an explicit private memory_schema"
+                        )
 
             from butlers.chronicler.day_close_continuation import DayCloseContinuation
             from butlers.chronicler.day_close_refresh import held_refresh_service
@@ -1375,6 +1385,7 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
         from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
+        from butlers.core_tools._temporal import TEMPORAL_DARK_TOOLS
 
         # Registration owns this snapshot state. Some focused integration
         # seams construct a daemon without calling __init__, so initialise it
@@ -1449,7 +1460,9 @@ class ButlerDaemon:
         register_all_core_tools(ctx, mcp, _core_tool)
         # Dark build (RFC 0038): _finalize_tool_catalog catalogs these, then
         # hides them from today's classify-and-route sessions.
-        self._goal_runtime_dark_tools = GOAL_RUNTIME_DARK_TOOLS & mcp._registered_tool_names
+        self._goal_runtime_dark_tools = (
+            GOAL_RUNTIME_DARK_TOOLS | TEMPORAL_DARK_TOOLS
+        ) & mcp._registered_tool_names
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
@@ -1536,6 +1549,14 @@ class ButlerDaemon:
                         f"tool presentation metadata conflicts with central inventory for "
                         f"{tool_name!r}: {', '.join(mismatches)}"
                     )
+            try:
+                approval_mode = declared_approval_mode(presentation.approval_policy)
+                if presentation.approval_policy != {"mode": approval_mode}:
+                    raise ToolCatalogError("declarations may supply only approval_policy.mode")
+            except ToolCatalogError as exc:
+                raise ToolCatalogError(
+                    f"invalid approval_policy declaration for {tool_name!r}: {exc}"
+                ) from exc
             resolved[tool_name] = ToolMeta(
                 arg_sensitivities=dict(sensitivity.arg_sensitivities),
                 canonical_name=presentation.canonical_name,
@@ -1550,7 +1571,7 @@ class ButlerDaemon:
                     if field_name not in {"owner_domain", "approval_policy"}
                 },
                 owner_domain=self.config.name,
-                approval_policy={},
+                approval_policy={"mode": approval_mode},
                 read_stores=presentation.read_stores,
                 write_stores=presentation.write_stores,
                 unknown_output_source=presentation.unknown_output_source,
@@ -1559,16 +1580,36 @@ class ButlerDaemon:
             if policy is not None:
                 gate = policy.gated_tools.get(tool_name)
                 resolved[tool_name].approval_policy = {
+                    "mode": approval_mode,
                     "enabled": policy.enabled,
                     "configured_gate": gate is not None,
                     "expiry_hours": policy.get_effective_expiry(tool_name),
                     "risk_tier": policy.get_effective_risk_tier(tool_name).value,
                     "rule_precedence": policy.rule_precedence,
                 }
+                if tool_name in {
+                    "calendar_create_event",
+                    "calendar_update_event",
+                    "calendar_delete_event",
+                    "calendar_update_event_instance",
+                    "calendar_delete_event_instance",
+                    "drive_write_file",
+                    "drive_create_folder",
+                    "drive_move_file",
+                } and (policy.enabled or presentation.module_name in policy.domain_producers):
+                    # Descriptive configuration, never evidence of an owner
+                    # decision or a generic gate for unrelated capabilities.
+                    resolved[tool_name].approval_policy = {
+                        **(resolved[tool_name].approval_policy or {}),
+                        "domain_producer": True,
+                    }
             # Explicit new declarations cannot silently contradict the inventory.
             for field_name in AUTHORIZATION_FIELDS:
                 supplied = getattr(sensitivity, field_name, None)
-                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                canonical = getattr(resolved[tool_name], field_name)
+                if field_name == "approval_policy" and supplied is not None:
+                    canonical = {"mode": approval_mode}
+                if supplied is not None and supplied != canonical:
                     raise ToolCatalogError(
                         f"tool authorization metadata conflicts with central inventory for "
                         f"{tool_name!r}: {field_name}"
@@ -1987,15 +2028,10 @@ class ButlerDaemon:
     async def _warn_if_approval_callback_secret_missing(self) -> None:
         """Log loudly, once at startup, when APPROVAL_CALLBACK_SECRET is unresolvable.
 
-        Without this Tier 1 secret, ``emit_approval_push`` structurally cannot
-        dispatch a single-action push: it resolves 'failed' before every
-        attempt (see ``notifications.py::_callback_secret``). That was
-        previously visible only as a per-push ``logger.warning`` an operator
-        would have to be looking at the right log line to see. This makes the
-        degraded state loud and startup-time visible instead -- a clear
-        operator-facing signal, not a silent per-push warning. This never
-        raises: a missing secret degrades approval pushes, it must not take
-        the daemon down (dashboard-only fallback remains available).
+        Durable delivery needs this Tier 1 secret to sign single-action callbacks.
+        Report missing configuration at startup without enabling admission or
+        worker startup. This never raises: unavailable callbacks must not take
+        the daemon down, and the dashboard review door remains available.
         """
         if self._credential_store is None:
             return
@@ -2026,29 +2062,31 @@ class ButlerDaemon:
             )
 
     def _wire_calendar_approval_enqueuer(self) -> None:
-        """Wire calendar overlap-approval enqueuer when both modules are loaded.
+        """Wire calendar and Drive domain gates to their owning approval queue.
 
-        When both the ``calendar`` and ``approvals`` modules are active on this
-        butler, connects the calendar module's overlap-override gate to the
-        approvals pending-action queue via a lightweight enqueue callback.
+        Enabling this callback does not install unrelated tool gates or grant
+        standing rules. Both consumers retain exact stored-call replay checks.
         """
         approvals_raw = self.config.modules.get("approvals")
         approval_config = parse_approval_config(approvals_raw)
-        if approval_config is None or not approval_config.enabled:
+        if approval_config is None:
+            return
+        approvals = next((m for m in self._active_modules if m.name == "approvals"), None)
+        if (
+            approvals is None
+            or not callable(getattr(approvals, "_tool_executor", None))
+            or getattr(self.db, "pool", None) is None
+        ):
             return
 
-        calendar_mod = None
-        for mod in self._active_modules:
-            if mod.name == "calendar":
-                calendar_mod = mod
-                break
-
-        if calendar_mod is None:
-            return
-
-        # Only wire if the calendar module exposes the setter.
-        set_enqueuer = getattr(calendar_mod, "set_approval_enqueuer", None)
-        if not callable(set_enqueuer):
+        setters = [
+            getattr(mod, "set_approval_enqueuer", None)
+            for mod in self._active_modules
+            if mod.name in {"calendar", "google_drive"}
+            and (approval_config.enabled or mod.name in approval_config.domain_producers)
+            and callable(getattr(mod, "set_approval_enqueuer", None))
+        ]
+        if not setters:
             return
 
         pool = self.db.pool
@@ -2061,7 +2099,7 @@ class ButlerDaemon:
             tool_args: dict[str, Any],
             agent_summary: str,
         ) -> str:
-            """Insert a pending_actions row for a calendar overlap override."""
+            """Park the owning domain's exact requested call without delivery here."""
             import uuid as _uuid
             from datetime import UTC as _UTC
             from datetime import datetime as _dt
@@ -2101,9 +2139,17 @@ class ButlerDaemon:
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
-                actor="system:calendar_overlap_gate",
+                actor=(
+                    "system:calendar_overlap_gate"
+                    if tool_name.startswith("calendar_")
+                    else "system:drive_party_gate"
+                ),
                 action_id=action_id,
-                reason="calendar overlap override requires approval",
+                reason=(
+                    "calendar overlap override requires approval"
+                    if tool_name.startswith("calendar_")
+                    else "Drive destination audience requires approval"
+                ),
                 metadata={"tool_name": tool_name},
                 occurred_at=now,
             )
@@ -2115,7 +2161,9 @@ class ButlerDaemon:
             )
             return str(action_id)
 
-        set_enqueuer(_enqueue_overlap_action)
+        for set_enqueuer in setters:
+            if callable(set_enqueuer):
+                set_enqueuer(_enqueue_overlap_action)
         logger.info("Wired calendar overlap-approval enqueuer via approvals module")
 
     def _wire_module_runtime(self) -> None:

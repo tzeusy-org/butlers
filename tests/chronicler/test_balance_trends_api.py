@@ -44,6 +44,7 @@ def _build_app(
     rollups: list[DailyRollup] | None = None,
     flags: list[DailyRollupFlag] | None = None,
     raise_error: bool = False,
+    pending_dates: set[date] | None = None,
 ):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = MagicMock()
@@ -51,6 +52,18 @@ def _build_app(
     app = create_app()
     router_module = _find_chronicler_router_module(app)
     app.dependency_overrides[get_db] = lambda: mock_db
+
+    async def fake_numeric_snapshot(pool, *, start_date, end_date, flag_start_date, flag_end_date):
+        if raise_error:
+            raise RuntimeError("simulated query failure")
+        return (
+            [r for r in (rollups or []) if start_date <= r.local_date <= end_date],
+            [f for f in (flags or []) if flag_start_date <= f.local_date <= flag_end_date],
+            pending_dates or set(),
+            False,
+        )
+
+    monkeypatch.setattr(router_module, "_numeric_snapshot", fake_numeric_snapshot, raising=False)
 
     async def fake_rollups_range(pool, *, start_date, end_date):
         if raise_error:
@@ -125,11 +138,10 @@ async def test_balance_not_yet_materialized_day_returns_empty_lanes(
 async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_keeps_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    rollups = [
-        _rollup(date(2026, 7, 5), "sleep", 25200),
-        _rollup(date(2026, 6, 20), "sleep", 28800),
-        _rollup(date(2026, 6, 21), "sleep", 30600),
-    ]
+    rollups = [_rollup(date(2026, 7, 5), "sleep", 25200)]
+    # Seven prior days: enough history for a personal band (median 28800).
+    for i, seconds in enumerate([28800, 30600, 28800, 30600, 28800, 30600, 28800], start=1):
+        rollups.append(_rollup(date(2026, 7, 5) - timedelta(days=i), "sleep", seconds))
     app = _build_app(monkeypatch, rollups=rollups, flags=[])
     resp = await _get(app, _BALANCE_ENDPOINT, {"date": "2026-07-05"})
     assert resp.status_code == 200
@@ -140,9 +152,9 @@ async def test_balance_materialized_day_zero_fills_lane_with_no_activity_but_kee
 
     sleep = lanes_by_name["sleep"]
     assert sleep["seconds"] == 25200
-    assert sleep["baseline_seconds"] == pytest.approx(29700.0)
-    assert sleep["delta_seconds"] == pytest.approx(25200 - 29700.0)
-    assert sleep["baseline_sample_days"] == 2
+    assert sleep["baseline_seconds"] == pytest.approx(28800.0)
+    assert sleep["delta_seconds"] == pytest.approx(25200 - 28800.0)
+    assert sleep["baseline_sample_days"] == 7
 
     # No activity today, but baseline history exists -> zero with context.
     work = lanes_by_name["work"]
@@ -264,4 +276,25 @@ async def test_trends_source_error_sets_unknown_status_for_every_day(
     assert data["trends_source_error"] is True
     work_series = next(s for s in data["lanes"] if s["lane"] == "work")
     assert all(d["status"] == "unknown" for d in work_series["days"])
+    assert work_series["streak_days"] is None
     assert data["anomalies"] == []
+
+
+async def test_trends_pending_baseline_suppresses_streak_until_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rollups = [_rollup(date(2026, 7, d), "work", 3600) for d in range(1, 8)]
+    for pending, expected in (({date(2026, 6, 30)}, None), (set(), 7)):
+        app = _build_app(monkeypatch, rollups=rollups, pending_dates=pending)
+        resp = await _get(
+            app,
+            _TRENDS_ENDPOINT,
+            {"window": "week", "end_date": "2026-07-07", "lookback_days": 7},
+        )
+        assert resp.status_code == 200
+        work = next(row for row in resp.json()["data"]["lanes"] if row["lane"] == "work")
+        assert work["streak_days"] == expected
+        assert all(
+            day["status"] == ("pending_repair" if pending else "materialized")
+            for day in work["days"]
+        )

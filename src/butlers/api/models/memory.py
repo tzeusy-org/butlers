@@ -118,6 +118,9 @@ class Fact(BaseModel):
     last_confirmed_at: str | None = None
     tags: list[str] = []
     metadata: dict = {}
+    endorsed_at: str | None = None
+    endorsed_by: str | None = None
+    held: bool = False
 
 
 class Rule(BaseModel):
@@ -169,6 +172,16 @@ class RuleEndorsement(BaseModel):
     changed: bool = False
 
 
+class FactVouch(BaseModel):
+    """Receipt for an owner vouch of a held fact (idempotent)."""
+
+    fact_id: str
+    content_authority: str | None = None
+    endorsed_at: str | None = None
+    endorsed_by: str | None = None
+    changed: bool = False
+
+
 class MemoryGapOrigin(BaseModel):
     """One thread an owner question was asked in."""
 
@@ -196,6 +209,14 @@ class MemoryGap(BaseModel):
     delivery_failed: bool = False
     last_error: str | None = None
     origins: list[MemoryGapOrigin] = []
+
+
+class MemoryGapDemand(BaseModel):
+    """Open knowledge gaps and asking threads for one predicate (bu-q7vx1q.73)."""
+
+    predicate: str
+    open_gaps: int
+    asks: int
 
 
 class MemoryGapDismissal(BaseModel):

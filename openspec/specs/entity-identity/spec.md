@@ -218,6 +218,49 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **AND** the source tombstone MUST retain its other roles and MUST no longer hold owner
 - **AND** the owner singleton constraint MUST remain enabled without a committed ownerless state
 
+#### Scenario: A forgotten entity cannot be merged
+
+- **WHEN** the source or target of a merge carries `metadata.tombstone = true` or `metadata.deleted_at`
+- **THEN** the merge MUST be refused as tombstoned under the entity locks
+- **AND** both entities MUST be unchanged and no rebind receipt MUST exist
+
+#### Scenario: A contact on a removed entity is refused by name
+
+- **WHEN** a contact merge finds that either contact's entity has been deleted, forgotten or merged away
+- **THEN** it MUST refuse with an error naming that contact and MUST change nothing
+- **AND** the removed entity MUST stay removed
+
+#### Scenario: A forget or delete cannot race a merge or rebind
+
+- **WHEN** a forget or memory entity delete overlaps a merge or rebind of that entity
+- **THEN** it MUST hold the entity row `FOR UPDATE` from before it retires anything until its marker commits
+- **AND** references moved by an operation that finished first MUST be retired with the rest
+- **AND** an operation that waited MUST see the marker and move nothing onto the entity
+- **AND** a memory entity delete that cannot finish MUST write no marker and MUST be retryable
+
+#### Scenario: The enrichment reap cannot remove an entity that gained a reference
+
+- **WHEN** the email enrichment reap finds a clean placeholder while a writer or merge is adding a reference to it
+- **THEN** it MUST hold the entity row `FOR UPDATE` while it repeats its no-references check in a new statement
+- **AND** it MUST skip a row another transaction holds, for its next run, rather than wait
+
+#### Scenario: A memory supersede cannot deadlock a forget or delete
+
+- **WHEN** a memory property fact write, a Dunbar tier pin or a loan settle replaces a fact on an entity that a forget or delete holds or is about to hold
+- **THEN** the write MUST lock its entity rows, in ascending id order, before its first fact lock
+- **AND** the write and the forget or delete MUST both complete, whichever reached the entity first
+
+#### Scenario: A promote cannot cross another writer over identity slots
+
+- **WHEN** an entity promote or create carries several initial facts on identity predicates
+- **THEN** it MUST take the union of their identity slots once, in the shared slot order, before its first write
+- **AND** overlapping requests MUST NOT deadlock, whatever order their bodies list the facts in
+
+#### Scenario: Concurrent memory entity deletes do not starve each other
+
+- **WHEN** two memory entity deletes overlap in one process, at the deployed pool maximum of 2
+- **THEN** they MUST run one at a time and both complete
+
 #### Scenario: Downstream merge failure restores the original owner
 
 - **WHEN** a merge fails after owner roles and references have moved inside its transaction
@@ -235,8 +278,9 @@ receipt. A running daemon SHALL react to the fleet event immediately. Pending
 receipts SHALL be replayed on daemon startup; fleet-event delivery is a
 freshness path, not the recovery authority. The daemon SHALL establish its
 fleet-event listener before startup replay and SHALL re-establish the listener
-and replay pending receipts after a retained-listener connection failure.
-PostgreSQL SHALL restrict cohort creation to Relationship and receipt
+and replay pending receipts after a retained-listener connection failure. While
+idle, it SHALL periodically sweep for pending receipts, and SHALL retry a failed
+receipt after a backoff. PostgreSQL SHALL restrict cohort creation to Relationship and receipt
 settlement to the runtime role bound to the receipt's target schema.
 
 #### Scenario: A merge opens an honest receipt cohort
@@ -260,6 +304,38 @@ settlement to the runtime role bound to the receipt's target schema.
 - **AND** concurrent live and startup replay MUST NOT overwrite a truthful count with zero
 - **AND** an event committed during startup replay MUST NOT be lost
 - **AND** a listener connection failure MUST trigger listener re-establishment and pending replay
+
+#### Scenario: A running daemon recovers a missed event
+
+- **WHEN** a running memory-bearing daemon's schema has a pending receipt and it received no event
+- **THEN** its idle sweep MUST process the receipt without a restart or a reconnect
+
+#### Scenario: A failed receipt is retried
+
+- **WHEN** a schema's receipt is `failed` and its backoff has passed
+- **THEN** that schema's daemon MUST retry it without a restart
+- **AND** a successful retry MUST settle the receipt with the references counted across all attempts
+- **AND** a failing retry MUST leave it `failed`, name the latest error class, and restart the backoff
+- **AND** a live event for that receipt MUST NOT retry it
+
+#### Scenario: A late rebind follows later merges of its target
+
+- **WHEN** a pending or failed receipt from A to B is processed after B was merged into C
+- **THEN** A's references in that schema MUST move to the entity at the end of B's `merged_into` chain
+- **AND** a merge of that entity still in flight MUST be waited for and followed
+- **AND** the receipt MUST keep its original source and target
+
+#### Scenario: A late rebind onto a forgotten entity moves nothing
+
+- **WHEN** the entity at the end of a receipt target's `merged_into` chain has been forgotten
+- **THEN** no reference MUST move onto it
+- **AND** the receipt MUST stay `failed` and name `EntityRebindTargetForgotten`
+
+#### Scenario: A rebind failure log carries no data values
+
+- **WHEN** a rebind attempt fails, first or on a retry
+- **THEN** the log MUST name the rebind id, schema, step, and error class
+- **AND** it MUST NOT include the exception's message or traceback
 
 ---
 

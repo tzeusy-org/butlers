@@ -156,6 +156,9 @@ class ToolMeta:
     read_stores: tuple[str, ...] = ()
     write_stores: tuple[str, ...] = ()
     unknown_output_source: bool = True
+    alias_free_params: tuple[str, ...] | None = None
+    categories: tuple[str, ...] | None = None
+    alias_resolvers: Mapping[str, str] | None = None
 
 
 class Module(abc.ABC):

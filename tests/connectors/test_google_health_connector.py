@@ -326,7 +326,11 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
     connector._client_id = "client-id"
     connector._client_secret = "client-secret"
     connector._http_client = MagicMock()
-    connector._http_client.post = AsyncMock(return_value=httpx.Response(400, json=payload))
+    connector._http_client.post = AsyncMock(
+        return_value=httpx.Response(
+            400, json=payload, request=httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        )
+    )
     monkeypatch.setattr(
         "butlers.google_credentials._resolve_entity_refresh_token",
         AsyncMock(return_value="refresh-token"),
@@ -337,6 +341,19 @@ async def test_mint_access_token_classifies_only_exact_oauth_error_codes(
 
     if expected_error is GoogleHealthCredentialError:
         assert type(exc_info.value) is GoogleHealthCredentialError
+
+    connector._shared_pool.execute = AsyncMock()
+    if expected_error is GoogleHealthTokenRevokedError:
+        await connector._mark_account_revoked(ctx.account_id)
+        args = connector._shared_pool.execute.await_args.args
+        assert "WHERE ga.id = $1" in args[0]
+        assert "ei.value = $2" in args[0]
+        assert args[1] == ctx.account_id and args[1] != ctx.entity_id
+        assert args[2] == "refresh-token"
+    else:
+        # The helper refuses a transition without qualified grant provenance.
+        await connector._mark_account_revoked(ctx.account_id)
+        connector._shared_pool.execute.assert_not_awaited()
 
 
 def test_health_state_reports_degraded_when_account_missing() -> None:
@@ -1153,6 +1170,43 @@ async def test_per_account_token_mint_isolation(monkeypatch: pytest.MonkeyPatch)
     # Only B's token is cached; A has nothing.
     assert ctx_a.cached_access_token is None
     assert ctx_b.cached_access_token == f"token-for-{_UUID_B}"
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_pre_initialises_alert_counters_per_resource() -> None:
+    """Alertable counters exist at zero before their first event, per account and resource.
+
+    ``increase()`` needs a prior sample, so a lazily created child would hide the
+    first-ever page-cap or quarantine event. An email change re-keys the identity
+    and must prime the new label set too.
+    """
+    from prometheus_client import REGISTRY
+
+    connector = _make_connector()
+    connector._shared_pool = MagicMock()
+    connector._spinup_account_heartbeat = MagicMock()  # type: ignore[method-assign]
+    account = HealthScopedAccount(
+        id=_UUID_A, email="prime@example.com", entity_id=_ENTITY_A, refresh_token_present=True
+    )
+    renamed = HealthScopedAccount(
+        id=_UUID_A, email="primed@example.com", entity_id=_ENTITY_A, refresh_token_present=True
+    )
+
+    for registry_rows in ([account], [renamed]):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "butlers.connectors.google_health.list_health_scoped_accounts",
+                AsyncMock(return_value=registry_rows),
+            )
+            await connector._resolve_owner_and_scopes()
+        identity = _endpoint_identity_for_user(registry_rows[0].email)
+        for bundle in RESOURCE_BUNDLES:
+            labels = {"endpoint_identity": identity, "resource": bundle.resource}
+            for sample in (
+                "connector_google_health_window_page_cap_exceeded_total",
+                "connector_google_health_quarantined_envelopes_total",
+            ):
+                assert REGISTRY.get_sample_value(sample, labels) == 0.0, (sample, labels)
 
 
 def test_prometheus_labels_distinct_per_account() -> None:

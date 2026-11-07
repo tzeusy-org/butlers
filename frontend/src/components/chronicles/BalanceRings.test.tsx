@@ -54,6 +54,14 @@ describe("BalanceRings — states", () => {
     expect(html).not.toContain("role=\"alert\"")
   })
 
+  it("reports pending repair without showing an empty or zero balance", () => {
+    const html = renderToStaticMarkup(
+      <BalanceRings data={makeResponse({ status: "pending_repair", lanes: [] })} />,
+    )
+    expect(html).toContain("balance-pending-repair")
+    expect(html).not.toContain("balance-empty")
+  })
+
   it("renders a ring with a signed delta for an active lane", () => {
     const html = renderToStaticMarkup(<BalanceRings data={makeResponse()} />)
     expect(html).toContain("balance-ring-work")

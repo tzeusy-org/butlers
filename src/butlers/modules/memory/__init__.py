@@ -436,6 +436,7 @@ class MemoryModule(Module):
                 # deterministic output is unaffected unless requested.
                 include_fleet_knowledge=True,
                 catalog_read_policy=catalog_read_policy,
+                memory_schema=module._config.memory_schema,
             )
             if isinstance(result, str) and result.strip():
                 return result
@@ -511,6 +512,7 @@ class MemoryModule(Module):
                 enable_shared_catalog=enable_shared_catalog,
                 source_schema=module._config.catalog_source_schema or None,
                 retry_failed=module._allows_failed_consolidation_retry(),
+                memory_schema=module._config.memory_schema,
             )
 
         if self._session_runtime_owner is not None and self._session_runtime is not None:
@@ -585,7 +587,7 @@ class MemoryModule(Module):
         """
         if db is None:
             return
-        from butlers.core.scheduler import ensure_module_default_schedule
+        from butlers.core.scheduler.crud import ensure_module_default_schedule
 
         owner_butler = getattr(db, "owner_butler", None) or getattr(db, "schema", None)
         # Legacy per-butler databases use their unqualified public schema.
@@ -838,6 +840,7 @@ class MemoryModule(Module):
         # Deferred to avoid import-time side effects (sentence_transformers).
         from butlers.modules.memory import consolidation as _consolidation
         from butlers.modules.memory import reembedding as _reembedding
+        from butlers.modules.memory import search as _search
         from butlers.modules.memory.tools import context as _context
         from butlers.modules.memory.tools import entities as _entities
         from butlers.modules.memory.tools import feedback as _feedback
@@ -1201,7 +1204,7 @@ class MemoryModule(Module):
                         "Optional structured filters applied as AND conditions. "
                         "Supported keys: scope, entity_id, predicate, source_butler, "
                         "time_from (ISO-8601), time_to (ISO-8601), retention_class, sensitivity. "
-                        "Unrecognized keys are silently ignored."
+                        "An unrecognized key is refused with an error naming it."
                     )
                 ),
             ] = None,
@@ -1232,6 +1235,7 @@ class MemoryModule(Module):
               "limit": 10
             }
             """
+            _search._validate_filter_keys(filters)
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_search(
                 module._get_pool(),
@@ -1244,6 +1248,7 @@ class MemoryModule(Module):
                 min_confidence=min_confidence,
                 filters=filters,
                 read_policy=read_policy,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("core")
@@ -1258,7 +1263,7 @@ class MemoryModule(Module):
                         "Optional structured filters applied as AND conditions. "
                         "Supported keys: scope, entity_id, predicate, source_butler, "
                         "time_from (ISO-8601), time_to (ISO-8601), retention_class, sensitivity. "
-                        "Unrecognized keys are silently ignored."
+                        "An unrecognized key is refused with an error naming it."
                     )
                 ),
             ] = None,
@@ -1274,6 +1279,7 @@ class MemoryModule(Module):
             ] = None,
         ) -> list[dict[str, Any]]:
             """High-level composite-scored retrieval of relevant facts and rules."""
+            _search._validate_filter_keys(filters)
             read_policy = await module._catalog_read_policy()
             return await _reading.memory_recall(
                 module._get_pool(),
@@ -1284,6 +1290,7 @@ class MemoryModule(Module):
                 filters=filters,
                 request_context=request_context,
                 read_policy=read_policy,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("core")
@@ -1298,6 +1305,7 @@ class MemoryModule(Module):
                 memory_type,
                 memory_id,
                 read_policy=read_policy,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Feedback tools ---
@@ -1419,6 +1427,7 @@ class MemoryModule(Module):
             return await _management.memory_stats(
                 module._get_pool(),
                 scope=scope,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Predicate registry tool ---
@@ -1563,6 +1572,7 @@ class MemoryModule(Module):
                 include_fleet_knowledge=include_fleet_knowledge,
                 catalog_read_policy=catalog_read_policy,
                 request_context=request_context,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Entity tools ---
@@ -1696,6 +1706,7 @@ class MemoryModule(Module):
                 enable_shared_catalog=module._config.enable_shared_catalog,
                 source_schema=effective_catalog_source_schema,
                 retry_failed=module._allows_failed_consolidation_retry(),
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("admin")
@@ -1758,6 +1769,7 @@ class MemoryModule(Module):
                 max_depth=max_depth,
                 predicate_filter=predicate_filter,
                 direction=direction,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("entity")
@@ -1799,6 +1811,7 @@ class MemoryModule(Module):
                 entity_type=entity_type,
                 context_hints=context_hints,
                 enable_fuzzy=enable_fuzzy,
+                memory_schema=module._config.memory_schema,
             )
 
         @_tool("entity")
@@ -2022,6 +2035,7 @@ class MemoryModule(Module):
                 module._get_pool(),
                 scope=scope,
                 predicate_pattern=predicate_pattern,
+                memory_schema=module._config.memory_schema,
             )
 
         # --- Re-embedding migration tool ---

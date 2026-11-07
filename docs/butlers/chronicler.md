@@ -113,6 +113,42 @@ release is incomplete or closes the shared pool underneath retained work.
 Local software controls do not establish real PostgreSQL, model/provider or
 owner-delivery outcomes; those require their source-bound hosted evidence.
 
+### Where the owner was: anchors and situational blocks (bu-r3fmja)
+
+OwnTracks reports sparsely and goes silent while the phone is still, so place clustering bridges a
+silent gap of up to 16 h at the same place, and a silent stay ends at the departure fix
+(`owntracks_place_cluster.py`, REQ-butler-chronicler-014). `place_episode` rows are `evidence`:
+they say where the owner was and never count on their own.
+
+`chronicler.situation_inferred` (`adapters/situation.py`, pure rules in `situation.py`) turns those
+stays into counted blocks every 30 minutes, re-deriving the last 3 owner-local days:
+
+- An **anchor** decides the lane (`anchors.py`). Per kind, the first source with one wins: the owner
+  place registry (`public.owner_places`), then the memory graph, then `OWNTRACKS_PLACE_REFERENCES`,
+  then (home only) the place most often occupied at 03:00 over 28 days. Work is never inferred.
+- In the **graph**, work is the geocoded `has-address` of the organisation the owner `works-at`;
+  home is the owner's own `has-address`, else the address of the place they `rental-location` /
+  `lives-at`. Relationship geocodes those addresses into `relationship.address_geocodes`; a geocode
+  counts only while its hash matches the address text. To register work, tell Relationship
+  "I work at <Org>; <Org>'s address is <address>".
+- **Blocks:** work anchor → `work_presence_block` (Work), home → `home_block` (Rest), airport →
+  `airport_block` (Travel), anywhere else within 50 km of home → `outing_block` (Social). Farther
+  away is a trip and gets no block.
+- **Precedence:** each block is its stay minus every higher-ranked lane's activity (sleep >
+  exercise > travel > work > play > eat > social > rest) and every owner gap-interview answer.
+  Steam at home is Play; the rest of the evening is Rest. Butler sessions, comms bursts, Spotify and
+  episodes under 10 minutes never preempt; pieces under 15 minutes are dropped.
+- A **provisional hold** covers the stay the clusterer has not closed yet, from the trailing run of
+  same-place fixes to the earliest of last fix + 12 h and now.
+- Each run tombstones the day's earlier blocks it no longer derives, except owner-corrected ones.
+  Payloads carry the anchor kind, label and source and a distance from home rounded to 100 m; no
+  coordinates.
+
+The day-close gap interview (`gap_interview.py`) asks about the longest unexplained waking block
+(at least 30 minutes) when no occupation block anchors the day, e.g. "Yesterday 07:55–10:40 isn't
+accounted for (about 18 km from home). What were you doing?". The Work / Social / Play / Eat / Rest
+buttons write one `chronicler.owner_answer` activity block in that lane; Dismiss counts nothing.
+
 ### Travel intents and location (bu-2tsgqb.7)
 
 `reconcile_day` checks one-way travel intents (a flight, or a route block `A -> B`, 30 min to 24 h)
@@ -125,3 +161,36 @@ taken; anything else is `unknown`. Each anchor needs two fixes; `trail_outlier`,
 naive-timestamp fixes are ignored. There is no geocoding, so an event's stated place is never
 checked. Every intent also carries `reconciliation.plan_producer`: `butler` for events the calendar
 module marked `butler_generated` (or titled `BUTLER:`), else `calendar`.
+
+### Timed Steam Play and music evidence (bu-r3fmja.7)
+
+The Steam connector persists detected `personastate` / `gameextrainfo` changes in
+`connectors.steam_status_history` alongside ingest submission. `gameid` is stored
+but never changes that delta rule. A storage failure still advances the polling
+cursor and degrades health. Chronicler has SELECT only; connector writes retain
+the existing connector role boundary. Bootstrap replay preserves the read grant.
+
+`steam.status_history` projects minute-precision `play_session` evidence every
+five minutes. A game ends at the next no-game, other-game or offline change.
+Same-game persona changes keep it open. Open sessions are provisional, capped
+at twelve hours, and refreshed on replay using the same source identity. The
+adapter scans sparse history in bounded keyset pages, carrying an active game
+across page boundaries; its checkpoint does not hide an open session.
+
+Situational fusion alone emits counted `play_block` rows. Known away-from-home
+where-segments, higher-precedence activity and owner answers cut Play out;
+unknown location allows it. Only accepted Play displaces home time. A local date
+with any status session suppresses the daily-total guess; dates with none use
+the existing daily-total placed window under the same exclusions. Steam daily
+totals and Spotify listening rows are evidence, including historical rows.
+Music has no Play lane, but remains available as a quiet-run breaker.
+The migration resets the situation checkpoint once to rebuild historical fallback
+Play. Later runs also revisit dates of changed Steam evidence, so late session
+closures can replace older provisional blocks without losing old daily totals.
+Tombstones and owner corrections revisit canonical, corrected and previously
+projected provenance dates, removing stale counted Play after evidence moves.
+
+The additive core table and historical evidence survive source rollback;
+downgrade does not destroy observations or reintroduce directly counted source
+rows. Trip-span fusion belongs to `bu-r3fmja.8`, which composes its exclusions
+with this source; this change does not infer trips from calendar or PC power.

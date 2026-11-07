@@ -53,17 +53,17 @@ import json
 import logging
 import os
 import time
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.bridge_manager import (
-    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
-    DEFAULT_STANDALONE_BRIDGE_SOCKET,
     BridgeConfig,
     BridgeSubprocessManager,
 )
-from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.discretion import (
     ContactWeightResolver,
@@ -71,16 +71,25 @@ from butlers.connectors.discretion import (
     classify_ignore_kind,
     record_discretion_ignore,
 )
-from butlers.connectors.discretion_dispatcher import (
+from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.known_contact_snapshot import (
+    PriorityContactSnapshotSource,
+    normalize_phone_digits,
+    phone_is_known,
+)
+from butlers.connectors.mcp_client import CachedMCPClient
+from butlers.connectors.metrics import ConnectorMetrics
+from butlers.connectors.owner_outbound_events import (
+    record_owner_outbound_point,
+    resolve_dedup_key,
+)
+from butlers.conversation_identity import whatsapp_conversation_id
+from butlers.core.discretion_dispatcher import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     DiscretionDispatcher,
 )
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
-from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
-from butlers.connectors.mcp_client import CachedMCPClient
-from butlers.connectors.metrics import ConnectorMetrics
-from butlers.connectors.owner_outbound_events import record_owner_outbound_point
-from butlers.conversation_identity import whatsapp_conversation_id
+from butlers.core.known_contact_state import not_applicable_classification
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -91,6 +100,11 @@ from butlers.credential_store import (
 from butlers.db import db_params_from_env
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import forwarded_line_spans, whole_text_span
+from butlers.whatsapp_bridge_client import (
+    DEFAULT_INVALIDATED_SESSION_THRESHOLD_S,
+    DEFAULT_STANDALONE_BRIDGE_SOCKET,
+    BridgeClient,
+)
 
 _DESCRIPTOR = connector_descriptor("whatsapp_user_client")
 
@@ -163,48 +177,6 @@ _WHATSAPP_UNKNOWN_SENDER_LABEL = "Unknown WhatsApp sender"
 # ---------------------------------------------------------------------------
 # Backfill acknowledgement framing
 # ---------------------------------------------------------------------------
-
-
-async def _read_backfill_acknowledgement(
-    reader: asyncio.StreamReader,
-    expected_window_hours: int | None,
-) -> int:
-    """Read and validate the close-delimited bridge acknowledgement within a byte cap."""
-    chunks: list[bytes] = []
-    total_bytes = 0
-    while True:
-        chunk = await reader.read(_BACKFILL_ACK_MAX_BYTES - total_bytes + 1)
-        if not chunk:
-            break
-        total_bytes += len(chunk)
-        if total_bytes > _BACKFILL_ACK_MAX_BYTES:
-            raise RuntimeError(
-                f"Bridge /backfill acknowledgement exceeded {_BACKFILL_ACK_MAX_BYTES}-byte limit"
-            )
-        chunks.append(chunk)
-
-    raw_response = b"".join(chunks)
-    headers, separator, response_body = raw_response.partition(b"\r\n\r\n")
-    status_line = headers.split(b"\r\n", maxsplit=1)[0]
-    status_parts = status_line.split(maxsplit=2)
-    if not separator or len(status_parts) < 2 or status_parts[1] != b"200":
-        safe_status = status_line.decode(errors="replace")
-        raise RuntimeError(f"Bridge /backfill returned unexpected response: {safe_status}")
-    acknowledgement = json.loads(response_body)
-    if (
-        acknowledgement.get("schema_version") != "whatsapp.backfill.v1"
-        or acknowledgement.get("status") != "accepted"
-        or acknowledgement.get("window_hours") != expected_window_hours
-    ):
-        raise RuntimeError("Bridge /backfill returned an invalid acknowledgement")
-    replay_event_count = acknowledgement.get("replay_event_count")
-    if (
-        not isinstance(replay_event_count, int)
-        or isinstance(replay_event_count, bool)
-        or replay_event_count < 0
-    ):
-        raise RuntimeError("Bridge /backfill acknowledgement has an invalid replay_event_count")
-    return replay_event_count
 
 
 # ---------------------------------------------------------------------------
@@ -534,78 +506,15 @@ def _extract_wa_participant_count(event: dict[str, Any]) -> int | None:
 # ---------------------------------------------------------------------------
 
 
-async def _sse_event_stream(socket_path: str) -> asyncio.AsyncGenerator[dict[str, Any], None]:
-    """Consume SSE events from the bridge GET /events endpoint via Unix socket.
-
-    Yields parsed JSON dicts for each SSE ``data:`` line.
-    Raises on connection failure (caller handles reconnect).
-    """
-    reader, writer = await asyncio.open_unix_connection(socket_path)
-    try:
-        # HTTP GET request
-        request = (
-            "GET /events HTTP/1.0\r\n"
-            "Host: localhost\r\n"
-            "Accept: text/event-stream\r\n"
-            "Connection: close\r\n"
-            "\r\n"
+async def _sse_event_stream(socket_path: str) -> AsyncGenerator[dict[str, Any], None]:
+    """Delegate bridge framing while retaining the connector's reconnect seam."""
+    async with aclosing(
+        BridgeClient(socket_path).stream_events(
+            line_timeout=_SSE_KEEPALIVE_TIMEOUT_S,
         )
-        writer.write(request.encode())
-        await writer.drain()
-
-        # Read HTTP status line and validate before consuming headers
-        status_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
-        if status_line:
-            parts = status_line.split(None, 2)
-            if len(parts) >= 2:
-                try:
-                    status_code = int(parts[1])
-                except ValueError:
-                    status_code = 0
-                if status_code != 200:
-                    status_text = status_line.decode(errors="replace").strip()
-                    raise ConnectionError(f"Bridge /events returned non-200 status: {status_text}")
-
-        # Read and discard remaining HTTP headers
-        while True:
-            line = await asyncio.wait_for(reader.readline(), timeout=30.0)
-            if not line or line == b"\r\n":
-                break
-
-        # Consume SSE stream
-        while True:
-            line = await asyncio.wait_for(
-                reader.readline(),
-                timeout=_SSE_KEEPALIVE_TIMEOUT_S,
-            )
-            if not line:
-                # Connection closed by bridge
-                return
-
-            text = line.decode(errors="replace").rstrip()
-
-            # SSE keepalive comment lines (": keepalive" or empty)
-            if not text or text.startswith(":"):
-                continue
-
-            # SSE data line
-            if text.startswith("data:"):
-                data_str = text[len("data:") :].strip()
-                if not data_str:
-                    continue
-                try:
-                    yield json.loads(data_str)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "WhatsApp bridge SSE: malformed JSON in event (redacted, length=%d bytes)",
-                        len(data_str),
-                    )
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
+    ) as events:
+        async for event in events:
+            yield event
 
 
 # ---------------------------------------------------------------------------
@@ -680,6 +589,16 @@ class WhatsAppUserClientConnector:
         self._filtered_event_buffer = FilteredEventBuffer(
             connector_type=_CONNECTOR_TYPE,
             endpoint_identity=config.endpoint_identity,
+        )
+
+        # Known-contact snapshot (phone facts of priority contacts): lets a dropped 1:1 chat
+        # be marked, and an "except people I know" rule be honored, as on Gmail.
+        self._known_contacts = PriorityContactSnapshotSource(
+            db_pool,
+            predicate="has-phone",
+            normalize=normalize_phone_digits,
+            label="WhatsAppKnownContacts",
+            provider="WhatsApp",
         )
 
         # Discretion layer
@@ -811,6 +730,8 @@ class WhatsAppUserClientConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        # Publish the unloaded classification before provider work; never blocks ingestion.
+        await self._publish_known_contacts()
 
         # Start flush scanner
         self._flush_scanner_task = asyncio.create_task(
@@ -932,11 +853,12 @@ class WhatsAppUserClientConnector:
 
             try:
                 logger.info("Connecting to bridge SSE /events stream …")
-                async for event in _sse_event_stream(self._config.bridge_socket):
-                    if not self._running:
-                        return
-                    backoff_attempt = 0  # reset backoff on successful event
-                    await self._handle_bridge_event(event)
+                async with aclosing(_sse_event_stream(self._config.bridge_socket)) as events:
+                    async for event in events:
+                        if not self._running:
+                            return
+                        backoff_attempt = 0  # reset backoff on successful event
+                        await self._handle_bridge_event(event)
 
                 # Stream ended cleanly — reconnect
                 logger.info("Bridge SSE stream closed cleanly, reconnecting …")
@@ -1509,6 +1431,8 @@ class WhatsAppUserClientConnector:
         min_id = min((i for i in event_ids if i), default="0")
         max_id = max((i for i in event_ids if i), default="0")
         batch_event_id = f"batch:{chat_jid}:{min_id}-{max_id}"
+        # The classification that decided the drop; every record site stores this one.
+        drop_class: tuple[bool | None, dict[str, Any] | None] | None = None
 
         try:
             # a2. Translate any opaque "@lid" senders to phone JIDs so the
@@ -1521,9 +1445,13 @@ class WhatsAppUserClientConnector:
             envelope = self._build_batch_envelope(chat_jid, buffered_events, batch_event_id)
 
             # c. Evaluate ingestion policy (connector scope)
+            await self._refresh_known_contacts()
+            drop_class = self._batch_known_contact(chat_jid)
+            _known_contact = drop_class[0]
             _ip_envelope = IngestionEnvelope(
                 source_channel=_DESCRIPTOR.channel,
                 raw_key=chat_jid,
+                known_contact=_known_contact,
             )
             _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
             if not _ip_decision.allowed:
@@ -1542,6 +1470,7 @@ class WhatsAppUserClientConnector:
                         _ip_decision.matched_rule_type or "unknown",
                     ),
                     events=buffered_events,
+                    drop_class=drop_class,
                 )
                 await self._flush_and_drain()
                 return
@@ -1563,6 +1492,7 @@ class WhatsAppUserClientConnector:
                         _gp_decision.matched_rule_type or "unknown",
                     ),
                     events=buffered_events,
+                    drop_class=drop_class,
                 )
                 await self._flush_and_drain()
                 return
@@ -1609,6 +1539,7 @@ class WhatsAppUserClientConnector:
                         filter_reason=FilteredEventBuffer.reason_discretion_ignore(ignore_kind),
                         subject_or_preview=normalized_text[:200] if normalized_text else None,
                         events=buffered_events,
+                        drop_class=drop_class,
                     )
                     await self._flush_and_drain()
                     return
@@ -1642,6 +1573,7 @@ class WhatsAppUserClientConnector:
                 status="error",
                 error_detail=failure_class,
                 events=buffered_events,
+                drop_class=drop_class,
             )
             await self._flush_and_drain()
 
@@ -1655,8 +1587,14 @@ class WhatsAppUserClientConnector:
         status: str = "filtered",
         error_detail: str | None = None,
         events: list[dict[str, Any]] | None = None,
+        drop_class: tuple[bool | None, dict[str, Any] | None] | None = None,
     ) -> None:
-        """Record a filtered or errored batch event."""
+        """Record a filtered or errored batch event.
+
+        ``drop_class`` is the ``(known_contact, classification)`` pair that decided the drop;
+        when the drop happened before evaluation it is derived here.
+        """
+        known_contact, classification = drop_class or self._batch_known_contact(chat_jid)
         self._filtered_event_buffer.record(
             external_message_id=batch_event_id,
             source_channel=self._config.channel,
@@ -1687,6 +1625,8 @@ class WhatsAppUserClientConnector:
                     ]
                 )
                 or None,
+                important_dropped_basis="known_contact" if known_contact else None,
+                classification=classification,
                 raw={},
             ),
             status=status,
@@ -2232,8 +2172,41 @@ class WhatsAppUserClientConnector:
             metrics=self._metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint,
+            get_contact_snapshot=self._known_contacts.peek_snapshot,
         )
         self._switchboard_heartbeat.start()
+
+    async def _publish_known_contacts(self) -> None:
+        if self._switchboard_heartbeat is not None:
+            await self._switchboard_heartbeat.publish_once()
+
+    def _batch_known_contact(self, chat_jid: str) -> tuple[bool | None, dict[str, Any] | None]:
+        """Classify a chat for drop marking: ``(known_contact, frozen classification)``.
+
+        A group or broadcast batch has many senders, so it is not applicable (certain, never
+        counted). A 1:1 chat resolves its peer phone from the chat JID (through the LID map
+        for ``@lid``); ``known_contact`` is only ever set from a loaded snapshot. A 1:1 chat
+        whose peer cannot be resolved returns no classification, which reads as uncertain.
+        """
+        now = datetime.now(UTC)
+        if _derive_wa_chat_type(chat_jid) != "private":
+            return None, not_applicable_classification(now)
+        identity = self._participant_identity(chat_jid)
+        phone = (
+            identity.partition("@")[0] if identity and identity.endswith("@s.whatsapp.net") else ""
+        )
+        if not phone:
+            return None, None
+        snapshot = self._known_contacts.peek_snapshot()
+        known = phone_is_known(normalize_phone_digits(phone), snapshot.contacts)
+        return (known if snapshot.state == "loaded" else None), snapshot.historical(now)
+
+    async def _refresh_known_contacts(self) -> None:
+        """Refresh the TTL-bounded snapshot before policy evaluation; failure never blocks."""
+        try:
+            await self._known_contacts.get_snapshot(self._publish_known_contacts)
+        except Exception:
+            logger.warning("WhatsApp known-contact refresh failed")
 
     def _get_health_state(self) -> tuple[str, str | None]:
         """Determine current health state for heartbeat."""
@@ -2349,37 +2322,10 @@ class WhatsAppUserClientConnector:
         )
 
         try:
-            reader, writer = await asyncio.open_unix_connection(
-                self._config.bridge_socket,
-                limit=_BACKFILL_ACK_MAX_BYTES,
+            replay_event_count = await BridgeClient(self._config.bridge_socket).request_backfill(
+                self._config.backfill_window_h,
+                deadline_s=_BACKFILL_ACK_TIMEOUT_S,
             )
-            try:
-                body = json.dumps(
-                    {
-                        "schema_version": "whatsapp.backfill.v1",
-                        "window_hours": self._config.backfill_window_h,
-                    }
-                ).encode()
-                request = (
-                    "POST /backfill HTTP/1.0\r\n"
-                    "Host: localhost\r\n"
-                    "Content-Type: application/json\r\n"
-                    f"Content-Length: {len(body)}\r\n"
-                    "Connection: close\r\n"
-                    "\r\n"
-                )
-                writer.write(request.encode() + body)
-                await writer.drain()
-                replay_event_count = await asyncio.wait_for(
-                    _read_backfill_acknowledgement(reader, self._config.backfill_window_h),
-                    timeout=_BACKFILL_ACK_TIMEOUT_S,
-                )
-            finally:
-                writer.close()
-                try:
-                    await writer.wait_closed()
-                except Exception:
-                    pass
 
             logger.info(
                 "Backfill request accepted by bridge",
@@ -2639,6 +2585,10 @@ async def run_whatsapp_user_client_connector() -> None:
         codex_authority=codex_auth_authority,
         context="whatsapp_user_client",
     )
+
+    # Owner-outbound point events need the keyed dedup HMAC; without it they
+    # are not recorded at all (bu-szrvwu). Warns once, never raises.
+    await resolve_dedup_key(CredentialStore(cursor_pool))
 
     # Step 4: Run health server and connector concurrently
     health_task = asyncio.create_task(

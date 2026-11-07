@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from butlers.core.goal_admission import EvidenceRefused
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.tool_catalog import (
     AUTHORIZATION_FIELDS,
     RecipientParameters,
@@ -118,12 +119,25 @@ def decode_publication(value: object, domain: str) -> ToolCatalog:
             ):
                 raise ValueError
             kwargs = dict(item)
-            for key in ("resource_params", "safety_args", "read_stores", "write_stores"):
+            for key in (
+                "resource_params",
+                "safety_args",
+                "read_stores",
+                "write_stores",
+                "alias_free_params",
+                "categories",
+            ):
                 if kwargs[key] is not None:
                     if type(kwargs[key]) is not list:
                         raise ValueError
                     kwargs[key] = tuple(kwargs[key])
-            for key in ("input_schema", "approval_policy", "arg_sensitivities", "selection_bound"):
+            for key in (
+                "input_schema",
+                "approval_policy",
+                "arg_sensitivities",
+                "selection_bound",
+                "alias_resolvers",
+            ):
                 kwargs[key] = _freeze(kwargs[key])
             if kwargs["recipient_params"] is not None:
                 recipient = dict(kwargs["recipient_params"])
@@ -319,9 +333,10 @@ async def start_catalog_publication(daemon, pool) -> None:
                 if daemon.tool_catalog.generation_digest != owner.generation_digest:
                     raise EvidenceRefused("catalog_unavailable")
                 await owner.renew()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+        except (Exception, asyncio.CancelledError) as exc:
+            # A stray cancel from a renewal is a failed renewal, so it must not leave this
+            # looking healthy. Only a cancel of this task is shutdown.
+            raise_if_task_cancelled(exc)
             # The failed renewal never extends freshness. If retirement is
             # unavailable too, the finite server-clock lease still expires.
             daemon._catalog_publication_failed = True

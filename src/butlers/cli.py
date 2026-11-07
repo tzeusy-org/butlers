@@ -9,6 +9,7 @@ import signal
 import socket
 import sys
 from collections import defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -585,6 +586,37 @@ def db() -> None:
     """Database management commands."""
 
 
+@db.command("prepare-chronicler-memory")
+@click.option(
+    "--dir",
+    "butlers_dir",
+    type=click.Path(exists=True, path_type=Path),
+    default=DEFAULT_BUTLERS_DIR,
+    help="Directory containing butler configs",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show the private-schema migration order without executing it",
+)
+def prepare_chronicler_memory(butlers_dir: Path, dry_run: bool) -> None:
+    """Prepare Chronicler's explicitly configured private memory schema.
+
+    Run this before the ordinary migration command on a fresh installation.
+    It applies the core and memory chains to chronicler_mem only; the normal
+    core → domain → modules order remains owned by db migrate and daemon startup.
+    """
+    try:
+        asyncio.run(_prepare_chronicler_memory(butlers_dir, dry_run=dry_run))
+    except click.ClickException:
+        raise
+    except Exception as exc:
+        raise click.ClickException(
+            f"Chronicler private-memory preparation failed ({type(exc).__name__})."
+        ) from exc
+
+
 @db.command()
 @click.option(
     "--only",
@@ -614,7 +646,8 @@ def migrate(only: tuple[str, ...], butlers_dir: Path, dry_run: bool) -> None:
 
     This command is the recommended way to bootstrap a fresh database before
     starting butler daemons for the first time (breaks the circular dependency
-    between daemon startup and schema existence).
+    between daemon startup and schema existence). Run the
+    prepare-chronicler-memory command first when the Chronicler config is present.
     """
     configs = _discover_configs(butlers_dir)
     if not configs:
@@ -664,6 +697,73 @@ def provision(only: tuple[str, ...], butlers_dir: Path) -> None:
     asyncio.run(_provision_databases(configs))
 
 
+def _migration_db_url(params: Mapping[str, object], *, db_name: str, schema: str | None) -> str:
+    """Build the schema-scoped SQLAlchemy URL used by migration commands."""
+    from urllib.parse import quote, quote_plus
+
+    from butlers.db import schema_search_path
+
+    user = quote(str(params["user"]), safe="")
+    password = quote(str(params["password"]), safe="")
+    db_name_enc = quote(db_name, safe="")
+    base_url = f"postgresql://{user}:{password}@{params['host']}:{params['port']}/{db_name_enc}"
+    search_path = schema_search_path(schema)
+    if search_path:
+        return f"{base_url}?options={quote_plus(f'-csearch_path={search_path}')}"
+    return base_url
+
+
+async def _prepare_chronicler_memory(butlers_dir: Path, *, dry_run: bool) -> None:
+    """Apply core and memory only in Chronicler's declared private schema."""
+    configs = _discover_configs(butlers_dir)
+    config_dir = configs.get("chronicler")
+    if config_dir is None:
+        raise click.ClickException(f"No Chronicler config found in {butlers_dir}/")
+
+    config = load_config(config_dir)
+    memory_config = config.modules.get("memory") or {}
+    memory_schema = memory_config.get("memory_schema")
+    if config.name != "chronicler" or config.db_schema != "chronicler":
+        raise click.ClickException(
+            "Chronicler preparation requires the Chronicler domain schema to be chronicler."
+        )
+    if memory_schema != "chronicler_mem":
+        raise click.ClickException(
+            "Chronicler memory_schema must explicitly be chronicler_mem; no fallback is supported."
+        )
+
+    from butlers.migrations import get_module_migration_chains
+    from butlers.modules.registry import default_registry
+
+    modules = default_registry().load_from_config(config.modules)
+    module_chains = get_module_migration_chains(modules, config.name)
+    memory_chain = module_chains.get("memory")
+    if memory_chain != "memory":
+        raise click.ClickException(
+            "The configured Chronicler memory migration chain is unavailable."
+        )
+
+    if dry_run:
+        click.echo("Dry run — no migrations will be executed.")
+        click.echo("  chronicler (schema=chronicler_mem): core, memory")
+        return
+
+    from butlers.db import db_params_from_env
+    from butlers.migrations import run_migrations
+
+    db_url = _migration_db_url(
+        db_params_from_env(),
+        db_name=config.db_name or "butlers",
+        schema=memory_schema,
+    )
+    click.echo("Preparing Chronicler private memory schema (chronicler_mem)...")
+    for chain in ("core", memory_chain):
+        click.echo(f"  {chain} (schema=chronicler_mem)...", nl=False)
+        await run_migrations(db_url, chain=chain, schema=memory_schema)
+        click.echo(" done")
+    click.echo("Chronicler private memory schema is ready.")
+
+
 async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> None:
     """Run Alembic migrations for each butler config in dependency order.
 
@@ -672,9 +772,7 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
       2. butler-specific chain (if it exists)
       3. enabled module chains (if they have migrations)
     """
-    from urllib.parse import quote, quote_plus
-
-    from butlers.db import db_params_from_env, schema_search_path
+    from butlers.db import db_params_from_env
     from butlers.migrations import (
         get_module_migration_chains,
         has_butler_chain,
@@ -692,17 +790,7 @@ async def _migrate_all(configs: dict[str, Path], *, dry_run: bool = False) -> No
             db_name = config.db_name or "butlers"
             schema = config.db_schema
 
-            user = quote(str(params["user"]), safe="")
-            password = quote(str(params["password"]), safe="")
-            host = params["host"]
-            port = params["port"]
-            db_name_enc = quote(db_name, safe="")
-            base_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name_enc}"
-            search_path = schema_search_path(schema)
-            if search_path:
-                db_url = f"{base_url}?options={quote_plus(f'-csearch_path={search_path}')}"
-            else:
-                db_url = base_url
+            db_url = _migration_db_url(params, db_name=db_name, schema=schema)
 
             modules = registry.load_from_config(config.modules)
             module_chains = get_module_migration_chains(modules, name)
@@ -880,6 +968,8 @@ async def _record_deployment_boot(daemons: list, *, configured_count: int) -> No
 
 async def _start_all(configs: dict[str, Path]) -> None:
     """Start all butler daemons in a single event loop."""
+    from contextlib import AsyncExitStack
+
     from butlers.daemon import ButlerDaemon
 
     daemons: list[ButlerDaemon] = []
@@ -895,83 +985,88 @@ async def _start_all(configs: dict[str, Path]) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Start daemons: priority butlers first, then alphabetical.
-    # Port conflicts retry up to _PORT_RETRY_MAX_ATTEMPTS before skipping.
-    # Transient DB-connect failures retry up to _DB_RETRY_MAX_ATTEMPTS — covers
-    # short-lived Tailscale/DB blips during startup.
-    for name, config_dir in _ordered_configs(configs):
-        started = False
-        port_attempt = 0
-        db_attempt = 0
-        while not started:
-            daemon = ButlerDaemon(config_dir)
-            try:
-                await daemon.start()
-                daemons.append(daemon)
-                click.echo(f"  started: {name}")
-                started = True
-            except Exception as exc:
-                # daemon.start() may have already pre-bound the MCP socket and
-                # launched the server task (lifecycle step 14) before a later
-                # step raised.  A failed start that is retried or skipped without
-                # releasing those resources leaves the port bound, so the next
-                # attempt collides with "port still in use".  Tear the failed
-                # daemon down before retrying/skipping.  shutdown() is fully
-                # guarded (every step is None-checked), so it is safe to call on
-                # a partially-started daemon; we still wrap it so a cleanup error
-                # never masks the original start failure or crashes the loop.
+    async with AsyncExitStack() as cleanup:
+        # Start daemons: priority butlers first, then alphabetical.
+        # Port conflicts retry up to _PORT_RETRY_MAX_ATTEMPTS before skipping.
+        # Transient DB-connect failures retry up to _DB_RETRY_MAX_ATTEMPTS — covers
+        # short-lived Tailscale/DB blips during startup.
+        for name, config_dir in _ordered_configs(configs):
+            started = False
+            port_attempt = 0
+            db_attempt = 0
+            while not started:
+                daemon = ButlerDaemon(config_dir)
                 try:
-                    await daemon.shutdown()
-                except Exception:
-                    logger.warning(
-                        "Error releasing resources for failed butler %s", name, exc_info=True
-                    )
-                if _is_port_conflict(exc) and port_attempt < _PORT_RETRY_MAX_ATTEMPTS:
-                    delay = min(_PORT_RETRY_BASE_DELAY * (2**port_attempt), _PORT_RETRY_MAX_DELAY)
-                    port_attempt += 1
-                    click.echo(
-                        f"  {name}: port in use, retrying in {delay:.0f}s"
-                        f" (attempt {port_attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
-                    )
-                    await asyncio.sleep(delay)
-                elif _is_port_conflict(exc):
-                    click.echo(
-                        f"  skipped: {name}: port still in use after"
-                        f" {_PORT_RETRY_MAX_ATTEMPTS} attempts"
-                    )
-                    break
-                elif _is_db_unreachable(exc) and db_attempt < _DB_RETRY_MAX_ATTEMPTS:
-                    delay = min(_DB_RETRY_BASE_DELAY * (2**db_attempt), _DB_RETRY_MAX_DELAY)
-                    db_attempt += 1
-                    click.echo(
-                        f"  {name}: DB unreachable ({exc}), retrying in {delay:.0f}s"
-                        f" (attempt {db_attempt}/{_DB_RETRY_MAX_ATTEMPTS})..."
-                    )
-                    await asyncio.sleep(delay)
-                elif _is_db_unreachable(exc):
-                    click.echo(
-                        f"  failed: {name}: DB unreachable after"
-                        f" {_DB_RETRY_MAX_ATTEMPTS} attempts: {exc}"
-                    )
-                    break
-                else:
-                    click.echo(f"  failed: {name}: {exc}")
-                    break
-        if not started:
-            logger.warning("Butler %s failed to start", name)
+                    await daemon.start()
+                    daemons.append(daemon)
+                    cleanup.push_async_callback(daemon.shutdown)
+                    click.echo(f"  started: {name}")
+                    started = True
+                except BaseException as exc:
+                    # daemon.start() may have already pre-bound the MCP socket and
+                    # launched the server task (lifecycle step 14) before a later
+                    # step raised.  A failed start that is retried or skipped without
+                    # releasing those resources leaves the port bound, so the next
+                    # attempt collides with "port still in use".  Tear the failed
+                    # daemon down before retrying/skipping.  shutdown() is fully
+                    # guarded (every step is None-checked), so it is safe to call on
+                    # a partially-started daemon; we still wrap it so a cleanup error
+                    # never masks the original start failure or crashes the loop.
+                    try:
+                        await daemon.shutdown()
+                    except Exception:
+                        logger.warning(
+                            "Error releasing resources for failed butler %s", name, exc_info=True
+                        )
+                    if not isinstance(exc, Exception):
+                        raise
+                    if _is_port_conflict(exc) and port_attempt < _PORT_RETRY_MAX_ATTEMPTS:
+                        delay = min(
+                            _PORT_RETRY_BASE_DELAY * (2**port_attempt), _PORT_RETRY_MAX_DELAY
+                        )
+                        port_attempt += 1
+                        click.echo(
+                            f"  {name}: port in use, retrying in {delay:.0f}s"
+                            f" (attempt {port_attempt}/{_PORT_RETRY_MAX_ATTEMPTS})..."
+                        )
+                        await asyncio.sleep(delay)
+                    elif _is_port_conflict(exc):
+                        click.echo(
+                            f"  skipped: {name}: port still in use after"
+                            f" {_PORT_RETRY_MAX_ATTEMPTS} attempts"
+                        )
+                        break
+                    elif _is_db_unreachable(exc) and db_attempt < _DB_RETRY_MAX_ATTEMPTS:
+                        delay = min(_DB_RETRY_BASE_DELAY * (2**db_attempt), _DB_RETRY_MAX_DELAY)
+                        db_attempt += 1
+                        click.echo(
+                            f"  {name}: DB unreachable ({exc}), retrying in {delay:.0f}s"
+                            f" (attempt {db_attempt}/{_DB_RETRY_MAX_ATTEMPTS})..."
+                        )
+                        await asyncio.sleep(delay)
+                    elif _is_db_unreachable(exc):
+                        click.echo(
+                            f"  failed: {name}: DB unreachable after"
+                            f" {_DB_RETRY_MAX_ATTEMPTS} attempts: {exc}"
+                        )
+                        break
+                    else:
+                        click.echo(f"  failed: {name}: {exc}")
+                        break
+            if not started:
+                logger.warning("Butler %s failed to start", name)
 
-    if not daemons:
-        click.echo("No butlers started successfully")
-        return
+        if not daemons:
+            click.echo("No butlers started successfully")
+            return
 
-    await _record_deployment_boot(daemons, configured_count=len(configs))
+        from butlers.core.approval_delivery_authority import approval_delivery_composition
 
-    # Wait for shutdown signal
-    await shutdown_event.wait()
-
-    # Graceful shutdown
-    for daemon in reversed(daemons):
-        await daemon.shutdown()
+        # All registered dependencies must exist before any recovery worker starts.
+        # Its context exits before daemon callbacks retire their modules and pools.
+        async with approval_delivery_composition(daemons):
+            await _record_deployment_boot(daemons, configured_count=len(configs))
+            await shutdown_event.wait()
 
 
 async def _start_single(config_path: Path) -> None:

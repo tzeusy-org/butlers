@@ -29,8 +29,7 @@ import asyncpg
 import pytest
 
 from butlers.api.routers.attention_ledger import _query_ledger, _query_ledger_summary
-from butlers.core.attention_ledger import record_attention_event
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.core.attention_ledger import failed_attempts, record_attention_event
 from butlers.tools.switchboard.insight.broker import expire_candidates
 from scripts import repair_attention_ledger_metadata as metadata_repair
 
@@ -43,25 +42,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    yield p
-    await p.close()
-
-
 # ---------------------------------------------------------------------------
 # Schema shape
 # ---------------------------------------------------------------------------
 
 
-async def test_attention_ledger_table_exists_with_expected_columns(pool: asyncpg.Pool) -> None:
-    rows = await pool.fetch(
+async def test_attention_ledger_table_exists_with_expected_columns(db_pool: asyncpg.Pool) -> None:
+    rows = await db_pool.fetch(
         """
         SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'attention_ledger'
@@ -85,9 +72,9 @@ async def test_attention_ledger_table_exists_with_expected_columns(pool: asyncpg
     }
 
 
-async def test_source_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
+async def test_source_check_constraint_rejects_bogus_value(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.attention_ledger (origin_butler, source, outcome)
             VALUES ('health', 'bogus', 'delivered')
@@ -95,9 +82,9 @@ async def test_source_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -
         )
 
 
-async def test_outcome_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
+async def test_outcome_check_constraint_rejects_bogus_value(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.attention_ledger (origin_butler, source, outcome)
             VALUES ('health', 'notify', 'ghosted')
@@ -105,9 +92,9 @@ async def test_outcome_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) 
         )
 
 
-async def test_priority_score_out_of_range_rejected(pool: asyncpg.Pool) -> None:
+async def test_priority_score_out_of_range_rejected(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.attention_ledger
                 (origin_butler, source, outcome, priority_score)
@@ -121,8 +108,8 @@ async def test_priority_score_out_of_range_rejected(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_approvals_policy_seeded_to_asia_singapore_defaults(pool: asyncpg.Pool) -> None:
-    row = await pool.fetchrow(
+async def test_approvals_policy_seeded_to_asia_singapore_defaults(db_pool: asyncpg.Pool) -> None:
+    row = await db_pool.fetchrow(
         "SELECT quiet_start_hour, quiet_end_hour, timezone FROM public.approvals_policy WHERE id = 1"
     )
     assert row is not None
@@ -131,8 +118,8 @@ async def test_approvals_policy_seeded_to_asia_singapore_defaults(pool: asyncpg.
     assert row["timezone"] == "Asia/Singapore"
 
 
-async def test_insight_settings_has_no_legacy_quiet_hour_columns(pool: asyncpg.Pool) -> None:
-    rows = await pool.fetch(
+async def test_insight_settings_has_no_legacy_quiet_hour_columns(db_pool: asyncpg.Pool) -> None:
+    rows = await db_pool.fetch(
         """
         SELECT column_name
         FROM information_schema.columns
@@ -154,34 +141,25 @@ async def test_insight_settings_has_no_legacy_quiet_hour_columns(pool: asyncpg.P
 # ---------------------------------------------------------------------------
 
 
-async def test_seed_does_not_clobber_existing_approvals_policy(pool: asyncpg.Pool) -> None:
-    await pool.execute(
+async def test_seed_does_not_clobber_existing_approvals_policy(db_pool: asyncpg.Pool) -> None:
+    await db_pool.execute(
         """
         UPDATE public.approvals_policy
         SET quiet_start_hour = 10, quiet_end_hour = 14, timezone = 'America/New_York'
         WHERE id = 1
         """
     )
-    await pool.execute("""
+    await db_pool.execute("""
         UPDATE public.approvals_policy
         SET quiet_start_hour = 23, quiet_end_hour = 8, timezone = 'Asia/Singapore'
         WHERE id = 1 AND quiet_start_hour IS NULL AND quiet_end_hour IS NULL
     """)
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         "SELECT quiet_start_hour, quiet_end_hour, timezone FROM public.approvals_policy WHERE id = 1"
     )
     assert row["quiet_start_hour"] == 10
     assert row["quiet_end_hour"] == 14
     assert row["timezone"] == "America/New_York"
-
-    # Restore the module-scoped DB's seeded state so other tests in this file
-    # do not depend on execution order (module-scoped migrated_db_url is
-    # shared across every test function in this module).
-    await pool.execute("""
-        UPDATE public.approvals_policy
-        SET quiet_start_hour = 23, quiet_end_hour = 8, timezone = 'Asia/Singapore'
-        WHERE id = 1
-    """)
 
 
 # ---------------------------------------------------------------------------
@@ -189,9 +167,9 @@ async def test_seed_does_not_clobber_existing_approvals_policy(pool: asyncpg.Poo
 # ---------------------------------------------------------------------------
 
 
-async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
+async def test_record_attention_event_round_trips(db_pool: asyncpg.Pool) -> None:
     row_id = await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="finance",
         source="insight",
         outcome="coalesced",
@@ -205,7 +183,9 @@ async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
     )
     assert row_id is not None
 
-    row = await pool.fetchrow("SELECT * FROM public.attention_ledger WHERE id = $1::uuid", row_id)
+    row = await db_pool.fetchrow(
+        "SELECT * FROM public.attention_ledger WHERE id = $1::uuid", row_id
+    )
     assert row is not None
     assert row["origin_butler"] == "finance"
     assert row["source"] == "insight"
@@ -214,21 +194,16 @@ async def test_record_attention_event_round_trips(pool: asyncpg.Pool) -> None:
     assert row["priority_score"] == 80
     assert row["dedup_key"] == "finance:bill-due:abc:2026-01-01"
     assert row["notification_ref"] == "candidate-42"
-    # This bare asyncpg.create_pool() has no custom jsonb->dict codec (unlike
-    # the production Database.connect() pool), so jsonb columns read back as
-    # raw JSON text here — parse before comparing.
-    stored_metadata = row["metadata"]
-    if isinstance(stored_metadata, str):
-        stored_metadata = json.loads(stored_metadata)
-    assert stored_metadata == {"insight_count": 3}
+    # The factory pool carries the production JSONB codec, so metadata decodes to a dict.
+    assert row["metadata"] == {"insight_count": 3}
 
 
 async def test_expired_outcome_round_trips_and_is_summarized_per_origin(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
 ) -> None:
     test_now = _TEST_NOW
     row_id = await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="health",
         source="insight",
         outcome="expired",
@@ -240,13 +215,13 @@ async def test_expired_outcome_round_trips_and_is_summarized_per_origin(
     )
     assert row_id is not None
 
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         "SELECT outcome, reason FROM public.attention_ledger WHERE id=$1::uuid", row_id
     )
     assert dict(row) == {"outcome": "expired", "reason": "blocked_by:budget"}
 
     summary = await _query_ledger_summary(
-        pool,
+        db_pool,
         since=test_now - timedelta(minutes=1),
         until=None,
         intent="insight",
@@ -257,10 +232,10 @@ async def test_expired_outcome_round_trips_and_is_summarized_per_origin(
 
 
 async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
 ) -> None:
     test_now = _TEST_NOW
-    candidate_ids = await pool.fetch(
+    candidate_ids = await db_pool.fetch(
         """
         INSERT INTO public.insight_candidates
             (origin_butler, priority, category, dedup_key, expires_at, message, metadata)
@@ -275,8 +250,8 @@ async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
         test_now - timedelta(hours=2),
     )
 
-    assert await expire_candidates(pool, now=test_now) == 2
-    rows = await pool.fetch(
+    assert await expire_candidates(db_pool, now=test_now) == 2
+    rows = await db_pool.fetch(
         """
         SELECT notification_ref, outcome, reason, dedup_key
         FROM public.attention_ledger
@@ -292,7 +267,7 @@ async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
     assert {row["dedup_key"] for row in rows} == {None}
 
     listed = await _query_ledger(
-        pool,
+        db_pool,
         offset=0,
         limit=50,
         since=test_now - timedelta(days=1),
@@ -309,13 +284,13 @@ async def test_expire_candidates_writes_one_blocked_by_row_per_expiry(
 
 
 async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from butlers.tools.switchboard.insight import broker as insight_broker
 
     test_now = _TEST_NOW
-    candidate_id = await pool.fetchval(
+    candidate_id = await db_pool.fetchval(
         """
         INSERT INTO public.insight_candidates
             (origin_butler, priority, category, dedup_key, expires_at, message)
@@ -333,16 +308,16 @@ async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails
     monkeypatch.setattr(insight_broker, "record_attention_event", unavailable_ledger)
 
     with pytest.raises(RuntimeError, match="expiry ledger"):
-        await expire_candidates(pool, now=test_now)
+        await expire_candidates(db_pool, now=test_now)
 
     assert (
-        await pool.fetchval(
+        await db_pool.fetchval(
             "SELECT status FROM public.insight_candidates WHERE id = $1", candidate_id
         )
         == "pending"
     )
     assert (
-        await pool.fetchval(
+        await db_pool.fetchval(
             "SELECT count(*) FROM public.attention_ledger WHERE notification_ref = $1",
             str(candidate_id),
         )
@@ -350,15 +325,15 @@ async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails
     )
 
     monkeypatch.setattr(insight_broker, "record_attention_event", production_writer)
-    assert await expire_candidates(pool, now=test_now) == 1
+    assert await expire_candidates(db_pool, now=test_now) == 1
     assert (
-        await pool.fetchval(
+        await db_pool.fetchval(
             "SELECT status FROM public.insight_candidates WHERE id = $1", candidate_id
         )
         == "expired"
     )
     assert (
-        await pool.fetchval(
+        await db_pool.fetchval(
             "SELECT count(*) FROM public.attention_ledger WHERE notification_ref = $1",
             str(candidate_id),
         )
@@ -366,7 +341,7 @@ async def test_expire_candidates_keeps_candidate_pending_when_ledger_write_fails
     )
 
 
-async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg.Pool) -> None:
+async def test_record_attention_event_notify_coalesced_round_trips(db_pool: asyncpg.Pool) -> None:
     """bu-o8233 (JARVIS pursuit move 8 slice 4): same-window coalescing at the
     notify() boundary (``_tick_deferred_notification_pass``) records
     ``source="notify"`` + ``outcome="coalesced"`` — a combination the insight
@@ -375,7 +350,7 @@ async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg
     'coalesced' for source='notify', not just source='insight'.
     """
     row_id = await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="finance",
         source="notify",
         outcome="coalesced",
@@ -386,7 +361,9 @@ async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg
     )
     assert row_id is not None
 
-    row = await pool.fetchrow("SELECT * FROM public.attention_ledger WHERE id = $1::uuid", row_id)
+    row = await db_pool.fetchrow(
+        "SELECT * FROM public.attention_ledger WHERE id = $1::uuid", row_id
+    )
     assert row is not None
     assert row["source"] == "notify"
     assert row["outcome"] == "coalesced"
@@ -396,10 +373,10 @@ async def test_record_attention_event_notify_coalesced_round_trips(pool: asyncpg
 
 
 async def test_record_attention_event_notify_priority_label_normalization(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
 ) -> None:
     row_id = await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="health",
         source="notify",
         outcome="suppressed",
@@ -409,7 +386,7 @@ async def test_record_attention_event_notify_priority_label_normalization(
         reason="quiet_hours",
     )
     assert row_id is not None
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         "SELECT priority_label, priority_score, reason FROM public.attention_ledger WHERE id = $1::uuid",
         row_id,
     )
@@ -425,10 +402,12 @@ async def test_record_attention_event_notify_priority_label_normalization(
 # ---------------------------------------------------------------------------
 
 
-async def test_query_ledger_list_filters_by_outcome_and_origin_butler(pool: asyncpg.Pool) -> None:
+async def test_query_ledger_list_filters_by_outcome_and_origin_butler(
+    db_pool: asyncpg.Pool,
+) -> None:
     for outcome in ("delivered", "suppressed", "suppressed"):
         await record_attention_event(
-            pool,
+            db_pool,
             origin_butler="reader_test_alpha",
             source="notify",
             outcome=outcome,
@@ -436,7 +415,7 @@ async def test_query_ledger_list_filters_by_outcome_and_origin_butler(pool: asyn
             intent="send",
         )
     await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="reader_test_beta",
         source="notify",
         outcome="suppressed",
@@ -445,7 +424,7 @@ async def test_query_ledger_list_filters_by_outcome_and_origin_butler(pool: asyn
     )
 
     result = await _query_ledger(
-        pool,
+        db_pool,
         offset=0,
         limit=50,
         since=None,
@@ -465,11 +444,11 @@ async def test_query_ledger_list_filters_by_outcome_and_origin_butler(pool: asyn
 
 
 @pytest.mark.pg_clock
-async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> None:
+async def test_query_ledger_list_windows_by_since_until(db_pool: asyncpg.Pool) -> None:
     import datetime as dt
 
     await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="reader_test_gamma",
         source="insight",
         outcome="delivered",
@@ -480,7 +459,7 @@ async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> N
     far_past = dt.datetime.now(dt.UTC) - dt.timedelta(days=1)
 
     in_window = await _query_ledger(
-        pool,
+        db_pool,
         offset=0,
         limit=50,
         since=far_past,
@@ -493,7 +472,7 @@ async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> N
     assert in_window.meta.total == 1
 
     out_of_window = await _query_ledger(
-        pool,
+        db_pool,
         offset=0,
         limit=50,
         since=far_future,
@@ -507,7 +486,7 @@ async def test_query_ledger_list_windows_by_since_until(pool: asyncpg.Pool) -> N
 
 
 @pytest.mark.pg_clock
-async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: asyncpg.Pool) -> None:
+async def test_query_ledger_summary_flags_suppressed_never_delivered(db_pool: asyncpg.Pool) -> None:
     """The real GROUP BY/FILTER SQL against Postgres -- not a mocked
     aggregate -- computes suppressed_never_delivered exactly as the epic's
     live secrets_lifecycle failure required (120 suppressed / 0 delivered)."""
@@ -515,7 +494,7 @@ async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: async
 
     for _ in range(3):
         await record_attention_event(
-            pool,
+            db_pool,
             origin_butler="reader_test_delta",
             source="notify",
             outcome="suppressed",
@@ -523,7 +502,7 @@ async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: async
             intent="send",
         )
     await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="reader_test_epsilon",
         source="notify",
         outcome="delivered",
@@ -531,7 +510,7 @@ async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: async
         intent="send",
     )
     await record_attention_event(
-        pool,
+        db_pool,
         origin_butler="reader_test_epsilon",
         source="notify",
         outcome="suppressed",
@@ -541,7 +520,7 @@ async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: async
 
     since = dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)
     result = await _query_ledger_summary(
-        pool,
+        db_pool,
         since=since,
         until=None,
         intent=None,
@@ -561,7 +540,7 @@ async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: async
 
 @pytest.mark.parametrize("production_codec", [False, True], ids=["bare", "production-codec"])
 async def test_exact_metadata_repair_preserves_native_values_and_atomicity(
-    migrated_db_url: str, tmp_path, production_codec: bool
+    fresh_db, tmp_path, production_codec: bool
 ) -> None:
     """Real text->JSONB casts, normal-role SQL, independent readback and rollback.
 
@@ -569,6 +548,7 @@ async def test_exact_metadata_repair_preserves_native_values_and_atomicity(
     to PostgreSQL, then raises after the first real UPDATE. It cannot simulate a
     committed/rolled-back database result.
     """
+    migrated_db_url = await asyncio.to_thread(fresh_db, "core")
     options, target = metadata_repair.connection_options(migrated_db_url + "?sslmode=disable")
 
     async def ordinary_role(conn):
@@ -697,3 +677,28 @@ async def test_exact_metadata_repair_preserves_native_values_and_atomicity(
             await metadata_repair.verify_repair(
                 independent, plan, target=target, expected_texts=repeat_texts
             )
+
+
+async def test_failed_attempts_counts_only_failed_rows_under_the_key(db_pool) -> None:
+    """bu-jv1moa.54: a retrying job's backoff counts its own failed rows, nothing else."""
+    for outcome, key in [
+        ("failed", "job:a"),
+        ("failed", "job:a"),
+        ("delivered", "job:a"),
+        ("suppressed", "job:a"),
+        ("deferred", "job:a"),
+        ("failed", "job:b"),
+    ]:
+        assert await record_attention_event(
+            db_pool, origin_butler="general", source="notify", outcome=outcome, dedup_key=key
+        )
+    await db_pool.execute(
+        "UPDATE public.attention_ledger SET occurred_at = occurred_at - interval '1 hour' "
+        "WHERE dedup_key = 'job:a' AND outcome = 'failed'"
+    )
+
+    failures, since_last = await failed_attempts(db_pool, dedup_key="job:a")
+
+    assert failures == 2
+    assert timedelta(minutes=59) < since_last < timedelta(minutes=61)
+    assert await failed_attempts(db_pool, dedup_key="job:none") == (0, None)

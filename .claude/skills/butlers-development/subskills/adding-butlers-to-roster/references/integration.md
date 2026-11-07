@@ -54,7 +54,7 @@ No registration code needed — placing the right files in the right structure i
 
 - **Modules**: `_register_roster_modules()` in `src/butlers/modules/registry.py` scans `roster/*/modules/__init__.py` for `Module` subclasses — how domain tools get wired to MCP.
 - **Tools**: `register_all_butler_tools()` in `src/butlers/tools/_loader.py` scans `roster/*/tools.py` or `roster/*/tools/__init__.py`.
-- **Migrations**: `_discover_butler_chains()` in `src/butlers/migrations.py` scans `roster/*/migrations/`.
+- **Migrations**: `_discover_butler_chains()` in `src/butlers/migrations/__init__.py` scans `roster/*/migrations/`.
 - **API Routers**: `discover_butler_routers()` in `src/butlers/api/router_discovery.py` scans `roster/*/api/router.py`.
 - **Registry**: `discover_butlers()` scans butler.toml files to populate the butler registry.
 

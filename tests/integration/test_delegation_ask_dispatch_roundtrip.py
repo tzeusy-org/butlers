@@ -27,7 +27,6 @@ import asyncpg
 import pytest
 
 from butlers.core_tools._delegation import dispatch_delegated_ask
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -37,16 +36,11 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    yield p
-    await p.close()
+async def ledger_pool(db) -> asyncpg.Pool:
+    # Production-shaped pool (JSONB codec registered), so the
+    # ``metadata->>'origin_key'`` lookups below see what a live butler writes.
+    return await db("core")
 
 
 def _origin_key_lookup(pool: asyncpg.Pool, asking_butler: str, origin_key: str) -> Any:
@@ -72,11 +66,13 @@ class _OkClient:
         return SimpleNamespace(is_error=False, data={"status": "scheduled"})
 
 
-async def test_successful_dispatch_records_routed_row_with_origin_key(pool: asyncpg.Pool) -> None:
+async def test_successful_dispatch_records_routed_row_with_origin_key(
+    ledger_pool: asyncpg.Pool,
+) -> None:
     origin_key = "relationship-birthday-gift-ask:v1:2026-08-01"
 
     result = await dispatch_delegated_ask(
-        pool,
+        ledger_pool,
         _OkClient(),
         asking_butler="relationship",
         target_butler="finance",
@@ -87,7 +83,7 @@ async def test_successful_dispatch_records_routed_row_with_origin_key(pool: asyn
     assert result["status"] == "routed"
     ledger_id = result["ledger_id"]
 
-    row = await pool.fetchrow(
+    row = await ledger_pool.fetchrow(
         "SELECT status, asking_butler, target_butler, metadata "
         "FROM public.delegation_ledger WHERE id = $1",
         ledger_id,
@@ -96,16 +92,18 @@ async def test_successful_dispatch_records_routed_row_with_origin_key(pool: asyn
     assert row["status"] == "routed"
     assert row["asking_butler"] == "relationship"
     assert row["target_butler"] == "finance"
+    # Stored as a JSON object, not a double-encoded string scalar (bu-yuuk69).
+    assert row["metadata"] == {"origin_key": origin_key, "seed": "birthday_gift_budget_ask"}
 
     # The exact dedup lookup the briefing seed performs finds this row.
-    found_id = await _origin_key_lookup(pool, "relationship", origin_key)
+    found_id = await _origin_key_lookup(ledger_pool, "relationship", origin_key)
     assert str(found_id) == ledger_id
 
 
-async def test_dedup_lookup_ignores_a_different_origin_key(pool: asyncpg.Pool) -> None:
+async def test_dedup_lookup_ignores_a_different_origin_key(ledger_pool: asyncpg.Pool) -> None:
     origin_key = "relationship-birthday-gift-ask:v1:2026-08-02"
     await dispatch_delegated_ask(
-        pool,
+        ledger_pool,
         _OkClient(),
         asking_butler="relationship",
         target_butler="finance",
@@ -114,18 +112,18 @@ async def test_dedup_lookup_ignores_a_different_origin_key(pool: asyncpg.Pool) -
     )
 
     miss = await _origin_key_lookup(
-        pool, "relationship", "relationship-birthday-gift-ask:v1:2026-08-03"
+        ledger_pool, "relationship", "relationship-birthday-gift-ask:v1:2026-08-03"
     )
     assert miss is None
 
 
-async def test_route_failure_records_failed_row_not_routed(pool: asyncpg.Pool) -> None:
+async def test_route_failure_records_failed_row_not_routed(ledger_pool: asyncpg.Pool) -> None:
     origin_key = "relationship-birthday-gift-ask:v1:2026-08-04"
 
     # client=None and asking_butler != "switchboard" -> the standing
     # "Switchboard is not connected" retryable failure path.
     result = await dispatch_delegated_ask(
-        pool,
+        ledger_pool,
         None,
         asking_butler="relationship",
         target_butler="finance",
@@ -136,7 +134,7 @@ async def test_route_failure_records_failed_row_not_routed(pool: asyncpg.Pool) -
     assert result["status"] == "failed"
     assert result["retryable"] is True
 
-    row = await pool.fetchrow(
+    row = await ledger_pool.fetchrow(
         "SELECT status FROM public.delegation_ledger WHERE id = $1", result["ledger_id"]
     )
     assert row["status"] == "failed"
@@ -146,7 +144,7 @@ async def test_route_failure_records_failed_row_not_routed(pool: asyncpg.Pool) -
     # but the seed's job-level "already_asked" short circuit still applies
     # per-origin-key regardless of terminal outcome (AC2: no duplicate ASK
     # attempts on a duplicate run, not "retry until success").
-    found_id = await _origin_key_lookup(pool, "relationship", origin_key)
+    found_id = await _origin_key_lookup(ledger_pool, "relationship", origin_key)
     assert str(found_id) == result["ledger_id"]
 
 
@@ -170,22 +168,11 @@ async def test_route_failure_records_failed_row_not_routed(pool: asyncpg.Pool) -
 # ``butlers.jobs.briefing``.
 
 
-@pytest.fixture(scope="module")
-def gift_ask_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship", "contacts"],
-    )
-
-
 @pytest.fixture
-async def gift_ask_pool(gift_ask_db_url: str) -> asyncpg.Pool:
+async def gift_ask_pool(db) -> asyncpg.Pool:
     # min/max > 1 so both concurrent job runs get their own connection -- the
     # lock must be doing the serializing, not pool exhaustion.
-    p = await asyncpg.create_pool(gift_ask_db_url, min_size=2, max_size=5)
-    yield p
-    await p.close()
+    return await db("core", "memory", "relationship", "contacts", min_size=2, max_size=5)
 
 
 async def test_concurrent_runs_dispatch_at_most_one_ask(

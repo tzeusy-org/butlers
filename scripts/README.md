@@ -61,8 +61,11 @@ The script is idempotent — safe to re-run on an already-provisioned database.
 
 **Note on ordering:**
 - Run `init-db.sql` **after** the database and connecting user exist.
-- Run Alembic migrations next: `butlers db migrate` (or `docker compose run
-  migrations`).
+- Before manually starting Chronicler on a fresh database, run
+  `butlers db prepare-chronicler-memory --dir roster`; it prepares the explicitly configured
+  `chronicler_mem` schema using the core and memory chains.
+- Then run Alembic migrations: `butlers db migrate` (or `docker compose run migrations`, which runs
+  the prerequisite before ordinary migrations).
 - You should not need a post-migration privileged grant pass for new objects
   created by the connecting user; re-run the bootstrap only when the managed
   schema/role surface itself changes.
@@ -195,11 +198,11 @@ Optional environment variable:
 ## setup_main_ruleset.sh and the merge queue
 
 `setup_main_ruleset.sh` installs the `main-merge-queue` ruleset for
-`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, and
-the non-strict required contexts `check`, `guards` and `frontend`; `check` and
-`frontend` now only mirror `alls-green`, the fan-in over every CI job. The script
-already writes the single `alls-green` context: running it is the owner's
-cutover act, after which the two mirror jobs are deleted.
+`tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, up
+to 9 concurrent merge-group builds, and one non-strict required context:
+`alls-green`, the fan-in over every CI job, reported by GitHub Actions.
+`.github/workflows/merge-queue-sweep.yml` force-cancels runs left behind when
+the queue rebuilds its groups.
 
 After review and the PR-head gates are complete, add the PR to the queue:
 
@@ -242,19 +245,16 @@ changes infrastructure or historical data.
 | [`fact_source_capture_before_observer.py`](fact_source_capture_before_observer.py) | `fact_source_capture_before_control.py` (pytest plugin) | Records bounded lifecycle observations for the fixed control carrier. |
 | [`fact_source_capture_before_supervisor.py`](fact_source_capture_before_supervisor.py) | `fact_source_capture_before_control.py::run_owned` | Supervises bounded control children and verifies owned-process cleanup. |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
-| [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | `ci.yml`, Make, `pre_push.py` | Confirms archived OpenSpec requirements reached their canonical specs, honouring `archived-capability-homes.json`. |
-| [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition. |
-| [`check_countable_tasks.py`](check_countable_tasks.py) | `ci.yml`, `make check-countable-tasks`, `pre_push.py` | Fails when an unarchived change's tasks cannot be counted by the archive gate. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
 | [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |
 | [`check_for_update_joins.py`](check_for_update_joins.py) | `make check-for-update-joins`, `pre_push.py` | Statically rejects `FOR UPDATE` on nullable outer-join sides. |
 | [`check_owner_emails.py`](check_owner_emails.py) | `ci.yml`, Make, `pre_push.py` | Fails when a tracked file contains a blocked deployment-owner email address. |
 | [`check_requirement_trace_lines.py`](check_requirement_trace_lines.py) | `ci.yml`, `make check-requirement-trace` | Requires ID, Source and Scope lines on ADDED/MODIFIED requirement blocks; today's debt is frozen in `requirement-trace-baseline.json`. |
-| [`check_spec_overwrites.py`](check_spec_overwrites.py) | `ci.yml`, `make check-spec-overwrites`, `pre_push.py` | Compares active OpenSpec MODIFIED blocks against current canonical bodies. |
+| `tests/contracts/test_requirement_citations.py` | CI unit/guards, `make check-requirement-citations`, `pre_push.py` | Resolves qualified test citations from canonical specs or complete retained ADDED/MODIFIED requirements. |
 | [`check_pyright_baseline.py`](check_pyright_baseline.py) | `pyright_runtime.py`, `make typecheck` | Strict diagnostic JSON and shrinking error-Counter comparison. |
-| [`check_test_budget.py`](check_test_budget.py) | Make, `ci.yml` preflight | Per-lane collected-test budget ratchet against `test-budget-baseline.json`. |
 | [`check_test_db_fixtures.py`](check_test_db_fixtures.py) | `tests/scripts/test_check_test_db_fixtures.py` (unit lane) | Ratchet against per-file `pool`/`migrated_db_url` fixtures and hand-written `CREATE TABLE` in tests (`test-db-fixtures-baseline.json`). |
 | [`check_test_kit_copies.py`](check_test_kit_copies.py) | `tests/scripts/test_check_test_kit_copies.py` (unit lane) | Ratchet against per-file copies of the `src/butlers/testing/` kit (`_make_row`, `_FakePool`, `_load_migration`, ...) frozen in `test-kit-copies-baseline.json`. |
+| [`check_test_boot_patches.py`](check_test_boot_patches.py) | `tests/scripts/test_check_test_boot_patches.py` (unit lane) | Ratchet against patched daemon boots in tests (`patch("butlers.lifecycle.X")`, `patch.object(ButlerDaemon, "_x")`); per-file counts frozen in `test-boot-patches-baseline.json`. Boot with `booted_daemon` or call the phase on `tool_host`. |
 | [`extract-frontend-copy.py`](extract-frontend-copy.py) | Manual, on demand | Writes the bounded frontend copy report to stdout and diagnostics to stderr; redirect to ignored `.tmp/` for a local copy. |
 | [`frontend_guards.py`](frontend_guards.py) | Make, `pre_push.py` | Runs the frontend guard steps locally in the order CI runs them. |
 | [`lint_tools.py`](lint_tools.py) | `make install-lint-tools`, `make lint`, CI | Installs pinned gitleaks and actionlint, scans source and workflows, and self-tests the detectors and allowances. |
@@ -276,17 +276,22 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | --- | --- | --- |
 | [`check_ci_coverage.py`](check_ci_coverage.py) | `nightly.yml` | Binds and validates the complete same-run coverage population before reporting. |
 | [`ci_group_count.py`](ci_group_count.py) | `ci_lanes.py` (pytest plugin) | Records each backend group's actual collection count and test durations. |
+| [`ci_hang_evidence.py`](ci_hang_evidence.py) | `ci_lanes.py` (pytest plugin) | Lets the lane runner dump every pytest process's stacks when a group hangs, and records each worker's last-started test. |
 | [`ci_lanes.py`](ci_lanes.py) | `ci.yml`, `nightly.yml` | Runs pytest-split backend groups, reconciles their counts against fresh collection, and merges measured durations. |
 | [`ci_latency.py`](ci_latency.py) | `ci-latency.yml` | Bounded, read-only Actions timestamp report; never a required merge gate. |
+| [`ci_sweep_stale_merge_groups.py`](ci_sweep_stale_merge_groups.py) | `merge-queue-sweep.yml` | Force-cancels merge-group CI runs whose queue ref is gone, so rebuilt groups don't starve live ones. |
 | [`ci_smoke.py`](ci_smoke.py) | `ci.yml` (`smoke` job) | Runs the dedicated smoke tier and writes its release evidence. |
 | [`pyright_runtime.py`](pyright_runtime.py) | `make typecheck`, `make prepare-typecheck`, `make update-type-baseline` | Pinned offline checker supervision, immutable-public bootstrap and atomic baseline shrink. |
 | [`ci_environment.py`](ci_environment.py) | `ci.yml`, `ci-python-environment` action, watchdog workflow | Advisory CI environment cache with mandatory frozen repair on every restore. |
-| [`ci_test_images.py`](ci_test_images.py) | root `conftest.py`, `test_owner_auth_browser.py` | Preloads the test container images by public immutable content, without credentials. |
+| [`ci_test_images.py`](ci_test_images.py) | root `conftest.py`, `test_owner_auth_browser.py`, the PG17 client-container integration tests | Preloads the test container images by public immutable content, without credentials. |
 | [`ci_vitest.py`](ci_vitest.py) | `ci.yml` | Executes the locked Vitest shards and retains actual-item evidence. |
 | [`ci_vitest_reporter.mjs`](ci_vitest_reporter.mjs) | `ci_vitest.py` | Vitest reporter. |
 | [`combine_review_comment_sources.py`](combine_review_comment_sources.py) | `ci.yml` | Flattens raw GitHub review-comment dumps into the session-link guard's input shape. |
 | [`fetch_pr_metadata.py`](fetch_pr_metadata.py) | `ci.yml` | Producer of validated PR title/body guard inputs. |
 | [`install_ci_uv.py`](install_ci_uv.py) | `ci.yml`, `nightly.yml`, `ci-python-environment` action, watchdog workflow | Installs the pinned `uv` in CI. |
+| [`session_host_ci.py`](session_host_ci.py) | `ci.yml`, `session-host-causal.yml`, `session_host_causal_probe.py` | Owns the pinned native-session CI profile lifecycle and bounded readiness checks. |
+| [`session_host_causal_probe.py`](session_host_causal_probe.py) | `session-host-causal.yml` | Runs the fixed-source disposable-VM A/B/A experiment and emits closed evidence; uncertain settlement quarantines the policy. |
+| [`session_host_probe_adapter.py`](session_host_probe_adapter.py) | `session_host_causal_probe.py` (pytest plugin) | Records test-only native launch and post-finally settlement receipts for the single causal node. |
 | [`summarize_junit_durations.py`](summarize_junit_durations.py) | `ci.yml`, `nightly.yml` | Summarizes JUnit durations for the weight pipeline. |
 | [`ci_branch_hygiene.py`](ci_branch_hygiene.py) | the live runbook [stale branch hygiene](../docs/operations/stale-branch-hygiene.md) (human) | Inventories, plans and verifies recovery for stale remote branches. Kept: `AGENTS.md` points agents at the runbook. |
 | [`test_owner_auth_browser.py`](test_owner_auth_browser.py) | `frontend/tests/owner-auth/README.md` (human), `ci_test_images.py` | Native HTTPS owner-auth evidence against a disposable PostgreSQL instance. |
@@ -298,6 +303,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`compose.sh`](compose.sh) | developers, `butlers deploy`, Dockerfile, Helm values | Supported Compose launcher for the local stack and protected restore-drill variants. |
 | [`base-image-input-fingerprint.sh`](base-image-input-fingerprint.sh) | `compose.sh`, `k8s/build-push.sh`, `nightly.yml` | Fingerprints the base image build inputs. |
 | [`generate_runtime_cli_sandbox_manifest.py`](generate_runtime_cli_sandbox_manifest.py) | `Dockerfile.base`, `compose.sh`, `k8s/build-push.sh`, `nightly.yml` | Generates the runtime CLI sandbox input manifest. |
+| [`export_runtime_image_closure.py`](export_runtime_image_closure.py) | `nightly.yml` exact-image builder | Exports bounded allowlisted installed files and original metadata without executing a runtime; verifies exact artifact bytes and provenance. |
 | [`render_connector_catalog.py`](render_connector_catalog.py) | developers; `tests/contracts/test_connector_catalog.py::test_generated_recovery_projection_matches_catalog_and_refuses_stale_output` | Regenerates the public connector recovery projection with `python3 scripts/render_connector_catalog.py`; `--check` refuses stale generated TypeScript. |
 | [`runtime_cli_sandbox_init.c`](runtime_cli_sandbox_init.c) | `Dockerfile.base` | Source of the sandbox init binary. |
 | [`dev_entrypoint.sh`](dev_entrypoint.sh) | `docker-compose.yml`, Helm templates | Container entrypoint for dev services. |
@@ -339,10 +345,12 @@ criteria and dry-run controls before applying it to a database.
 | Script | Caller | Why it stays |
 | --- | --- | --- |
 | [`backfill_fleet_cases.py`](backfill_fleet_cases.py) | operators, per `REQ-fleet-case-file-011` in the [fleet-case-file spec](../openspec/specs/fleet-case-file/spec.md) | Previews or backfills resolved owner-condition episodes as closed historical cases using the Switchboard writer role; never scheduled. |
+| [`memory_authority_demotion.py`](memory_authority_demotion.py) | operators, per the [authority demotion runbook](../docs/operations/memory-authority-demotion.md), after separate operational authorization | Classifies one memory schema against an evidence manifest (default read-only dry run); an exact owner-approved apply demotes laundered owner-authority rows to `mixed` with receipts. |
 | [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | operators, per the `s3-blob-storage` spec and RFC 0016 | Moves scoped local attachment blobs to the S3-compatible backend. |
 | [`qa_reconcile_publications.py`](qa_reconcile_publications.py) | operators, with `bws run -- ...` supplying the GitHub token | Runs one read-only sweep of held QA publication operations against a fixed repository and prints a content-free JSON report. |
 | [`recover_chronicler_day_close_cache.py`](recover_chronicler_day_close_cache.py) | operators, per [`chronicler-day-close-recovery.md`](../docs/operations/chronicler-day-close-recovery.md), after separate operational authorization | Plans bounded day-close cache recovery; applying the reviewed plan requires separate authorization. |
 | [`repair_attention_ledger_metadata.py`](repair_attention_ledger_metadata.py) | operators, per [metadata repair](../docs/operations/attention-ledger-metadata-repair.md), after separate live allocation | Plans exact bounded UUID selections; owner-approved apply repairs one encoded object layer with CAS and committed readback. |
+| [`retention_drain.py`](retention_drain.py) | operators, per [controlled retention](../docs/operations/controlled-retention-drain.md) | One authorized fixed-cutoff Switchboard READ ONLY inventory; no live-delete CLI. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | operators, per the active `repair-whatsapp-identity-reconciliation` change (tasks 6.3 and 6.4) | Content-blind WhatsApp entity reconciliation pass. Delete when that change archives. |
 | [`scrub_filtered_event_previews.py`](scrub_filtered_event_previews.py) | operators, per [connectors overview](../docs/connectors/overview.md) | Scrubs preview text from filtered-event buffers; imported by two connector tests. |
 

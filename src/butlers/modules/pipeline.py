@@ -23,7 +23,7 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
-from butlers.connectors.catalog import conversation_history_strategies
+from butlers.connector_catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
 from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
@@ -1203,6 +1203,15 @@ def _format_decomp_conversation_history(messages: list[dict[str, Any]]) -> str:
     lines.append("---")
     lines.append("")
     return "\n".join(lines)
+
+
+def _identity_cause_class(exc: BaseException) -> str | None:
+    """Return the content-blind inner class of an identity query failure only."""
+    from butlers.identity import IdentityResolutionQueryError
+
+    if isinstance(exc, IdentityResolutionQueryError):
+        return exc.failure_class
+    return None
 
 
 class MessagePipeline:
@@ -3160,12 +3169,17 @@ class MessagePipeline:
                                         extra={
                                             "source_channel": source,
                                             "failure_class": type(exc).__name__,
+                                            "cause_class": _identity_cause_class(exc),
                                         },
                                     )
                                 else:
                                     logger.warning(
                                         "pipeline.identity_resolution_failed",
-                                        extra={"failure_class": type(exc).__name__},
+                                        extra={
+                                            "failure_class": type(exc).__name__,
+                                            # Content-blind inner class (bu-n7zmbp.20).
+                                            "cause_class": _identity_cause_class(exc),
+                                        },
                                     )
 
                     if _decomp_messages is not None:

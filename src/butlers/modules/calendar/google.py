@@ -10,6 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
+from butlers.google_credentials import GoogleOAuthClient, _mark_account_revoked
 from butlers.modules.calendar_response import (
     CalendarResponseError,
     CalendarResponseUncertainError,
@@ -30,6 +31,7 @@ from .errors import (
     CalendarAuthError,
     CalendarRequestError,
     CalendarSyncTokenExpiredError,
+    CalendarTokenRefreshError,
     _safe_google_error_message,
 )
 from .google_mapping import (
@@ -49,7 +51,7 @@ from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
 )
-from .oauth import _GoogleOAuthClient, _GoogleOAuthCredentials
+from .oauth import _GoogleOAuthCredentials
 from .provider import CalendarProvider
 
 
@@ -140,23 +142,12 @@ class _GoogleProvider(CalendarProvider):
                             "(account was re-authorized; restart to pick up the new token)."
                         )
                         return
-                    if _email:
-                        await _pool.execute(
-                            """
-                            UPDATE public.google_accounts
-                            SET status = 'revoked'
-                            WHERE email = $1
-                            """,
-                            _email,
-                        )
-                    else:
-                        await _pool.execute(
-                            """
-                            UPDATE public.google_accounts
-                            SET status = 'revoked'
-                            WHERE is_primary = true
-                            """
-                        )
+                    await _mark_account_revoked(
+                        _pool,
+                        email=_email or None,
+                        primary=not bool(_email),
+                        expected_refresh_token=_module_refresh_token,
+                    )
                 except Exception:
                     logger.debug(
                         "CalendarModule: failed to mark Google account revoked",
@@ -166,11 +157,13 @@ class _GoogleProvider(CalendarProvider):
             on_token_refreshed = _update_last_token_refresh_at
             on_token_revoked = _mark_token_revoked
 
-        self._oauth = _GoogleOAuthClient(
+        self._oauth = GoogleOAuthClient(
             credentials,
             self._http_client,
             on_token_refreshed,
             on_token_revoked,
+            error_type=CalendarTokenRefreshError,
+            account=account_email,
         )
 
     @property
@@ -618,13 +611,15 @@ class _GoogleProvider(CalendarProvider):
         calendar_id: str,
         event_id: str,
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> None:
         """Delete a Google Calendar event.
 
         Sends a DELETE request to the Google Calendar API.  A 404 response is
         treated as success (the event was already deleted).  For events with
         attendees, pass ``send_updates="all"`` to send cancellation
-        notifications; the default (``None`` / ``"none"``) suppresses emails.
+        notifications. ``"none"`` explicitly suppresses notifications; ``None``
+        omits the provider flag and is not evidence of silence.
 
         For recurring events, v1 always operates on the full series: the
         ``event_id`` must be the base recurring-event ID, not an instance ID.
@@ -646,6 +641,7 @@ class _GoogleProvider(CalendarProvider):
             method="DELETE",
             path=f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             params=params,
+            extra_headers={"If-Match": etag} if etag is not None else None,
         )
 
         # 404 means the event was already deleted — treat as success.
@@ -684,6 +680,7 @@ class _GoogleProvider(CalendarProvider):
         event_id: str,
         recurrence: list[str],
         send_updates: str | None = None,
+        etag: str | None = None,
     ) -> CalendarEvent:
         normalized_event_id = event_id.strip()
         if not normalized_event_id:
@@ -698,6 +695,7 @@ class _GoogleProvider(CalendarProvider):
             f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
             params=params,
             json_body={"recurrence": list(recurrence)},
+            extra_headers={"If-Match": etag} if etag is not None else None,
         )
         event = _google_event_to_calendar_event(
             response_payload,

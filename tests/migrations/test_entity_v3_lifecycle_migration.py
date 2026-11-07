@@ -16,12 +16,13 @@ Parent epic: bu-89993 — entity v3 lifecycle & backend contracts
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -32,18 +33,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("rel_021", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
     """Run upgrade() with op mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_021")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -54,7 +46,7 @@ def _collect_upgrade_sqls() -> list[str]:
 
 def _collect_downgrade_sqls() -> list[str]:
     """Run downgrade() with op mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_021")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -73,7 +65,7 @@ class TestMigrationFileAndChain:
 
     def test_single_cardinality_seed_list(self) -> None:
         """The single-cardinality seed set must be exactly the two spec predicates."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_021")
         assert set(mod._SINGLE_CARDINALITY_PREDICATES) == {
             "has-birthday",
             "dunbar_tier_override",
@@ -270,7 +262,7 @@ async def _provision_prerequisites(pool) -> None:
             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )
     """)
-    # schema-standin-exempt: a deliberately minimal pre-rel_021 registry for
+    # Hand DDL on purpose: a deliberately minimal pre-rel_021 registry for
     # testing rel_021's upgrade; it must not include cardinality, and current-
     # chain constraints are intentionally outside this migration fixture.
     await pool.execute("""

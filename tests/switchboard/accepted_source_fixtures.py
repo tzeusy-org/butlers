@@ -31,6 +31,8 @@ async def accept(
     event_id=None,
     sender_extra=None,
     external_thread_id=None,
+    idempotency_key=None,
+    payload_extra=None,
 ):
     event = {
         "external_event_id": event_id or str(uuid4()),
@@ -51,6 +53,7 @@ async def accept(
         payload["untrusted_spans"] = markers
     if attachments is not None:
         payload["attachments"] = attachments
+    payload.update(payload_extra or {})
     result = await ingest_v1(
         owner,
         {
@@ -59,7 +62,7 @@ async def accept(
             "event": event,
             "sender": {"identity": sender, **(sender_extra or {})},
             "payload": payload,
-            "control": {"idempotency_key": str(uuid4())},
+            "control": {"idempotency_key": idempotency_key or str(uuid4())},
         },
         enable_thread_affinity=False,
     )

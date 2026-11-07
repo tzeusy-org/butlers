@@ -87,6 +87,15 @@ Scope: v1-mandatory
 - **THEN** the full event is returned from the provider
 - **AND** a 404 response returns `{"status": "not_found", "event": null}`
 
+#### Scenario: Caller arguments cannot open a calendar approval gate
+
+- **WHEN** a session passes an approval-asserting argument (such as `_approval_bypass`) to a calendar mutation tool
+- **THEN** argument validation SHALL reject it, or the ordinary approval gate SHALL still park the call, and no mutation SHALL occur
+- **AND** no calendar tool input schema SHALL declare a parameter that asserts approval
+- **AND** a gated mutation SHALL run without parking only while the approvals executor replays the exact stored call, proven by the execution context for that tool and argument digest
+- **AND** a parked call SHALL store every public parameter, defaults included, so the replay executes exactly what the owner approved
+- **AND** a parked call to a tool that takes `calendar_id` SHALL bind the concrete calendar resolved at park time, so a later default-calendar change cannot redirect the approved effect; an approved row without a bound `calendar_id` SHALL be refused before effect
+
 #### Scenario: Create butler-generated event
 
 - **WHEN** `calendar_create_event` is called with title, start_at, end_at, and optional fields
@@ -723,6 +732,26 @@ When a mutation targets a recurring event, the module SHALL support operating on
 - **WHEN** a recurrence-scoped mutation is evaluated before the provider write
 - **THEN** an impact preview reports the number of occurrences the mutation will touch: 1 for `this`, the remaining-from-boundary count for `following`, and the whole-series occurrence count for `series`
 - **AND** the count feeds the high-impact approval gate so large `series` / `following` mutations are gated while a single-occurrence `this` mutation is not
+
+#### Scenario: Large series edit requires exact approved replay
+
+- **WHEN** a series update or delete affects at least ten occurrences in the 90-day recurrence projection window
+- **THEN** it SHALL return `approval_required` and park the canonical executable call before any provider write
+- **AND** the parked call SHALL bind the resolved calendar and every public argument with its default
+- **AND** only the approvals executor replaying that exact approved call SHALL resume its pending workspace action and execute once
+- **AND** a changed default calendar SHALL NOT redirect the approved replay
+
+#### Scenario: Approval unavailable refuses high-impact mutations
+
+- **WHEN** no approval enqueuer is wired and a series or following mutation affects at least ten projected occurrences, or a workspace butler-event delete or toggle is requested
+- **THEN** the tool SHALL return `approval_unavailable` without any provider or native mutation
+- **AND** the workspace action SHALL record a terminal no-effect result so its request ID replays the refusal instead of remaining pending
+- **AND** after approvals become available a new request ID MAY request approval
+
+#### Scenario: Low-impact mutations do not require an enqueuer
+
+- **WHEN** no approval enqueuer is wired and a recurrence mutation affects only `this` or fewer than ten projected occurrences
+- **THEN** the recurrence impact gate SHALL permit the mutation while preserving permission, overlap and other applicable checks
 
 #### Scenario: Unknown recurrence scope rejected
 

@@ -1,7 +1,8 @@
 """REQ-module-approvals-003: migrated roles and real synthetic WebAuthn.
 
 The authority and signed_binding_proof fixtures are the dark reusable D13
-handoff. No future Vouch/Contain/mode consumer is registered or granted here.
+handoff. No future Vouch/mode consumer is registered or granted here; Contain
+and policy_loosen are proven in ``test_owner_stepup_consumers.py``.
 """
 
 from __future__ import annotations
@@ -33,16 +34,15 @@ from tests.api.test_owner_auth_store import host
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "approvals"]
-    )
+@pytest.fixture
+def authority_db_url(fresh_db) -> str:
+    """The database ``authority`` runs on; importers override it with their own chains."""
+    return fresh_db("core", "approvals")
 
 
 @pytest.fixture
-async def authority(migrated_db_url, postgres_container):
-    parsed = urlparse(migrated_db_url)
+async def authority(authority_db_url, postgres_container):
+    parsed = urlparse(authority_db_url)
     admin_url = migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/"))
     admin = await asyncpg.create_pool(
         admin_url.replace("postgresql+psycopg2", "postgresql"),
@@ -57,7 +57,7 @@ async def authority(migrated_db_url, postgres_container):
     granted_connect = False
     try:
         pool = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=4, init=register_jsonb_codec
+            authority_db_url, min_size=1, max_size=4, init=register_jsonb_codec
         )
         # Generated identifiers/password are synthetic and confined to this DB test.
         await admin.execute(
@@ -634,10 +634,14 @@ async def test_restricted_login_and_runtime_cannot_mint_or_administer_a_factor(a
 
     # Shared fixtures do not silently activate any future consumer or grant.
     namespace = await pool.fetchval("SELECT current_database() || ':' || current_schema()")
-    for future_kind in ("vouch", "contain", "mode_loosen"):
+    for future_kind in ("vouch", "mode_loosen"):
         binding = RuleBinding(future_kind, "new", "a" * 64, "b" * 64, namespace)
         with pytest.raises(AuthError):
             await signed_binding_proof(authority, binding)
+    # The closed catalog admits exactly the registered consumers (bu-dhloi1.29).
+    for kind in ("contain", "policy_loosen"):
+        binding = RuleBinding(kind, "synthetic", "a" * 64, "b" * 64, namespace)
+        assert (await signed_binding_proof(authority, binding)).nonce
     role = await admin.fetchrow(
         "SELECT rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls FROM pg_roles WHERE rolname='dashboard_stepup_owner'"
     )
@@ -658,25 +662,17 @@ async def test_options_and_mutation_use_trusted_cookie_projection_not_a_header_b
     from butlers.api.owner_auth.config import OwnerAuthConfig
     from butlers.api.owner_auth.http import OwnerAuthMiddleware
     from butlers.api.routers import approvals
+    from butlers.testing.db_manager import db_manager
 
     pool, service, key, handle, session, _ = authority
-
-    class Manager:
-        butler_names = ["home"]
-
-        def pool(self, name):
-            assert name == "home"
-            return pool
-
-        def butlers_with_module(self, name):
-            return ["home"] if name == "approvals" else []
+    manager = db_manager({"home": pool}, modules={"home": ["approvals"]})
 
     config = OwnerAuthConfig(ORIGIN, RP)
     app = FastAPI()
     app.state.owner_auth_service = service
     app.add_middleware(OwnerAuthMiddleware, config=config)
     app.include_router(approvals.router)
-    app.dependency_overrides[get_db] = Manager
+    app.dependency_overrides[get_db] = lambda: manager
     request = dict(
         butler="home",
         tool_name="synthetic_send",

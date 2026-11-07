@@ -37,6 +37,12 @@ from taking actions beyond their intended scope.
   (OwnTracks), listening history (Spotify), smart home state (Home Assistant),
   and file metadata (Google Drive) may appear in LLM prompts when butlers
   process ingested events from these sources.
+- **The owner's edge and outside AI clients (RFC 0039).** The owner's own
+  gateway (Cloudflare Worker OAuth and a GitHub-id allowlist) terminates TLS
+  for the public read surface and sees its responses. The owner's outside AI
+  clients (ChatGPT and claude.ai) are models outside Butlers: they receive only
+  data the projection manifest publishes, and anything they send back is
+  third-party content. No request from either carries owner authority.
 - **Ephemeral LLM sessions.** Leads and children are partially trusted
   whatever model runs them. Each runs in a sandbox, holds a grant derived from
   its goal's origin, and reaches capabilities only through the broker.
@@ -77,7 +83,11 @@ specifies the mechanism. The rules it must satisfy:
   undeterminable one, is not the owner.
 - **No goal spends.** `transact` capabilities (spend, pay, book) are disabled
   for every goal, including as prepared actions, until the owner enables them
-  through an amendment to RFC 0038.
+  through an amendment to RFC 0038. A reservation request is a message:
+  asking a venue to hold a table or slot through an approval-gated message
+  is `communicate`; any step that accepts a fee, deposit, card hold or
+  cancellation charge is `book` and stays disabled (owner decision,
+  2026-10-20).
 - **Grants only narrow.** A lead's grant is at most its goal's ceiling. A
   child's grant is a subset of its lead's, without `administer`. Discovery,
   skills, and task prompts never grant anything.
@@ -156,6 +166,18 @@ butler's schema even though all schemas live in one database.
 - A butler runtime connection scoped by `SET ROLE` can reach only its own schema
   and `public`, plus any explicitly granted connector read schemas.
 - Cross-butler data access goes through MCP and the Switchboard, not direct SQL.
+  The one guarded exception is the publisher role that feeds the public read
+  surface's projection by logical replication. The publication's column lists
+  and row filters limit what the projection receives, not what the role can
+  read: the publisher role holds `REPLICATION`, which in PostgreSQL can decode
+  every change in the database regardless of grants, so it is
+  primary-read-all. It therefore has no credential at all: no password or
+  certificate exists, it logs in only by local peer authentication inside the
+  database instance pods, every network login as it is refused, and no role
+  is a member of it. No runtime role, session or internet-facing process can
+  act as it. What remains are the permissions that are already
+  superuser-equivalent; the publisher adds none of them (see Public Read
+  Surface).
 
 **Limitations:**
 
@@ -203,6 +225,68 @@ the exact action and current version, consumed atomically with that action
 the Telegram phone. Telegram identity or a presentation ACK cannot supply that
 factor. This contract does not register a factor, change credentials or release
 a held Vouch, Contain or mode action.
+
+## Public Read Surface
+
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) admits
+exactly one internet-reachable Butlers workload: a deterministic MCP server
+through which the owner's own outside AI clients read Butlers data (owner
+decision, 2026-11-04, recorded in
+[the decision record](../legends-and-lore/decisions/2026-11-04-doctrine-public-mcp-read-surface.md)). It covers outside clients calling Butlers. It admits no
+outside server as a Butlers data source, and the owner's rule that no outside
+server gets a write, send or spend effect (`bu-mzvel0`) is unchanged.
+
+**Guarantees.** The exception holds only while all four hold:
+
+- **No credential is reachable.** The server reads only a separate projection
+  database that one-way logical replication fills from one checked-in
+  allowlist manifest. `butler_secrets`, secured `entity_info` rows, connector
+  and OAuth tokens, and private-custody content are never published, and a
+  contract test holds the publication equal to the manifest. The server holds
+  no login to the primary database (the projection is a second database on
+  the same cluster, and `pg_hba` admits the server's role to it alone), no
+  network route to butler daemons, the dashboard API or the Switchboard, and
+  the publisher has no credential to hold.
+- **No Butlers model runs on the request path.** The server starts no session,
+  imports no spawner, runtime, model SDK or Switchboard client, has no egress
+  beyond the PostgreSQL port that serves its projection, and offers no
+  sampling or elicitation.
+- **Writes are proposals the owner gates.** `propose_fact` only inserts into a
+  quarantined inbox. An inbox row is not an effect: it writes no domain store,
+  goal or schedule. A deterministic domain job parks each valid proposal as an
+  approval, and only the owner's per-event approval applies it, under the
+  Approval Gates rules above. No standing rule approves one. An applied fact
+  keeps `content_authority = third_party`, so it is never steering memory.
+- **The owner holds kill switches** for each domain and for the whole
+  surface, effective without a deploy.
+
+Cloudflare and OAuth are not the only defense. Every tool call carries a
+per-call assertion that the owner's Worker signs and the server verifies at
+home, the hop bearer is checked against a stored digest, the server runs in its
+own default-deny namespace, and responses are scanned for secrets and canaries
+and audited. The Worker's signing key never enters Butlers: the server holds
+only verification keys and a bearer digest, so the surface adds no
+process-bound deployment control key.
+
+**Limitations:**
+
+- The gateway and the clients see every response the manifest allows.
+- A client model can be steered by content it reads (prompt injection) into
+  reading any enabled domain and leaking it through its own tools. Every
+  layer past Cloudflare authenticates the owner's session, not the owner's
+  intent, and Butlers cannot see the client's intent. Per-client budgets,
+  volume alerts, audit and per-domain kill switches bound and detect this;
+  they do not prevent it.
+- Automatic approval of proposals is not admitted. It would turn outside
+  content into a write without a per-event tap, so it needs its own owner
+  decision.
+- Several permissions on the database cluster are already
+  superuser-equivalent, and each reaches primary-read-all with or without the
+  publisher: exec, attach or debug access to the instance pods, creating pods
+  beside them, reading the cluster's Secrets (which hold the replication
+  role's client certificate), writing the cluster's configuration, and access
+  to its node or disk. They stay with the owner. The publisher adds none of
+  them.
 
 ## Credential Management
 
@@ -316,13 +400,25 @@ These two are the only approved uses.
 
 Identity resolution maps channel-specific identifiers (Telegram chat ID, email
 address, Discord user ID) to a known entity and their roles. The canonical
-reverse-lookup (`resolve_contact_by_channel` in `src/butlers/identity.py`) reads
-`relationship.entity_facts` RDF triples (predicates `has-handle`, `has-email`,
-`has-phone`) joined to `public.entities`. Under the seam law (RFC 0004
-Amendment 3), `relationship.entity_facts` is the single source of truth for all
-non-secret identifiers and relationships, while `public.entity_info` holds only
-secured credentials. Telegram handles are stored canonically with a `telegram:`
-prefix. This enables:
+reverse-lookup (`resolve_contact_by_channel` in `src/butlers/identity.py`) is
+required by RFC 0004 Amendment 4 to read only
+`public.identity_channel_projection` joined to `public.entities`. Relationship
+atomically maintains the derived projection from its eligible channel facts;
+it remains the sole canonical writer. Public placement does not mean public
+access: named runtime readers receive only read access, Relationship alone
+receives runtime write access, and bootstrap replay must preserve the exact
+ACL and forced row-policy contract. Missing, ambiguous or unavailable projected
+identity cannot confer owner authority; inbound misses follow the existing
+unknown-sender flow without a private-schema fallback. The implementation and
+environment-specific backfill/cutover require separate evidence after adoption
+of the amendment; this document does not assert that they have shipped.
+
+Under the seam law (RFC 0004 Amendment 3), `relationship.entity_facts` remains
+the single source of truth for all non-secret identifiers and relationships,
+while `public.entity_info` holds secured credentials and its existing narrow
+technical-configuration whitelist. Neither credentials nor private attribution
+or evidence packets enter the channel projection. Telegram handles retain their
+canonical `telegram:` prefix. This enables:
 
 - **Sender recognition:** Knowing who sent a message regardless of channel.
 - **Cross-channel context:** The relationship butler knows that the person who
@@ -387,7 +483,8 @@ and adapter-owned pointers to files staged inside the sandbox.
 ### Principles
 
 1. **Bind to localhost unless there is a specific reason not to.** Tailscale
-   serve handles external HTTPS exposure.
+   serve handles external HTTPS exposure. The public read surface (RFC 0039)
+   is reached only through the owner's MCP gateway.
 2. **Egress by exception.** A service should not join the `egress` network
    unless it calls external APIs. This is a membership convention: the
    firewall covers only the `egress` bridge and no network is `internal: true`
@@ -401,6 +498,10 @@ and adapter-owned pointers to files staged inside the sandbox.
    value or `CredentialStore` fallback.
 5. **No `privileged: true`, no Docker socket mounts, no `cap_add`.** Containers
    run with default Docker capabilities.
+6. **Default-deny ingress on Kubernetes.** Every Butlers namespace denies
+   ingress by default and allows only named peers. The public read surface runs
+   in its own namespace, reachable only from the gateway's proxy and able to
+   reach only its projection database.
 
 ## Anti-Patterns
 
@@ -415,6 +516,9 @@ and adapter-owned pointers to files staged inside the sandbox.
   confirmation for high-stakes actions.
 - Logging full credential values in session logs or error messages.
 - Binding Docker ports to `0.0.0.0` (exposes services to the entire LAN).
+- Putting an OAuth layer or an internet route in front of a butler daemon's or
+  the dashboard API's MCP endpoint. Only the public read surface is
+  internet-reachable, and only through the gateway (RFC 0039).
 - Adding services to the `egress` network when they don't call external APIs.
 - Hardcoding tailnet IPs in compose files (use `ALLOWED_TAILNET_HOSTS` and
   dynamic resolution instead).

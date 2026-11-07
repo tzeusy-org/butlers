@@ -45,16 +45,30 @@ import html
 import logging
 import os
 import re
-import signal
 import time
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from functools import partial
 from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
+
+from butlers.connectors.google_fleet import (
+    AccountHealthStatus,
+    GoogleAccountFleet,
+    MultiAccountHealthStatus,
+    _redact_email,
+)
+from butlers.connectors.google_fleet import (
+    _classify_source_api_error as _classify_google_source_api_error,
+)
+from butlers.connectors.google_fleet import (
+    _format_google_error as _format_google_response_error,
+)
+from butlers.google_credentials import GoogleTokenCache
 
 if TYPE_CHECKING:
     import asyncpg
@@ -64,7 +78,8 @@ import uvicorn
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
+from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -88,7 +103,6 @@ from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
-    google_oauth_requires_reauthorization,
     load_google_credentials,
 )
 from butlers.identity import parse_email_sender
@@ -99,7 +113,6 @@ from butlers.ingestion_policy import (
     PolicyDecision,
 )
 from butlers.ingestion_spans import collapse_spans
-from butlers.oauth_token_payload import validate_oauth_token_payload
 from butlers.storage.blobs import BlobStore
 
 _DESCRIPTOR = connector_descriptor("gmail")
@@ -118,54 +131,13 @@ class HealthStatus(BaseModel):
     timestamp: str
 
 
-class AccountHealthStatus(BaseModel):
-    """Per-account health status for multi-account connectors."""
-
-    email: str | None
-    endpoint_identity: str
-    status: Literal["healthy", "degraded", "error"]
-    last_checkpoint_save_at: str | None
-    last_ingest_submit_at: str | None
-    source_api_connectivity: Literal["connected", "disconnected", "unknown"]
-    error: str | None = None
-
-
-class MultiAccountHealthStatus(BaseModel):
-    """Aggregated health status for the multi-account Gmail connector manager."""
-
-    status: Literal["healthy", "degraded", "error"]
-    uptime_seconds: float
-    active_accounts: int
-    account_health: list[AccountHealthStatus]
-    timestamp: str
+_format_google_error = partial(_format_google_response_error, gmail_detail=True)
+_classify_source_api_error = partial(_classify_google_source_api_error, gmail_detail=True)
 
 
 # Gmail OAuth scope constants for account filtering.
 _GMAIL_SCOPE_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 _GMAIL_SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
-
-
-def _redact_email(email: str | None) -> str | None:
-    """Redact an email address for safe inclusion in health responses.
-
-    Shows the first 2 characters of the local part, then ***, then @domain.
-    Examples:
-        "test@example.invalid" → "te***@example.invalid"
-        "a@example.invalid"    → "a***@example.invalid"
-        None             → None
-
-    This prevents PII leakage in the unauthenticated /health endpoint.
-    """
-    if email is None:
-        return None
-    at_pos = email.find("@")
-    if at_pos <= 0:
-        # No @ or empty local part — return fully masked string
-        return "***"
-    local = email[:at_pos]
-    domain = email[at_pos:]  # includes the '@'
-    visible = local[:2]
-    return f"{visible}***{domain}"
 
 
 # Default re-scan interval for dynamic account discovery (seconds).
@@ -211,104 +183,12 @@ SUPPORTED_ATTACHMENT_TYPES: frozenset[str] = frozenset(ATTACHMENT_POLICY.keys())
 # Any attachment exceeding this cap is skipped regardless of per-type limit.
 GLOBAL_MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024
 
-
-def _format_google_error(response: httpx.Response) -> str | None:
-    """Extract a compact Google API/OAuth error summary from response JSON."""
-    try:
-        payload = response.json()
-    except Exception:
-        return None
-
-    if not isinstance(payload, dict):
-        return None
-
-    # Gmail/Google API error shape:
-    # {"error": {"code": 404, "message": "...", "status": "...", "errors": [{"reason": "..."}]}}
-    nested_error = payload.get("error")
-    if isinstance(nested_error, dict):
-        parts: list[str] = []
-
-        code = nested_error.get("code")
-        if code is not None:
-            parts.append(f"code={code}")
-
-        status = nested_error.get("status")
-        if isinstance(status, str) and status:
-            parts.append(f"status={status}")
-
-        reason = None
-        nested_errors = nested_error.get("errors")
-        if isinstance(nested_errors, list):
-            for item in nested_errors:
-                if isinstance(item, dict) and item.get("reason"):
-                    reason = item["reason"]
-                    break
-        if isinstance(reason, str) and reason:
-            parts.append(f"reason={reason}")
-
-        message = nested_error.get("message")
-        if isinstance(message, str) and message:
-            parts.append(f"message={message}")
-
-        return ", ".join(parts) if parts else None
-
-    # OAuth token endpoint error shape:
-    # {"error": "invalid_grant", "error_description": "..."}
-    if isinstance(nested_error, str) and nested_error:
-        error_description = payload.get("error_description")
-        if isinstance(error_description, str) and error_description:
-            return f"error={nested_error}, description={error_description}"
-        return f"error={nested_error}"
-
-    return None
-
-
-def _classify_source_api_error(exc: Exception) -> tuple[bool, str]:
-    """Classify a Gmail source-API failure for honest health reporting.
-
-    Returns ``(is_auth_revocation, description)``.
-
-    ``is_auth_revocation`` is True only when the failure is Google's OAuth
-    token endpoint reporting ``invalid_grant``/``unauthorized_client`` — a
-    genuinely revoked or expired refresh token that requires owner
-    re-consent. Every other failure (timeouts, connection errors, rate
-    limits, 5xx, or any other 4xx from the Gmail data API) is transient and
-    typically clears on the very next successful poll; conflating the two
-    into a single generic "unreachable or authentication failed" state
-    (bu-dej20) made a one-off network hiccup look identical to an
-    action-required credential revocation, and discarded the actual error
-    detail needed to tell them apart.
-
-    ``description`` is the most specific error text available: Google's own
-    structured error body when the exception carries an HTTP response, else
-    a compact ``"<error_type>: <str(exc)>"`` fallback.
-
-    Revocation detection inspects the parsed JSON payload's top-level
-    ``error`` field directly (the OAuth token endpoint's exact error shape:
-    ``{"error": "invalid_grant", ...}``) rather than substring-matching the
-    formatted description — a substring check on ``google_error`` would
-    false-positive if an unrelated Gmail data-API error message happened to
-    mention "invalid_grant" in prose, and the Gmail data API's nested-dict
-    error shape (``{"error": {"code": ..., "message": ...}}``) never equals
-    one of the revocation code strings so it's safely excluded either way.
-    """
-    response = getattr(exc, "response", None)
-    google_error = _format_google_error(response) if response is not None else None
-    is_auth_revocation = False
-    if isinstance(response, httpx.Response):
-        try:
-            request = response.request
-        except RuntimeError:
-            request = None
-        # Only the actual response's token POST can supply reauthorization proof.
-        if (
-            request is not None
-            and request.method == "POST"
-            and str(request.url) == "https://oauth2.googleapis.com/token"
-        ):
-            is_auth_revocation = google_oauth_requires_reauthorization(response)
-    description = google_error or f"{get_error_type(exc)}: {exc}"
-    return is_auth_revocation, description
+# Lazy-ref fetches requested through Switchboard's attachment_materialize
+# (switchboard.attachment_refs.fetch_requested_at): poll interval, rows per
+# poll, and the age after which a claim by a crashed runtime is reclaimed.
+_MATERIALIZE_POLL_INTERVAL_S = 2.0
+_MATERIALIZE_BATCH = 2
+_MATERIALIZE_CLAIM_STALE_S = 120
 
 
 def _header_name_is(header: Any, expected_lower_name: str) -> bool:
@@ -700,6 +580,8 @@ class GmailConnectorRuntime:
         # Track how many backfill.poll attempts have been made so we can
         # suppress the first-attempt warning when Switchboard is still starting.
         self._backfill_poll_attempts: int = 0
+        # Lazy attachment fetches requested through Switchboard.
+        self._materialize_task: asyncio.Task[None] | None = None
 
         # Label filter policy (per docs/connectors/gmail-ingestion-policy.md,
         # "Gmail Label Filtering")
@@ -1160,6 +1042,10 @@ class GmailConnectorRuntime:
         else:
             logger.info("Backfill polling disabled via CONNECTOR_BACKFILL_ENABLED=false")
 
+        # Serve on-demand fetches of lazy attachment refs (attachment_materialize).
+        if self._db_pool and self._blob_store:
+            self._materialize_task = asyncio.create_task(self._run_materialize_loop())
+
         # Main ingestion loop
         try:
             await self._run_ingestion_loop()
@@ -1178,6 +1064,13 @@ class GmailConnectorRuntime:
             except asyncio.CancelledError:
                 pass
             self._backfill_task = None
+        if self._materialize_task is not None and not self._materialize_task.done():
+            self._materialize_task.cancel()
+            try:
+                await self._materialize_task
+            except asyncio.CancelledError:
+                pass
+            self._materialize_task = None
 
         # Stop heartbeat
         if self._heartbeat is not None:
@@ -1814,6 +1707,17 @@ class GmailConnectorRuntime:
                 returned_status,
             )
             return str(returned_status)
+        except RuntimeError as exc:
+            # CachedMCPClient raises RuntimeError only when the tool ran and
+            # rejected the report (transport faults surface as ConnectionError):
+            # a protocol break such as an identity mismatch. Stay non-fatal, but
+            # loudly, so a contract break cannot hide as a silent "ack".
+            logger.error(
+                "backfill.progress rejected for job %s (application error): %s",
+                job_id,
+                exc,
+            )
+            return "ack"
         except Exception as exc:
             logger.warning(
                 "backfill.progress call failed for job %s (non-fatal): %s",
@@ -1912,53 +1816,37 @@ class GmailConnectorRuntime:
             raise
 
     async def _get_access_token(self) -> str:
-        """Get valid OAuth access token (refresh if expired)."""
-        if self._access_token and self._token_expires_at:
-            if datetime.now(UTC) < self._token_expires_at:
-                return self._access_token
-
-        # Refresh token
-        if not self._http_client:
+        """Use the shared locked cache with the canonical early-expiry margin."""
+        if self._http_client is None:
             raise RuntimeError("HTTP client not initialized")
-
-        try:
-            response = await self._http_client.post(
-                "https://oauth2.googleapis.com/token",
-                data={
-                    "client_id": self._config.gmail_client_id,
-                    "client_secret": self._config.gmail_client_secret,
-                    "refresh_token": self._config.gmail_refresh_token,
-                    "grant_type": "refresh_token",
-                },
+        cache = getattr(self, "_google_token_cache", None)
+        if cache is None:
+            cache = self._google_token_cache = GoogleTokenCache(
+                self,
+                account=self._config.gmail_user_email or self._config.connector_endpoint_identity,
+                current_credentials=lambda: (
+                    self._config.gmail_client_id,
+                    self._config.gmail_client_secret,
+                    self._config.gmail_refresh_token,
+                ),
             )
-            if response.is_error:
-                google_error = _format_google_error(response)
-                if google_error:
-                    logger.error(
-                        "OAuth token refresh failed status=%s details=%s",
-                        response.status_code,
-                        google_error,
-                    )
-                else:
-                    logger.error("OAuth token refresh failed status=%s", response.status_code)
-            response.raise_for_status()
-            # Validate the whole payload before touching connector state, so a
-            # malformed 200 cannot leave a stale token paired with a fresh expiry.
-            token = validate_oauth_token_payload(response.json())
 
-            self._access_token = token.access_token
-            self._token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
-
-            # Mark API as connected on successful token refresh
+        async def refreshed() -> None:
             self._source_api_ok = True
             self._source_api_error_message = None
             self._auth_error = False
             self._metrics.record_source_api_call(api_method="token_refresh", status="success")
 
-            logger.debug("Refreshed OAuth access token (expires in %ds)", token.expires_in)
-            return self._access_token
+        try:
+            token = await cache.get_token(
+                self._http_client,
+                on_refreshed=refreshed,
+                client_id=self._config.gmail_client_id,
+                client_secret=self._config.gmail_client_secret,
+                refresh_token=self._config.gmail_refresh_token,
+            )
+            return token
         except Exception as exc:
-            # Mark API as disconnected on failure
             self._source_api_ok = False
             self._auth_error, self._source_api_error_message = _classify_source_api_error(exc)
             self._metrics.record_source_api_call(api_method="token_refresh", status="error")
@@ -3271,13 +3159,16 @@ class GmailConnectorRuntime:
             async with self._db_pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO attachment_refs
+                    INSERT INTO switchboard.attachment_refs AS r
                         (message_id, attachment_id, filename, media_type, size_bytes,
-                         fetched, blob_ref)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                         fetched, blob_ref, endpoint_identity)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (message_id, attachment_id) DO UPDATE SET
-                        fetched = EXCLUDED.fetched,
-                        blob_ref = EXCLUDED.blob_ref
+                        -- A replayed lazy ref must not forget a fetched blob.
+                        fetched = r.fetched OR EXCLUDED.fetched,
+                        blob_ref = COALESCE(EXCLUDED.blob_ref, r.blob_ref),
+                        endpoint_identity =
+                            COALESCE(r.endpoint_identity, EXCLUDED.endpoint_identity)
                     """,
                     message_id,
                     attachment_id,
@@ -3286,6 +3177,7 @@ class GmailConnectorRuntime:
                     size_bytes,
                     fetched,
                     blob_ref,
+                    self._config.connector_endpoint_identity or None,
                 )
         except Exception as exc:
             logger.warning(
@@ -3435,7 +3327,7 @@ class GmailConnectorRuntime:
 
                 # Include lazy-fetched attachments in the ingest envelope with
                 # source identifiers so downstream butlers know attachments exist
-                # and can trigger on-demand fetch via fetch_attachment().
+                # and can request it through Switchboard's attachment_materialize.
                 lazy_dict: dict[str, Any] = {
                     "media_type": mime_type,
                     "storage_ref": None,
@@ -3492,7 +3384,7 @@ class GmailConnectorRuntime:
                     row = await conn.fetchrow(
                         """
                         SELECT fetched, blob_ref, filename, media_type, size_bytes
-                        FROM attachment_refs
+                        FROM switchboard.attachment_refs
                         WHERE message_id = $1 AND attachment_id = $2
                         """,
                         message_id,
@@ -3520,16 +3412,19 @@ class GmailConnectorRuntime:
         # Download and store.
         try:
             attachment_bytes = await self._download_gmail_attachment(message_id, attachment_id)
+            if len(attachment_bytes) > GLOBAL_MAX_ATTACHMENT_SIZE_BYTES:
+                raise ValueError(
+                    f"attachment exceeds the global cap: {len(attachment_bytes)} bytes"
+                )
 
             # Determine media_type from DB row if available.
             media_type = "application/octet-stream"
             filename = None
-            size_bytes = len(attachment_bytes)
             if self._db_pool:
                 try:
                     async with self._db_pool.acquire() as conn:
                         row = await conn.fetchrow(
-                            "SELECT filename, media_type, size_bytes FROM attachment_refs "
+                            "SELECT filename, media_type FROM switchboard.attachment_refs "
                             "WHERE message_id = $1 AND attachment_id = $2",
                             message_id,
                             attachment_id,
@@ -3537,7 +3432,6 @@ class GmailConnectorRuntime:
                     if row:
                         media_type = row["media_type"]
                         filename = row["filename"]
-                        size_bytes = row["size_bytes"]
                 except Exception:
                     pass
 
@@ -3547,16 +3441,20 @@ class GmailConnectorRuntime:
                 filename=filename,
             )
 
-            # Persist updated ref.
-            await self._write_attachment_ref(
-                message_id=message_id,
-                attachment_id=attachment_id,
-                filename=filename,
-                media_type=media_type,
-                size_bytes=size_bytes,
-                fetched=True,
-                blob_ref=blob_ref,
-            )
+            try:
+                await self._record_fetched_blob(message_id, attachment_id, blob_ref)
+            except LookupError:
+                # Definitely unrecorded: delete rather than orphan. A retry
+                # downloads again.
+                await self._discard_blob(blob_ref)
+                raise
+            except BaseException:
+                # Outcome unknown (lost reply, cancellation): the UPDATE may
+                # have committed. Delete only if the row names another ref;
+                # an orphan wastes storage, a dangling ref loses the file.
+                if await self._row_names_other_blob(message_id, attachment_id, blob_ref):
+                    await self._discard_blob(blob_ref)
+                raise
 
             self._metrics.record_attachment_fetched(
                 media_type=media_type, fetch_mode="lazy", result="success"
@@ -3581,6 +3479,189 @@ class GmailConnectorRuntime:
                 media_type="unknown", fetch_mode="lazy", result="error"
             )
             return None
+
+    async def _record_fetched_blob(
+        self, message_id: str, attachment_id: str, blob_ref: str
+    ) -> None:
+        """Mark a lazy ref fetched; raise unless this call recorded ``blob_ref``.
+
+        Unlike the best-effort ``_write_attachment_ref``, a failure here must
+        reach the caller: a fetched blob the row does not name is lost. A row
+        that is gone or was fetched meanwhile (a reclaimed stale claim) also
+        raises, so the caller drops its duplicate bytes.
+        """
+        if not self._db_pool:
+            raise RuntimeError("attachment_refs: db_pool unavailable")
+        async with self._db_pool.acquire() as conn:
+            recorded = await conn.fetchval(
+                """
+                UPDATE switchboard.attachment_refs
+                SET fetched = true, blob_ref = $3, fetch_claimed_at = NULL
+                WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
+                RETURNING true
+                """,
+                message_id,
+                attachment_id,
+                blob_ref,
+            )
+        if not recorded:
+            raise LookupError("attachment ref missing or already fetched")
+
+    async def _row_names_other_blob(
+        self, message_id: str, attachment_id: str, blob_ref: str
+    ) -> bool:
+        """True only if the row is readable and does not name ``blob_ref``."""
+        if not self._db_pool:
+            return False
+        try:
+            async with self._db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT blob_ref FROM switchboard.attachment_refs "
+                    "WHERE message_id = $1 AND attachment_id = $2",
+                    message_id,
+                    attachment_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "fetch_attachment: keeping blob %s; could not tell if it is recorded: %s",
+                blob_ref,
+                exc,
+            )
+            return False
+        return row is None or row["blob_ref"] != blob_ref
+
+    async def _discard_blob(self, blob_ref: str) -> None:
+        """Best-effort delete of bytes no attachment ref names."""
+        if self._blob_store is None:
+            return
+        try:
+            await self._blob_store.delete(blob_ref)
+        except Exception as exc:
+            logger.warning(
+                "fetch_attachment: could not delete unrecorded blob %s: %s", blob_ref, exc
+            )
+
+    async def _release_materialize_claims(self, claims: list[tuple[str, str, datetime]]) -> None:
+        """Clear claims an interrupted batch never finished, so the next poll retries them.
+
+        Each claim is matched on its own ``fetch_claimed_at``, so a claim another
+        runtime has since reclaimed is left alone.
+        """
+        if not self._db_pool:
+            return
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE switchboard.attachment_refs r
+                    SET fetch_claimed_at = NULL
+                    FROM unnest($1::text[], $2::text[], $3::timestamptz[])
+                        AS u(message_id, attachment_id, claimed_at)
+                    WHERE r.message_id = u.message_id AND r.attachment_id = u.attachment_id
+                      AND r.fetch_claimed_at = u.claimed_at
+                      AND NOT r.fetched
+                    """,
+                    [claim[0] for claim in claims],
+                    [claim[1] for claim in claims],
+                    [claim[2] for claim in claims],
+                )
+        except Exception as exc:
+            # The stale-claim window still reclaims them; keep the original error.
+            logger.warning(
+                "attachment materialize: could not release %d claims: %s", len(claims), exc
+            )
+
+    async def materialize_requested_once(self) -> int:
+        """Fetch lazy refs Switchboard's ``attachment_materialize`` requested; return the count.
+
+        Claims up to ``_MATERIALIZE_BATCH`` requested rows written by this account
+        (or by no recorded account), downloads each through ``fetch_attachment``
+        and records a failure as ``fetch_error`` so the waiting caller is told:
+        ``too_large`` without a download when the row declares more than the
+        global cap, otherwise ``fetch_failed``.
+        If the batch is interrupted, its unfinished claims are released for the
+        next poll. A claim older than ``_MATERIALIZE_CLAIM_STALE_S`` (a crashed
+        runtime's) is reclaimed.
+        """
+        if not self._db_pool or not self._blob_store:
+            return 0
+        async with self._db_pool.acquire() as conn:
+            claimed = await conn.fetch(
+                """
+                WITH claimable AS (
+                    SELECT message_id, attachment_id
+                    FROM switchboard.attachment_refs
+                    WHERE fetch_requested_at IS NOT NULL
+                      AND NOT fetched
+                      AND fetch_error IS NULL
+                      AND (fetch_claimed_at IS NULL
+                           OR fetch_claimed_at < now() - make_interval(secs => $3))
+                      AND (endpoint_identity = $1 OR endpoint_identity IS NULL)
+                    ORDER BY fetch_requested_at
+                    LIMIT $2
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE switchboard.attachment_refs r
+                SET fetch_claimed_at = now()
+                FROM claimable c
+                WHERE r.message_id = c.message_id AND r.attachment_id = c.attachment_id
+                RETURNING r.message_id, r.attachment_id, r.fetch_claimed_at, r.size_bytes
+                """,
+                self._config.connector_endpoint_identity,
+                _MATERIALIZE_BATCH,
+                float(_MATERIALIZE_CLAIM_STALE_S),
+            )
+        unfinished = [
+            (row["message_id"], row["attachment_id"], row["fetch_claimed_at"]) for row in claimed
+        ]
+        declared_size = {
+            (row["message_id"], row["attachment_id"]): row["size_bytes"] for row in claimed
+        }
+        try:
+            while unfinished:
+                message_id, attachment_id, claimed_at = unfinished[0]
+                # size_bytes is the decoded size Gmail declared, so it compares
+                # with the cap as is; the base64 response would be about a third
+                # larger. Refusing here avoids buffering that response at all.
+                # fetch_attachment still checks the downloaded bytes, since a
+                # declared size can be wrong.
+                error: str | None = None
+                if declared_size[message_id, attachment_id] > GLOBAL_MAX_ATTACHMENT_SIZE_BYTES:
+                    error = "too_large"
+                elif await self.fetch_attachment(message_id, attachment_id) is None:
+                    error = "fetch_failed"
+                if error is not None:
+                    async with self._db_pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE switchboard.attachment_refs
+                            SET fetch_error = $4, fetch_claimed_at = NULL
+                            WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
+                              AND fetch_claimed_at = $3
+                            """,
+                            message_id,
+                            attachment_id,
+                            claimed_at,
+                            error,
+                        )
+                unfinished.pop(0)
+        finally:
+            # An exception or cancellation mid-batch must not strand the
+            # remaining claims for the stale window.
+            if unfinished:
+                await self._release_materialize_claims(unfinished)
+        return len(claimed)
+
+    async def _run_materialize_loop(self) -> None:
+        """Serve ``attachment_materialize`` requests until the runtime stops."""
+        while self._running:
+            try:
+                await self.materialize_requested_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("attachment materialize poll failed (will retry): %s", exc)
+            await asyncio.sleep(_MATERIALIZE_POLL_INTERVAL_S)
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit ingest.v1 envelope to Switchboard via MCP ingest tool."""
@@ -3766,12 +3847,15 @@ class GmailAccountLoop:
         email: str,
         config: GmailConnectorConfig,
         cursor_pool: asyncpg.Pool | None,
+        blob_store: BlobStore | None = None,
     ) -> None:
         self.email = email
         self.endpoint_identity = config.connector_endpoint_identity
         self._config = config
         self._cursor_pool = cursor_pool
-        self._runtime = GmailConnectorRuntime(config, db_pool=cursor_pool, cursor_pool=cursor_pool)
+        self._runtime = GmailConnectorRuntime(
+            config, blob_store=blob_store, db_pool=cursor_pool, cursor_pool=cursor_pool
+        )
         self._task: asyncio.Task[None] | None = None
         self._error: str | None = None
 
@@ -3870,7 +3954,7 @@ class GmailAccountLoop:
         )
 
 
-class GmailConnectorManager:
+class GmailAccountSource(GoogleAccountFleet[GmailAccountLoop]):
     """Top-level orchestrator for multi-account Gmail connector.
 
     Discovers all active Google accounts with Gmail scopes from public.google_accounts,
@@ -3889,30 +3973,17 @@ class GmailConnectorManager:
         db_pool: asyncpg.Pool,
         cursor_pool: asyncpg.Pool | None,
     ) -> None:
+        super().__init__()
         self._process_config = process_config
         self._db_pool = db_pool
         self._cursor_pool = cursor_pool
 
-        # Active account loops keyed by email
-        self._loops: dict[str, GmailAccountLoop] = {}
-
-        # State
-        self._start_time = time.time()
-        self._running = False
-        self._reload_event = asyncio.Event()
-        # Capture the main event loop at construction time so the background
-        # health-server thread can safely signal reload via call_soon_threadsafe.
-        self._main_loop: asyncio.AbstractEventLoop | None = None
-
-        # Health server
-        self._health_server: uvicorn.Server | None = None
-        self._health_thread: Thread | None = None
-
-        # Rescan task
-        self._rescan_task: asyncio.Task[None] | None = None
-
         # Credential store (shared across accounts for app creds)
         self._credential_store: CredentialStore | None = None
+
+        # Connector blob store for eager and on-demand attachment fetches;
+        # resolved once at start. None records attachments without bytes.
+        self._blob_store: BlobStore | None = None
 
     def _get_credential_store(self) -> CredentialStore:
         """Return or initialize the CredentialStore for app credentials."""
@@ -4020,72 +4091,58 @@ class GmailConnectorManager:
             )
             return None
 
-    async def _sync_accounts(
-        self,
-    ) -> tuple[list[str], list[str], list[str]]:
-        """Discover qualifying accounts and reconcile running loops.
+    async def _make_account_loop(self, email: str, metadata: dict[str, Any] | None):
+        creds = await self._resolve_credentials_for_account(email)
+        if creds is None:
+            return None
 
-        Returns (added, removed, unchanged) email lists.
-        """
-        qualifying = await self._discover_qualifying_accounts()
-
-        # Compute desired set
-        desired_emails: set[str] = set()
-        account_metadata: dict[str, dict[str, Any] | None] = {}
-        for email, metadata_gmail in qualifying:
-            if email is None:
-                continue
-            desired_emails.add(email)
-            account_metadata[email] = metadata_gmail
-
-        current_emails = set(self._loops.keys())
-
-        to_add = desired_emails - current_emails
-        to_remove = current_emails - desired_emails
-        unchanged = current_emails & desired_emails
-
-        # Stop removed loops
-        for email in to_remove:
-            loop = self._loops.pop(email)
-            logger.info("Gmail manager: stopping loop for removed account %r", email)
-            await loop.stop()
-
-        # Start new loops
-        added: list[str] = []
-        for email in to_add:
-            creds = await self._resolve_credentials_for_account(email)
-            if creds is None:
-                continue
-
-            metadata_gmail = account_metadata.get(email)
-            try:
-                account_config = self._process_config.make_account_config(
-                    email=email,
-                    client_id=creds["client_id"],
-                    client_secret=creds["client_secret"],
-                    refresh_token=creds["refresh_token"],
-                    metadata_gmail=metadata_gmail,
-                    pubsub_webhook_token=creds.get("pubsub_webhook_token"),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Gmail manager: failed to build config for account %r (skipping): %s",
-                    email,
-                    exc,
-                )
-                continue
-
-            loop = GmailAccountLoop(
+        metadata_gmail = metadata
+        try:
+            account_config = self._process_config.make_account_config(
                 email=email,
-                config=account_config,
-                cursor_pool=self._cursor_pool,
+                client_id=creds["client_id"],
+                client_secret=creds["client_secret"],
+                refresh_token=creds["refresh_token"],
+                metadata_gmail=metadata_gmail,
+                pubsub_webhook_token=creds.get("pubsub_webhook_token"),
             )
-            self._loops[email] = loop
-            loop.start()
-            added.append(email)
-            logger.info("Gmail manager: started loop for new account %r", email)
+        except Exception as exc:
+            logger.warning(
+                "Gmail manager: failed to build config for account %r (skipping): %s",
+                email,
+                exc,
+            )
+            return None
 
-        return added, list(to_remove), list(unchanged)
+        loop = GmailAccountLoop(
+            email=email,
+            config=account_config,
+            blob_store=self._blob_store,
+            cursor_pool=self._cursor_pool,
+        )
+        return loop
+
+    async def _discover_accounts(self) -> dict[str, Any]:
+        return {
+            email: metadata
+            for email, metadata in await self._discover_qualifying_accounts()
+            if email is not None
+        }
+
+    async def _prepare_source(self) -> None:
+        self._blob_store = await connector_blob_store(
+            self._get_credential_store(), label="Gmail connector"
+        )
+
+    async def _fleet_ready(self) -> None:
+        try:
+            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
+        except TimeoutError:
+            logger.warning("Switchboard readiness probe timed out; proceeding")
+
+    @property
+    def rescan_interval(self) -> float:
+        return self._process_config.gmail_account_rescan_interval_s
 
     def _start_health_server(self) -> None:
         """Start aggregated health endpoint in background thread."""
@@ -4156,112 +4213,6 @@ class GmailConnectorManager:
             account_health=account_statuses,
             timestamp=datetime.now(UTC).isoformat(),
         )
-
-    def _setup_sighup(self) -> None:
-        """Register SIGHUP handler to trigger immediate account re-scan."""
-        try:
-            loop = asyncio.get_event_loop()
-
-            def _on_sighup() -> None:
-                logger.info("Gmail manager: SIGHUP received — triggering account reload")
-                self._reload_event.set()
-
-            loop.add_signal_handler(signal.SIGHUP, _on_sighup)
-        except (OSError, NotImplementedError):
-            # SIGHUP not available on Windows
-            logger.debug("Gmail manager: SIGHUP not available on this platform")
-
-    async def start(self) -> None:
-        """Start the connector manager: discover accounts, start loops, run rescan loop."""
-        self._running = True
-
-        # Capture the running event loop so the background health-server thread
-        # can safely signal _reload_event via loop.call_soon_threadsafe.
-        self._main_loop = asyncio.get_running_loop()
-
-        # Start health server
-        self._start_health_server()
-
-        # Register SIGHUP for reload
-        self._setup_sighup()
-
-        # Initial account discovery
-        added, removed, unchanged = await self._sync_accounts()
-        logger.info(
-            "Gmail manager: initial account sync — added=%d removed=%d unchanged=%d",
-            len(added),
-            len(removed),
-            len(unchanged),
-        )
-
-        if not self._loops:
-            logger.warning(
-                "Gmail manager: no qualifying Gmail accounts found at startup. "
-                "Running in idle/degraded mode. Will retry at rescan interval=%ds.",
-                self._process_config.gmail_account_rescan_interval_s,
-            )
-
-        # Wait for Switchboard readiness before main loop
-        try:
-            await wait_for_switchboard_ready(self._process_config.switchboard_mcp_url)
-        except TimeoutError:
-            logger.warning(
-                "Gmail manager: Switchboard readiness probe timed out; proceeding anyway."
-            )
-
-        # Main rescan loop
-        try:
-            await self._run_rescan_loop()
-        finally:
-            await self.stop()
-
-    async def _run_rescan_loop(self) -> None:
-        """Periodically re-scan for account changes, also triggered by reload events."""
-        rescan_interval = self._process_config.gmail_account_rescan_interval_s
-        while self._running:
-            # Wait for either rescan interval or reload trigger
-            try:
-                await asyncio.wait_for(self._reload_event.wait(), timeout=rescan_interval)
-                logger.info("Gmail manager: reload triggered — re-scanning accounts")
-                self._reload_event.clear()
-            except TimeoutError:
-                logger.debug("Gmail manager: periodic re-scan triggered")
-
-            if not self._running:
-                break
-
-            added, removed, unchanged = await self._sync_accounts()
-            if added or removed:
-                logger.info(
-                    "Gmail manager: account sync — added=%s removed=%s unchanged=%d",
-                    added,
-                    removed,
-                    len(unchanged),
-                )
-
-    async def stop(self) -> None:
-        """Gracefully stop all account loops and the manager."""
-        self._running = False
-
-        # Stop all loops
-        for email, loop in list(self._loops.items()):
-            logger.info("Gmail manager: stopping loop for %r", email)
-            await loop.stop()
-        self._loops.clear()
-
-        logger.info("Gmail manager: all account loops stopped")
-
-    async def reload_accounts(self) -> dict[str, Any]:
-        """Trigger immediate account re-scan (MCP tool handler).
-
-        Returns a summary of accounts added, removed, and unchanged.
-        """
-        added, removed, unchanged = await self._sync_accounts()
-        return {
-            "added": added,
-            "removed": removed,
-            "unchanged": unchanged,
-        }
 
 
 async def _create_shared_db_pool() -> asyncpg.Pool:
@@ -4364,7 +4315,7 @@ async def run_gmail_connector() -> None:
             )
 
     # Step 3: Start the multi-account manager.
-    manager = GmailConnectorManager(
+    manager = GmailAccountSource(
         process_config=process_config,
         db_pool=shared_pool,
         cursor_pool=cursor_pool,

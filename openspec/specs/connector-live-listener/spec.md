@@ -149,11 +149,15 @@ The connector SHALL send speech audio to an external faster-whisper service and 
 
 ### Requirement: Discretion Layer
 
+ID: REQ-connector-live-listener-006
+Source: REQ-connector-base-spec-007; bu-ep60gq.3 adopted path-only relocation
+Scope: v1-mandatory
+
 The live-listener SHALL use the shared discretion layer (`butlers.connectors.discretion`) to evaluate transcribed utterances in context and decide whether they warrant butler attention. See `connector-base-spec` for the full shared discretion contract.
 
 #### Scenario: Shared discretion module
 - **WHEN** the live-listener connector uses the discretion layer
-- **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` and `DiscretionDispatcher` from `butlers.connectors.discretion_dispatcher`
+- **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` and `DiscretionDispatcher` from `butlers.core.discretion_dispatcher`
 - **AND** it creates a single `DiscretionDispatcher(pool=db_pool)` and injects it into each per-mic `DiscretionEvaluator`
 - **AND** the dispatcher resolves the discretion model from the shared model catalog (`complexity_tier='discretion'`) via the RuntimeAdapter interface
 

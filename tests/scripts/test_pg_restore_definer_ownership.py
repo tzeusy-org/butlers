@@ -253,26 +253,62 @@ def backup_artifact(source_db_url: str, postgres_container, tmp_path_factory) ->
 
 
 @pytest.fixture(scope="module")
-def ownership_control_backup_artifact(source_db_url, postgres_container, tmp_path_factory) -> Path:
-    """A genuine pre-capture snapshot isolates the original silent ownership defect.
-
-    The current capture tail deliberately aborts on a bare cluster missing
-    General authority. That guard must not mask the independent definer-owner
-    defect, nor be disabled in a production artifact to revive this control.
-    Core282 has the same fenced functions and no capture importer tail.
-    """
+def ownership_control_source_db_url(postgres_container) -> str:
+    """Keep the genuine pre-capture source; current head has additional fences."""
     control_url = create_migration_db(postgres_container, migration_db_name())
     command.upgrade(_build_alembic_config(control_url, chains=["core"]), "core_282")
-    assert set(_query(control_url, _FENCED_DEFINER_FUNCTIONS_SQL)) == set(
-        _query(source_db_url, _FENCED_DEFINER_FUNCTIONS_SQL)
-    )
     assert _query(control_url, "SELECT to_regclass('public.captures') IS NULL") == [True]
-    artifact = _produce_backup(
-        control_url, postgres_container, tmp_path_factory.mktemp("ownership-control")
+    return control_url
+
+
+@pytest.fixture(scope="module")
+def ownership_control_inventory(ownership_control_source_db_url) -> dict:
+    """Bind both historical negative controls to the fences their dump contains."""
+    functions = _query(ownership_control_source_db_url, _FENCED_DEFINER_FUNCTIONS_SQL)
+    roles = _query(ownership_control_source_db_url, _FENCED_OWNER_ROLES_SQL)
+    owners = _query(
+        ownership_control_source_db_url,
+        _FENCED_DEFINER_FUNCTIONS_SQL.replace(
+            "SELECT p.proname", "SELECT p.proname || ':' || r.rolname"
+        ),
     )
-    assert "-- Butlers scoped General capture data" not in gzip.decompress(
-        artifact.read_bytes()
-    ).decode("utf-8")
+    assert functions, "the historical control must contain real fenced functions"
+    assert roles, "the historical control must contain real NOLOGIN owners"
+    assert {entry.split(":", 1)[0] for entry in owners} == set(functions)
+    assert {entry.split(":", 1)[1] for entry in owners} == set(roles)
+    return {"functions": functions, "roles": roles, "owners": owners}
+
+
+@pytest.fixture(scope="module")
+def ownership_control_backup_artifact(
+    ownership_control_source_db_url,
+    ownership_control_inventory,
+    postgres_container,
+    tmp_path_factory,
+) -> Path:
+    """A genuine core282 dump isolates the original silent ownership defect.
+
+    Its own nonempty function/owner inventory is the control, not today's head
+    inventory. Current-head certified restore controls remain separate.
+    """
+    artifact = _produce_backup(
+        ownership_control_source_db_url,
+        postgres_container,
+        tmp_path_factory.mktemp("ownership-control"),
+    )
+    dump = gzip.decompress(artifact.read_bytes()).decode("utf-8")
+    assert "-- Butlers scoped General capture data" not in dump
+    for entry in ownership_control_inventory["owners"]:
+        function, role = entry.split(":", 1)
+        assert re.search(r"CREATE FUNCTION public\." + re.escape(function) + r"\(", dump)
+        assert re.search(
+            r"ALTER FUNCTION public\."
+            + re.escape(function)
+            + r"\([^;]*\) OWNER TO \"?"
+            + re.escape(role)
+            + r'"?;',
+            dump,
+        )
     return artifact
 
 
@@ -520,7 +556,7 @@ def test_a_real_dump_assigns_ownership_before_it_creates_anything(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_pre_creating_the_fenced_roles_does_not_preserve_ownership(
     ownership_control_backup_artifact: Path,
-    source_db_url: str,
+    ownership_control_inventory: dict,
     disaster_recovery_target: _Target,
 ) -> None:
     """Creating the fenced roles on the target does not rebuild the fence.
@@ -533,7 +569,7 @@ def test_pre_creating_the_fenced_roles_does_not_preserve_ownership(
     exist`` — and every fenced function still lands on the restorer.
     """
     target = disaster_recovery_target
-    fenced_roles = _query(source_db_url, _FENCED_OWNER_ROLES_SQL)
+    fenced_roles = ownership_control_inventory["roles"]
     assert fenced_roles, "no fenced owner roles in the source; nothing to pre-create"
 
     admin = target.url("postgres")
@@ -555,7 +591,7 @@ def test_pre_creating_the_fenced_roles_does_not_preserve_ownership(
             )
 
         landed = _query(target.url(db_name), _DEFINER_FUNCTIONS_OWNED_BY_SQL, login=target.login)
-        fenced_functions = _query(source_db_url, _FENCED_DEFINER_FUNCTIONS_SQL)
+        fenced_functions = ownership_control_inventory["functions"]
         assert set(fenced_functions) <= set(landed), (
             "Pre-creating the roles was expected to change nothing about where "
             f"the fenced functions land. fenced={sorted(fenced_functions)} "
@@ -577,7 +613,7 @@ def test_pre_creating_the_fenced_roles_does_not_preserve_ownership(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_plain_psql_restore_silently_launders_definer_ownership(
     ownership_control_backup_artifact: Path,
-    source_db_url: str,
+    ownership_control_inventory: dict,
     disaster_recovery_target: _Target,
 ) -> None:
     """The unguarded restore reports success while inverting the fence.
@@ -586,7 +622,7 @@ def test_plain_psql_restore_silently_launders_definer_ownership(
     source: ``psql`` prints its ownership errors, keeps going, and exits 0.
     """
     target = disaster_recovery_target
-    fenced = _query(source_db_url, _FENCED_DEFINER_FUNCTIONS_SQL)
+    fenced = ownership_control_inventory["functions"]
     assert fenced, (
         "The source database has no SECURITY DEFINER function in public owned "
         "by a NOLOGIN role, so there is no fence left for a restore to invert. "

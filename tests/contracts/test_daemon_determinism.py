@@ -18,7 +18,7 @@ pytestmark = pytest.mark.contract
 class TestStartupPhaseOrder:
     """RFC 0001: 17-phase startup executes in strict order."""
 
-    async def test_daemon_startup_structure(self, monkeypatch):
+    async def test_daemon_startup_structure(self):
         """Await each RFC stage in order; a fatal phase prevents later work."""
         from butlers import lifecycle
 
@@ -65,10 +65,8 @@ class TestStartupPhaseOrder:
 
             return run
 
-        monkeypatch.setattr(
-            lifecycle, "STARTUP_PHASES", [observe(p) for p in lifecycle.STARTUP_PHASES]
-        )
-        await lifecycle.run_startup(daemon)
+        observed = [observe(p) for p in lifecycle.STARTUP_PHASES]
+        await lifecycle.run_startup(daemon, observed)
         assert events == [(name, event) for name in expected for event in ("start", "done")]
         assert all(state is states[0] for state in states)
 
@@ -77,7 +75,7 @@ class TestStartupPhaseOrder:
         states.clear()
         fail_at = "_startup_runtime_config"
         with pytest.raises(RuntimeError, match="fatal phase"):
-            await lifecycle.run_startup(daemon)
+            await lifecycle.run_startup(daemon, observed)
         assert states[0] is not first_state
         preceding = expected[: expected.index(fail_at)]
         assert events == [(name, event) for name in preceding for event in ("start", "done")] + [

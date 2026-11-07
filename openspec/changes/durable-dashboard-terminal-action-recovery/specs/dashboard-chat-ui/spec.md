@@ -14,21 +14,21 @@ Scope: v1-mandatory
 #### Scenario: SSE connection for new conversation
 
 - **WHEN** `POST /api/butlers/{name}/conversations` is called
-- **THEN** the frontend SHALL read the SSE stream using Fetch `ReadableStream`
-- **AND** `conversation_created` creates local conversation state, `token`
-  appends content, `message_complete` finalizes model, token, duration, and
-  tool-call metadata, `error` displays in the thread, and `done` closes the
-  stream and re-enables input
+- **THEN** the frontend reads the SSE stream using the Fetch API with `ReadableStream`
+- **AND** `conversation_created` events create the conversation in local state
+- **AND** `token` events append content to the active assistant message
+- **AND** `message_complete` events finalize the message with metadata (model, tokens, duration, tool calls)
+- **AND** `error` events display the error in the message thread
+- **AND** `done` events close the stream and re-enable the input
 
 #### Scenario: SSE connection for follow-up
 
 - **WHEN** `POST /api/butlers/{name}/conversations/{id}/messages` is called
-- **THEN** the frontend SHALL apply the same SSE handling without a
-  `conversation_created` event
+- **THEN** the same SSE event handling applies as for new conversations (without `conversation_created`)
 
 #### Scenario: Stream cancellation is a real server-side stop
 
-- **WHEN** the owner clicks Stop during streaming
+- **WHEN** the user clicks the "Stop" button during streaming
 - **THEN** the frontend SHALL call `POST
   /api/butlers/{name}/conversation-turns/{message_id}/cancel`, where
   `message_id` is the client-created immutable user-turn identifier and SHALL
@@ -36,20 +36,23 @@ Scope: v1-mandatory
 - **AND** the Stop button SHALL enter a pending (`Stopping…`) state that prevents
   a second request and exposes its state to assistive technology
 - **AND** the backend SHALL record cancellation intent against that durable turn,
-  preventing a later Switchboard ingress claim, classifier, target route,
-  recovery, or runtime invocation from starting work for it
-- **AND** when the exact immutable turn owns one or more in-flight routed
-  runtimes, the backend SHALL resolve every exact registered runtime session and
-  kill the corresponding subprocesses through `cancel_session`; it SHALL not
-  merely detach a watcher or persist intent alone
+  preventing any later Switchboard ingress claim, classifier, target-route,
+  recovery, or runtime-invoke transition from starting work for it
+- **AND** if a runtime already crossed the invocation boundary, the backend
+  resolves every exact registered runtime session and kills the subprocesses
+  through the `cancel_session` MCP tool (not merely detaching a watcher or
+  persisting intent alone); this covers every in-flight routed runtime the exact
+  immutable turn owns
 - **AND** when the turn instead owns a terminal action, the backend SHALL persist
   and linearize terminal-action Stop intent against that action
-- **AND** only after the API returns `outcome: "cancelled"` or emits the terminal
-  `SESSION_CANCELLED` SSE outcome from the durable turn record may the frontend
+- **AND** only once the server confirms `cancelled: true` (or, for a terminal
+  action, returns `outcome: "cancelled"`) **or** emits the terminal
+  `SESSION_CANCELLED` SSE outcome from the durable turn record does the frontend
   abort its own SSE watch (`AbortController`) and render the partial assistant
-  message with `Cancelled by owner`, distinct from the generic `Interrupted`
-  indicator used for unrelated client-side aborts
-- **AND** it SHALL re-enable the input
+  message with a "Cancelled by owner" indicator, distinct from the generic
+  "Interrupted" indicator used for unrelated client-side aborts (e.g. component
+  unmount, switching conversations)
+- **AND** the input is re-enabled
 
 #### Scenario: Stop requires terminal-action reconciliation
 
@@ -156,15 +159,14 @@ Scope: v1-mandatory
 #### Scenario: useConversations hook
 
 - **WHEN** `useConversations(butlerName, status)` is called
-- **THEN** it SHALL return a paginated list using key
-  `["conversations", butlerName, "list", params]` and a 10-second stale time
+- **THEN** it returns a paginated list of conversations using `useQuery` with key `["conversations", butlerName, "list", params]`
+- **AND** `staleTime` is 10 seconds (conversations update frequently during active chat)
 
 #### Scenario: useConversationMessages hook
 
 - **WHEN** `useConversationMessages(butlerName, conversationId)` is called
-- **THEN** it SHALL return the message list using key
-  `["conversation-messages", butlerName, conversationId]` with `staleTime: 0`
-  so it always refetches on conversation switch
+- **THEN** it returns the message list using `useQuery` with key `["conversation-messages", butlerName, conversationId]`
+- **AND** `staleTime` is 0 (always refetch when switching conversations)
 
 #### Scenario: Pending dashboard outcome is refreshed
 

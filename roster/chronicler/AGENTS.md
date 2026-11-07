@@ -19,8 +19,8 @@ day-close summary (see "Memory write-back loop" below).
 - No connector ownership.
 - No per-event LLM invocation.
 - Own-schema writes only. Day-close synthesizes insights into the chronicler's
-  private memory schema (`chronicler_mem`); enrichment for other butlers is an
-  MCP proposal, never a foreign write.
+  private memory schema (`chronicler_mem`); the write-back never writes
+  another butler's schema.
 
 ## Your Tools
 
@@ -100,7 +100,7 @@ module's own `episodes` table does not collide with the domain
 `chronicler.episodes`). Writing there satisfies the "own-schemas only"
 invariant, not a foreign write. After the day-close summary is produced, a
 deterministic completion-hook write-back
-(`src/butlers/chronicler/writeback.py`) runs. Three write kinds:
+(`src/butlers/chronicler/writeback.py`) runs. Two write kinds, both into your own schema:
 
 1. **Synthesized insights:** durable, *derived* facts with `source=chronicler`
    provenance, confidence, and decay (via `permanence`), e.g. sleep debt
@@ -108,10 +108,6 @@ deterministic completion-hook write-back
    evidence; never asserts attendance from a calendar (intent) block alone.
 2. **Self-reminders:** low-confidence day blocks get a "revisit when more
    evidence lands" marker so the next day-close re-reconciles after backfill.
-3. **Entity-enrichment proposals:** when co-presence repeatedly resolves to a
-   person, the Chronicler **proposes** a recurring-companion fact to
-   **Relationship over MCP** (switchboard-routed). It NEVER writes
-   `relationship.entity_facts` (or any other butler's tables) directly.
 
 **The day-close session itself writes no memory.** Only the deterministic
 write-back above stores chronicler facts. Delivery and scheduling receipts
@@ -135,8 +131,7 @@ other sanctioned owner-facing message.
 - Never project raw source payloads, only stable refs.
 - Never call LLMs per event.
 - Never write another butler's schema. Insights land in the chronicler's own
-  `chronicler_mem` schema; enrichment for Relationship (or any butler) is an
-  MCP proposal.
+  `chronicler_mem` schema.
 - Never touch the `/api/timeline` route; that is the operational stream, and
   you own `/api/chronicler/*`.
 
@@ -859,7 +854,10 @@ left untouched.
   the POST carries the connector callback credential
   (`X-Butlers-Approval-Callback-Token`), which owner auth accepts
   for that exact route only, without an owner principal; without it the API
-  answers 401 and the owner sees "Couldn't record that right now". That endpoint + the
+  answers 401 and the owner sees "Couldn't record that right now". Once the
+  answer settles (applied, already answered, or expired) the connector edits
+  the question to append the outcome and drops its buttons; failures keep the
+  buttons so the owner can retry. That endpoint + the
   `chronicler_resolve_gap_interview` MCP tool both delegate to
   `gap_interview.resolve_gap_interview_callback` (one resolver, identical write
   shape). It is the **first real tenant of the corrections machinery**: writes a
@@ -872,3 +870,39 @@ left untouched.
   the **decision loop** (RFC 0021 one-tap approvals, epic bu-24lu6, gated behind
   bu-24lu6.1) with no engine change; only the encoding/route swaps. No new
   migration (overrides/routines exist).
+- **Block interviews (bu-r3fmja):** with no occupation block, the question names
+  the longest uncovered waking block (≥30 min) plus a coordinate-free location
+  context and offers Work/Social/Play/Eat/Rest/Dismiss (rows of 3). The pending
+  state stores `block_start_at`/`block_end_at`; a lane tap writes one
+  `chronicler.owner_answer` `owner_<lane>_block` (activity, high, minute,
+  `source_ref = gap_interview:<id>`). The owner id is read in a savepoint
+  (`_owner_id_in_savepoint`): a failed lookup inside the resolver's transaction
+  would abort it. A lane tap on an occupation interview is refused.
+
+## Situational blocks and anchors (bu-r3fmja)
+
+- `chronicler.situation_inferred` re-derives whole days; its blocks' `source_ref`
+  embeds the block start, so a reshaped day writes new refs and tombstones the
+  old ones (`payload.local_date` scopes the sweep; overridden rows survive). Do not
+  key anything durable on a situation `source_ref`.
+- `adapters/situation.py` is imported directly, not via `adapters/__init__`:
+  `anchors.py` imports from the adapters package, so re-exporting it there is a
+  circular import.
+- `place_episode` is evidence since chronicler_029; anything that summed it as
+  Rest now reads the situational `home_block` instead. Migration 029 tombstoned
+  the old stays and cleared the place-cluster watermark/carryover, so the first
+  run after deploy re-clusters all retained fixes.
+- No anchor at all (no registry row, no geocoded graph address, no env refs, under
+  3 overnight stays) means every stay is an `outing_block`: Social, low
+  confidence. Registering home/work fixes the lanes on the next run.
+- The adapter reads `v_episodes_corrected`, never raw `episodes`: an owner
+  correction to sleep/play/occupation must move the blocks it preempts. Its own
+  overridden blocks are kept and subtracted from new ones (never re-emitted).
+- Anchor loaders degrade only on a structurally absent surface (undefined
+  table/column/schema, no privilege). A transient error fails the run; degrading
+  would re-lane every block for one run and back.
+- Place clustering holds a lone out-of-radius fix that ends a batch after a
+  bridged silence as `pending_departure` in carryover. The next batch decides:
+  back at the place → stray dropped; elsewhere → the stay ends at the held fix.
+- Address hash contract with Relationship: hex `sha256(text.strip())` (UTF-8);
+  `test_anchors.py` pins a shared vector.

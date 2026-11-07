@@ -14,7 +14,7 @@ in the meantime.  Gating *deltas* covers every new canonical requirement, becaus
 only change by archiving a delta.
 
 What it checks, per block under ``## ADDED Requirements`` / ``## MODIFIED Requirements``
-(``## REMOVED`` and ``## RENAMED`` sections and ``openspec/changes/archive/`` are exempt):
+(``## REMOVED`` and ``## RENAMED`` blocks and ``openspec/changes/archive/`` are exempt):
 
 * ``ID: REQ-<capability>-<NNN>`` present, with ``<capability>`` equal to the spec directory name;
 * ``Source: <non-empty>`` present;
@@ -25,6 +25,9 @@ What it checks, per block under ``## ADDED Requirements`` / ``## MODIFIED Requir
   pending-parent sibling modifying what another change adds), but two ADDED blocks may not;
 * an ADDED ID does not already exist in the canonical ``openspec/specs/<capability>/spec.md``,
   and a MODIFIED ID that the canonical spec gives to a different requirement name fails.
+  An existing canonical current name is authoritative, including an already-synced rename.
+  Otherwise, same-delta RENAMED FROM/TO chains resolve to their canonical ancestor before
+  either ownership check; renaming cannot mint a replacement canonical ID.
   Two further MODIFIED rules reverse-map the requirement name to its ID, so a block cannot
   re-mint an identity that already exists: a MODIFIED block whose requirement already has a
   canonical ID must carry that ID, and a MODIFIED block whose requirement another active change
@@ -36,14 +39,19 @@ block reader (case-insensitive header, marker-and-length code fences, stray ``##
 inside the block) matches OpenSpec's own parser, so no block ``openspec archive`` applies is hidden
 from the gate.
 
+Each ADDED/MODIFIED/REMOVED/RENAMED section kind may occur only once per delta spec
+(outside code fences); repeated headings can hide blocks from OpenSpec archive.
+
 Baseline ratchet
 ----------------
 Today's unidentified blocks are frozen in ``requirement-trace-baseline.json``, keyed by
 ``change/capability/requirement`` and pinned to a sha256 of the normalized block.  The ratchet is
-content-addressed, like ``check_spec_overwrites.py``: editing a frozen block changes its digest,
+content-addressed: editing a frozen block changes its digest,
 so it leaves the baseline and must carry the lines.  Entries whose block is gone (for example
 because its change was archived) or now carries valid trace lines must be removed; stale entries
 fail the gate. ``--write-baseline`` explicitly drops them when freezing current debt.
+Identity conflicts and repeated sections can never be frozen; baseline writes refuse them
+without changing the existing ratchet, and matching exemptions cannot suppress a collision.
 
 Usage:
   python3 scripts/check_requirement_trace_lines.py                  # gate (ratchet)
@@ -53,7 +61,7 @@ Usage:
 
 Exit codes:
   0  Every ADDED/MODIFIED block is identified or frozen.
-  1  A block lacks valid trace lines, or the baseline contains stale entries.
+  1  A trace/identity/section error exists, or the baseline contains stale entries.
   2  The scan matched no active change spec files (a silent pass would hide a broken path).
 """
 
@@ -71,9 +79,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = Path(__file__).resolve().parent / "requirement-trace-baseline.json"
 
 SECTION_HEADER = re.compile(r"^##\s+(.+?)\s*$")
+DELTA_SECTION = re.compile(r"^(ADDED|MODIFIED|REMOVED|RENAMED)\s+Requirements$", re.IGNORECASE)
 # Parity with OpenSpec's own reader (dist/core/parsers/requirement-blocks.js, code-fence.js),
 # which is what `openspec archive` applies: a block this guard cannot see could still be archived.
 REQUIREMENT_HEADER = re.compile(r"^###\s*Requirement:\s*(.+?)\s*$", re.IGNORECASE)
+RENAME_FROM = re.compile(r"^\s*-?\s*FROM:\s*`?###\s*Requirement:\s*(.+?)`?\s*$")
+RENAME_TO = re.compile(r"^\s*-?\s*TO:\s*`?###\s*Requirement:\s*(.+?)`?\s*$")
 FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})")
 FENCE_CLOSE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
 
@@ -95,6 +106,11 @@ class Block:
     body: list[str]
     req_id: str | None = None
     problems: list[str] = field(default_factory=list)
+    identity_conflict: bool = False
+
+    def add_identity_problem(self, problem: str) -> None:
+        self.problems.append(problem)
+        self.identity_conflict = True
 
     @property
     def key(self) -> str:
@@ -168,6 +184,23 @@ def iter_blocks(text: str) -> list[tuple[str | None, str, int, list[str]]]:
     return blocks
 
 
+def repeated_sections(text: str) -> list[tuple[int, str]]:
+    """Repeated archive section kinds, excluding OpenSpec-masked code fences."""
+    lines = text.splitlines()
+    mask = _fence_mask(lines)
+    seen: set[str] = set()
+    problems = []
+    for index, line in enumerate(lines):
+        heading = None if mask[index] else SECTION_HEADER.match(line)
+        section = DELTA_SECTION.fullmatch(heading.group(1)) if heading else None
+        if section is not None:
+            kind = section.group(1).upper()
+            if kind in seen:
+                problems.append((index + 1, kind))
+            seen.add(kind)
+    return problems
+
+
 def parse_blocks(text: str) -> list[tuple[str, str, int, list[str]]]:
     """``(kind, name, line, body)`` for blocks under ADDED/MODIFIED headings only."""
     out: list[tuple[str, str, int, list[str]]] = []
@@ -210,6 +243,33 @@ def check_block(block: Block) -> None:
         block.problems.append("missing Scope (v1-mandatory|v1-reserved|post-v1)")
 
 
+def rename_map(text: str) -> dict[str, str]:
+    """New-to-old requirement names from this delta's unfenced RENAMED section."""
+    lines = text.splitlines()
+    mask = _fence_mask(lines)
+    renames: dict[str, str] = {}
+    in_renamed = False
+    pending: str | None = None
+    for index, line in enumerate(lines):
+        if mask[index]:
+            continue
+        header = SECTION_HEADER.match(line)
+        if header:
+            in_renamed = "RENAMED" in header.group(1).upper()
+            pending = None
+            continue
+        if not in_renamed:
+            continue
+        before = RENAME_FROM.match(line)
+        after = RENAME_TO.match(line)
+        if before:
+            pending = before.group(1).strip()
+        elif after and pending:
+            renames[after.group(1).strip()] = pending
+            pending = None
+    return renames
+
+
 def canonical_ids(root: Path, capability: str) -> dict[str, set[str]]:
     """``{ID: {requirement names}}`` for the canonical spec of one capability."""
     path = root / "openspec" / "specs" / capability / "spec.md"
@@ -225,20 +285,25 @@ def canonical_ids(root: Path, capability: str) -> dict[str, set[str]]:
     return ids
 
 
-def collect(root: Path) -> tuple[list[Block], int]:
-    """Every ADDED/MODIFIED block in active changes, checked; plus the number of files scanned."""
+def collect(root: Path) -> tuple[list[Block], int, list[tuple[Path, int, str]]]:
+    """Checked blocks, number of active spec files, and unfrozen structural errors."""
     changes_dir = root / "openspec" / "changes"
     blocks: list[Block] = []
     files = 0
+    section_errors: list[tuple[Path, int, str]] = []
+    renames: dict[Path, dict[str, str]] = {}
     if not changes_dir.is_dir():
-        return blocks, files
+        return blocks, files, section_errors
     for change_dir in sorted(p for p in changes_dir.iterdir() if p.is_dir()):
         if change_dir.name == "archive":
             continue
         for spec_path in sorted(change_dir.glob("specs/*/spec.md")):
             files += 1
             capability = spec_path.parent.name
-            for kind, name, line, body in parse_blocks(spec_path.read_text("utf-8")):
+            text = spec_path.read_text("utf-8")
+            section_errors.extend((spec_path, line, kind) for line, kind in repeated_sections(text))
+            renames[spec_path] = rename_map(text)
+            for kind, name, line, body in parse_blocks(text):
                 block = Block(change_dir.name, capability, name, kind, spec_path, line, body)
                 check_block(block)
                 blocks.append(block)
@@ -250,24 +315,36 @@ def collect(root: Path) -> tuple[list[Block], int]:
             continue
         existing = canonical.setdefault(block.capability, canonical_ids(root, block.capability))
         owners = existing.get(block.req_id)
+        canonical_name = block.name
+        if block.kind == "MODIFIED":
+            visited: set[str] = set()
+            while canonical_name in renames[block.path]:
+                # OpenSpec honors an already-synced current name before walking ancestors.
+                if any(canonical_name in names for names in existing.values()):
+                    break
+                if canonical_name in visited:
+                    block.add_identity_problem("cyclic RENAMED requirement lineage")
+                    break
+                visited.add(canonical_name)
+                canonical_name = renames[block.path][canonical_name]
         if block.kind == "ADDED":
             if owners:
-                block.problems.append(
+                block.add_identity_problem(
                     f"ID {block.req_id} already exists in openspec/specs/{block.capability}"
                 )
             minted.setdefault((block.capability, block.req_id), []).append(block)
         elif owners is None:
             # A MODIFIED block with an ID the canonical spec lacks mints it, like an ADDED one.
             minted.setdefault((block.capability, block.req_id), []).append(block)
-            held = sorted(i for i, names in existing.items() if block.name in names)
+            held = sorted(i for i, names in existing.items() if canonical_name in names)
             if held:
-                block.problems.append(
+                block.add_identity_problem(
                     f"requirement {block.name!r} already has canonical ID {held[0]} in "
                     f"openspec/specs/{block.capability}; a MODIFIED block must carry it, "
                     f"not {block.req_id}"
                 )
-        elif block.name not in owners:
-            block.problems.append(
+        elif canonical_name not in owners:
+            block.add_identity_problem(
                 f"ID {block.req_id} belongs to requirement "
                 f"{sorted(owners)[0]!r} in openspec/specs/{block.capability}"
             )
@@ -280,7 +357,7 @@ def collect(root: Path) -> tuple[list[Block], int]:
             continue
         for other_id, other in pending.get((block.capability, block.name), {}).items():
             if other_id != block.req_id and other.change != block.change:
-                block.problems.append(
+                block.add_identity_problem(
                     f"requirement {block.name!r} is ADDED as {other_id} by {other.change}; "
                     f"a MODIFIED block must carry that ID, not {block.req_id}"
                 )
@@ -290,8 +367,8 @@ def collect(root: Path) -> tuple[list[Block], int]:
         if len(group) > 1 and (len(names) > 1 or added > 1):
             for block in group:
                 others = ", ".join(sorted(o.change for o in group if o is not block))
-                block.problems.append(f"duplicate new ID {req_id} (also minted by {others})")
-    return blocks, files
+                block.add_identity_problem(f"duplicate new ID {req_id} (also minted by {others})")
+    return blocks, files, section_errors
 
 
 def load_baseline(path: Path) -> dict[str, str]:
@@ -301,6 +378,8 @@ def load_baseline(path: Path) -> dict[str, str]:
 
 
 def write_baseline(path: Path, blocks: list[Block]) -> int:
+    if any(block.identity_conflict for block in blocks):
+        raise ValueError("ID conflicts cannot be frozen")
     payload = {block.key: block.digest for block in blocks if block.problems}
     path.write_text(
         json.dumps(dict(sorted(payload.items())), indent=2, ensure_ascii=False, sort_keys=True)
@@ -319,12 +398,12 @@ def main() -> int:
     parser.add_argument(
         "--write-baseline",
         action="store_true",
-        help="Freeze the current unidentified blocks (and drop stale entries), then exit 0.",
+        help="Freeze trace debt; refuse identity conflicts or repeated sections.",
     )
     parser.add_argument("--strict", action="store_true", help="Ignore the ratchet.")
     args = parser.parse_args()
 
-    blocks, files = collect(args.root)
+    blocks, files, section_errors = collect(args.root)
     if files == 0:
         print(
             f"error: no openspec/changes/*/specs/*/spec.md files found under {args.root}; "
@@ -333,13 +412,29 @@ def main() -> int:
         )
         return 2
 
+    if section_errors:
+        for path, line, kind in section_errors:
+            print(f"{path.relative_to(args.root)}:{line}: repeated {kind} Requirements section")
+        return 1
+
+    conflicts = [block for block in blocks if block.identity_conflict]
+    if args.write_baseline and conflicts:
+        for block in conflicts:
+            print(f"{block.path.relative_to(args.root)}:{block.line}: ID conflict: {block.key}")
+            for problem in block.problems:
+                print(f"  {problem}")
+        print("error: ID conflicts cannot be frozen; baseline unchanged")
+        return 1
+
     if args.write_baseline:
         total = write_baseline(args.baseline, blocks)
         print(f"Wrote baseline: {total} unidentified block(s) -> {args.baseline}")
         return 0
 
     baseline = {} if args.strict else load_baseline(args.baseline)
-    failures = [b for b in blocks if b.problems and baseline.get(b.key) != b.digest]
+    failures = [
+        b for b in blocks if b.problems and (b.identity_conflict or baseline.get(b.key) != b.digest)
+    ]
     for block in failures:
         rel = block.path.relative_to(args.root)
         print(f'{rel}:{block.line}: {block.kind} requirement "{block.name}"')

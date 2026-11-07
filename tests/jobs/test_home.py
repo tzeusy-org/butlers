@@ -34,6 +34,7 @@ from butlers.jobs.home import (
     run_maintenance_schedule_check,
     select_due_issues,
 )
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -59,13 +60,6 @@ def _make_item(
         next_due_at=next_due_at,
         notes=None,
     )
-
-
-def _make_pool(*, fetch_rows=None) -> MagicMock:
-    pool = MagicMock()
-    pool.fetch = AsyncMock(return_value=fetch_rows or [])
-    pool.execute = AsyncMock()
-    return pool
 
 
 def _make_db_row(
@@ -228,7 +222,7 @@ def test_build_notification_text():
 
 async def test_maintenance_check_no_items():
     """Empty DB: all counts zero, notify_fn not called."""
-    pool = _make_pool(fetch_rows=[])
+    pool = fake_pool(fetch=[], execute=None)
     notify_fn = AsyncMock()
     result = await run_maintenance_schedule_check(pool, None, notify_fn=notify_fn, _now=_NOW)
     assert result["items_checked"] == 0
@@ -244,7 +238,7 @@ async def test_maintenance_check_all_severities_counted():
         _make_db_row(name="Upcoming", next_due_at=_NOW + timedelta(days=4)),
         _make_db_row(name="NeverDone"),
     ]
-    pool = _make_pool(fetch_rows=rows)
+    pool = fake_pool(fetch=rows, execute=None)
     notify_fn = AsyncMock()
     result = await run_maintenance_schedule_check(pool, None, notify_fn=notify_fn, _now=_NOW)
     assert result["critical_count"] == 1 and result["overdue_count"] == 1
@@ -261,7 +255,7 @@ async def test_maintenance_check_error_propagation_and_notify_failure():
         await run_maintenance_schedule_check(pool_fail, None, _now=_NOW)
 
     row = _make_db_row(next_due_at=_NOW - timedelta(days=5))
-    pool_ok = _make_pool(fetch_rows=[row])
+    pool_ok = fake_pool(fetch=[row], execute=None)
 
     async def broken_notify(msg):
         raise RuntimeError("Telegram unavailable")
@@ -280,7 +274,9 @@ async def test_maintenance_wrapper_delivers_when_items_due():
     a notification when items are due/overdue/upcoming (mirrors siblings)."""
     from butlers.scheduled_jobs import _run_home_maintenance_schedule_check_job
 
-    pool = _make_pool(fetch_rows=[_make_db_row(next_due_at=datetime.now(UTC) - timedelta(days=5))])
+    pool = fake_pool(
+        fetch=[_make_db_row(next_due_at=datetime.now(UTC) - timedelta(days=5))], execute=None
+    )
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify:
         result = await _run_home_maintenance_schedule_check_job(pool, None)
 
@@ -296,7 +292,7 @@ async def test_maintenance_wrapper_no_notify_when_nothing_due():
     """The wrapper does NOT notify when no items require attention."""
     from butlers.scheduled_jobs import _run_home_maintenance_schedule_check_job
 
-    pool = _make_pool(fetch_rows=[])
+    pool = fake_pool(fetch=[], execute=None)
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as mock_notify:
         result = await _run_home_maintenance_schedule_check_job(pool, None)
 

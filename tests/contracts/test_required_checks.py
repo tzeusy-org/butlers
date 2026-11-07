@@ -36,9 +36,6 @@ REQUIRED_WORKLOADS = frozenset(
         "frontend-e2e",
     }
 )
-# Downstream-only mirrors of alls-green for the ruleset's legacy contexts, until the
-# owner switches the required set to alls-green alone.
-ADAPTERS = frozenset({"check", "frontend"})
 NON_SUCCESS_RESULTS = ("failure", "cancelled", "skipped", "", "unknown")
 
 
@@ -61,7 +58,7 @@ def fan_in_is_complete(workflow: dict) -> bool:
         len(needs) == len(set(needs))
         and set(needs) == REQUIRED_WORKLOADS
         and all(name in jobs for name in needs)
-        and set(jobs) - {FAN_IN} - ADAPTERS == REQUIRED_WORKLOADS
+        and set(jobs) - {FAN_IN} == REQUIRED_WORKLOADS
         and str(expected) == str(len(needs))
     )
 
@@ -115,7 +112,7 @@ def test_no_workload_can_be_skipped_or_soft_failed_by_configuration() -> None:
 
     for name, job in jobs.items():
         # Any job-level condition (`if: false`, a route output) can skip a workload.
-        if name != FAN_IN and name not in ADAPTERS:
+        if name != FAN_IN:
             assert "if" not in job, f"{name} has a job-level condition"
         assert "continue-on-error" not in job, f"{name} can soft-fail"
         assert "needs.route" not in json.dumps(job), f"{name} still reads the retired route job"
@@ -175,19 +172,55 @@ def test_fan_in_count_check_is_load_bearing() -> None:
     assert _run_fan_in(json.dumps(needs), run=mutated).returncode == 0
 
 
-@pytest.mark.parametrize("adapter", sorted(ADAPTERS))
-def test_legacy_contexts_only_mirror_the_fan_in(adapter: str) -> None:
-    job = _workflow()["jobs"][adapter]
-    (step,) = job["steps"]
+def test_the_ruleset_script_requires_alls_green_alone() -> None:
+    """The ruleset source of truth names the fan-in as its only required context."""
+    script = (REPO_ROOT / "scripts/setup_main_ruleset.sh").read_text(encoding="utf-8")
+    contexts = re.findall(r'"context":\s*"([^"]+)"', script)
 
-    assert job["needs"] == [FAN_IN]
-    assert job["if"] == "always()"
-    assert step["env"] == {"RESULT": "${{ needs.alls-green.result }}"}
-    for result, code in [("success", 0), *((r, 1) for r in NON_SUCCESS_RESULTS)]:
-        ran = subprocess.run(
-            ["bash", "-e", "-c", step["run"]],
-            env={**os.environ, "RESULT": result},
-            capture_output=True,
-            timeout=10,
-        )
-        assert ran.returncode == code, result
+    assert contexts == [FAN_IN]
+
+
+def test_unit_groups_require_native_session_host_proof() -> None:
+    job = _workflow()["jobs"]["check-unit"]
+    assert job["env"]["BUTLERS_REQUIRE_SESSION_HOST_NATIVE"] == "1"
+    steps = job["steps"]
+    setup = next(
+        step
+        for step in steps
+        if step.get("name") == "Install session-host native proof prerequisites"
+    )
+    assert "if" not in setup and not setup.get("continue-on-error", False)
+    command = setup["run"]
+    assert (
+        "sudo apt-get install -y --no-install-recommends bubblewrap build-essential openssl"
+        in command
+    )
+    assert "/usr/bin/bwrap --version" in command
+    assert steps.index(setup) < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name", "").startswith("Unit tests (group")
+    )
+    test_step = next(step for step in steps if step.get("name", "").startswith("Unit tests (group"))
+    assert "BUTLERS_REQUIRE_SESSION_HOST_NATIVE" not in test_step.get("env", {})
+    assert "continue-on-error" not in test_step and "if" not in test_step
+
+
+def test_unit_native_policy_experiment_is_scoped_and_always_cleaned() -> None:
+    job = _workflow()["jobs"]["check-unit"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    steps = job["steps"]
+    prepare = next(
+        step for step in steps if step.get("name") == "Prove scoped session-host user namespaces"
+    )
+    cleanup = next(
+        step
+        for step in steps
+        if step.get("name") == "Remove scoped session-host user namespace profile"
+    )
+    tests = next(step for step in steps if step.get("name", "").startswith("Unit tests (group"))
+    assert prepare["run"] == "uv run --no-sync python scripts/session_host_ci.py prepare"
+    assert "if" not in prepare and "continue-on-error" not in prepare
+    assert cleanup["if"] == "always()" and "continue-on-error" not in cleanup
+    assert cleanup["run"] == "uv run --no-sync python scripts/session_host_ci.py cleanup"
+    assert steps.index(prepare) < steps.index(tests) < steps.index(cleanup)

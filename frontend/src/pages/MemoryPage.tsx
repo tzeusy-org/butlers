@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 import MemoryOverture from "@/components/memory/MemoryOverture";
 import MemoryBrowser from "@/components/memory/MemoryBrowser";
 import AttentionRail from "@/components/memory/AttentionRail";
 import HousekeepingBand from "@/components/memory/HousekeepingBand";
+import { useMemoryUrlState } from "@/hooks/use-memory-url-state";
+import { useRegisterCommands } from "@/lib/command-registry";
 import { usePageSubject } from "@/lib/page-context.tsx";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +20,22 @@ export default function MemoryPage() {
   useEffect(() => {
     setPageSubject({ visible_resource: { kind: "memory" }, visible_summary: "Memory" });
   }, [setPageSubject]);
+
+  // Palette-only verb (no shortcut key): jump to the Questions register, leaving
+  // any submitted search so the register is what the owner sees.
+  const { setState } = useMemoryUrlState();
+  const paletteCommands = useMemo(
+    () => [
+      {
+        id: "memory-open-questions",
+        label: "Open questions",
+        keywords: ["unknown", "gaps", "unanswered", "memory"],
+        perform: () => setState({ register: "questions", q: null, offset: 0 }),
+      },
+    ],
+    [setState],
+  );
+  useRegisterCommands(paletteCommands);
 
   return (
     <div className="space-y-6">

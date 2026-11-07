@@ -298,3 +298,28 @@ created once credentials resolve at startup and closed at shutdown.
 #### Scenario: Client cleanup
 - **WHEN** `on_shutdown` is called
 - **THEN** the HTTP client SHALL be closed
+
+### Requirement: Destination Audience Approval
+
+Write, create-folder and move capabilities SHALL inspect the complete effective
+destination ACL and resolve every user permission through the existing owner
+identity resolver before mutation. Non-owner, group, domain, public or unresolved
+audiences SHALL require approval. Unavailable or incomplete ACL reads SHALL
+refuse even an approved replay. Exact stored arguments SHALL bind the concrete
+destination and server-computed optional `destination_audience_digest`; the
+digest SHALL confer no authority and changed snapshots SHALL refuse.
+
+#### Scenario: Shared destination and changed audience
+- **WHEN** a write reaches a known shared destination
+- **THEN** the complete concrete call SHALL park before any provider mutation
+- **AND** a changed permission identity, role, inheritance or visibility at replay SHALL refuse
+
+#### Scenario: Shared default bootstrap
+- **WHEN** the default path needs a folder under a known shared parent
+- **THEN** only the exact existing create-folder call SHALL park before creation
+- **AND** its receipt SHALL state the original operation is incomplete
+- **AND** approval SHALL NOT authorize original content, which requires a fresh retry and audience check
+
+#### Scenario: Owner-private default bootstrap
+- **WHEN** every verified parent and final audience is owner-only
+- **THEN** existing default creation and upload SHALL remain automatic

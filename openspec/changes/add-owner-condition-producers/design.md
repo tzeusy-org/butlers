@@ -64,8 +64,8 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
   supervises exactly one named task for each current loop and lists them (`secrets_lifecycle`,
   `model_verify`, ..., `calendar_sync_deadman`, `external_deadman`, `restore_drill`;
   `openspec/specs/infrastructure-reliability/spec.md`). The RFC 0007 readiness `supervisors`
-  projection consumes that loop health. A new calendar loop therefore requires amending that
-  list at adoption; this draft deliberately adds no MODIFIED block.
+  projection consumes that loop health. bu-vcjgo8 amends that list with `calendar_overcommitment`
+  (MODIFIED block in `specs/infrastructure-reliability/spec.md`).
 
 ## D3: Calendar qualifying issues, severity, identity
 
@@ -80,13 +80,17 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
   via `calendar_event_proposals.source_event_id`); `overloaded_day` keyed on the owner-local
   date. One overlap pair is one condition, so a three-way pile-up is three conditions; accepted
   because it matches the radar's own issue list and proposal join.
-  `[Unknown]` Whether `calendar_event_instances.id` stays stable across a provider resync of the
-  same recurring instance. If it does not, a resync would resolve and reopen pair conditions;
-  verify before adoption (task 1.1). Related seam: `load_dedup_rules` and
-  `load_keep_separate_keys` fail open to the default strategy while `available` stays true, so a
-  dedup-store outage can change which copy survives a cluster and therefore which `instance_id`
-  feeds `overlap_pair_id`; a "complete" scan could then resolve and reopen pair conditions.
-  Task 1.1 covers both.
+  Resolved (task 1.1, bu-vcjgo8): an instance id is stable across a resync of one schema's copy
+  (upsert on `(event_id, origin_instance_ref)`), but every calendar butler's schema holds its
+  own copy of the same provider event and the `origin_ref` dedup keeps the most recently synced
+  one, so the surviving instance id, and `overlap_pair_id` over it, rotates between schemas. The
+  condition's pair id is therefore `overlap_pair_id` over each entry's provider identity (its
+  `origin_ref` cluster key, exposed as `CalendarConflictScan.entry_identity_keys`). The radar
+  re-keys its own `DetectedIssue.pair_id` the same way (bu-nd32y3), so a fix proposal stays
+  attached across a resync; its proposal join also matches the old instance-based pair id, so
+  proposals stored before the change still attach (no migration). A dedup-store read failure is now reported as
+  `CalendarConflictScan.dedup_available = false`, and the producer reconciles nothing on such a
+  tick.
 - Grace: `initial_grace_seconds` defaults to 3600, mirroring Finance.
 
 ## D4: Resolution, concurrency, partial sync
@@ -104,9 +108,10 @@ The Calendar producer runs as a supervised loop in the dashboard-api process, mo
 - Overlapping scans (two API replicas, or a tick overlapping a restart) are safe: the engine
   takes a transaction-scoped advisory lock per source and fingerprints are deterministic, so two
   scans of the same state produce confirmations, not duplicates.
-- `[Unknown]` Whether a provider source whose sync stopped but whose rows are still present can
-  hide a cancellation; `calendar_sync_deadman` covers sync death independently. Verify whether the
-  producer should additionally require fresh `source_freshness` before a complete scan (task 1.2).
+- Resolved (task 1.2, bu-vcjgo8): a source whose sync stopped keeps its rows, so a scan can
+  keep observing a conflict the provider cancelled, or miss a new one, but it cannot fabricate an
+  absence and so never resolves a live conflict. `calendar_sync_deadman` already raises sync
+  death as its own condition; fresh sources are not an extra completeness gate.
 
 ## D5: Threshold crossings are job-time, not write-time
 

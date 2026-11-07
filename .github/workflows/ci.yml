@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; smoke owns the lane counts, test budget and smoke
+    # their exact scopes; smoke owns the lane counts and smoke
     # tests, and check-totals reconciles the lane totals after the groups finish.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
@@ -187,21 +187,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check-no-em-dashes.py
 
-      # Spec-overwrite guard (bu-s9uv3): `openspec archive` writes the WHOLE
-      # requirement block from a change into openspec/specs/, so an unarchived
-      # `## MODIFIED Requirements` block authored against an older ancestor
-      # silently deletes whatever the baseline gained in between. OpenSpec 1.9.0
-      # guards only scenario NAMES, so a block that keeps every name and rewrites
-      # the bodies validates clean and still destroys baseline content -- which has
-      # happened three times on the same axis. This compares bodies. A digest-keyed
-      # ratchet (scripts/spec-overwrite-baseline.json) freezes today's debt and
-      # re-fires as soon as an archive moves a requirement under an unarchived
-      # block.
-      - name: Check unarchived MODIFIED spec blocks against the live baseline
-        id: spec_overwrites
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_spec_overwrites.py
-
       # bu-xjs98p.1: new and edited requirements in active changes carry identity. Every
       # ADDED/MODIFIED block needs ID, Source and Scope lines unless it is frozen in the
       # content-addressed baseline (scripts/requirement-trace-baseline.json); editing a frozen
@@ -221,65 +206,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: make check-openspec-strict
 
-      # Archived-requirements guard (bu-966by): the other side of the ledger from
-      # the spec-overwrite guard. Archiving a change is supposed to write its
-      # requirements into openspec/specs/, and 488 of them across 44 changes never
-      # got there while every check stayed green -- `openspec validate` reads delta
-      # syntax, `openspec archive` reports what it wrote and not what it skipped,
-      # and check_spec_overwrites.py never looks at the baseline side at all. This
-      # asserts each archived `## ADDED` requirement exists in the baseline by name
-      # and each `## MODIFIED` block's content reached it, failing per requirement
-      # so a half-applied archive cannot look green. A digest-keyed ratchet
-      # (scripts/archived-requirements-baseline.json) freezes today's debt for
-      # bu-tk618 to burn down by hand; there is no re-freeze flag on purpose,
-      # and a `## REMOVED` block excuses an absence only once its own change
-      # has archived, so a pending proposal cannot mute a gap off-ratchet.
-      - name: Check archived change requirements reached the baseline
-        id: archived_requirements
+      # Qualified test citations resolve to canonical contracts first, then complete retained
+      # ADDED/MODIFIED requirements. Archive history and prose mentions are not definitions.
+      - name: Check test requirement citations
+        id: requirement_citations
         if: ${{ !cancelled() }}
-        run: python3 scripts/check_archived_requirements_landed.py
+        run: uv run --no-sync pytest tests/contracts/test_requirement_citations.py -q --tb=short -n 0
 
       # Owner-email guard: the repo stays user-agnostic, so no tracked file may
       # carry the owner's personal addresses (matched by local-part hash).
       - name: Check no owner email addresses are tracked
         if: ${{ !cancelled() }}
         run: python3 scripts/check_owner_emails.py
-
-      # Countable-tasks guard (bu-h7igs): `openspec archive`'s incomplete-task
-      # gate counts markdown checkbox lines only. A tasks.md written as `### N.`
-      # sections with per-task acceptance bullets -- richer than most checkbox files
-      # here, not lazier -- matches zero of them, so archive reports
-      # `Task status: No tasks`, cannot be incomplete, and archives unprompted. The
-      # defect is not the missing warning but that the gate's silence is
-      # indistinguishable from its pass: "archived with no task warning" reads as
-      # evidence the tasks were done. This fails on any unarchived change the gate
-      # cannot see, so the difference is restored before the change reaches archive.
-      - name: Check every change's tasks.md is countable by the archive gate
-        id: countable_tasks
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_countable_tasks.py
-
-      # Cited-requirements guard (bu-lpwjc): the third side of the ledger. The
-      # two guards above read the spec tree against itself and have never opened a
-      # test file, so nothing ever checked that a REQ id cited by a test docstring
-      # resolves to a definition at all. Measured at introduction: 39 distinct ids
-      # are cited, 30 resolve only to a change that has not archived yet, and
-      # REQ-cli-runtime-auth-003 resolves nowhere -- there is no cli-runtime-auth
-      # capability in the repo. openspec/specs/ and unarchived changes are the two
-      # definition sources; openspec/changes/archive/** deliberately is NOT one,
-      # because an archived change has already had its chance to write the
-      # requirement into the baseline. Counting it would make this blind to
-      # exactly the case it exists for (`openspec archive --skip-specs` moves the
-      # delta and writes no baseline) and would hide a half-applied archive, since
-      # the ids that landed and the ids that did not would read the same.
-      # Pending-only citations pass but are printed with the change they lean on:
-      # that is the state that rots. A ratchet
-      # (scripts/cited-requirements-baseline.json) freezes today's one dangling
-      # citation per (test file, id); there is no re-freeze flag on purpose.
-      - name: Check REQ ids cited by tests resolve to a definition
-        id: cited_requirements
-        if: ${{ !cancelled() }}
-        run: python3 scripts/check_cited_requirements_resolve.py
 
       # Duplicate-name guard (bu-ayrbg): two branches each added a
       # module-level `_fenced_code_blocks` to one test file with incompatible
@@ -325,12 +263,9 @@ jobs:
             sql_safety=${{ steps.sql_safety.outcome }}
             session_links=${{ steps.session_links.outcome }}
             em_dashes=${{ steps.em_dashes.outcome }}
-            spec_overwrites=${{ steps.spec_overwrites.outcome }}
             requirement_trace=${{ steps.requirement_trace.outcome }}
             openspec_strict=${{ steps.openspec_strict.outcome }}
-            archived_requirements=${{ steps.archived_requirements.outcome }}
-            countable_tasks=${{ steps.countable_tasks.outcome }}
-            cited_requirements=${{ steps.cited_requirements.outcome }}
+            requirement_citations=${{ steps.requirement_citations.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
             host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
         run: |
@@ -397,7 +332,7 @@ jobs:
       - name: Set up the CI Python environment
         uses: ./.github/actions/ci-python-environment
 
-      - name: Count each lane and check the test budget
+      - name: Count each lane
         # One fresh --collect-only count per lane of the same selection the groups
         # run; check-totals requires the groups to sum to it (bu-29wkwj.2).
         run: uv run --no-sync python scripts/ci_lanes.py count --output "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
@@ -478,7 +413,7 @@ jobs:
 
   check-unit:
     timeout-minutes: 28
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # pytest-split duration-balanced groups over the committed .test_durations.
     strategy:
       fail-fast: false
@@ -487,6 +422,7 @@ jobs:
 
     env:
       CI_COVERAGE: '0'
+      BUTLERS_REQUIRE_SESSION_HOST_NATIVE: '1'
 
     steps:
       - uses: actions/checkout@v6
@@ -494,10 +430,25 @@ jobs:
       - name: Set up the CI Python environment
         uses: ./.github/actions/ci-python-environment
 
+      - name: Install session-host native proof prerequisites
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends bubblewrap build-essential openssl
+          /usr/bin/bwrap --version
+          cc --version | head -n 1
+          openssl version
+
+      - name: Prove scoped session-host user namespaces
+        run: uv run --no-sync python scripts/session_host_ci.py prepare
+
       - name: Unit tests (group ${{ matrix.group }})
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}
         run: uv run python scripts/ci_lanes.py run --lane unit --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/unit-${{ matrix.group }}"
+
+      - name: Remove scoped session-host user namespace profile
+        if: always()
+        run: uv run --no-sync python scripts/session_host_ci.py cleanup
 
       - name: Prepare unit group ${{ matrix.group }} duration evidence
         if: always()
@@ -517,6 +468,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
@@ -534,6 +486,8 @@ jobs:
 
     env:
       CI_COVERAGE: '0'
+      BUTLERS_TEST_STORAGE_EVIDENCE: ${{ matrix.group == 6 && '1' || '0' }}
+      BUTLERS_STORAGE_GROUP: ${{ matrix.group }}
 
     steps:
       - uses: actions/checkout@v6
@@ -542,10 +496,14 @@ jobs:
         uses: ./.github/actions/ci-python-environment
 
       - name: Free disk space before testcontainers
+        env:
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
         # Runner disk capacity varies. Preserve the cleanup that eliminated
         # no-space/asyncpg failures on small runners, but do not spend minutes
         # deleting 20+ GiB of tools when the runner already has a safe floor.
         run: |
+          mkdir -p "${TEST_EVIDENCE_DIR}" || echo "storage evidence UNKNOWN evidence_directory_startup"
+          uv run --no-sync python -B -m butlers.testing.storage before_cleanup || echo "storage evidence UNKNOWN before_cleanup_startup"
           echo "Disk usage before cleanup:"
           df -h /
           MIN_FREE_GB=30
@@ -572,12 +530,19 @@ jobs:
           fi
           echo "Disk usage after cleanup decision:"
           df -h /
+          uv run --no-sync python -B -m butlers.testing.storage after_cleanup || echo "storage evidence UNKNOWN after_cleanup_startup"
 
       - name: Integration tests (group ${{ matrix.group }})
         env:
           TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
           TESTCONTAINERS_RYUK_DISABLED: "true"
         run: uv run python scripts/ci_lanes.py run --lane integration --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/integration-${{ matrix.group }}"
+
+      - name: Summarize bounded integration storage metadata
+        env:
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}
+        if: always() && matrix.group == 6
+        run: uv run --no-sync python -B -m butlers.testing.storage inventory || echo "storage evidence UNKNOWN inventory_startup"
 
       - name: Prepare integration group ${{ matrix.group }} duration evidence
         if: always()
@@ -597,7 +562,9 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/storage-*.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -735,29 +702,3 @@ jobs:
           printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
           printf '%s' "$NEEDS_JSON" | jq -e --argjson n "$EXPECTED_JOBS" \
             'type == "object" and length == $n and all(.[]; .result == "success")' > /dev/null
-
-  # Compatibility adapters for the `main-merge-queue` ruleset, which still requires
-  # the `check`, `guards` and `frontend` contexts. Each only mirrors `alls-green`.
-  # The ruleset switch to `alls-green` alone is a separate owner act
-  # (scripts/setup_main_ruleset.sh); a follow-up then deletes these two jobs.
-  check:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [alls-green]
-    if: always()
-    steps:
-      - name: Mirror alls-green
-        env:
-          RESULT: ${{ needs.alls-green.result }}
-        run: test "$RESULT" = success
-
-  frontend:
-    timeout-minutes: 3
-    runs-on: ubuntu-latest
-    needs: [alls-green]
-    if: always()
-    steps:
-      - name: Mirror alls-green
-        env:
-          RESULT: ${{ needs.alls-green.result }}
-        run: test "$RESULT" = success

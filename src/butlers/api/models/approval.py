@@ -151,6 +151,35 @@ class ApprovalAction(BaseModel):
         ),
     )
     delivery: ApprovalDeliveryTruth | None = None
+    goal: ApprovalGoalLineage | None = Field(
+        default=None,
+        description=(
+            "RFC 0038 goal lineage of a broker-parked effect; null for an action "
+            "no goal parked (including pre-cutover 'legacy' rows)."
+        ),
+    )
+
+
+class ApprovalGoalLineage(BaseModel):
+    """The goal, invocation, depth, exposure and origin that parked an action."""
+
+    goal_id: str
+    invocation_id: str
+    depth: int
+    exposed: bool
+    origin: Literal["owner", "obligation", "third_party", "staffer"]
+
+
+ApprovalAction.model_rebuild()
+
+
+class OwnerDeliveryCard(BaseModel):
+    """One dashboard presentation of an owner-delivery subject (bu-dhloi1.13)."""
+
+    subject_id: str
+    generation: int
+    approve_token: str
+    reject_token: str
 
 
 class ApprovalDetail(BaseModel):
@@ -198,6 +227,14 @@ class ApprovalDetail(BaseModel):
     origin: Literal["prepared"] | None = Field(
         default=None,
         description="Exact stored 'prepared' classification, or null for unknown origin.",
+    )
+    owner_delivery: OwnerDeliveryCard | None = Field(
+        default=None,
+        description=(
+            "Canonical owner-delivery presentation of a pending action for the owner's "
+            "dashboard session: single-use tokens for POST /api/owner-delivery/actions. "
+            "Null while owner delivery is off, for connector reads, or when unavailable."
+        ),
     )
     push_outcome: Literal["delivered", "deferred", "collapsed", "duplicate", "failed"] | None = (
         Field(
@@ -422,6 +459,7 @@ class ApprovalMetrics(BaseModel):
     delivery_by_state: dict[str, int] = Field(default_factory=dict)
     delivery_by_reason: dict[str, int] = Field(default_factory=dict)
     delivery_sources_complete: bool = False
+    owner_delivery_retractions_given_up: int = 0
 
 
 class ApprovalActionApproveRequest(BaseModel):

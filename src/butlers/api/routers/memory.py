@@ -17,10 +17,11 @@ import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, NoReturn, cast
 
+import asyncpg
 from asyncpg.exceptions import UndefinedTableError
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -42,11 +43,13 @@ from butlers.api.models.memory import (
     EntitySummary,
     Episode,
     Fact,
+    FactVouch,
     GraphHealthCoverage,
     GraphHealthPoolCoverage,
     MemoryActivity,
     MemoryCatalogSearchResult,
     MemoryGap,
+    MemoryGapDemand,
     MemoryGapDismissal,
     MemoryInspectResult,
     MemoryLink,
@@ -61,12 +64,22 @@ from butlers.api.models.memory import (
     UpdateEntityRequest,
     UpdateRetentionPoliciesRequest,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as _audit
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.modules.memory import knowledge_gaps
-from butlers.modules.memory.content_authority import is_rule_admitted
-from butlers.modules.memory.storage import RuleNotEndorsableError, endorse_rule, get_links
+from butlers.modules.memory.content_authority import HELD_FACT_SQL, is_fact_held, is_rule_admitted
+from butlers.modules.memory.storage import (
+    FactNotEndorsableError,
+    RuleNotEndorsableError,
+    endorse_fact,
+    endorse_rule,
+    get_links,
+)
+from butlers.modules.memory.tools.entities import SYSTEM_METADATA_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +94,12 @@ _EPISODE_DOSSIER_COLUMNS = (
     "consolidation_attempts, last_consolidation_error, dead_letter_reason,"
     " next_consolidation_retry_at"
 )
+
+
+_ENTITY_DELETE_DEADLINE_S = 30.0
+# A delete holds a connection while its fan-out takes others from the same per-process
+# pools, so at the deployed maximum of 2 concurrent deletes would starve each other.
+_ENTITY_DELETE_GATE = asyncio.Lock()
 
 
 def _memory_pool_names(db: DatabaseManager) -> list[str]:
@@ -289,7 +308,7 @@ def _raise_memory_detail_miss(
     *,
     resource: str,
     tracker: DegradedSources,
-) -> None:
+) -> NoReturn:
     """Raise a truthful error for an unresolved cross-pool detail lookup."""
     if tracker.failed:
         names = ", ".join(tracker.names)
@@ -479,6 +498,10 @@ async def get_memory_stats(
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         facts_relation = _memory_relation(db, butler_name, "facts")
         rules_relation = _memory_relation(db, butler_name, "rules")
+        fact_visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        fact_visibility_filter = fact_visibility or "TRUE"
         return {
             "total_episodes": await pool.fetchval(f"SELECT count(*) FROM {episodes_relation}") or 0,
             "unconsolidated_episodes": await pool.fetchval(
@@ -490,13 +513,18 @@ async def get_memory_stats(
                 "WHERE consolidation_status = 'dead_letter'"
             )
             or 0,
-            "total_facts": await pool.fetchval(f"SELECT count(*) FROM {facts_relation}") or 0,
+            "total_facts": await pool.fetchval(
+                f"SELECT count(*) FROM {facts_relation} AS facts WHERE {fact_visibility_filter}"
+            )
+            or 0,
             "active_facts": await pool.fetchval(
-                f"SELECT count(*) FROM {facts_relation} WHERE validity = 'active'"
+                f"SELECT count(*) FROM {facts_relation} AS facts "
+                f"WHERE facts.validity = 'active' AND {fact_visibility_filter}"
             )
             or 0,
             "fading_facts": await pool.fetchval(
-                f"SELECT count(*) FROM {facts_relation} WHERE validity = 'fading'"
+                f"SELECT count(*) FROM {facts_relation} AS facts "
+                f"WHERE facts.validity = 'fading' AND {fact_visibility_filter}"
             )
             or 0,
             "total_rules": await pool.fetchval(f"SELECT count(*) FROM {rules_relation}") or 0,
@@ -918,6 +946,14 @@ async def list_facts(
     importance_min: float | None = Query(
         None, description="Filter to facts with importance >= this threshold"
     ),
+    held: bool | None = Query(
+        None,
+        description=(
+            "Pass true to list only held facts ('reported, not vouched for'): live facts "
+            "from third-party or mixed authority the owner has not vouched for. Pass "
+            "false to list everything else."
+        ),
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     *,
@@ -963,12 +999,22 @@ async def list_facts(
         args.append(importance_min)
         idx += 1
 
-    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    if held is True:
+        conditions.append(HELD_FACT_SQL)
+    elif held is False:
+        conditions.append(f"NOT COALESCE({HELD_FACT_SQL}, false)")
 
     row_limit = offset + limit
 
     async def _query_pool(butler_name: str, pool: object) -> tuple[int, list[object]]:
         relation = _memory_relation(db, butler_name, "facts")
+        pool_conditions = list(conditions)
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        if visibility is not None:
+            pool_conditions.append(visibility)
+        where = (" WHERE " + " AND ".join(pool_conditions)) if pool_conditions else ""
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
         total = await pool.fetchval(f"SELECT count(*) FROM {relation}{where}", *args) or 0
@@ -978,7 +1024,8 @@ async def list_facts(
             f" entity_id, object_entity_id, content_authority, authority_entity_id,"
             " validity, scope, reference_count,"
             f" created_at, last_referenced_at,"
-            f" last_confirmed_at, tags, metadata"
+            f" last_confirmed_at, tags, metadata,"
+            f" endorsed_at, endorsed_by"
             f" FROM {relation}{where}"
             f" ORDER BY created_at DESC"
             f" OFFSET ${idx} LIMIT ${idx + 1}"
@@ -1035,6 +1082,10 @@ async def get_fact(
         relation = _memory_relation(db, butler_name, "facts")
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        visibility_filter = f" AND {visibility}" if visibility is not None else ""
         row = await pool.fetchrow(
             _with_source_episode_status(
                 "SELECT id, subject, predicate, content, importance, confidence,"
@@ -1042,8 +1093,9 @@ async def get_fact(
                 " entity_id, object_entity_id, content_authority, authority_entity_id,"
                 " validity, scope, reference_count,"
                 " created_at, last_referenced_at,"
-                " last_confirmed_at, tags, metadata"
-                f" FROM {relation} WHERE id = $1",
+                " last_confirmed_at, tags, metadata,"
+                " endorsed_at, endorsed_by"
+                f" FROM {relation} AS facts WHERE facts.id = $1{visibility_filter}",
                 episodes_relation=episodes_relation,
                 tombstones_relation=tombstones_relation,
             ),
@@ -1054,7 +1106,8 @@ async def get_fact(
         # Reverse-lookup the fact that supersedes THIS one (if any).  Runs on the
         # same pool that owns the fact, so we never cross butler schemas.
         superseder = await pool.fetchrow(
-            f"SELECT id FROM {relation} WHERE supersedes_id = $1 LIMIT 1",
+            f"SELECT facts.id FROM {relation} AS facts WHERE facts.supersedes_id = $1"
+            f"{visibility_filter} LIMIT 1",
             fact_id,
         )
         return (row, superseder)
@@ -1087,14 +1140,25 @@ _FACT_SELECT_COLUMNS = (
     " entity_id, object_entity_id, content_authority, authority_entity_id,"
     " validity, scope, reference_count,"
     " created_at, last_referenced_at,"
-    " last_confirmed_at, tags, metadata"
+    " last_confirmed_at, tags, metadata,"
+    " endorsed_at, endorsed_by"
 )
 
 
-def _fact_select_query(relation: str, *, episodes_relation: str, tombstones_relation: str) -> str:
+def _fact_select_query(
+    relation: str,
+    *,
+    episodes_relation: str,
+    tombstones_relation: str,
+    visibility_condition: str | None = None,
+) -> str:
     """Return the fact detail query pinned to its local memory relation."""
+    from_clause = f"{relation} AS facts" if visibility_condition is not None else relation
+    where = "facts.id = $1" if visibility_condition is not None else "id = $1"
+    if visibility_condition is not None:
+        where += f" AND {visibility_condition}"
     return _with_source_episode_status(
-        f"{_FACT_SELECT_COLUMNS} FROM {relation} WHERE id = $1",
+        f"{_FACT_SELECT_COLUMNS} FROM {from_clause} WHERE {where}",
         episodes_relation=episodes_relation,
         tombstones_relation=tombstones_relation,
     )
@@ -1140,11 +1204,20 @@ async def confirm_fact(
             relation = _memory_relation(db, name, "facts")
             episodes_relation = _memory_relation(db, name, "episodes")
             tombstones_relation = _memory_relation(db, name, "episode_tombstones")
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=memory_schema, alias="facts"
+            )
+            if visibility is not None and not await cast("asyncpg.Pool", pool).fetchval(
+                f"SELECT 1 FROM {relation} AS facts WHERE facts.id = $1 AND {visibility}",
+                fact_uuid,
+            ):
+                continue
             confirmed = await _storage.confirm_memory(
                 pool,
                 "fact",
                 fact_uuid,
                 memory_schema=memory_schema,
+                actor="owner",
             )
             if not confirmed:
                 continue
@@ -1153,6 +1226,7 @@ async def confirm_fact(
                     relation,
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,
+                    visibility_condition=visibility,
                 ),
                 fact_uuid,
             )
@@ -1174,6 +1248,93 @@ async def confirm_fact(
         fact = _row_to_fact(row)
         await _resolve_entity_names(db, [fact])
         return ApiResponse[Fact](data=fact)
+
+    _raise_memory_detail_miss(resource="Fact", tracker=tracker)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/memory/facts/{fact_id}/vouch
+# ---------------------------------------------------------------------------
+
+
+@router.post("/facts/{fact_id}/vouch", response_model=ApiResponse[FactVouch])
+async def vouch_held_fact(
+    fact_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[FactVouch]:
+    """Vouch for a held fact: the owner stands behind a reported claim (owner only).
+
+    A fact born from a non-owner's words is stored as an attributed report. Vouching
+    stamps ``endorsed_at``/``endorsed_by`` and writes the ``fact_vouched`` audit event in
+    one transaction on the pool that owns the fact. It is additive: authority and taint
+    are unchanged, so clearing ``endorsed_at`` restores the prior state. Idempotent: a
+    repeat returns the original receipt with ``changed=false``. There is no LLM tool for
+    this; a session cannot vouch.
+
+    Errors:
+    - 400: ``fact_id`` is not a valid UUID.
+    - 401: the caller is not the authenticated dashboard owner.
+    - 404: no memory pool holds a fact with this id.
+    - 409: the fact is retracted, superseded or expired (a later correction wins).
+    - 503: no database pools are available.
+    """
+    try:
+        fact_uuid = _uuid.UUID(fact_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid fact id (must be a UUID)") from exc
+
+    pools = _memory_pools(db)
+    if not pools:
+        raise HTTPException(status_code=503, detail="No database pools available")
+
+    tracker = DegradedSources(logger)
+    for name, source in pools:
+        pool = cast("asyncpg.Pool", source)
+        try:
+            memory_schema = _memory_source_schema(db, name)
+            relation = _memory_relation(db, name, "facts")
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=memory_schema, alias="facts"
+            )
+            if visibility is not None and not await pool.fetchval(
+                f"SELECT 1 FROM {relation} AS facts WHERE facts.id = $1 AND {visibility}",
+                fact_uuid,
+            ):
+                continue
+            receipt = await endorse_fact(
+                pool,
+                fact_uuid,
+                endorsed_by=await fetch_owner_entity_id(pool),
+                memory_schema=memory_schema,
+            )
+        except FactNotEndorsableError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            if not _is_missing_memory_schema_error(
+                exc,
+                schema_absent_at_start=_memory_schema_absent_at_start(db, name),
+            ):
+                tracker.mark(name, msg="fact vouch source unavailable")
+            logger.debug(
+                "Skipping pool %s while vouching fact %s (pool lacks memory tables or failed)",
+                name,
+                fact_id,
+                exc_info=True,
+            )
+            continue
+        if receipt is None:
+            continue
+        return ApiResponse[FactVouch](
+            data=FactVouch(
+                fact_id=str(receipt["fact_id"]),
+                content_authority=receipt["content_authority"],
+                endorsed_at=str(receipt["endorsed_at"]) if receipt["endorsed_at"] else None,
+                endorsed_by=str(receipt["endorsed_by"]) if receipt["endorsed_by"] else None,
+                changed=receipt["changed"],
+            )
+        )
 
     _raise_memory_detail_miss(resource="Fact", tracker=tracker)
 
@@ -1222,6 +1383,14 @@ async def retract_fact(
             relation = _memory_relation(db, name, "facts")
             episodes_relation = _memory_relation(db, name, "episodes")
             tombstones_relation = _memory_relation(db, name, "episode_tombstones")
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=memory_schema, alias="facts"
+            )
+            if visibility is not None and not await cast("asyncpg.Pool", pool).fetchval(
+                f"SELECT 1 FROM {relation} AS facts WHERE facts.id = $1 AND {visibility}",
+                fact_uuid,
+            ):
+                continue
             retracted = await _storage.forget_memory(
                 pool,
                 "fact",
@@ -1235,6 +1404,7 @@ async def retract_fact(
                     relation,
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,
+                    visibility_condition=visibility,
                 ),
                 fact_uuid,
             )
@@ -1646,6 +1816,44 @@ async def list_memory_gaps(
     )
 
 
+@router.get("/gaps/demand", response_model=ApiResponse[list[MemoryGapDemand]])
+async def memory_gap_demand(*, db: Db) -> ApiResponse[list[MemoryGapDemand]]:
+    """Open gaps and asking threads per predicate, most asked first, across memory pools.
+
+    Aggregated per pool in SQL and summed here, so the count is right whatever the page
+    size of ``GET /api/memory/gaps``.  A pool that fails is named in
+    ``meta.sources_degraded`` rather than reading as zero demand.
+    """
+
+    async def _query_pool(butler_name: str, pool: object) -> list[dict]:
+        return await knowledge_gaps.demand_by_predicate(
+            pool, memory_schema=_memory_source_schema(db, butler_name)
+        )
+
+    tracker = DegradedSources(logger)
+    per_pool = await _fan_out_memory_queries(
+        db,
+        query_name="gap demand",
+        query_fn=_query_pool,
+        tracker=tracker,
+    )
+    totals: dict[str, list[int]] = {}
+    for rows in cast("list[list[dict]]", per_pool):
+        for row in rows:
+            acc = totals.setdefault(row["predicate"], [0, 0])
+            acc[0] += row["open_gaps"]
+            acc[1] += row["asks"]
+    data = [
+        MemoryGapDemand(predicate=predicate, open_gaps=open_gaps, asks=asks)
+        for predicate, (open_gaps, asks) in totals.items()
+    ]
+    data.sort(key=lambda d: (-d.asks, -d.open_gaps, d.predicate))
+    meta_fields: dict[str, object] = {}
+    if tracker.names:
+        meta_fields["sources_degraded"] = tracker.names
+    return ApiResponse[list[MemoryGapDemand]](data=data, meta=ApiMeta(**meta_fields))
+
+
 @router.post("/gaps/{gap_id}/dismiss", response_model=ApiResponse[MemoryGapDismissal])
 async def dismiss_memory_gap(
     gap_id: str,
@@ -1830,14 +2038,19 @@ async def list_activity(
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         facts_relation = _memory_relation(db, butler_name, "facts")
         rules_relation = _memory_relation(db, butler_name, "rules")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+        )
+        visibility_filter = visibility or "TRUE"
         episode_rows = await pool.fetch(
             "SELECT id, butler, content, created_at"
             f" FROM {episodes_relation} ORDER BY created_at DESC LIMIT $1",
             limit,
         )
         fact_rows = await pool.fetch(
-            "SELECT id, subject, predicate, source_butler, created_at"
-            f" FROM {facts_relation} ORDER BY created_at DESC LIMIT $1",
+            "SELECT facts.id, facts.subject, facts.predicate, facts.source_butler, facts.created_at"
+            f" FROM {facts_relation} AS facts WHERE {visibility_filter}"
+            " ORDER BY facts.created_at DESC LIMIT $1",
             limit,
         )
         rule_rows = await pool.fetch(
@@ -2087,10 +2300,14 @@ async def list_entities(
 
         async def _count_facts(butler_name: str, fpool: object) -> dict[str, int]:
             relation = _memory_relation(db, butler_name, "facts")
+            visibility = await local_fact_visibility_condition(
+                fpool, memory_schema=_memory_source_schema(db, butler_name), alias="f"
+            )
+            visibility_filter = f" AND {visibility}" if visibility is not None else ""
             fc_rows = await fpool.fetch(
-                f"SELECT entity_id, count(*) AS cnt FROM {relation}"
-                " WHERE entity_id = ANY($1) AND validity IN ('active', 'fading')"
-                " GROUP BY entity_id",
+                f"SELECT f.entity_id, count(*) AS cnt FROM {relation} AS f"
+                " WHERE f.entity_id = ANY($1) AND f.validity IN ('active', 'fading')"
+                f"{visibility_filter} GROUP BY f.entity_id",
                 entity_ids,
             )
             return {str(r["entity_id"]): r["cnt"] for r in fc_rows}
@@ -2182,11 +2399,16 @@ async def get_entity(
         facts_relation = _memory_relation(db, butler_name, "facts")
         episodes_relation = _memory_relation(db, butler_name, "episodes")
         tombstones_relation = _memory_relation(db, butler_name, "episode_tombstones")
+        visibility = await local_fact_visibility_condition(
+            fpool, memory_schema=_memory_source_schema(db, butler_name), alias="f"
+        )
+        visibility_filter = visibility or "TRUE"
         count = (
             await fpool.fetchval(
-                f"SELECT count(*) FROM {facts_relation}"
-                " WHERE (entity_id = $1 OR object_entity_id = $1)"
-                " AND validity IN ('active', 'fading')",
+                f"SELECT count(*) FROM {facts_relation} AS f"
+                " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
+                " AND f.validity IN ('active', 'fading')"
+                f" AND {visibility_filter}",
                 eid,
             )
             or 0
@@ -2209,6 +2431,7 @@ async def get_entity(
             " ON tombstone.episode_id = f.source_episode_id"
             " WHERE (f.entity_id = $1 OR f.object_entity_id = $1)"
             " AND f.validity IN ('active', 'fading')"
+            f" AND {visibility_filter}"
             " ORDER BY f.created_at DESC"
             " OFFSET $2 LIMIT $3",
             eid,
@@ -2362,10 +2585,7 @@ async def update_entity(
         # Filter out system-managed keys to prevent unauthorized state manipulation.
         # deleted_at/merged_into are managed by delete_entity/merge_entity endpoints.
         # unidentified is managed by the promote_entity endpoint.
-        _SYSTEM_METADATA_KEYS = {"deleted_at", "merged_into", "unidentified"}
-        allowed_metadata = {
-            k: v for k, v in body.metadata.items() if k not in _SYSTEM_METADATA_KEYS
-        }
+        allowed_metadata = {k: v for k, v in body.metadata.items() if k not in SYSTEM_METADATA_KEYS}
         if allowed_metadata:
             # Merge patch into existing metadata (JSONB || operator).
             # Pass the dict directly — the asyncpg JSONB codec handles encoding.
@@ -2422,35 +2642,10 @@ async def update_entity(
 # ---------------------------------------------------------------------------
 
 
-@router.delete("/entities/{entity_id}", status_code=204)
-async def delete_entity(
-    entity_id: str,
-    retire_facts: bool = Query(False, description="Retire all active facts before deleting"),
-    *,
-    db: Db,
+async def _retire_entity_facts_for_delete(
+    db: DatabaseManager, eid: _uuid.UUID, *, retire_facts: bool
 ) -> None:
-    """Soft-delete an entity by setting metadata.deleted_at.
-
-    Owner entities cannot be deleted (returns 403).  When active or fading facts
-    exist, returns 409 with the count unless ``retire_facts=true`` is passed, in
-    which case all active/fading facts are retired (validity → 'retracted') first.
-    """
-    import uuid as _uuid
-    from datetime import datetime
-
-    pool = _any_pool(db)
-    eid = _uuid.UUID(entity_id)
-
-    row = await pool.fetchrow(
-        "SELECT id, roles FROM public.entities WHERE id = $1",
-        eid,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
-    roles = list(row["roles"]) if row["roles"] else []
-    if "owner" in roles:
-        raise HTTPException(status_code=403, detail="Cannot delete owner entity")
+    """Refuse a delete that would orphan live facts, or retire them when asked to."""
 
     # Check active/fading facts referencing this entity across all memory pools.
     # 'fading' facts are still live (not yet superseded/expired/retracted) and
@@ -2458,10 +2653,15 @@ async def delete_entity(
     # only has fading facts would silently orphan them.
     async def _count_active_facts(butler_name: str, fpool: object) -> int:
         relation = _memory_relation(db, butler_name, "facts")
+        visibility = await local_fact_visibility_condition(
+            fpool, memory_schema=_memory_source_schema(db, butler_name), alias="f"
+        )
+        visibility_filter = f" AND {visibility}" if visibility is not None else ""
         return (
             await fpool.fetchval(
-                f"SELECT count(*) FROM {relation}"
-                " WHERE entity_id = $1 AND validity IN ('active', 'fading')",
+                f"SELECT count(*) FROM {relation} AS f"
+                " WHERE f.entity_id = $1 AND f.validity IN ('active', 'fading')"
+                f"{visibility_filter}",
                 eid,
             )
             or 0
@@ -2521,15 +2721,63 @@ async def delete_entity(
                 ),
             )
 
-    deleted_at = datetime.now(UTC).isoformat()
-    await pool.execute(
-        "UPDATE public.entities"
-        " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
-        " updated_at = now()"
-        " WHERE id = $1",
-        eid,
-        {"deleted_at": deleted_at},
-    )
+
+@router.delete("/entities/{entity_id}", status_code=204)
+async def delete_entity(
+    entity_id: str,
+    retire_facts: bool = Query(False, description="Retire all active facts before deleting"),
+    *,
+    db: Db,
+) -> None:
+    """Soft-delete an entity by setting metadata.deleted_at.
+
+    Owner entities cannot be deleted (returns 403).  When active or fading facts
+    exist, returns 409 with the count unless ``retire_facts=true`` is passed, in
+    which case all active/fading facts are retired (validity → 'retracted') first.
+    """
+    import uuid as _uuid
+    from datetime import datetime
+
+    pool = cast(asyncpg.Pool, _any_pool(db))
+    eid = _uuid.UUID(entity_id)
+
+    # Facts live behind per-butler pools, so retirement cannot share this transaction.
+    # Holding the entity lock across it, with the marker written last, means a merge
+    # or rebind in flight finishes before the facts are counted, and a later one waits
+    # for the marker and refuses it. A crash leaves retired facts on an unmarked entity,
+    # which a retry completes.
+    async with _ENTITY_DELETE_GATE, pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT id, roles FROM public.entities WHERE id = $1 FOR UPDATE",
+            eid,
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        roles = list(row["roles"]) if row["roles"] else []
+        if "owner" in roles:
+            raise HTTPException(status_code=403, detail="Cannot delete owner entity")
+
+        # A writer holding a fact while it waits on this lock is a cycle across two
+        # connections, which Postgres cannot detect. Only this deadline can end it.
+        try:
+            async with asyncio.timeout(_ENTITY_DELETE_DEADLINE_S):
+                await _retire_entity_facts_for_delete(db, eid, retire_facts=retire_facts)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Entity deletion incomplete: fact retirement timed out; retry the delete.",
+            ) from exc
+
+        deleted_at = datetime.now(UTC).isoformat()
+        await conn.execute(
+            "UPDATE public.entities"
+            " SET metadata = COALESCE(metadata, '{}'::jsonb) || $2,"
+            " updated_at = now()"
+            " WHERE id = $1",
+            eid,
+            {"deleted_at": deleted_at},
+        )
     # public.contacts retired (bu-jnaa3): no contact rows to unlink.
 
 
@@ -2758,6 +3006,9 @@ def _row_to_fact(r) -> Fact:
         last_confirmed_at=str(r["last_confirmed_at"]) if r["last_confirmed_at"] else None,
         tags=_parse_tags(r["tags"]),
         metadata=_parse_jsonb(r["metadata"]),
+        endorsed_at=str(r["endorsed_at"]) if r.get("endorsed_at") else None,
+        endorsed_by=str(r["endorsed_by"]) if r.get("endorsed_by") else None,
+        held=is_fact_held(r.get("content_authority"), r.get("endorsed_at"), r["validity"]),
     )
 
 
@@ -2846,11 +3097,20 @@ async def get_butler_memory_stats(
     async def _count_memory_table(table: str) -> tuple[int, int]:
         relation = _memory_relation(db, name, table)
         try:
+            from_clause = f"FROM {relation}"
+            visibility_filter = ""
+            if table == "facts":
+                visibility = await local_fact_visibility_condition(
+                    pool, memory_schema=_memory_source_schema(db, name), alias="facts"
+                )
+                from_clause = f"FROM {relation} AS facts"
+                if visibility is not None:
+                    visibility_filter = f" WHERE {visibility}"
             row = await pool.fetchrow(
                 f"SELECT"
                 f"  count(*) AS total,"
                 f"  count(*) FILTER (WHERE created_at > {_INTERVAL}) AS recent"
-                f" FROM {relation}"
+                f" {from_clause}{visibility_filter}"
             )
             return (row["total"] or 0, row["recent"] or 0) if row else (0, 0)
         except Exception as exc:
@@ -3082,7 +3342,7 @@ async def update_retention_policies(
 
     updated: list[MemoryRetentionPolicy] = []
     for entry in body.policies:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn, audit_transaction(conn):
             row = await conn.fetchrow(
                 "INSERT INTO public.memory_retention_policies"
                 " (kind, ttl_days, max_rows, updated_by)"
@@ -3240,15 +3500,23 @@ async def inspect_memory(
                 )
 
         if "fact" in target_kinds:
-            fact_cond = ""
+            fact_conditions: list[str] = []
             fact_args: list[object] = []
             idx = 1
             if q:
-                fact_cond = f" WHERE search_vector @@ plainto_tsquery('english', ${idx})"
+                fact_conditions.append(f"facts.search_vector @@ plainto_tsquery('english', ${idx})")
                 fact_args.append(q)
                 idx += 1
+            visibility = await local_fact_visibility_condition(
+                pool, memory_schema=_memory_source_schema(db, butler_name), alias="facts"
+            )
+            if visibility is not None:
+                fact_conditions.append(visibility)
+            fact_cond = " WHERE " + " AND ".join(fact_conditions) if fact_conditions else ""
             pool_total += (
-                await pool.fetchval(f"SELECT count(*) FROM {facts_relation}{fact_cond}", *fact_args)
+                await pool.fetchval(
+                    f"SELECT count(*) FROM {facts_relation} AS facts{fact_cond}", *fact_args
+                )
                 or 0
             )
             fact_rows = await pool.fetch(
@@ -3259,8 +3527,8 @@ async def inspect_memory(
                     " validity, scope, reference_count,"
                     f" created_at, last_referenced_at,"
                     f" last_confirmed_at, tags, metadata"
-                    f" FROM {facts_relation}{fact_cond}"
-                    f" ORDER BY created_at DESC"
+                    f" FROM {facts_relation} AS facts{fact_cond}"
+                    f" ORDER BY facts.created_at DESC"
                     f" LIMIT ${idx}",
                     episodes_relation=episodes_relation,
                     tombstones_relation=tombstones_relation,

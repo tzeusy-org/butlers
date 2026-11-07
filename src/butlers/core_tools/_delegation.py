@@ -66,7 +66,7 @@ from butlers.core.delegation_ledger import (
     resolve_target_via_catalog,
 )
 from butlers.core.delegation_wake import handle_delegate_wake
-from butlers.core.scheduler import schedule_create as _schedule_create
+from butlers.core.scheduler.crud import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._switchboard_route_dispatch import dispatch_via_switchboard_route

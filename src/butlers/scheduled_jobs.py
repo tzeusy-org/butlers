@@ -812,7 +812,7 @@ async def _discover_chronicler_projection_schemas(
             FROM information_schema.tables
             WHERE table_name = $1
               AND table_schema != ALL($2::text[])
-              AND table_schema NOT LIKE 'pg_%'
+              AND left(table_schema, 3) <> 'pg_'
             ORDER BY table_schema ASC
             """,
             table_name,
@@ -1235,6 +1235,23 @@ async def _run_relationship_maintenance_job(
     from butlers.tools.relationship.reminders import run_relationship_maintenance
 
     return await run_relationship_maintenance(pool)
+
+
+async def _run_relationship_geocode_owner_addresses_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Geocode the owner's anchor addresses for Chronicler (bu-r3fmja.3; zero LLM).
+
+    Delegates to ``run_owner_address_geocoding`` in the Relationship roster module
+    ``butlers.tools.relationship.owner_address_geocoding``, resolved at call time so
+    tests can substitute it.
+    """
+    del job_args
+    import importlib
+
+    geocoding = importlib.import_module("butlers.tools.relationship.owner_address_geocoding")
+    return await geocoding.run_owner_address_geocoding(pool)
 
 
 async def _run_prepared_action_orphan_sweep_job(
@@ -1790,6 +1807,16 @@ async def _run_chronicler_project_steam_job(
     return await run_project_steam(pool, job_args)
 
 
+async def _run_chronicler_project_steam_status_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's timed Steam session evidence projection."""
+    from butlers.chronicler.jobs import run_project_steam_status
+
+    return await run_project_steam_status(pool, job_args)
+
+
 async def _run_chronicler_project_meals_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1908,6 +1935,26 @@ async def _run_chronicler_project_occupation_inferred_job(
     from butlers.chronicler.jobs import run_project_occupation_inferred
 
     return await run_project_occupation_inferred(pool, job_args)
+
+
+async def _run_chronicler_rebuild_daily_rollups_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run a bounded historical quantitative rebuild."""
+    from butlers.chronicler.jobs import run_rebuild_daily_rollups
+
+    return await run_rebuild_daily_rollups(pool, job_args)
+
+
+async def _run_chronicler_project_situation_inferred_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's situational-block projection job (bu-r3fmja)."""
+    from butlers.chronicler.jobs import run_project_situation_inferred
+
+    return await run_project_situation_inferred(pool, job_args)
 
 
 async def _run_chronicler_project_comms_job(
@@ -2090,6 +2137,21 @@ def _retention_pruner_job_handlers(butler_name: str) -> dict[str, _Deterministic
 # ---------------------------------------------------------------------------
 
 
+def _paperwork_deadline_notice_job(butler_name: str) -> _DeterministicScheduleJobHandler:
+    """Document-deadline owner notice, bound to the butler whose deadline fired.
+
+    Every butler gets it because ``paperwork_deadline_set`` is a core temporal tool: a
+    job-mode document deadline names this job and the deadline pass dispatches it.
+    """
+
+    async def _run(pool: asyncpg.Pool, job_args: dict[str, Any] | None) -> Any:
+        from butlers.jobs.document_deadlines import run_paperwork_deadline_notice
+
+        return await run_paperwork_deadline_notice(pool, job_args, origin_butler=butler_name)
+
+    return _run
+
+
 def _build_deterministic_schedule_job_registry() -> dict[
     str, dict[str, _DeterministicScheduleJobHandler]
 ]:
@@ -2100,7 +2162,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
     accidentally lost entries through mutation.
     """
 
-    return {
+    registry: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
         "general": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
@@ -2148,6 +2210,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "entity_dedup_curation": _run_relationship_entity_dedup_curation_job,
             "episodic_predicate_curation": _run_relationship_episodic_predicate_curation_job,
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
+            "relationship_geocode_owner_addresses": (_run_relationship_geocode_owner_addresses_job),
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             **_retention_pruner_job_handlers("relationship"),
             "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,
@@ -2194,6 +2257,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,
+            "chronicler_project_steam_status": _run_chronicler_project_steam_status_job,
             "chronicler_project_meals": _run_chronicler_project_meals_job,
             "chronicler_project_home_assistant": _run_chronicler_project_home_assistant_job,
             "chronicler_project_home_assistant_sensor_activity": (
@@ -2217,6 +2281,10 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "chronicler_project_exercise_inferred": (_run_chronicler_project_exercise_inferred_job),
             "chronicler_project_occupation_inferred": (
                 _run_chronicler_project_occupation_inferred_job
+            ),
+            "chronicler_rebuild_daily_rollups": _run_chronicler_rebuild_daily_rollups_job,
+            "chronicler_project_situation_inferred": (
+                _run_chronicler_project_situation_inferred_job
             ),
             "chronicler_project_comms": _run_chronicler_project_comms_job,
             "chronicler_routines_mine": _run_chronicler_routines_mine_job,
@@ -2257,6 +2325,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_retention_pruner_job_handlers("qa"),
         },
     }
+    for butler_name, jobs in registry.items():
+        jobs["paperwork_deadline_notify"] = _paperwork_deadline_notice_job(butler_name)
+    return registry
 
 
 def get_deterministic_schedule_job_registry() -> dict[

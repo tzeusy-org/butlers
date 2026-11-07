@@ -65,7 +65,9 @@ does not ship.
 1. **User-federated: one user, one instance, full sovereignty.** The user owns
    the database, the credentials, the LLM API keys, and all data. There is no
    shared infrastructure. Design decisions must never assume or enable
-   multi-tenancy.
+   multi-tenancy. The owner's own edge services in front of the public read
+   surface (RFC 0039: the owner's gateway account and the identity used as its
+   allowlist key) serve only the owner; they are not shared infrastructure.
 
 2. **Modules only add tools --- they never touch core infrastructure.** A module
    registers MCP tools, declares database migrations, and hooks into the daemon
@@ -105,9 +107,37 @@ does not ship.
    (sessions, spend, fleet status), reached through Switchboard-routed tool
    calls. It conveys no domain data and no general-purpose SQL authority.
    Its views, grants, and failure behavior are governed by RFC 0030;
-   expansion requires a new owner-approved doctrine and RFC decision. These
-   two named carve-outs do not create a general class of on-demand
-   exceptions.
+   expansion requires a new owner-approved doctrine and RFC decision.
+
+   Deterministic channel identity resolution reads only `public.entities`
+   and the source-owned, derived public identity-channel projection defined
+   by RFC 0004 Amendment 4. Relationship remains the sole canonical owner
+   of channel facts and maintains that projection in the same transaction
+   as its fact writes. This grants no access to Relationship's private
+   schema, no second canonical fact store, and no general-purpose SQL or
+   policy-write authority. Projection grants, failure behavior and cutover
+   follow that amendment; the two named private-schema exceptions above
+   remain unchanged.
+
+   A third separately reviewed exception permits only the public read
+   surface: one deterministic, internet-reachable MCP server through which the
+   owner's own outside AI clients read Butlers data on demand. It reads only a
+   separate projection database that one-way logical replication fills from a
+   single checked-in allowlist manifest; it reads no live schema and calls no
+   butler or Switchboard. The exception holds only while four conditions hold:
+   no credential is reachable from it; no Butlers model runs on its request
+   path; its only write is a proposal that changes nothing until the owner
+   approves it per event; and the owner holds kill switches for each domain and
+   for the whole surface. If any condition stops holding, the exception lapses.
+   It covers outside clients calling Butlers. It admits no outside server as a
+   Butlers data source and leaves unchanged the owner's rule that no outside
+   server gets a write, send or spend effect (`bu-mzvel0`). Its manifest,
+   grants, network placement and failure behavior are governed by RFC 0039
+   (owner decision, 2026-11-04, recorded in
+   `about/legends-and-lore/decisions/2026-11-04-doctrine-public-mcp-read-surface.md`);
+   expansion requires a new owner-approved
+   doctrine and RFC decision. These three named carve-outs do not create a
+   general class of on-demand exceptions.
 
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and

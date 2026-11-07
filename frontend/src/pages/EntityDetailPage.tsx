@@ -547,6 +547,7 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   }, [pages]);
   const total = pages[0]?.total ?? 0;
   const isDegraded = pages.some((page) => page.degraded);
+  const chroniclerTruncated = pages.some((page) => page.chronicler_truncated === true);
   const hasUnloaded = items.length < total;
   const activityChanged = entityActivityNeedsRefresh(pages, hasNextPage === true, items.length);
   const retryActivity = () => void refetch({ cancelRefetch: false });
@@ -628,6 +629,12 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
           );
         })}
       </div>
+
+      {chroniclerTruncated && (
+        <p className="text-muted-foreground text-xs" data-testid="entity-activity-truncated">
+          Showing the latest 500 chronicle episodes. Older episodes are not counted.
+        </p>
+      )}
 
       {activityChanged && (
         <div
@@ -712,8 +719,26 @@ function ActivityTimeline({ entityId }: { entityId: string }) {
   );
 }
 
+/**
+ * Where a timeline row opens, or null when it has no honest destination.
+ * Chronicler rows open their episode on its owner-local day (a null ts has no
+ * day, so no link). Only narrative facts resolve at /memory/facts/:id; identity
+ * triples live in relationship.entity_facts, which that endpoint does not read.
+ */
+function timelineRowHref(item: EntityActivityItem, day: string | null): string | null {
+  if (item.src === "chronicler") {
+    if (!day) return null;
+    const qs = new URLSearchParams({ date: day, episode: item.episode_id ?? item.id });
+    return `/chronicles?${qs.toString()}`;
+  }
+  if (item.store === "narrative") return `/memory/facts/${encodeURIComponent(item.id)}`;
+  return null;
+}
+
 function TimelineRow({ item }: { item: EntityActivityItem }) {
+  const tz = useTimezone();
   const date = item.ts ? new Date(item.ts) : null;
+  const href = timelineRowHref(item, date ? dayKeyInTimeZone(date, tz) : null);
   const predicate = item.predicate ?? item.kind;
   const subtitle =
     item.src === "chronicler"
@@ -732,9 +757,18 @@ function TimelineRow({ item }: { item: EntityActivityItem }) {
         {timelineKindGlyph(item.kind)}
       </span>
       <div className="min-w-0 flex-1">
-        {item.summary && (
-          <p className="text-sm leading-snug">{item.summary}</p>
-        )}
+        {item.summary &&
+          (href ? (
+            <Link
+              to={href}
+              className="text-sm leading-snug underline-offset-2 hover:underline"
+              data-testid="timeline-row-link"
+            >
+              {item.summary}
+            </Link>
+          ) : (
+            <p className="text-sm leading-snug">{item.summary}</p>
+          ))}
         {item.store === "identity" && (
           <FactReporterLine fact={item} />
         )}

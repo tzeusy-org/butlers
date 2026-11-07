@@ -18,7 +18,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,7 +39,7 @@ from butlers.core.logging import CREDENTIAL_REDACTION, resolve_log_root
 from butlers.core.metrics import init_metrics
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.registry import build_runtime_adapter
-from butlers.core.scheduler import sync_schedules
+from butlers.core.scheduler.sync import sync_schedules
 from butlers.core.skills import get_skills_dir
 from butlers.core.spawner import Spawner
 from butlers.core.telemetry import init_telemetry
@@ -414,6 +414,31 @@ async def _startup_shared_bootstrap(daemon: Any, state: StartupState) -> None:
             exc_info=True,
         )
 
+    # 8d4. Create this daemon's failed_permanent delivery series at zero so an
+    #      alert's increase() sees a route's first-ever failure (non-fatal).
+    _prime_domain_event_delivery_series(daemon)
+
+
+def _prime_domain_event_delivery_series(daemon: Any) -> None:
+    """Prime the daemon's failed_permanent route series at zero, best-effort."""
+    try:
+        from butlers.core_tools._domain_events import (
+            prime_failed_permanent_delivery_series,
+            schedules_reconciliation_sweep,
+        )
+
+        prime_failed_permanent_delivery_series(
+            daemon.config.name,
+            runs_reconciliation_sweep=schedules_reconciliation_sweep(daemon.config.schedules),
+        )
+    except Exception:
+        logger.warning(
+            "prime_failed_permanent_delivery_series failed for butler=%s "
+            "(best-effort, startup continues)",
+            daemon.config.name,
+            exc_info=True,
+        )
+
 
 async def _startup_session_recovery(daemon: Any, state: StartupState) -> None:
     """Recover orphaned sessions, best-effort."""
@@ -545,10 +570,17 @@ async def _startup_spawner(daemon: Any, state: StartupState) -> None:
 async def _startup_core_tools(daemon: Any, state: StartupState) -> None:
     """Create FastMCP and register core tools."""
     # 13. Create FastMCP and register core tools
+    from butlers.capability_broker.verification import (
+        DomainVerificationSwitch,
+        attach_domain_verification,
+    )
     from butlers.core.owner_creation import OwnerCreationMiddleware
 
     daemon.mcp = FastMCP(daemon.config.name)
     daemon.mcp.add_middleware(OwnerCreationMiddleware(daemon.config.name))
+    # RFC 0038 D7 domain verification: dark until the M6 switch release turns
+    # the default-off switch on; off, this installs nothing.
+    attach_domain_verification(daemon.mcp, DomainVerificationSwitch(), audience=daemon.config.name)
     daemon._register_core_tools()
 
 
@@ -715,14 +747,16 @@ _STARTUP_ERROR_CATEGORIES = (
 )
 
 
-async def run_startup(daemon: Any) -> None:
+async def run_startup(daemon: Any, phases: Sequence[Phase] | None = None) -> None:
     """Execute the ordered startup phases with fresh per-run state.
 
     Fatal errors propagate and prevent later phases. Each module phase retains
-    its own non-fatal failure handling and dependent-module cascading.
+    its own non-fatal failure handling and dependent-module cascading. *phases*
+    defaults to ``STARTUP_PHASES``; a caller may run another sequence through the
+    same loop (its failure labelling and propagation).
     """
     state = StartupState()
-    for phase in STARTUP_PHASES:
+    for phase in STARTUP_PHASES if phases is None else phases:
         try:
             await phase(daemon, state)
         except Exception as exc:
@@ -989,15 +1023,17 @@ async def _shutdown_chronicler_dependents(daemon: Any) -> None:
         await daemon.blob_store.close()
         daemon.blob_store = None
 
-    # 6c. Detach the butler DB log handler before tearing down the pool so
-    # in-flight fire-and-forget writes can finish and no new writes are
-    # scheduled against a closing pool.
+    # 6c. Detach the butler DB log handler, then wait for its in-flight
+    # fire-and-forget writes, before tearing down the pool: a write still
+    # running when the pool closes fails mid-protocol and outlives shutdown
+    # (bu-rvgzmf.7).
     if daemon._db_log_handler is not None:
+        handler, daemon._db_log_handler = daemon._db_log_handler, None
         try:
-            logging.getLogger().removeHandler(daemon._db_log_handler)
+            logging.getLogger().removeHandler(handler)
+            await handler.aclose()
         except Exception:
             logger.exception("Error while detaching DB log handler")
-        daemon._db_log_handler = None
 
     # 7. Close credential-layer DB pools
     if daemon._shared_credentials_db is not None:

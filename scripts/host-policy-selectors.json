@@ -1046,25 +1046,25 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 77,
-    "direct_files": 35,
-    "container": 86,
-    "supplementary": 30,
+    "direct": 81,
+    "direct_files": 37,
+    "container": 90,
+    "supplementary": 42,
     "all_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
-      "NON_NAME_ENUM_OR_MODULE": 20,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 54,
+      "NON_NAME_ENUM_OR_MODULE": 26,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 25,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 26,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
-      "SCHEMA_OWNERSHIP": 8
+      "SCHEMA_OWNERSHIP": 11
     },
     "direct_categories": {
-      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 34,
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 36,
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 20,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 21,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
-      "SCHEMA_OWNERSHIP": 7
+      "SCHEMA_OWNERSHIP": 8
     }
   },
   "selectors": [
@@ -2547,13 +2547,13 @@
       "public_source_commit": "4ed774826b3e498f68bea7ef154bd27249d8b868"
     },
     {
-      "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
-      "path": "src/butlers/core/scheduler.py",
+      "id": "3b3affcb701593a943a4107ce3be29d613fcf9884efa7e3be02af2528cd9ff1e",
+      "path": "src/butlers/core/scheduler/dispatch.py",
       "symbol": "tick",
       "kind": "alias_compare",
       "expression": "butler_name == _QA_BUTLER_NAME",
       "occurrence": 1,
-      "line": 2183,
+      "line": 187,
       "direct": false,
       "container": false,
       "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
@@ -4003,6 +4003,353 @@
       ],
       "reason": "bu-fvw4ap.11 relocates the original controller selector (public source cf9d0f00aa8c6ebccf4467c039e579a2c5c05a46) and coalesces the equivalent Q4 readiness selector fd74ff6990933f5dd03f3c2ad63eb1277ac4b150d0a4509921feb9e6d9922731 (actually landed #5185/e9f5bfadc210070822c2ef576416c32e32209849). First missing/None/disabled contract, order and identity are preserved; not a policy conversion.",
       "public_source_commit": null
+    },
+    {
+      "id": "7ac2dbec9a1126ed2aac3e7403d0fed5f871516f718dea94ae5e29fc0c26c290",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "anchors_from_registry",
+      "kind": "alias_compare",
+      "expression": "place.kind in ANCHOR_KINDS",
+      "occurrence": 1,
+      "line": 118,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "d497a7003a38efc96fed92c80a506e4707cf9973f0cb7eb96560756c4848dac4",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "anchors_from_references",
+      "kind": "alias_compare",
+      "expression": "label.lower() in (KIND_HOME, KIND_WORK)",
+      "occurrence": 1,
+      "line": 196,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "2111d6f278006d6bb1380af7058bd5ca3ec3eddc3de9cb51be2fb541c5c2e29f",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "resolve_anchors",
+      "kind": "alias_compare",
+      "expression": "kind == KIND_HOME",
+      "occurrence": 1,
+      "line": 282,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "adfc3cfb7a3228dbdcebdae7a66bed061d09348b236f4ffbe2cf3d876c68bf77",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "home_anchor",
+      "kind": "alias_compare",
+      "expression": "a.kind == KIND_HOME",
+      "occurrence": 1,
+      "line": 301,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "855869816efb8525de70702e01930fec7539f5396e6a64d309bca57623b78dc2",
+      "path": "src/butlers/chronicler/anchors.py",
+      "symbol": "load_anchors",
+      "kind": "alias_compare",
+      "expression": "a.kind == KIND_HOME",
+      "occurrence": 1,
+      "line": 448,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare owner anchor place kinds (home/work), not roster identities, when resolving where the owner was.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "ecbc75c9928f69f0a87c217b0d09eea3f06e0628c58d0659205783727d8300e2",
+      "path": "src/butlers/chronicler/situation.py",
+      "symbol": "_outranks",
+      "kind": "alias_compare",
+      "expression": "lane not in LANE_PRECEDENCE",
+      "occurrence": 1,
+      "line": 249,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Check a Chronicler lane name (travel/work/...), not a roster identity, against the situational precedence order.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Mapped Wi-Fi SSID Presence Projection"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-r3fmja: new place-kind/lane enum comparison; the string collides with a roster name but never selects a butler."
+    },
+    {
+      "id": "a71ac4d44b93ed4ac7c6178eb9b1449101c1a84b36c3fe08c2969823e7d15dc0",
+      "path": "src/butlers/testing/daemon.py",
+      "symbol": "DaemonBooter.boot",
+      "kind": "lookup",
+      "expression": "schemas['switchboard']",
+      "occurrence": 1,
+      "line": 332,
+      "direct": false,
+      "container": false,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Map the Switchboard migration chain to the schema it owns in a test-kit clone.",
+      "citations": [
+        {
+          "path": "openspec/specs/testing/spec.md",
+          "requirement": "Daemon Lifecycle Smoke Test"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-rvgzmf.2 S7b: booted_daemon(registered=True) migrates the Switchboard chain into its own schema so public.register_butler_boot exists and the boot can accept routes. Test kit only; it writes a chain-to-schema mapping and no behaviour branches on the butler name. Not a host-policy conversion."
+    },
+    {
+      "id": "a0c2d6a1ec9c8fc35c904d66685327593ba96812c979eb8bf6df906cf5135d81",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "lookup",
+      "expression": "peers.get('switchboard')",
+      "occurrence": 1,
+      "line": 640,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind the canonical cohosted Switchboard registration as the approval recovery routing authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "27f7f10eb14be1de76b128fad8f4081979a33212a6db2578ef979e604ab3334d",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "lookup",
+      "expression": "peers.get('messenger')",
+      "occurrence": 1,
+      "line": 640,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind the canonical cohosted Messenger registration as the approval recovery provider-handoff authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "7438fcdf0e12049e624b6c892ae906c0621197765b1bc755f42b6eaaa7ea2c74",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "lookup",
+      "expression": "switchboard._module_runtime_states.get('switchboard')",
+      "occurrence": 1,
+      "line": 642,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Require the active canonical Switchboard module before installing protected recovery routing.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "0030e905a855de1eadf58a2625aa7e3679c8beeae2fe1ea382f0eedb89a378a9",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "approval_delivery_composition",
+      "kind": "compare",
+      "expression": "item.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 685,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind source verifiers and the protected Messenger call to the registered Switchboard module.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-ys9hdx.12: accepted same-PID recovery composition requires these fixed authority identities and registered objects; missing peers fail closed. This is no independent host-policy conversion or configurable identity."
+    },
+    {
+      "id": "15b20f4b749f6a9c32a0e2e6ad1ef3a62789ee1705b8ecfb810a5a2280c09871",
+      "path": "src/butlers/modules/memory/retention_drain.py",
+      "symbol": "Plan.validate",
+      "kind": "alias_compare",
+      "expression": "self.schema != SCHEMA",
+      "occurrence": 1,
+      "line": 70,
+      "direct": false,
+      "container": false,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Pin the controlled drain to its Switchboard-owned schema.",
+      "citations": [
+        {
+          "path": "openspec/specs/memory-retention-policy/spec.md",
+          "requirement": "Controlled historical retention requires fixed evidence and bounded authority"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-kqnum.13.9: fixed target/provenance boundary for the owner-authorized controlled drain, never configurable per host and never deletion authority."
+    },
+    {
+      "id": "9c655162a70924ffc57a1b82d12482f861a8d5d3a5280fdec813f6289dfd8599",
+      "path": "src/butlers/modules/memory/retention_drain.py",
+      "symbol": "readback",
+      "kind": "compare",
+      "expression": "row['actor_butler'] != 'switchboard'",
+      "occurrence": 1,
+      "line": 272,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Validate attributable Switchboard operation audit on same-run readback.",
+      "citations": [
+        {
+          "path": "openspec/specs/memory-retention-policy/spec.md",
+          "requirement": "Controlled historical retention requires fixed evidence and bounded authority"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "bu-kqnum.13.9: fixed target/provenance boundary for the owner-authorized controlled drain, never configurable per host and never deletion authority."
+    },
+    {
+      "baseline_ids": [],
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Butler Identity and Wire Contract"
+        },
+        {
+          "path": "openspec/specs/chronicler-intent-evidence-activity/spec.md",
+          "requirement": "Memory Write-Back Within Own Schema"
+        }
+      ],
+      "container": false,
+      "direct": false,
+      "expression": "configs.get('chronicler')",
+      "id": "e2d5c9ea57841a51608fbd5d451b9a0a398ecbc0fe0cfc519ffeb4c5dfd73a81",
+      "kind": "lookup",
+      "line": 718,
+      "occurrence": 1,
+      "path": "src/butlers/cli.py",
+      "public_source_commit": "6ce7f5d3f9fd3193da9d70f78538e56a9d717475",
+      "purpose": "Select the canonical Chronicler configuration for its explicit private-memory preparation command; the lookup does not route preparation to another butler.",
+      "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
+      "symbol": "_prepare_chronicler_memory"
+    },
+    {
+      "baseline_ids": [],
+      "category": "SCHEMA_OWNERSHIP",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Butler Identity and Wire Contract"
+        },
+        {
+          "path": "openspec/specs/chronicler-intent-evidence-activity/spec.md",
+          "requirement": "Memory Write-Back Within Own Schema"
+        }
+      ],
+      "container": true,
+      "direct": true,
+      "expression": "config.db_schema != 'chronicler'",
+      "id": "5388810c85a26d9935502730f5a43504a7665898e10c151e083af391bc496071",
+      "kind": "compare",
+      "line": 725,
+      "occurrence": 1,
+      "path": "src/butlers/cli.py",
+      "public_source_commit": "6ce7f5d3f9fd3193da9d70f78538e56a9d717475",
+      "purpose": "Require the existing Chronicler domain schema before preparing its separate private-memory schema; this is not a configurable destination.",
+      "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
+      "symbol": "_prepare_chronicler_memory"
+    },
+    {
+      "baseline_ids": [],
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Butler Identity and Wire Contract"
+        }
+      ],
+      "container": true,
+      "direct": true,
+      "expression": "config.name != 'chronicler'",
+      "id": "d09736b62d6564541125bbab4b0f74b000d2bc6f721d8bb1f488216acf544785",
+      "kind": "compare",
+      "line": 725,
+      "occurrence": 1,
+      "path": "src/butlers/cli.py",
+      "public_source_commit": "6ce7f5d3f9fd3193da9d70f78538e56a9d717475",
+      "purpose": "Refuse the explicit Chronicler memory-preparation command unless the loaded configuration has the canonical Chronicler identity.",
+      "reason": "Source-introducing commit 6ce7f5d3f9fd3193da9d70f78538e56a9d717475 is a local ancestor of PR5471 at review time, not public yet; the same PR head must be pushed before this is treated as public. This row protects Chronicler identity/schema ownership and makes no host-policy configurability or reduction claim.",
+      "symbol": "_prepare_chronicler_memory"
     }
   ],
   "retired": [
@@ -4021,6 +4368,10 @@
     {
       "id": "fd74ff6990933f5dd03f3c2ad63eb1277ac4b150d0a4509921feb9e6d9922731",
       "reason": "bu-fvw4ap.11: equivalent QA lookup relocated/coalesced into shared qa_patrol_contract selector c5df7c64f36d591a1f70b99ac37da905cea8f29fd3b1d64eea4813e876869595; original historical controller lineage and unresolved category retained. No caller fallback or policy conversion."
+    },
+    {
+      "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
+      "reason": "bu-m0vjeb.9: move-only split of core/scheduler.py into the core/scheduler/ package; tick() now lives in core/scheduler/dispatch.py, so the path-keyed identity moved to 3b3affcb701593a943a4107ce3be29d613fcf9884efa7e3be02af2528cd9ff1e. Selector and category unchanged."
     }
   ]
 }

@@ -29,6 +29,8 @@ from butlers.api.deps import (
 )
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
+from butlers.core.audit_transaction import audit_transaction
+from butlers.core.goal_lineage import taint_insert
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
@@ -1551,6 +1553,7 @@ async def promote_entity(
     """
     from butlers.tools.relationship.relationship_assert_fact import (
         _lock_fact_entities_batch,
+        _lock_fact_slots_batch,
         relationship_assert_fact,
         validate_fact_fields_or_raise,
     )
@@ -1619,23 +1622,19 @@ async def promote_entity(
                 if row is None:
                     raise HTTPException(status_code=404, detail="Entity not found")
 
-                # Merge metadata: remove the 'unidentified' key and 'duplicate_candidate' key.
-                existing_meta: dict = dict(row["metadata"]) if row["metadata"] else {}
-                existing_meta.pop("unidentified", None)
-                existing_meta.pop("duplicate_candidate", None)
-
-                if body.roles is not None:
-                    new_roles = body.roles
-                else:
-                    new_roles = list(row["roles"]) if row["roles"] else []
-
                 updated = await conn.fetchrow(
                     """
                     UPDATE public.entities
                     SET canonical_name = $2,
                         entity_type    = $3,
-                        roles          = $4,
-                        metadata       = $5,
+                        -- No roles in the request leaves them as the row holds them at the
+                        -- UPDATE: the batch lock is FOR KEY SHARE, so a roles UPDATE can
+                        -- commit between the read above and this write.
+                        roles          = COALESCE($4::text[], roles),
+                        -- Removed in place: the batch lock above is FOR KEY SHARE, so a
+                        -- plain metadata UPDATE can commit after the read.
+                        metadata       = COALESCE(metadata, '{}'::jsonb)
+                                         - ARRAY['unidentified', 'duplicate_candidate'],
                         updated_at     = now()
                     WHERE id = $1
                     RETURNING id, canonical_name, entity_type, aliases, roles, metadata,
@@ -1644,8 +1643,7 @@ async def promote_entity(
                     body.entity_id,
                     body.canonical_name,
                     body.entity_type,
-                    new_roles,
-                    existing_meta,
+                    body.roles,
                 )
                 entity_id = updated["id"]
                 result_row = updated
@@ -1667,6 +1665,13 @@ async def promote_entity(
                     {},
                 )
                 entity_id = result_row["id"]
+
+            # Each writer call below takes only its own slot, so take the whole request's
+            # slots once, or a merge or another promote sharing two of them could cross
+            # this body's order.
+            await _lock_fact_slots_batch(
+                conn, entity_id, ((fact.predicate, fact.object) for fact in body.initial_facts)
+            )
 
             # Assert any initial_facts via the central writer (inside the same transaction).
             for fact in body.initial_facts:
@@ -4081,6 +4086,12 @@ async def patch_entity_dunbar_tier(
     entity_id_str = str(entity_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. The insert below takes it for
+            # its foreign key, which after the retraction is a cycle with a forget.
+            if body.tier is not None:
+                await conn.execute(
+                    "SELECT id FROM public.entities WHERE id = $1 FOR KEY SHARE", entity_id
+                )
             # Retract any existing active override for this entity.
             await conn.execute(
                 """
@@ -4094,8 +4105,9 @@ async def patch_entity_dunbar_tier(
                 entity_id_str,
             )
             if body.tier is not None:
+                taint = taint_insert(4)  # empty: a dashboard write is never exposed
                 await conn.execute(
-                    """
+                    f"""
                     INSERT INTO facts (
                         subject,
                         predicate,
@@ -4103,15 +4115,16 @@ async def patch_entity_dunbar_tier(
                         scope,
                         entity_id,
                         validity,
-                        permanence
+                        permanence{taint.columns}
                     ) VALUES (
                         $1, 'dunbar_tier_override', $2, 'relationship',
-                        $3::uuid, 'active', 'permanent'
+                        $3::uuid, 'active', 'permanent'{taint.placeholders}
                     )
                     """,
                     f"entity:{entity_id_str}",
                     str(body.tier),
                     entity_id_str,
+                    *taint.values,
                 )
 
     if body.tier is None:
@@ -5689,17 +5702,18 @@ async def forget_entity(
     if (err := await _assert_owner_role(pool)) is not None:
         return err
 
-    row = await pool.fetchrow(
-        """
-        SELECT id FROM public.entities WHERE id = $1
-        """,
-        entity_id,
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Entity not found")
-
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # Lock order: the entity before its facts. A merge or rebind in flight
+            # finishes first, so what it moved is retracted below; a later one waits
+            # for the tombstone and refuses it.
+            row = await conn.fetchrow(
+                "SELECT id FROM public.entities WHERE id = $1 FOR UPDATE",
+                entity_id,
+            )
+            if row is None:
+                raise HTTPException(status_code=404, detail="Entity not found")
+
             # Retract every active occurrence where this entity is subject or
             # object -- deliberately all of them, each keeping its effective
             # packet -- and drop their graph projections in the same transaction.
@@ -6035,17 +6049,17 @@ async def merge_entities(
     Steps 3–7 execute inside a **single transaction** (atomicity guarantee): a
     partial merge can never leave rows stranded on the tombstoned source.
 
-    **Conflict handling:** rewiring a subject row may collide with an existing active triple
-    at (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index.
-    Such conflicting source rows are retracted (``validity='superseded'``) instead of
-    being moved, to preserve the target's existing fact.
+    **Conflict handling:** rewiring a row may collide with an existing active triple at
+    (target, predicate, object) due to the ``uq_ef_spo_active`` partial unique index. The
+    source row survives only if it alone is verified; otherwise the target row does. The
+    other row is superseded and its evidence is carried to the survivor.
 
     **Authorization**: owner-only gate (Amendment 12a) — returns HTTP 403 with
     ``{"code": "owner_required"}`` when no owner entity is registered.
 
     **Error codes:**
     - ``403`` — owner entity not registered (Amendment 12a).
-    - ``404`` — either entity does not exist or is already tombstoned.
+    - ``404`` — either entity does not exist, is already tombstoned, or was forgotten or deleted.
     - ``422`` — ``entityA == entityB`` (same entity) or validation failure.
     """
     from butlers.tools.relationship.entity_merge import (
@@ -6528,6 +6542,9 @@ async def dismiss_pair(
 #: the aggregator degrades gracefully if the chronicler is unreachable.
 _CHRONICLER_ACTIVITY_TIMEOUT_S = 10.0
 
+#: Episodes requested from Chronicler per entity; a full page means the read was capped.
+_CHRONICLER_ACTIVITY_CAP = 500
+
 # Content-blind API discriminator. Never expose the upstream exception or MCP
 # payload through the entity activity response.
 _CHRONICLER_ACTIVITY_UNAVAILABLE: Literal["chronicler_activity_unavailable"] = (
@@ -6654,7 +6671,7 @@ async def _fetch_identity_activity(
 async def _fetch_chronicler_activity(
     mcp_manager: MCPClientManager | None,
     entity_id: UUID,
-) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None]:
+) -> tuple[list[ActivityEntry], Literal["chronicler_activity_unavailable"] | None, bool]:
     """Fetch episodes from the chronicler butler via MCP.
 
     Calls ``chronicler_list_episodes(participant_entity_id=<entity_id>, limit=500)``
@@ -6666,7 +6683,8 @@ async def _fetch_chronicler_activity(
     where the requested entity is an organizer or attendee — but not the calendar
     owner — surface in the entity's activity feed.
 
-    Returns ``(entries, None)`` on a successful read. When Chronicler is
+    Returns ``(entries, None, truncated)`` on a successful read, where ``truncated`` is
+    true when the page hit the episode cap. When Chronicler is
     unreachable, the MCP call fails, or the response envelope is unreadable,
     returns ``([], chronicler_activity_unavailable)`` so callers cannot confuse
     missing source evidence with genuine zero activity. A non-object row, a
@@ -6677,7 +6695,7 @@ async def _fetch_chronicler_activity(
     INVARIANT: No direct SQL on chronicler.* tables.
     """
     if mcp_manager is None:
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
     try:
         client = await asyncio.wait_for(
             mcp_manager.get_client("chronicler"),
@@ -6686,7 +6704,7 @@ async def _fetch_chronicler_activity(
         result = await asyncio.wait_for(
             client.call_tool(
                 "chronicler_list_episodes",
-                {"participant_entity_id": str(entity_id), "limit": 500},
+                {"participant_entity_id": str(entity_id), "limit": _CHRONICLER_ACTIVITY_CAP},
             ),
             timeout=_CHRONICLER_ACTIVITY_TIMEOUT_S,
         )
@@ -6696,7 +6714,7 @@ async def _fetch_chronicler_activity(
             entity_id,
             exc,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     raw_text = _extract_mcp_result_text(result)
     payload = _parse_mcp_result_payload(raw_text)
@@ -6707,7 +6725,7 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: unexpected payload for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes_raw = payload.get("data")
     if not isinstance(episodes_raw, list):
@@ -6715,9 +6733,11 @@ async def _fetch_chronicler_activity(
             "Chronicler activity: missing episode list for entity %s; degrading gracefully",
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE, False
 
     episodes: list[Any] = episodes_raw
+    # A full page means older episodes may exist; Chronicler has no cursor here.
+    truncated = len(episodes) >= _CHRONICLER_ACTIVITY_CAP
     entries: list[ActivityEntry] = []
     malformed_count = 0
     for ep in episodes:
@@ -6767,8 +6787,8 @@ async def _fetch_chronicler_activity(
             len(episodes),
             entity_id,
         )
-        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE
-    return entries, None
+        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE, False
+    return entries, None, truncated
 
 
 def _sort_key_activity(entry: ActivityEntry) -> datetime:
@@ -6914,8 +6934,8 @@ async def get_entity_activity(
     async def _no_entries() -> list[ActivityEntry]:
         return []
 
-    async def _no_chronicler() -> tuple[list[ActivityEntry], None]:
-        return [], None
+    async def _no_chronicler() -> tuple[list[ActivityEntry], None, bool]:
+        return [], None, False
 
     with_relationship = source in ("all", "relationship")
     with_chronicler = source in ("all", "chronicler")
@@ -6924,7 +6944,7 @@ async def get_entity_activity(
         _fetch_identity_activity(pool, entity_id) if with_relationship else _no_entries(),
         _fetch_chronicler_activity(mcp_manager, entity_id) if with_chronicler else _no_chronicler(),
     )
-    chr_entries, degraded_reason = chronicler_result
+    chr_entries, degraded_reason, chronicler_truncated = chronicler_result
     degraded = degraded_reason is not None
 
     # Merge and sort descending by timestamp.
@@ -6940,6 +6960,7 @@ async def get_entity_activity(
                 bins=daily,
                 degraded=degraded,
                 degraded_reason=degraded_reason,
+                chronicler_truncated=chronicler_truncated,
             )
         total = len(all_entries)
         page = all_entries[offset : offset + limit]
@@ -6953,6 +6974,7 @@ async def get_entity_activity(
             offset=offset,
             degraded=degraded,
             degraded_reason=degraded_reason,
+            chronicler_truncated=chronicler_truncated,
         )
         return stream.model_dump(mode="json") | {"bins": [b.model_dump(mode="json") for b in daily]}
 
@@ -6966,6 +6988,7 @@ async def get_entity_activity(
         offset=offset,
         degraded=degraded,
         degraded_reason=degraded_reason,
+        chronicler_truncated=chronicler_truncated,
     )
 
 
@@ -7425,7 +7448,7 @@ async def owner_identity_fact_decision(
     )
 
     pool = _pool(db)
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         try:
             result = await decide_identity_fact(
                 conn, entity_id=entity_id, fact_id=fact_id, decision=decision

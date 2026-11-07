@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from importlib.machinery import ModuleSpec
 from pathlib import Path
@@ -465,15 +465,11 @@ def _install_serialized_testcontainers_run() -> None:
 
     def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
         with _serialize_testcontainer_startup():
-            if os.environ.get("GITHUB_ACTIONS") == "true":
-                from scripts.ci_test_images import IMAGES, prepare
+            from scripts.ci_test_images import prepare_alias_on_hosted_runner
 
-                image = args[0] if args else kwargs.get("image")
-                required = [name for name, pin in IMAGES.items() if image == pin["alias"]]
-                if required:
-                    # Only an actual known container consumer acquires content.
-                    # Ryuk reaches this same boundary under its existing policy.
-                    prepare(required)
+            # Only an actual known container consumer acquires content.
+            # Ryuk reaches this same boundary under its existing policy.
+            prepare_alias_on_hosted_runner(args[0] if args else kwargs.get("image"))
             return original_run(self, *args, **kwargs)
 
     _serialized_run.__butlers_serialized_start__ = True
@@ -517,6 +513,64 @@ def _install_resilient_testcontainers_stop() -> None:
 _install_resilient_testcontainers_startup()
 _install_serialized_testcontainers_run()
 _install_resilient_testcontainers_stop()
+
+
+# --- Docker-skip guard for lanes that guarantee Docker (bu-u5euwb.37) ---------
+#
+# Real-PG tests skip with exactly ``DOCKER_UNAVAILABLE_SKIP_REASON`` when the
+# docker CLI is absent, which keeps a Docker-less laptop usable. In a CI lane
+# that guarantees Docker, the same skip would let a broken runner pass green
+# while running none of those tests. ``scripts/ci_lanes.py`` sets
+# ``BUTLERS_REQUIRE_DOCKER=1`` for such lanes, and this hook turns that skip
+# into a failure there. Unset, nothing changes.
+
+DOCKER_UNAVAILABLE_SKIP_REASON = "Docker not available"
+REQUIRE_DOCKER_ENV = "BUTLERS_REQUIRE_DOCKER"
+
+
+def _docker_required() -> bool:
+    return os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _is_docker_unavailable_skip(report: pytest.TestReport | pytest.CollectReport) -> bool:
+    """True for a plain skip (not an xfail) whose reason is the Docker one."""
+    if not report.skipped or hasattr(report, "wasxfail"):
+        return False
+    longrepr = report.longrepr
+    if not (isinstance(longrepr, tuple) and len(longrepr) == 3):
+        return False
+    reason = str(longrepr[2]).removeprefix("Skipped: ")
+    return reason == DOCKER_UNAVAILABLE_SKIP_REASON
+
+
+def _fail_required_docker_skip(report: pytest.TestReport | pytest.CollectReport) -> None:
+    if _docker_required() and _is_docker_unavailable_skip(report):
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{REQUIRE_DOCKER_ENV}=1, but this skipped with "
+            f"{DOCKER_UNAVAILABLE_SKIP_REASON!r}: this lane guarantees Docker, "
+            "so a real-PG skip here means the runner lost it."
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None]
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
+    report: pytest.TestReport = yield
+    _fail_required_docker_skip(report)
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(
+    collector: pytest.Collector,
+) -> Generator[None, pytest.CollectReport, pytest.CollectReport]:
+    # A module-level ``pytest.skip(..., allow_module_level=True)`` skips at
+    # collection, so it reaches a CollectReport and never a TestReport.
+    report: pytest.CollectReport = yield
+    _fail_required_docker_skip(report)
+    return report
 
 
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
@@ -576,6 +630,23 @@ def _configure_postgres_container(container: Any, environ: Mapping[str, str]) ->
     )
 
 
+def _delete_session_data_volume(environ: Mapping[str, str]) -> bool:
+    """Whether session teardown should delete the container's anonymous PGDATA volume.
+
+    CI has observed 25-60+ s volume-removal calls and concurrent restore-client
+    timeouts. Avoiding anonymous-volume deletion on disposable hosted VMs is
+    a contention mitigation; these observations do not establish the timeout's
+    cause or guarantee the ordering of test bodies and worker teardown.
+
+    Hosted VMs are discarded after the job. Everywhere else (developer
+    machines and self-hosted runners), teardown still requests volume deletion
+    so retained hosts do not accumulate session data. Container-removal errors
+    retain the existing retry/warning behavior; this decision is not proof that
+    cleanup succeeded.
+    """
+    return environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
+
+
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
@@ -594,8 +665,16 @@ def postgres_container() -> Iterator[PostgresContainer]:
     container = _configure_postgres_container(
         PostgresContainer("pgvector/pgvector:pg17"), os.environ
     )
-    with container as pg:
-        yield pg
+    # Equivalent to ``with container`` (stop also runs after a failed start),
+    # except that the volume decision is explicit rather than always-delete.
+    try:
+        started = container.start()
+        from butlers.testing.storage import observe
+
+        with observe(started):
+            yield started
+    finally:
+        container.stop(delete_volume=_delete_session_data_volume(os.environ))
 
 
 @pytest.fixture
@@ -642,7 +721,12 @@ def provisioned_postgres_pool(
             min_pool_size=min_pool_size,
             max_pool_size=max_pool_size,
         )
+        from butlers.testing.storage import database_event
+
+        database_event("intent", postgres_container, db.db_name, "F")
         await db.provision()
+        database_event("created", postgres_container, db.db_name, "F")
+        database_event("ready", postgres_container, db.db_name, "F")
         pool_kwargs = {
             "host": db.host,
             "port": db.port,
@@ -741,3 +825,78 @@ def fresh_db(postgres_container: PostgresContainer) -> Callable[..., str]:
         return migrated_url(postgres_container, *chains, **kwargs)
 
     return _make
+
+
+@pytest.fixture
+async def booted_daemon(
+    postgres_container: PostgresContainer,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for real daemon boots with no LLM (``butlers.testing.daemon``).
+
+    ``booted = await booted_daemon(config_dir)`` starts the butler in ``config_dir`` on a
+    fresh ``core`` clone (pass more chains after it) under a fake runtime adapter;
+    ``await booted.call_tool("status")`` calls it over HTTP. Teardown shuts down every
+    daemon still running.
+    """
+    from butlers.testing.daemon import DaemonBooter
+
+    booter = DaemonBooter(postgres_container, monkeypatch, tmp_path_factory.mktemp("daemon"))
+    try:
+        yield booter.boot
+    finally:
+        await booter.close()
+
+
+@pytest.fixture
+async def tool_host(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory: a butler's core tools on a fresh clone, with no daemon lifecycle.
+
+    ``host = await tool_host(config_dir)`` registers the tools and connects the
+    butler's pool; ``await host.call("remind", ...)`` runs a handler in process. Use it
+    when the subject is a tool's SQL, not the boot. See ``butlers.testing.tool_host``.
+    """
+    from butlers.testing.tool_host import ToolHosts
+
+    hosts = ToolHosts(postgres_container)
+    try:
+        yield hosts
+    finally:
+        await hosts.close()
+
+
+@pytest.fixture(scope="module")
+async def _shared_daemons(
+    postgres_container: PostgresContainer,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncIterator[Any]:
+    """The module's shared boots; tests use ``shared_booted_daemon``."""
+    from butlers.testing.daemon import DaemonBooter, SharedDaemons
+
+    patcher = pytest.MonkeyPatch()
+    root = tmp_path_factory.mktemp("shared-daemon")
+    booter = DaemonBooter(postgres_container, patcher, root)
+    try:
+        yield SharedDaemons(booter, root)
+    finally:
+        try:
+            await booter.close()
+        finally:
+            patcher.undo()
+
+
+@pytest.fixture
+async def shared_booted_daemon(_shared_daemons: Any) -> AsyncIterator[Any]:
+    """One boot per module and configuration, for tests that only read daemon state.
+
+    ``booted = await shared_booted_daemon(registered=True)`` (name, chains, ``schema=``,
+    ``extra_toml=`` and ``credentials=`` as for ``booted_daemon``) returns the module's
+    boot for that configuration. The fake runtime is reset before each test; a test
+    that changes durable daemon state (route inbox or session rows, config) fails at
+    teardown and its boot is replaced. See ``butlers.testing.daemon.SharedDaemons``.
+    """
+    try:
+        yield _shared_daemons
+    finally:
+        await _shared_daemons.verify()

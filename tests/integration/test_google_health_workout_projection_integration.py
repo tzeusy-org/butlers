@@ -13,7 +13,6 @@ the adopted companion-entity registry shape, with independent owner attribution.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,7 +33,6 @@ from butlers.connectors.google_health import (
 )
 from butlers.db import register_jsonb_codec, schema_search_path
 from butlers.google_account_registry import list_health_scoped_accounts
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.health import wellness_ingest
 from tests.modules.memory._test_helpers import make_embedding_engine_mock
 
@@ -55,16 +53,26 @@ class _ProjectionPools:
     account_entity_id: UUID
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def migrated_db_url(postgres_container) -> str:
+@pytest.fixture
+def projection_db_url(fresh_db) -> str:
     # chronicler_003 restricts Health grants; mem_011 must apply afterwards.
-    return await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        migration_db_name(),
-        ["core", "chronicler", "memory", "health"],
-        {"core": "health", "chronicler": "chronicler", "memory": "health", "health": "health"},
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db(
+        "core",
+        "chronicler",
+        "memory",
+        "health",
+        schemas={
+            "core": "health",
+            "chronicler": "chronicler",
+            "memory": "health",
+            "health": "health",
+        },
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 async def _runtime_pool(db_url: str, schema: str, role: str) -> asyncpg.Pool:
@@ -85,11 +93,11 @@ async def _runtime_pool(db_url: str, schema: str, role: str) -> asyncpg.Pool:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def projection_pools(migrated_db_url: str, monkeypatch) -> AsyncIterator[_ProjectionPools]:
+async def projection_pools(projection_db_url: str, monkeypatch) -> AsyncIterator[_ProjectionPools]:
     owner_id, account_entity_id = uuid4(), uuid4()
     # Fixture control is the ordinary migration login in this disposable DB.
     # No SQL schema or privilege is invented to make the runtime path pass.
-    control = await asyncpg.connect(migrated_db_url)
+    control = await asyncpg.connect(projection_db_url)
     try:
         await register_jsonb_codec(control)
         # This transaction is fixture seeding only, never the executing chain.
@@ -125,8 +133,8 @@ async def projection_pools(migrated_db_url: str, monkeypatch) -> AsyncIterator[_
     monkeypatch.setattr(wellness_ingest, "_recognised_owner_identities", None)
     health = chronicler = None
     try:
-        health = await _runtime_pool(migrated_db_url, "health", "butler_health_rw")
-        chronicler = await _runtime_pool(migrated_db_url, "chronicler", "butler_chronicler_rw")
+        health = await _runtime_pool(projection_db_url, "health", "butler_health_rw")
+        chronicler = await _runtime_pool(projection_db_url, "chronicler", "butler_chronicler_rw")
         yield _ProjectionPools(health, chronicler, owner_id, account_entity_id)
     finally:
         if chronicler is not None:
@@ -134,7 +142,7 @@ async def projection_pools(migrated_db_url: str, monkeypatch) -> AsyncIterator[_
         if health is not None:
             await health.close()
         # Pools are closed before the ordinary fixture login removes its seeds.
-        control = await asyncpg.connect(migrated_db_url)
+        control = await asyncpg.connect(projection_db_url)
         try:
             await control.execute(
                 """

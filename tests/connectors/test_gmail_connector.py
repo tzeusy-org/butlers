@@ -14,6 +14,7 @@ Verifies:
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -564,6 +565,24 @@ def test_classify_source_api_error_transient_5xx_is_not_auth_revocation() -> Non
     is_auth_revocation, description = _classify_source_api_error(exc)
     assert is_auth_revocation is False
     assert "503" in description or "UNAVAILABLE" in description
+
+    nested = _http_error_with_response(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (
+        False,
+        "code=503, reason=syntheticReason, message=Retry",
+    )
+    request = httpx.Request("GET", "https://gmail.googleapis.com/synthetic")
+    for body in (b"", b"synthetic plain body", b"[]", b'{"error": {}}'):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, "http_error: source failure")
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "timeout: synthetic timeout",
+    )
 
 
 def test_classify_source_api_error_falls_back_for_bare_exception() -> None:
@@ -1543,8 +1562,13 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             )
 
     for code in ("invalid_grant", "unauthorized_client"):
-        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
-        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        # Independent failing grants: a successful first case must not seed
+        # this case through the intentionally shared account token cache.
+        case_config = gmail_config.model_copy(
+            update={"gmail_refresh_token": f"synthetic-grant-{code}"}
+        )
+        runtime = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
         runtime._metrics = MagicMock()
         requests = []
 
@@ -2156,3 +2180,38 @@ async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
     assert reports[-1]["status"] == "completed"
     tokens = [a["progress_token"] for a in reports]
     assert all(tokens) and len(set(tokens)) == 3
+
+
+@pytest.mark.parametrize(
+    ("exc", "level"),
+    [
+        (RuntimeError("endpoint_identity does not match job"), logging.ERROR),
+        (ConnectionError("switchboard unreachable"), logging.WARNING),
+    ],
+    ids=["application-error", "transport-error"],
+)
+async def test_backfill_progress_failure_logs_application_errors_loudly(
+    gmail_config: GmailConnectorConfig,
+    caplog: pytest.LogCaptureFixture,
+    exc: Exception,
+    level: int,
+) -> None:
+    """A rejected progress report is a protocol break, not a blip (bu-02zdve).
+
+    Both failures stay non-fatal so the backfill keeps going, but a tool error
+    (RuntimeError from CachedMCPClient) logs at ERROR so a contract break like
+    the missing identity fields fixed in #5173 cannot stay silent.
+    """
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(side_effect=exc)
+
+    with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+        status = await runtime._report_backfill_progress(
+            job_id="job-1", rows_processed=1, rows_skipped=0, cost_spent_cents=1
+        )
+
+    assert status == "ack"
+    [record] = [r for r in caplog.records if "backfill.progress" in r.getMessage()]
+    assert record.levelno == level
+    assert "job-1" in record.getMessage() and str(exc) in record.getMessage()

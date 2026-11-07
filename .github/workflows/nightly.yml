@@ -245,6 +245,9 @@ jobs:
 
   exact-image-sandbox:
     timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
     # bu-zfmq2: task 3.6b's real-kernel exact-image proof
     # (test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled)
     # only runs when BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 names an explicitly
@@ -323,6 +326,63 @@ jobs:
         run: |
           DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
             -t "butlers-app:${GIT_SHA}" .
+
+      - name: Export installed runtime image files
+        timeout-minutes: 4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          EXPORT_WORK="${RUNNER_TEMP}/runtime-export-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 0700 "${EXPORT_WORK}"
+          mkdir -m 0700 "${EXPORT_WORK}/payload"
+          python3 -B -m scripts.export_runtime_image_closure identity \
+            --output "${EXPORT_WORK}/identity.json"
+          IMAGE_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["image_id"])' "${EXPORT_WORK}/identity.json")
+          IDENTITY=$(cat "${EXPORT_WORK}/identity.json")
+          cleanup_export() {
+            if [ -f "${EXPORT_WORK}/container.cid" ]; then
+              local owned_id
+              owned_id=$(cat "${EXPORT_WORK}/container.cid")
+              if [[ ! "${owned_id}" =~ ^[0-9a-f]{64}$ ]]; then
+                return 1
+              fi
+              timeout --signal=TERM --kill-after=5s 20s \
+                docker rm --force "${owned_id}" >/dev/null 2>&1 || return 1
+              rm "${EXPORT_WORK}/container.cid"
+            fi
+          }
+          trap 'status=$?; trap - EXIT; if ! cleanup_export; then exit 1; fi; exit "$status"' EXIT
+          timeout --signal=TERM --kill-after=5s 20s docker create --pull never \
+            --cidfile "${EXPORT_WORK}/container.cid" \
+            --name "runtime-export-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --pids-limit 16 --memory 512m --cpus 1 \
+            --ulimit nofile=64:64 --ulimit fsize=268435456:268435456 --ulimit core=0:0 \
+            --user "$(id -u):$(id -g)" --log-driver none \
+            --mount "type=bind,src=${EXPORT_WORK}/payload,dst=/export" \
+            --entrypoint /usr/local/bin/python3 --workdir /app \
+            "${IMAGE_ID}" -B -m scripts.export_runtime_image_closure export \
+            --output /export --identity "${IDENTITY}" >/dev/null
+          OWNED_ID=$(cat "${EXPORT_WORK}/container.cid")
+          [[ "${OWNED_ID}" =~ ^[0-9a-f]{64}$ ]]
+          timeout --signal=TERM --kill-after=10s 120s docker start --attach "${OWNED_ID}"
+          STATE=$(timeout --signal=TERM --kill-after=5s 10s \
+            docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "${OWNED_ID}")
+          [ "${STATE}" = "exited 0" ]
+          cleanup_export
+          python3 -B -m scripts.export_runtime_image_closure verify \
+            --output "${EXPORT_WORK}/payload" --identity-file "${EXPORT_WORK}/identity.json"
+
+      - name: Upload installed runtime image files
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-runtime-files-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/runtime-export-${{ github.run_id }}-${{ github.run_attempt }}/payload/manifest.json
+            ${{ runner.temp }}/runtime-export-${{ github.run_id }}-${{ github.run_attempt }}/payload/files/*.bin
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Allow unprivileged user namespaces for Bubblewrap (runner host setting)
         # bu-3kyyyy: ubuntu-24.04 hosts (what ubuntu-latest now is) set
@@ -488,6 +548,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/hang-evidence/
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
@@ -535,7 +596,7 @@ jobs:
         with:
           pattern: ci-*-test-evidence
           path: ${{ runner.temp }}/ci-test-receipts
-      - name: Check the covered lane groups add up and stay within the test budget
+      - name: Check the covered lane groups add up
         run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
       - name: Smoke tests (fast gate + release evidence)
         id: smoke

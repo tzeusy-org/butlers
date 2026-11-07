@@ -122,7 +122,11 @@ services:
 
   migrations:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    command: ["db", "migrate"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        uv run --frozen --no-dev butlers db prepare-chronicler-memory --dir /app/roster
+        && exec uv run --frozen --no-dev butlers db migrate --dir /app/roster
     environment:
       <<: *postgres-env
     volumes:
@@ -231,8 +235,8 @@ services:
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
-      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -619,8 +623,8 @@ services:
       BUTLERS_HOST: butlers-up
       SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
-      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
       # the configured public frontend origin (including any path prefix) so a
       # Telegram deep link never falls back to the daemon host's localhost.
@@ -678,13 +682,14 @@ services:
       net.ipv4.ip_local_reserved_ports: "41100-41112"
     # No security_opt: runtime sessions run Codex with
     # --dangerously-bypass-approvals-and-sandbox (never bwrap), so butlers-up
-    # keeps Docker's default AppArmor confinement. Only the dashboard services
-    # below need a user-namespace-capable posture (bu-swzloi).
+    # keeps Docker's default AppArmor confinement. Only the dashboard-api
+    # services (dashboard-api and dashboard-api-hotreload) need a
+    # user-namespace-capable posture (bu-swzloi).
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
-      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
       # the configured public frontend origin (including any path prefix) so a
       # Telegram deep link never falls back to the daemon host's localhost.
@@ -828,7 +833,7 @@ services:
       SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
@@ -885,7 +890,7 @@ services:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
@@ -931,7 +936,7 @@ services:
     environment:
       <<: *postgres-env
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}

@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
-import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -27,11 +26,10 @@ from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     mint_approval_callback_token,
 )
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import gate as approvals_gate_module
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db_manager import db_manager
 from tests.api.auth_helpers import _DomainOwnerState
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -49,24 +47,6 @@ _DASHBOARD_API_KEY = "test-only-dashboard-api-key"
 _CALLBACK_CONNECTOR_TOKEN = "test-only-callback-connector-token"
 
 
-class _DbManager:
-    def __init__(self, pool: Any) -> None:
-        self._pool = pool
-        self.butler_names = ["relationship"]
-
-    def pool(self, butler_name: str) -> Any:
-        assert butler_name == "relationship"
-        return self._pool
-
-    def butlers_with_module(self, module_name: str) -> list[str] | None:
-        """Describe known fixture capabilities without turning unknown into absent."""
-        if module_name == "approvals":
-            return self.butler_names
-        if module_name == "memory":
-            return []
-        return None
-
-
 async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -81,10 +61,9 @@ async def test_fixture_skips_decision_memory_writer_when_memory_is_known_absent(
         _unexpected_settings_lookup,
     )
 
-    db_mgr = _DbManager(object())
+    db_mgr = db_manager({"relationship": object()}, modules={"relationship": ["approvals"]})
     assert db_mgr.butlers_with_module("approvals") == ["relationship"]
     assert db_mgr.butlers_with_module("memory") == []
-    assert db_mgr.butlers_with_module("calendar") is None
     writer = approvals_router._decision_memory_writer_for(db_mgr, "relationship", object())
 
     assert writer is None
@@ -96,6 +75,9 @@ class _ExecutingButlerClient:
     def __init__(self, module: ApprovalsModule) -> None:
         self._module = module
         self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def ping(self) -> bool:
+        return True
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         self.calls.append((tool_name, arguments))
@@ -159,32 +141,19 @@ def _protected_approvals_app(pool: Any, *, mcp_mgr: Any | None = None) -> FastAP
     app.state.owner_auth_service = _DomainOwnerState(_DASHBOARD_API_KEY)
     app.add_middleware(OwnerAuthMiddleware, config=OwnerAuthConfig.from_env(_DASHBOARD_API_KEY))
     app.include_router(approvals_router.router)
-    app.dependency_overrides[get_db] = lambda: _DbManager(pool)
+    app.dependency_overrides[get_db] = lambda: db_manager(
+        {"relationship": pool}, modules={"relationship": ["approvals"]}
+    )
     app.dependency_overrides[approvals_router.get_mcp_manager] = lambda: (
         mcp_mgr if mcp_mgr is not None else MagicMock()
     )
     return app
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Use the production core + approvals migrations, not hand-rolled DDL."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
 @pytest.fixture
-async def approval_pool(migrated_db_url: str):
-    """Return an isolated JSONB-aware pool over the migrated approval schema."""
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def approval_pool(db):
+    """Return an isolated JSONB-aware pool over the production core + approvals migrations."""
+    pool = await db("core", "approvals")
     await clear_audit_log_for_test(pool)
     await pool.execute(
         "TRUNCATE TABLE autonomy_suggestions, autonomy_approval_history, "
@@ -202,10 +171,7 @@ async def approval_pool(migrated_db_url: str):
         {"chat_id": "42"},
         _REQUESTED_AT,
     )
-    try:
-        yield pool
-    finally:
-        await pool.close()
+    return pool
 
 
 async def test_gate_park_owner_approve_executes_edits_and_preserves_provenance(
@@ -368,19 +334,38 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     result and terminal execution event are durable.
     """
     action_id = uuid4()
+    tool_args = {
+        "intent": "insight",
+        "channel": "telegram",
+        "recipient": "42",
+        "message": "Race-proof delivery",
+    }
     await approval_pool.execute(
         """
         INSERT INTO pending_actions (id, tool_name, tool_args, status)
         VALUES ($1, 'notify', $2, 'approved')
         """,
         action_id,
-        {"channel": "telegram", "recipient": "42", "message": "Race-proof delivery"},
+        tool_args,
     )
     delivery_started = asyncio.Event()
     release_delivery = asyncio.Event()
     abandon_started = asyncio.Event()
+    replay_started = asyncio.Event()
 
     from butlers.modules.approvals import operations as approvals_operations
+    from butlers.modules.approvals.executor import execute_approved_action
+
+    execution_attempts = 0
+
+    async def _observe_execution(**kwargs: Any) -> Any:
+        nonlocal execution_attempts
+        execution_attempts += 1
+        if execution_attempts == 2:
+            replay_started.set()
+        return await execute_approved_action(**kwargs)
+
+    monkeypatch.setattr(approvals_router, "execute_approved_action", _observe_execution)
 
     real_abandon = approvals_operations.abandon_approved_action
 
@@ -396,8 +381,20 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
         def __init__(self) -> None:
             self.calls = []
 
+        async def ping(self) -> bool:
+            return True
+
         async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+            from inspect import signature
+
+            from butlers.tools.switchboard.contracts import parse_notify_request
+            from butlers.tools.switchboard.notification.deliver import deliver
+
             assert tool_name == "deliver"
+            signature(deliver).bind(pool=approval_pool, **arguments)
+            parsed = parse_notify_request(arguments["notify_request"])
+            assert parsed.origin_butler == arguments["source_butler"] == "relationship"
+            assert parsed.delivery.model_dump(exclude_none=True) == tool_args
             self.calls.append((tool_name, arguments))
             delivery_started.set()
             await release_delivery.wait()
@@ -430,6 +427,10 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
             retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
         )
         await asyncio.wait_for(delivery_started.wait(), timeout=2)
+        replay_task = asyncio.create_task(
+            retry_client.post(f"/api/approvals/{action_id}/retry", headers=headers)
+        )
+        await asyncio.wait_for(replay_started.wait(), timeout=2)
         abandon_task = asyncio.create_task(
             abandon_client.post(
                 f"/api/approvals/{action_id}/abandon",
@@ -443,14 +444,19 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
         # here, marking the row abandoned while delivery is still in flight.
         await asyncio.sleep(0.05)
         abandon_blocked = not abandon_task.done()
+        replay_blocked = not replay_task.done()
 
         release_delivery.set()
         retry_response = await asyncio.wait_for(retry_task, timeout=2)
+        replay_response = await asyncio.wait_for(replay_task, timeout=2)
         abandon_response = await asyncio.wait_for(abandon_task, timeout=2)
 
     assert abandon_blocked, "Abandon must wait once notification delivery has begun"
+    assert replay_blocked, "A concurrent retry must wait for the first execution's result"
     assert retry_response.status_code == 200, retry_response.text
     assert retry_response.json()["data"]["status"] == "executed"
+    assert replay_response.status_code == 200, replay_response.text
+    assert replay_response.json()["data"]["status"] == "executed"
     assert abandon_response.status_code == 409, abandon_response.text
     assert len(delivery_client.calls) == 1
 
@@ -463,7 +469,7 @@ async def test_dashboard_notify_retry_holds_row_lock_against_abandon(
     events = await approval_pool.fetch(
         "SELECT event_type FROM approval_events WHERE action_id = $1", action_id
     )
-    assert {row["event_type"] for row in events} == {"action_execution_succeeded"}
+    assert [row["event_type"] for row in events] == ["action_execution_succeeded"]
 
 
 async def test_owner_reject_tap_transitions_and_audits_via_standard_approval_route(

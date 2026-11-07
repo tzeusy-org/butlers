@@ -30,15 +30,20 @@ bounds. Two independent runtimes, one shared fixture file, one contract.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.api.audit_grouping import build_audit_group_query
 from butlers.api.briefing.classify import classify
 from butlers.api.routers.dashboard_briefing import _fetch_dashboard_state, _map_board_rows
+from butlers.testing.fake_pool import fake_pool
+from tests.audit_helpers import clear_audit_log_for_test
 
 pytestmark = pytest.mark.unit
 
@@ -79,32 +84,12 @@ def _board_row(name: str, activity: str) -> SimpleNamespace:
     )
 
 
-def _make_pool(scenario: dict) -> AsyncMock:
-    """Build the audit source for one shared scenario.
+async def _classify_scenario(scenario: dict, pool: Any) -> str:
+    """Run one scenario through the real backend composition pipeline.
 
-    The historical-audit scenario returns its raw group only when the query
-    does *not* contain the selected 12-hour cutoff.  That makes this shared
-    contract catch a backend regression back to a wider/all-time window,
-    instead of merely hard-coding an already-filtered empty result.
+    *pool* answers the two pool-backed sources: grouped audit errors and
+    ambient-projection liveness.
     """
-    pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-
-    async def _fetch(sql: str, *args):
-        historical = scenario.get("historical_audit_group")
-        if "ambient_projections" in sql:
-            return []
-        if historical is not None and "INTERVAL '12 hours'" not in sql:
-            return [historical]
-        return []
-
-    pool.fetch = AsyncMock(side_effect=_fetch)
-    pool.fetchval = AsyncMock(return_value=0)
-    return pool
-
-
-async def _classify_scenario(scenario: dict) -> str:
-    """Run one scenario through the real backend composition pipeline."""
     rows = [_board_row(r["name"], r["activity"]) for r in scenario["board_rows"]]
 
     if scenario["board_source_error"]:
@@ -121,7 +106,6 @@ async def _classify_scenario(scenario: dict) -> str:
     qa = (scenario["qa"], False)
 
     now = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
-    pool = _make_pool(scenario)
 
     with (
         patch(
@@ -158,7 +142,9 @@ class TestAttentionContractBackend:
 
     @pytest.mark.parametrize("scenario", _SCENARIOS, ids=[s["name"] for s in _SCENARIOS])
     async def test_scenario_classifies_as_expected(self, scenario: dict):
-        state_class = await _classify_scenario(scenario)
+        # No live audit groups or projections; the historical group's exclusion
+        # by the 12-hour window is pinned on a real DB below.
+        state_class = await _classify_scenario(scenario, fake_pool(fetch=[]))
         assert state_class == scenario["expect"]["backend_state_class"], (
             f"scenario {scenario['name']!r}: expected state_class "
             f"{scenario['expect']['backend_state_class']!r}, got {state_class!r}"
@@ -172,3 +158,37 @@ class TestAttentionContractBackend:
     def test_every_scenario_has_a_unique_name(self):
         names = [s["name"] for s in _SCENARIOS]
         assert len(names) == len(set(names))
+
+
+_HISTORICAL = next(s for s in _SCENARIOS if s.get("historical_audit_group"))
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_historical_audit_group_stays_out_of_the_live_window(db) -> None:
+    """The shared historical-audit scenario holds when its raw audit rows really exist.
+
+    The group's rows are older than the briefing's 12-hour window. A regression
+    back to a wider or all-time window would surface them as attention items
+    and change the scenario's state_class.
+    """
+    pool = await db("core")
+    await clear_audit_log_for_test(pool)
+    group = _HISTORICAL["historical_audit_group"]
+    for seen_at in (group["first_seen_at"], group["last_seen_at"]):
+        await pool.execute(
+            "INSERT INTO public.audit_log (actor, action, result, error, ts)"
+            " VALUES ($1, 'session', 'error', $2, $3)",
+            group["butlers"][0],
+            group["error_summary"],
+            datetime.fromisoformat(seen_at),
+        )
+    # The seed is a real audit group: an unwindowed read groups it.
+    assert [r["error_summary"] for r in await pool.fetch(build_audit_group_query())] == [
+        group["error_summary"]
+    ]
+
+    state_class = await _classify_scenario(_HISTORICAL, pool)
+
+    assert state_class == _HISTORICAL["expect"]["backend_state_class"]

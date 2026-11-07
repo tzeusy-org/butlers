@@ -48,7 +48,7 @@ DEVIATION_CATEGORIES = frozenset({"baseline-deviation"})
 
 _EVIDENCE_NUMERIC_KEYS = ("n_observed", "n_expected", "coverage", "center", "dispersion")
 
-Bucket = Literal["day", "dow"]
+Bucket = Literal["day", "dow", "week"]
 Concern = Literal["above", "below", "both"]
 
 
@@ -85,6 +85,8 @@ class BaselineMetric:
             raise ValueError("metric key must be non-empty")
         if self.window_days < 1 or self.k_consecutive < 1:
             raise ValueError("window_days and k_consecutive must be positive")
+        if self.bucket == "week" and self.window_days % 7:
+            raise ValueError("a week-bucket metric needs window_days divisible by 7")
         if self.min_n < 1 or not 0 < self.min_coverage <= 1:
             raise ValueError("min_n must be positive and min_coverage in (0, 1]")
         if self.k_mad <= 0 or self.min_dispersion <= 0:
@@ -146,8 +148,13 @@ class Deviation:
         return self.state in (BaselineState.ABOVE, BaselineState.BELOW)
 
 
+def _step(metric: BaselineMetric) -> timedelta:
+    """Distance between consecutive samples: a day, or a week for a ``week`` metric."""
+    return timedelta(days=7 if metric.bucket == "week" else 1)
+
+
 def bucket_value(metric: BaselineMetric, day: date) -> str:
-    """Bucket a day falls in: ``all`` for a daily band, the weekday for ``dow``.
+    """Bucket a day falls in: ``all`` for a daily or weekly band, the weekday for ``dow``.
 
     ``day`` is the owner-local calendar date; the caller resolves the owner's
     timezone, so a reading just after local midnight lands on the right weekday.
@@ -156,9 +163,15 @@ def bucket_value(metric: BaselineMetric, day: date) -> str:
 
 
 def window_bounds(metric: BaselineMetric, as_of: date) -> tuple[date, date]:
-    """Inclusive ``(first, last)`` window days for scoring the run ending ``as_of``."""
-    last = as_of - timedelta(days=metric.k_consecutive)
-    first = last - timedelta(days=metric.window_days - 1)
+    """Inclusive ``(first, last)`` window days for scoring the run ending ``as_of``.
+
+    For a ``week`` metric a sample is one week, keyed by the date its week starts on (the caller
+    picks the anchor weekday), and ``as_of`` is the start of the scored week: the window is the
+    ``window_days // 7`` weeks ending ``k_consecutive`` weeks earlier.
+    """
+    step = _step(metric)
+    last = as_of - step * metric.k_consecutive
+    first = last - (timedelta(days=metric.window_days) - step)
     return first, last
 
 
@@ -181,6 +194,7 @@ def compute_baselines(
     expected: dict[str, int] = {}
     observed: dict[str, list[tuple[date, float]]] = {}
     day = first
+    step = _step(metric)
     while day <= last:
         if day not in excluded:
             bucket = bucket_value(metric, day)
@@ -188,7 +202,7 @@ def compute_baselines(
             observed.setdefault(bucket, [])
             if day in samples:
                 observed[bucket].append((day, float(samples[day])))
-        day += timedelta(days=1)
+        day += step
 
     out: list[Baseline] = []
     for bucket in sorted(expected):
@@ -341,7 +355,8 @@ def episode_decision(
             )
         return EpisodeDecision(EpisodeAction.CLOSE, opened_on=open_episode.opened_on)
 
-    days = [as_of - timedelta(days=offset) for offset in range(metric.k_consecutive - 1, -1, -1)]
+    step = _step(metric)
+    days = [as_of - step * offset for offset in range(metric.k_consecutive - 1, -1, -1)]
     run = [scored.get(day) for day in days]
     if any(item is None or not item.concerning for item in run):
         return EpisodeDecision(EpisodeAction.NONE)

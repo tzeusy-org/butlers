@@ -2532,6 +2532,7 @@ async def respond_to_invitation(
 @router.post("/user-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
 async def mutate_user_event(
     body: CalendarWorkspaceUserMutationRequest,
+    http_request: Request,
     mgr: MCPClientManager = Depends(get_mcp_manager),
     *,
     db: Db,
@@ -2544,6 +2545,9 @@ async def mutate_user_event(
     validation rejects any action other than ``create`` with HTTP 422; MCP
     failures retain the existing HTTP error behavior.
     """
+    # Owner decision bu-kf3n4i=A / PR4901 retired dashboard update/delete/undo;
+    # this composes approval only for the surviving create surface. MCP
+    # update/delete and instance handlers retain their own party gates.
     tool_name = "calendar_create_event"
 
     arguments = dict(body.payload)
@@ -2557,6 +2561,52 @@ async def mutate_user_event(
     }
     try:
         mutation_result = await _call_mcp_tool(mgr, body.butler_name, tool_name, arguments)
+        if mutation_result.get("status") == "request_changed":
+            raise HTTPException(status_code=409, detail="Queued calendar request changed")
+        if mutation_result.get("status") == "approval_required" and isinstance(
+            mutation_result.get("args_digest"), str
+        ):
+            from butlers.api.audit_emit import authenticated_principal
+            from butlers.api.routers.approvals import _decision_actor_id, approve_owning_action
+            from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+            # Keep the same provider/account owner. This exact owner submission
+            # supplies a decision, never delegated-success promotion evidence.
+            authenticated_principal()
+            try:
+                action_id = UUID(mutation_result["action_id"])
+            except (KeyError, ValueError, TypeError):
+                raise HTTPException(503, "create_approval_unavailable") from None
+            pool = db.pool(body.butler_name)
+            pending = await pool.fetchrow(
+                "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", action_id
+            )
+            parked = _normalize_json_object(pending["tool_args"]) if pending else {}
+            if (
+                pending is None
+                or pending["tool_name"] != tool_name
+                or approval_tool_args_digest(parked) != mutation_result.get("args_digest")
+            ):
+                raise HTTPException(409, "create_approval_binding_changed")
+            if pending["status"] == "pending":
+                decision = await approve_owning_action(
+                    parsed_id=action_id,
+                    actor_id=_decision_actor_id(None, callback_authenticated=False),
+                    edits=None,
+                    action_butler=body.butler_name,
+                    target_pool=pool,
+                    db_mgr=db,
+                    mcp_mgr=mgr,
+                    expected_tool_args=parked,
+                    expected_tool_name=tool_name,
+                    promotion_eligible=False,
+                )
+                mutation_result = {
+                    **mutation_result,
+                    "status": "executed" if decision.data.dispatched else "approved",
+                }
+            else:
+                mutation_result = {**mutation_result, "status": pending["status"]}
         freshness = await _projection_freshness_after_mutation(
             mgr=mgr,
             butler_name=body.butler_name,

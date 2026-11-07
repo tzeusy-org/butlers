@@ -24,12 +24,13 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -42,14 +43,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_234", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # Unit tests -- no DB required
 # ---------------------------------------------------------------------------
@@ -59,7 +52,7 @@ class TestMigrationFileAndChain:
     def test_revision_follows_predecessor_and_remains_in_core_chain(self) -> None:
         from butlers.migrations import get_chain_revision_ids
 
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_234")
         revision_ids = get_chain_revision_ids("core")
         assert mod.revision == "core_234"
         assert mod.down_revision == "core_233"
@@ -68,7 +61,7 @@ class TestMigrationFileAndChain:
 
 class TestUpgradeSQLShape:
     def _collect_execute_calls(self) -> list[str]:
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_234")
         calls_collected: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
@@ -92,7 +85,7 @@ class TestUpgradeSQLShape:
         assert "measurement" not in joined
 
     def test_downgrade_does_not_undo_reclassification(self) -> None:
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_234")
         mock_op = MagicMock()
         with patch.object(mod, "op", mock_op):
             mod.downgrade()
@@ -112,42 +105,14 @@ class TestReclassifyMigrationIntegration:
             yield pool
 
     @pytest.fixture
-    async def health_pool(self, provisioned_postgres_pool):
-        """A fresh DB with a "health" schema (minimal facts table) plus
-        public.memory_catalog, mirroring the real memory-module schema shape
-        just enough for this migration's two passes."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS health.facts (
-                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    scope       TEXT NOT NULL DEFAULT 'global',
-                    predicate   TEXT NOT NULL,
-                    sensitivity TEXT
-                )
-                """
-            )
-            await pool.execute(
-                """
-                CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tenant_id     TEXT NOT NULL DEFAULT 'shared',
-                    source_schema TEXT NOT NULL,
-                    source_table  TEXT NOT NULL,
-                    source_id     UUID NOT NULL,
-                    source_butler TEXT NOT NULL DEFAULT 'health',
-                    memory_type   TEXT NOT NULL DEFAULT 'fact',
-                    summary       TEXT,
-                    sensitivity   TEXT,
-                    invalid_at    TIMESTAMPTZ
-                )
-                """
-            )
-            yield pool
+    async def health_pool(self, db):
+        """Core at core_234's predecessor (public.memory_catalog) plus a "health"
+        butler schema with the real memory-module facts table."""
+        health = {"core": "health", "memory": "health"}
+        return await db("core", "memory", schemas=health, revisions={"core": "core_233"})
 
     async def _run_upgrade(self, pool) -> None:
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_234")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -158,8 +123,8 @@ class TestReclassifyMigrationIntegration:
 
     async def _insert_fact(self, pool, *, predicate: str, sensitivity: str | None) -> uuid.UUID:
         row = await pool.fetchrow(
-            "INSERT INTO health.facts (scope, predicate, sensitivity)"
-            " VALUES ('health', $1, $2) RETURNING id",
+            "INSERT INTO health.facts (subject, content, scope, predicate, sensitivity)"
+            " VALUES ('owner', 'health fact', 'health', $1, $2) RETURNING id",
             predicate,
             sensitivity,
         )

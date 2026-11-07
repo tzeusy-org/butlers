@@ -5,27 +5,47 @@ context: |
   Domain: AI agent framework — personal butler daemons with MCP-based communication
   Doctrine: about/heart-and-soul/ (vision.md defines 7 non-negotiable rules)
   Design contracts: about/legends-and-lore/rfcs/ (numbered RFCs; each carries its own status)
-  Change artifacts: follow about/heart-and-soul/development.md, "Spec Before Code, RFC Before Exception".
-  For a single-butler change that alters no cross-butler contract, shared-across-butlers schema,
-  or security boundary, proposal + delta specs + tasks suffice; design.md is optional.
-  Use the project-local single-butler schema for that eligible no-design workflow.
-  Keep spec-driven for required or voluntarily included designs; do not delete existing designs.
+  OpenSpec workflow: new standalone changes use a repo-local schema. Use single-butler for an
+  eligible change with no cross-butler contract, shared schema, or security boundary; design is
+  optional there. Use living-specs when a design is required. Both keep the canonical specs as the
+  living source of required behavior and create no change-local specs. Mark a new change using
+  either schema with skip_specs: true in its generated .openspec.yaml, preserving schema and created.
+  New multi-PR programs may use spec-driven for local deltas. Preserve every existing legacy
+  program with its resolved schema, metadata, content and deltas unchanged until verified completion.
+  Do not retag existing changes or add skip_specs to legacy changes.
+  When observable required behavior changes, update the governing canonical spec in the same change.
+  Read existing designs; artifact readiness is not owner approval, implementation review, or evidence.
 
 rules:
   proposal:
     - >
-      Classify whether the change alters a cross-butler contract, a schema shared
-      across butlers, or a security boundary. Any of those requires design.md;
-      directory placement alone does not establish single-butler eligibility.
+      Classify the actual scope. A cross-butler contract, shared-across-butlers schema, or security
+      boundary requires a design. New standalone work uses single-butler when eligible or living-specs
+      when design is required, without local delta specs. New multi-PR programs may use spec-driven
+      local deltas. Preserve all existing legacy schemas, metadata, content and local requirements.
+    - >
+      For a new single-butler or living-specs change with no local specs, preserve the generated
+      schema and created fields in .openspec.yaml and add skip_specs: true. Do not create a specs/
+      directory as a placeholder. Never add this marker to an existing change or to a change with
+      actual local deltas. A new no-delta change missing this marker or its generated schema/created
+      metadata is not ready to continue; stop and correct that new change before proceeding.
   specs:
     - >
-      Include a "## Source References" section at the end of each spec listing
-      the doctrine principles (by rule number from vision.md) and RFC numbers
-      that ground the spec's design decisions. Example:
-      "## Source References\n- Non-Negotiable Rule 3 (MCP-only inter-butler communication)\n- RFC 0003 (Switchboard routing and ingestion)"
+      Legacy spec-driven deltas and new multi-PR delta programs use exact capability paths and standard
+      ADDED/MODIFIED/REMOVED/RENAMED blocks. Every ADDED or MODIFIED requirement block carries
+      "ID: REQ-<capability>-<NNN>", "Source: <doctrine or RFC grounding>", and
+      "Scope: v1-mandatory|v1-reserved|post-v1"; scripts/check_requirement_trace_lines.py enforces
+      this for active local deltas. Keep existing delta programs and their trace lines intact.
     - >
-      Every ADDED or MODIFIED requirement block in a change carries three trace lines:
-      "ID: REQ-<capability>-<NNN>" (capability matching the spec directory), "Source: <doctrine or
-      RFC grounding>" and "Scope: v1-mandatory|v1-reserved|post-v1".
-      scripts/check_requirement_trace_lines.py enforces this in CI; pre-existing debt is frozen
-      in scripts/requirement-trace-baseline.json and an edited block must carry the lines.
+      Canonical specs and retained spec-driven deltas include a "## Source References" section at the
+      end naming the doctrine principles and RFCs that ground the requirements. Keep these references
+      with any required same-change canonical update.
+    - >
+      For other changes, the canonical files under openspec/specs/ are the maintained contracts.
+      Update an affected canonical requirement in the same change when required behavior changes;
+      do not copy it into a temporary delta solely to satisfy the old workflow.
+  design:
+    - >
+      Record the behavior boundary, key decisions, alternatives and migration/compatibility concerns.
+      Required for cross-butler contracts, shared schemas and security boundaries; optional for an
+      eligible single-butler change.

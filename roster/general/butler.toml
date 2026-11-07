@@ -114,3 +114,10 @@ groups = ["core", "preferences", "entity"]
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
 
 # RFC 0015: core always registers the error relay; no module opt-in is required.
+
+# Keep guest invitations on this same provider/account owner.
+# Capability adds no unrelated tool gates or standing rules.
+[modules.approvals]
+groups = ["actions"]
+enabled = false
+domain_producers = ["calendar"]

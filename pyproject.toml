@@ -24,6 +24,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "httpx",
+    "httpcore>=1.0.9,<1.1",
     "aiohttp>=3.9",
     "sentence-transformers",
     "torch==2.12.0",
@@ -258,6 +259,13 @@ name = "modules do not import the spawner"
 type = "forbidden"
 source_modules = ["butlers.modules"]
 forbidden_modules = ["butlers.core.spawner"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "modules, jobs and chronicler do not import connectors"
+type = "forbidden"
+source_modules = ["butlers.modules", "butlers.jobs", "butlers.chronicler"]
+forbidden_modules = ["butlers.connectors"]
 allow_indirect_imports = true
 
 [tool.pyright]

@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.modules.calendar_approval import calendar_approval_args, calendar_approval_datetime
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -26,9 +27,17 @@ from .models import (
     EventStatus,
     EventVisibility,
 )
+from .party import gate_calendar_party_mutation
 
 if TYPE_CHECKING:
     from . import CalendarModule
+
+
+def _create_boundary(value: date | datetime | str) -> date | datetime:
+    """Restore a replayed ISO boundary; a bare date stays an all-day date."""
+    if not isinstance(value, str):
+        return value
+    return date.fromisoformat(value) if len(value) == 10 else datetime.fromisoformat(value)
 
 
 def register_event_tools(
@@ -64,12 +73,46 @@ def register_event_tools(
         Fail-closed: provider errors return a structured error dict rather than
         silently dropping the mutation (spec section 4.4 / 15.2).
         """
+        # An approved overlap replay passes the parked ISO strings back in.
+        start_at = _create_boundary(start_at)
+        end_at = _create_boundary(end_at)
+        if isinstance(notification, dict):
+            notification = CalendarNotificationInput.model_validate(notification)
         await module._require_calendar_write_permission()
         provider = module._require_provider()
         resolved_calendar_id = module._resolve_calendar_id(calendar_id, for_create=True)
         resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
         normalized_request_id = module._normalize_request_id(request_id)
         resolved_entity_ids = entity_ids or []
+        # The exact call an overlap approval parks; replaying it rebuilds the
+        # same dict, so only the executor's context for it opens the gate.
+        overlap_args = {
+            "title": title,
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "all_day": all_day,
+            "timezone": timezone,
+            "description": description,
+            "body": body,
+            "location": location,
+            "attendees": attendees or [],
+            "recurrence_rule": recurrence_rule,
+            # Park the structured form; a str(model) cannot be validated back.
+            "notification": (
+                notification.model_dump(mode="json")
+                if isinstance(notification, CalendarNotificationInput)
+                else notification
+            ),
+            "status": status,
+            "visibility": visibility,
+            "notes": notes,
+            "color_id": color_id,
+            # Bind the calendar the owner is shown, not "resolve later".
+            "calendar_id": resolved_calendar_id,
+            "conflict_policy": resolved_conflict_policy,
+            "entity_ids": [str(e) for e in resolved_entity_ids],
+            "request_id": request_id,
+        }
         action_payload = {
             "title": title,
             "start_at": start_at,
@@ -93,6 +136,8 @@ def register_event_tools(
             action_type="workspace_user_create",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_create_event",
+            tool_args=overlap_args,
         )
         if replay is not None:
             return replay
@@ -101,6 +146,22 @@ def register_event_tools(
             lane="user",
             calendar_id=resolved_calendar_id,
         )
+
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_create_event",
+            tool_args=overlap_args,
+            attendees=attendees or [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_create",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=None,
+        )
+        if party_gate is not None:
+            return party_gate
 
         try:
             create_payload = CalendarEventCreate(
@@ -179,26 +240,7 @@ def register_event_tools(
         if conflict_result["status"] == "allow_overlap":
             approval_result = await module._gate_overlap_approval(
                 tool_name="calendar_create_event",
-                tool_args={
-                    "title": title,
-                    "start_at": start_at.isoformat(),
-                    "end_at": end_at.isoformat(),
-                    "all_day": all_day,
-                    "timezone": timezone,
-                    "description": description,
-                    "body": body,
-                    "location": location,
-                    "attendees": attendees or [],
-                    "recurrence_rule": recurrence_rule,
-                    "notification": notification,
-                    "status": status,
-                    "visibility": visibility,
-                    "notes": notes,
-                    "color_id": color_id,
-                    "calendar_id": calendar_id,
-                    "conflict_policy": resolved_conflict_policy,
-                    "entity_ids": [str(e) for e in resolved_entity_ids],
-                },
+                tool_args=overlap_args,
                 conflicts=conflict_result["conflicts"],
                 provider_name=provider.name,
                 resolved_calendar_id=resolved_calendar_id,
@@ -313,7 +355,6 @@ def register_event_tools(
         entity_ids: list[uuid.UUID] | None = None,
         clear_entity_ids: bool = False,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Update an event and preserve Butler tags for Butler-generated entries.
 
@@ -331,6 +372,31 @@ def register_event_tools(
         Fail-closed: provider errors return a structured error dict rather than
         silently dropping the mutation (spec section 4.4 / 15.2).
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_event",
+            event_id=event_id,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            all_day=all_day,
+            timezone=timezone,
+            description=description,
+            body=body,
+            location=location,
+            attendees=attendees,
+            recurrence_rule=recurrence_rule,
+            recurrence_scope=recurrence_scope,
+            instance_start_at=instance_start_at,
+            color_id=color_id,
+            calendar_id=calendar_id,
+            conflict_policy=conflict_policy,
+            entity_ids=entity_ids,
+            clear_entity_ids=clear_entity_ids,
+            request_id=request_id,
+        )
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         if clear_entity_ids and entity_ids != []:
             raise ValueError("clear_entity_ids requires entity_ids=[]")
         if recurrence_scope != "series":
@@ -354,7 +420,7 @@ def register_event_tools(
                 clear_entity_ids=clear_entity_ids,
                 request_id=request_id,
                 tool_name="calendar_update_event",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
         await module._require_calendar_write_permission()
         normalized_event_id = event_id.strip()
@@ -367,6 +433,13 @@ def register_event_tools(
         )
         resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
         normalized_request_id = module._normalize_request_id(request_id)
+        # The canonical call an overlap approval parks, with the calendar and
+        # policy the owner is shown bound in; replay rebuilds the same dict.
+        overlap_args = {
+            **approval_args,
+            "calendar_id": resolved_calendar_id,
+            "conflict_policy": resolved_conflict_policy,
+        }
         action_payload = {
             "event_id": normalized_event_id,
             "title": title,
@@ -390,6 +463,8 @@ def register_event_tools(
             action_type="workspace_user_update",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_update_event",
+            tool_args=overlap_args,
         )
         if replay is not None:
             return replay
@@ -447,6 +522,41 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
             )
             return not_found_result
+
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_update_event",
+            tool_args=overlap_args,
+            attendees=[a.email for a in existing_event.attendees] + (attendees or []),
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_update",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
+        )
+        if party_gate is not None:
+            return party_gate
+
+        gate = await module._maybe_gate_recurrence_impact(
+            tool_name="calendar_update_event",
+            action_type="workspace_user_update",
+            tool_args=overlap_args,
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope="series",
+            occurrences_touched=module._count_scope_occurrences(
+                event=existing_event,
+                recurrence_scope="series",
+                occurrence_start=existing_event.start_at,
+            ),
+            resolved_calendar_id=resolved_calendar_id,
+        )
+        if gate is not None:
+            return gate
 
         normalized_title = title.strip() if isinstance(title, str) else None
         update_title = normalized_title
@@ -560,27 +670,7 @@ def register_event_tools(
             if conflict_result["status"] == "allow_overlap":
                 approval_result = await module._gate_overlap_approval(
                     tool_name="calendar_update_event",
-                    tool_args={
-                        "event_id": event_id,
-                        "title": title,
-                        "start_at": start_at.isoformat() if start_at else None,
-                        "end_at": end_at.isoformat() if end_at else None,
-                        "all_day": all_day,
-                        "timezone": timezone,
-                        "description": description,
-                        "body": body,
-                        "location": location,
-                        "attendees": attendees,
-                        "recurrence_rule": recurrence_rule,
-                        "recurrence_scope": recurrence_scope,
-                        "color_id": color_id,
-                        "calendar_id": calendar_id,
-                        "conflict_policy": resolved_conflict_policy,
-                        "entity_ids": (
-                            [str(e) for e in entity_ids] if entity_ids is not None else None
-                        ),
-                        "clear_entity_ids": clear_entity_ids,
-                    },
+                    tool_args=overlap_args,
                     conflicts=conflict_result["conflicts"],
                     provider_name=provider.name,
                     resolved_calendar_id=resolved_calendar_id,
@@ -716,13 +806,13 @@ def register_event_tools(
         instance_start_at: datetime | None = None,
         send_updates: str | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete or cancel a calendar event.
 
         For events with attendees, pass send_updates="all" to send
-        cancellation notifications.  By default (send_updates=None),
-        no notification emails are sent.
+        cancellation notifications. ``send_updates="none"`` explicitly suppresses
+        notifications. The omitted provider policy is treated as unknown and
+        requires approval when the event has non-owner attendees.
 
         ``recurrence_scope`` controls how a recurring event is deleted:
         ``series`` (default) removes the whole series; ``this`` removes only
@@ -734,6 +824,16 @@ def register_event_tools(
         Returns status="deleted" on success, or status="not_found" when
         the event did not exist (already deleted — treated as success).
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_event",
+            event_id=event_id,
+            calendar_id=calendar_id,
+            recurrence_scope=recurrence_scope,
+            instance_start_at=instance_start_at,
+            send_updates=send_updates,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         if recurrence_scope != "series":
             return await module._apply_occurrence_delete(
                 event_id=event_id,
@@ -743,7 +843,7 @@ def register_event_tools(
                 send_updates=send_updates,
                 request_id=request_id,
                 tool_name="calendar_delete_event",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
         await module._require_calendar_write_permission()
         normalized_event_id = event_id.strip()
@@ -765,6 +865,8 @@ def register_event_tools(
             action_type="workspace_user_delete",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_delete_event",
+            tool_args={**approval_args, "calendar_id": resolved_calendar_id},
         )
         if replay is not None:
             return replay
@@ -821,6 +923,41 @@ def register_event_tools(
             )
             return result
 
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_delete_event",
+            tool_args=approval_args,
+            attendees=[a.email for a in existing_event.attendees] if send_updates != "none" else [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_delete",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
+        )
+        if party_gate is not None:
+            return party_gate
+
+        gate = await module._maybe_gate_recurrence_impact(
+            tool_name="calendar_delete_event",
+            action_type="workspace_user_delete",
+            tool_args={**approval_args, "calendar_id": resolved_calendar_id},
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope="series",
+            occurrences_touched=module._count_scope_occurrences(
+                event=existing_event,
+                recurrence_scope="series",
+                occurrence_start=existing_event.start_at,
+            ),
+            resolved_calendar_id=resolved_calendar_id,
+        )
+        if gate is not None:
+            return gate
+
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
             origin_ref=normalized_event_id,
@@ -836,6 +973,7 @@ def register_event_tools(
                 calendar_id=resolved_calendar_id,
                 event_id=normalized_event_id,
                 send_updates=send_updates,
+                **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
             )
         except CalendarAuthError as exc:
             await module._emit_calendar_audit(
@@ -911,7 +1049,6 @@ def register_event_tools(
         calendar_id: str | None = None,
         entity_ids: list[uuid.UUID] | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Edit a single occurrence (or this-and-following) of a recurring event.
 
@@ -922,6 +1059,25 @@ def register_event_tools(
         series at the boundary and applies the edit to the remainder.  The
         matching ``calendar_event_instances`` row is marked ``is_exception``.
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_event_instance",
+            event_id=event_id,
+            instance_start_at=instance_start_at,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            timezone=timezone,
+            description=description,
+            body=body,
+            location=location,
+            recurrence_scope=recurrence_scope,
+            calendar_id=calendar_id,
+            entity_ids=entity_ids,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
         return await module._apply_occurrence_update(
             event_id=event_id,
             instance_start_at=instance_start_at,
@@ -939,7 +1095,7 @@ def register_event_tools(
             entity_ids=entity_ids,
             request_id=request_id,
             tool_name="calendar_update_event_instance",
-            approval_bypass=_approval_bypass,
+            approval_args=approval_args,
         )
 
     @_tool("core")
@@ -950,7 +1106,6 @@ def register_event_tools(
         send_updates: str | None = None,
         calendar_id: str | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete a single occurrence (or this-and-following) of a recurring event.
 
@@ -962,6 +1117,16 @@ def register_event_tools(
         ``is_exception`` (status cancelled).  A non-existent base event surfaces
         a fail-open not-found response.
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_event_instance",
+            event_id=event_id,
+            instance_start_at=instance_start_at,
+            recurrence_scope=recurrence_scope,
+            send_updates=send_updates,
+            calendar_id=calendar_id,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         return await module._apply_occurrence_delete(
             event_id=event_id,
             instance_start_at=instance_start_at,
@@ -970,5 +1135,5 @@ def register_event_tools(
             send_updates=send_updates,
             request_id=request_id,
             tool_name="calendar_delete_event_instance",
-            approval_bypass=_approval_bypass,
+            approval_args=approval_args,
         )

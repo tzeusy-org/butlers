@@ -371,6 +371,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{schema}.collections>",
     ): "dynamic-local: quoted current General schema for trigger-owned collection tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "roster/general/migrations/004_owner_projects.py",
+        "<dynamic:{schema}.projects>",
+    ): "dynamic-local: quoted current General schema for the owner-project freeze trigger (bu-jv1moa.12); not a foreign-schema exception",
+    (
         "roster/messenger/tests/test_delivery_tracking_retirement.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed retired local Messenger table tuple in a test fixture; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -406,14 +410,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "roster/relationship/tests/calendar_projection.py",
         "switchboard.message_inbox",
     ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
-    (
-        "roster/relationship/tests/test_commitment_extraction_db.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: closed public table cleanup tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
-        "<dynamic:{_child}>",
-    ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
         "<dynamic:{table}>",
@@ -455,6 +451,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "chronicler.point_events",
     ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
     (
+        "roster/relationship/tests/test_whatsapp_reconciliation.py",
+        "chronicler.source_adapter_state",
+    ): "burn-down: companion cross-schema reconciliation fixtures; retire only with executing merge-invariant survivors",
+    (
         "roster/relationship/tools/contacts.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed contact child table tuple; local ownership not statically visible in SQL; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -491,9 +491,13 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
-        "roster/switchboard/tests/test_correct_route.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+        "roster/switchboard/migrations/057_invocation_labels.py",
+        "<dynamic:switchboard.{table}>",
+    ): "dynamic-local: owning migration's loop over its fixed labelled ledger table tuple (bu-dhloi1.6); not a foreign-schema exception",
+    (
+        "roster/switchboard/migrations/059_owner_policy.py",
+        "<dynamic:{qualified}>",
+    ): "dynamic-local: owning migration's loop over its fixed owner-policy table tuple (bu-dhloi1.10); not a foreign-schema exception",
     (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
@@ -607,6 +611,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         '<dynamic:"{admin}".bootstrap_configuration>',
     ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
     (
+        "src/butlers/chronicler/adapters/base.py",
+        "<dynamic:{table}>",
+    ): "sanctioned:RFC-0014: declared read-only source-adapter surface; keyset_page builds the page query over the adapter's own fixed source table",
+    (
         "src/butlers/chronicler/adapters/calendar.py",
         "<dynamic:{quoted}.calendar_event_entities>",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
@@ -647,13 +655,65 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "relationship.entity_facts",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
     (
+        "src/butlers/chronicler/adapters/situation.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/adapters/situation.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay days for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/anchors.py",
+        "relationship.address_geocodes",
+    ): "sanctioned:REQ-butler-chronicler-015: read-only owner anchor geocodes Relationship publishes to butler_chronicler_rw (REQ-butler-relationship-006)",
+    (
+        "src/butlers/chronicler/anchors.py",
+        "relationship.entity_facts",
+    ): "sanctioned:REQ-butler-chronicler-015: read-only owner works-at / has-address / residence facts for anchor places",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_archive",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned repair archive; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay days for daily repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_rollup_flags",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned rollup flags reconciled by historical repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_rollups",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned daily rollups reconciled by historical repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.v_episodes_corrected",
+    ): "sanctioned:Chronicler_030: fixed-schema corrected episode view used by historical repair; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/jobs.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control gates rollup work; schema and relation are constants, not caller-selected",
+    (
+        "src/butlers/chronicler/jobs.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned repair days gate rollup work; schema and relation are constants, not caller-selected",
+    (
         "src/butlers/connectors/cursor_store.py",
         "switchboard.connector_registry",
     ): "burn-down: existing switchboard.connector_registry coupling; route through owning service or make local schema authority explicit",
     (
-        "src/butlers/connectors/gmail_policy.py",
+        "src/butlers/connectors/gmail.py",
+        "switchboard.attachment_refs",
+    ): "burn-down: existing switchboard.attachment_refs coupling (was unqualified, so unseen); the connector alone holds Gmail credentials, so it serves attachment_materialize requests from this row",
+    (
+        "src/butlers/connectors/known_contact_snapshot.py",
         "relationship.entity_facts",
-    ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
+    ): "burn-down: existing relationship.entity_facts coupling (lifted out of gmail_policy.py, bu-q7vx1q.42); route through owning service or make local schema authority explicit",
     (
         "src/butlers/connectors/google_drive.py",
         "switchboard.connector_registry",
@@ -754,10 +814,82 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/goal_ledger.py",
         "switchboard.invocations",
     ): "sanctioned:RFC-0038: Switchboard-owned goal ledger; D1/D17 control-plane record with qualified SQL allocated to core/goal_ledger.py (bu-fkoexp)",
+    **{
+        ("src/butlers/capability_broker/ledger.py", f"switchboard.{table}"): (
+            "sanctioned:RFC-0038: D7/D11 broker per-call transaction over the Switchboard-owned "
+            "goal ledger; qualified SQL allocated to capability_broker/ledger.py (bu-cadcr1)"
+        )
+        for table in ("budgets", "effects", "goals", "invocations")
+    },
     (
-        "src/butlers/core/ingestion_events.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: partition/ingestion table selector; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.broker_refusals",
+    ): (
+        "sanctioned:RFC-0038: D7 durable broker refusal records in the Switchboard-owned "
+        "ledger (sw_056); qualified SQL allocated to capability_broker/ledger.py (bu-m1u7zy.12)"
+    ),
+    **{
+        ("src/butlers/capability_broker/ledger.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: S1 label joins at the runner's reads over the "
+            "Switchboard-owned goal ledger (sw_057); qualified SQL allocated to "
+            "capability_broker/ledger.py (bu-dhloi1.6)"
+        )
+        for relation in ("goal_inbox", "goal_label_exposed", "goal_label_union")
+    },
+    **{
+        ("src/butlers/capability_broker/boundaries.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: M7 typed boundaries (handles, extraction cache, child "
+            "results; sw_058) over the Switchboard-owned goal ledger; qualified SQL allocated "
+            "to capability_broker/boundaries.py (bu-4c7nvp.1.2)"
+        )
+        for relation in (
+            "effects",
+            "extraction_cache",
+            "goal_child_results",
+            "goal_handles",
+            "invocations",
+        )
+    },
+    **{
+        ("src/butlers/capability_broker/m7_report.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: M7 gate report, content-blind counts over the owner-only "
+            "S1 measurements view and sw_058 stores (bu-4c7nvp.1.2)"
+        )
+        for relation in (
+            "admission_decisions",
+            "extraction_cache",
+            "goal_child_results",
+            "goal_handles",
+            "invocation_exposure_measurements",
+            "source_containments",
+        )
+    },
+    **{
+        ("src/butlers/core/source_containment.py", f"switchboard.{relation}"): (
+            "sanctioned:RFC-0038: D13 Contain over the Switchboard-owned admission ledger "
+            "(sw_058); qualified SQL allocated to core/source_containment.py (bu-4c7nvp.1.2)"
+        )
+        for relation in ("admission_decisions", "goals", "source_containments")
+    },
+    (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.owner_policy_holds",
+    ): (
+        "sanctioned:RFC-0038: S1 owner-law hold receipts in the Switchboard-owned ledger "
+        "(sw_059); qualified SQL allocated to capability_broker/ledger.py (bu-dhloi1.10)"
+    ),
+    **{
+        ("src/butlers/core/owner_policy.py", f"switchboard.{table}"): (
+            "sanctioned:RFC-0038: S1 owner tighten-only policy in the Switchboard-owned "
+            "ledger (sw_059); qualified SQL allocated to core/owner_policy.py (bu-dhloi1.10)"
+        )
+        for table in (
+            "owner_policy_holds",
+            "owner_policy_receipts",
+            "owner_policy_state",
+            "owner_policy_terms",
+        )
+    },
     (
         "src/butlers/core/ingestion_events.py",
         "switchboard.connector_registry",
@@ -875,6 +1007,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{schema}.sessions>",
     ): "burn-down: dynamic fleet session schema enumeration; not the RFC-0030 Concierge view",
     (
+        "src/butlers/migrations/projection.py",
+        "<dynamic:{table}>",
+    ): "dynamic-local: RFC 0039 D2 replica-identity helper; the calling chain names its own table and identifiers are validated; no foreign-schema access",
+    (
         "src/butlers/modules/approvals/email_guard.py",
         "relationship.entity_facts",
     ): "retire:bu-ys9hdx.4: identity/channel resolution source and its fixture authority",
@@ -898,6 +1034,22 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/modules/memory/ann_observability.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed local memory tier tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{_q(schema, )}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{_q(schema, table)}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{events}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/authority_demotion.py",
+        "<dynamic:{links}>",
+    ): "dynamic-local: closed local memory table helpers; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/knowledge_gaps.py",
         "relationship.entity_facts",
@@ -927,6 +1079,54 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{table}>",
     ): "dynamic-local: validated memory-tier/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.episode_tombstones",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "verifies mem010 tombstones after isolated test_retention_* batches; dev inventory "
+        "is READ ONLY, no new grant or ambient cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.episodes",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "inventories Switchboard episodes READ ONLY in dev; bounded deletion is isolated "
+        "to test_retention_*, never live deletion or ambient cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.memory_events",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads attributable same-run evidence in dev READ ONLY and writes atomic batch "
+        "progress only in isolated test_retention_*; no new grant or cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.memory_policies",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads only Switchboard retention/archive policy for content-blind classification; "
+        "dev READ ONLY and isolated-only writer confer no policy-write or cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.scheduled_tasks",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads existing Switchboard schedule names to classify provenance; dev READ ONLY "
+        "and isolated-only writer do not execute/change schedules or grant cross-butler authority"
+    ),
+    (
+        "src/butlers/modules/memory/retention_drain.py",
+        "switchboard.sessions",
+    ): (
+        "sanctioned:REQ-memory-retention-policy-012: fixed butler_switchboard_rw operator "
+        "reads Switchboard source-session identity and hashed trigger provenance; dev READ ONLY "
+        "and isolated-only writer confer no session-write or ambient cross-butler authority"
+    ),
+    (
         "src/butlers/modules/memory/search.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed local memory table/type maps; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
@@ -946,6 +1146,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{rules_relation}>",
     ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/storage.py",
+        "<dynamic:{events_table}>",
+    ): "sanctioned:bu-r3fmja.7 F2: the dynamic relation name is constrained to fixed memory_events; optional schema is caller input (Dashboard derives it from the selected butler configuration), and identifier validation is injection safety only, not authorization. PostgreSQL ACLs remain the access gate; this inventory entry grants no privilege",
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{table}>",
@@ -971,13 +1175,49 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{_quote_ident(schema)}.alembic_version>",
     ): "dynamic-local: validated target schema migration-version table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "src/butlers/testing/migration.py",
+        '<dynamic:"{target_schema}"."{table}">',
+    ): "dynamic-local: test-only migrated-table clone validates source schema, target schema and table identifiers before cloning a fixed migration-owned table shape",
+    (
         "src/butlers/testing/recall_bench.py",
         "<dynamic:{table}>",
     ): "dynamic-local: benchmark-selected memory table; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
-        "src/butlers/testing/schema_standins.py",
-        "<dynamic:{qualified}>",
-    ): "dynamic-review: frozen baseline relation selector; exact target ownership is unresolved by literal scan and needs inspection, not product cleanup",
+        "src/butlers/api/routers/data_ops.py",
+        "<dynamic:{relation}>",
+    ): "dynamic-local: configured owning memory facts relation; visibility branch is restricted to chronicler_mem by local_fact_visibility_condition and uses fixed facts table; database ACLs remain authority, this inventory grants no privilege",
+    (
+        "src/butlers/api/routers/memory.py",
+        "<dynamic:{from_clause}>",
+    ): "dynamic-local: current _fact_select_query and _count_memory_table callers use validated owning-schema episodes, facts or rules relations; facts alone adds the fixed facts alias and visibility filter; database ACLs remain authority, this inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_fact_dispositions",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned fact dispositions used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_retention_spans",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned bounded retention cursor spans used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.daily_repair_source_redactions",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned retention source redactions used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.enqueue_daily_repair",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned bounded daily repair enqueue function used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.episodes",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned canonical source episode retention discovery used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.redact_retention_facts",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned retention fact redaction function used by historical repair; schema and relation/function are code constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/rollups.py",
+        "chronicler.daily_repair_source_redactions",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned retention redaction barrier for rollup source reads; schema and relation are code constants, not caller-selected; inventory grants no privilege",
 }
 
 

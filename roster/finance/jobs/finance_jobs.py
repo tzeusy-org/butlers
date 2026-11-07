@@ -28,6 +28,10 @@ from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.credential_store import CredentialStore
+from butlers.jobs.finance_spend_baselines import (
+    refresh_category_baselines,
+    retire_spending_baseline_facts,
+)
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
@@ -648,6 +652,9 @@ _INSIGHT_BUTLER = "finance"
 # of a short-but-nonzero grace rather than escalating on the very first scan.
 _OWNER_CONDITION_BILL_OVERDUE_SOURCE = "finance:bill-overdue"
 _OWNER_CONDITION_SPENDING_ANOMALY_SOURCE = "finance:spending-anomaly"
+# bu-5rjeup (REQ-owner-condition-ledger-010): third ledger source, one condition
+# per (category, period, period_start) budget window at/over its warn threshold.
+_OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE = "finance:budget-threshold"
 _OWNER_CONDITION_GRACE_S = 3600.0
 
 # Spending anomaly thresholds (percentage above 3-month rolling average)
@@ -896,6 +903,51 @@ async def _reconcile_owner_conditions(
         )
 
 
+def _budget_threshold_observations(items: list[dict[str, Any]]) -> list[OwnerObservation]:
+    """Build the complete ``finance:budget-threshold`` observation set.
+
+    Only ``warning``/``exceeded`` items qualify, so each budget's own
+    owner-configured warn/alert thresholds (applied by ``budget_status``) stay
+    the only thresholds. Identity is the budget window; the status is evidence,
+    so warning -> exceeded within a window confirms the same episode. Text and
+    metadata carry only what the budget insight already shows the owner.
+    """
+    observations: list[OwnerObservation] = []
+    for item in items:
+        status = item["status"]
+        if status not in ("warning", "exceeded"):
+            continue
+        category = item["category"]
+        period = item["period"]
+        period_start = item["period_start"]
+        spent = Decimal(item["spent"])
+        budget_amount = Decimal(item["budget_amount"])
+        utilisation_pct = item["utilization_pct"]
+        observations.append(
+            OwnerObservation(
+                fingerprint=owner_condition_fingerprint(
+                    _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+                    1,
+                    {"category": category, "period": period, "period_start": period_start},
+                ),
+                summary=(
+                    f"Budget {status}: '{category}' is at {utilisation_pct:.0f}% of the "
+                    f"{period} budget (${spent:.2f} of ${budget_amount:.2f})"
+                ),
+                metadata={
+                    "category": category,
+                    "period": period,
+                    "period_start": period_start,
+                    "status": status,
+                    "utilisation_pct": str(utilisation_pct),
+                    "spent": str(spent),
+                    "budget": str(budget_amount),
+                },
+            )
+        )
+    return observations
+
+
 async def _register_obligations(db_pool: asyncpg.Pool, *, today: date | None = None) -> None:
     """Best-effort forward obligation ledger write (bu-8cdl1.10 slice 2).
 
@@ -941,6 +993,9 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     the insight-candidate delivery above: it gives "is this still true and
     still unactioned" a durable, escalating answer on the dashboard's
     Standing Conditions panel, best-effort and non-fatal to this scan.
+    bu-5rjeup adds a third source, budget thresholds (per category, period
+    and period start; status is evidence), reconciled after the budget
+    section; a raising ``budget_status()`` skips only that section.
 
     bu-8cdl1.10 slice 2: this scan also registers/updates a forward
     obligation ledger row (``finance.obligation_ledger``) per active
@@ -1262,10 +1317,24 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     # budgets even though the owner can configure them. budget_status already
     # applies each budget's configured warn/alert thresholds (bu-rvz2o) and the
     # transactions.deleted_at guard, so no threshold logic is duplicated here.
-    async with _finance_scoped_connection(db_pool) as conn:
-        budget_result = await budget_status(conn, now=now)
+    #
+    # bu-5rjeup: a raising budget_status() skips this section and its ledger
+    # source only (never resolving an active condition) instead of aborting the
+    # rest of the scan. It has no degraded return shape, so any returned result,
+    # including the empty one when no budget is active, is a complete snapshot.
+    budget_items: list[dict[str, Any]] | None
+    try:
+        async with _finance_scoped_connection(db_pool) as conn:
+            budget_result = await budget_status(conn, now=now)
+        budget_items = list(budget_result.get("items", []))
+    except Exception:
+        logger.warning(
+            "Finance insight scan: budget_status failed; skipping budget thresholds",
+            exc_info=True,
+        )
+        budget_items = None
 
-    for item in budget_result.get("items", []):
+    for item in budget_items or []:
         status = item["status"]
         if status == "on_track":
             continue  # below warn_threshold — no candidate
@@ -1345,6 +1414,16 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         if not keep_going:
             logger.info("Finance insight scan: verbosity=off early exit (budget thresholds)")
             return {**counts, "early_exit": True}
+
+    # Reconciled after the candidate loop: an early exit in sections 1-3 skips
+    # it for that run, which only delays (never falsely resolves) -- accepted
+    # latency per the add-owner-condition-producers design (D8).
+    if budget_items is not None:
+        await _reconcile_owner_conditions(
+            db_pool,
+            source=_OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+            observations=_budget_threshold_observations(budget_items),
+        )
 
     # ------------------------------------------------------------------
     # 4. Subscription renewals (annual only, 14-day window)
@@ -1781,6 +1860,19 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
     logger.info("Running finance anomaly insight scan job")
 
     async with _finance_scoped_connection(db_pool) as conn:
+        # Producer of the week-bucket category bands the scan judges against; a rerun with
+        # unchanged inputs is a no-op. Also retires the spending_baseline facts once.
+        zone = await resolve_budget_zone(conn)
+        try:
+            await refresh_category_baselines(
+                conn,  # pyright: ignore[reportArgumentType]
+                now=datetime.now(UTC),
+                zone=zone,
+            )
+        except asyncpg.PostgresError as exc:
+            # The merchant checks do not depend on the bands, so they still run.
+            logger.warning("Finance category baselines not refreshed (%s)", type(exc).__name__)
+        await retire_spending_baseline_facts(conn)  # pyright: ignore[reportArgumentType]
         result = await anomaly_scan(conn, days_back=1, sensitivity="medium")
     status = result.get("status", "ok")
 
@@ -1813,7 +1905,11 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         priority = _ANOMALY_SEVERITY_PRIORITY.get(severity, 35)
         txn_id = anomaly.get("transaction_id")
         category = anomaly.get("category")
-        identity = txn_id or (f"category-{category}" if category else anomaly.get("type", "n-a"))
+        currency = anomaly.get("currency")
+        category_identity = (
+            f"category-{category}-{currency}" if currency else f"category-{category}"
+        )
+        identity = txn_id or (category_identity if category else anomaly.get("type", "n-a"))
         dedup_key = f"finance:anomaly:{identity}:{today.isoformat()}"
 
         merchant = anomaly.get("merchant")
@@ -1830,7 +1926,15 @@ async def run_anomaly_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
             message=message,
             expires_at=datetime(today.year, today.month, today.day, tzinfo=UTC) + timedelta(days=2),
             cooldown_days=1,
-            metadata={"anomaly_type": anomaly.get("type"), "severity": severity},
+            metadata={
+                "anomaly_type": anomaly.get("type"),
+                "severity": severity,
+                **(
+                    {"baseline_evidence": anomaly["baseline_evidence"]}
+                    if anomaly.get("baseline_evidence")
+                    else {}
+                ),
+            },
         )
         if status_result == "filtered":
             counts["filtered"] += 1

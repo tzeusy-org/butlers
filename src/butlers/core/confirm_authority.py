@@ -23,6 +23,7 @@ from butlers.core.approval_delivery_authority import (
 from butlers.core.confirm_delivery import terminal_text
 from butlers.core.confirm_models import ConfirmPrompt
 from butlers.core.confirm_service import ConfirmService, SinkRegistration
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 
 
 @dataclass(frozen=True)
@@ -260,7 +261,9 @@ async def run_confirm_worker(delivery, stop: asyncio.Event):
     while not stop.is_set():
         try:
             await delivery.cycle()
-        except Exception:
+        except (Exception, asyncio.CancelledError) as exc:
+            # A cycle's own stray cancel is its failure; only a cancel of this task ends the loop.
+            raise_if_task_cancelled(exc)
             # No source content/credential/driver errors go into a generic runtime log.
             import logging
 

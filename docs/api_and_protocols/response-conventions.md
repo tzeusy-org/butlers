@@ -69,6 +69,8 @@ second envelope or a second codec.
   keeps the same envelope but its cursor encodes a page offset, so a cursor from one sort mode is a
   400 in the other.
 - `GET /api/memory/gaps` orders by `asked_at DESC, id DESC`, merged across memory pools.
+  `GET /api/memory/gaps/demand` is not paged: a plain `{data, meta}` list (open gaps and asks
+  per predicate) that names failed pools in `meta.sources_degraded`.
 
 **Offset pagination** (`PaginatedResponse[T]`, `meta.total/offset/limit`) stays on the many list
 endpoints whose pages are random-access with an exact `total` (health and finance registers,
@@ -210,6 +212,23 @@ writer regression is not serving-deployment evidence.
 
 ## Implementation Notes
 
+- Canonical `audit.append` records `butlers.audit.log.appended` after acknowledged SQL commit.
+  Every owning mutation uses `butlers.core.audit_transaction.audit_transaction(connection)` at
+  its original transaction boundary, including the explicit audit-owned stepup path. Append
+  returns the integer row receipt inside that scope; it does not commit the caller's mutation.
+  Nested audit scopes use real savepoints: release merges action-only pending records into the
+  outer scope; child rollback drops only child records and outer rollback drops all records.
+  Existing unmanaged transactions and inherited child-task ownership are refused before insert.
+  Do not manually change transaction boundaries or put canonical appends inside raw savepoints.
+  Pool/nontransactional connection appends retain their successful implicit-commit boundary.
+  The bounded `metric_action` override is buffered instead of request-derived action text;
+  actor, row content and identifiers are never buffered. Before commit, a same-connection health
+  probe refuses a swallowed SQL error whose aborted transaction would otherwise roll back.
+  Commit failure/cancellation records nothing, but in-flight commit durability can be unknown:
+  a missing metric never proves no durable row and never authorizes replay. Recorder failure
+  after commit is an explicit content-blind telemetry failure, not rollback or retry. Existing
+  best-effort shims and the inside-append issue-listener timing remain unchanged.
+
 - Connector summaries are owned by `ApiResponse[ConnectorSummaryResponse]` and its explicit nested
   wire models in `api/routers/ingestion_connectors.py`. Keep the existing derivation helpers as the
   authority for liveness, operational roles and source availability. This route excludes unset
@@ -268,3 +287,20 @@ absent legacy fields. Retained stale query data during an error does not certify
 current scrub availability. An unavailable source never becomes a zero or an
 all-clear. No raw metric labels or upstream diagnostic text is exposed in the
 scrub projection.
+
+### Ingestion recovery without retained delivery evidence
+
+In the frozen classify-and-route lane, single-event replay of public `failed`,
+`ingested`, `replay_failed`, or legacy `replay_pending` rows returns HTTP 409 with
+`detail.reason=no_retained_delivery_plan`. This is a refusal: source status and
+error detail remain unchanged, no inbox row resets, and no classification or
+routing is scheduled. Other public statuses remain conflicts. A replay-safe
+connector policy does not prove retained target intent. Unsafe policy and
+unavailable policy keep their existing rejection precedence.
+
+Bulk retry records these public rows as individual conflicts with the same fixed
+reason and counts them as failed. A mixed batch may still queue eligible
+`connectors.filtered_events` rows under the current server-derived replay-safe
+policy and connector worker contract. The existing replay audit history records
+public refusals without message content; audit failure cannot turn refusal into
+success. No historical row repair or live replay follows from this source fix.

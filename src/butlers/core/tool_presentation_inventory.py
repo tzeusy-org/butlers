@@ -6,8 +6,11 @@ changes FastMCP listing, invocation, approval, module-state, or caller authority
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import MappingProxyType
+from typing import cast
 
+from butlers.core.goal_labels import CATEGORIES
 from butlers.core.tool_catalog import (
     OwnerNotifyBranch,
     RecipientParameters,
@@ -15,17 +18,26 @@ from butlers.core.tool_catalog import (
     ToolPresentation,
 )
 
+#: Every S1 sensitivity category: the declaration for output that can carry any.
+ALL_CATEGORIES: tuple[str, ...] = tuple(sorted(CATEGORIES))
+
 
 def _declare(
     module: str,
     group: str,
     names: str,
     *,
+    categories: tuple[str, ...],
     presentable: bool = True,
     posture: str = "deferred",
     namespace: str | None = None,
+    approval_mode: str = "default",
     **authorization: object,
 ) -> tuple[ToolPresentation, ...]:
+    # RFC 0038 S1: the categories the output may carry, from the six, cited
+    # through CATEGORY_SPECS. Required here so no declaration can omit them.
+    if not set(categories) <= CATEGORIES or len(set(categories)) != len(categories):
+        raise ValueError(f"unknown or duplicate categories for {names}: {categories!r}")
     # Provider/cache responses retain their external provenance even on writes.
     external_modules = {
         "google_drive",
@@ -43,6 +55,11 @@ def _declare(
         authorization["read_stores"] = (*authorization.get("read_stores", ()), boundary)
         if authorization.get("effect_class") != "read":
             authorization["write_stores"] = (*authorization.get("write_stores", ()), boundary)
+    # Undeclared: no identifier is alias-free, so nothing narrows an owner term.
+    alias_free = cast(tuple[str, ...], authorization.pop("alias_free_params", ()))
+    resolvers = MappingProxyType(
+        dict(cast(Mapping[str, str], authorization.pop("alias_resolvers", {})))
+    )
     return tuple(
         ToolPresentation(
             canonical_name=name,
@@ -51,6 +68,10 @@ def _declare(
             namespace=f"{module}.{namespace or group}",
             llm_presentable=presentable,
             load_posture=posture,  # type: ignore[arg-type]
+            approval_policy={"mode": approval_mode},
+            alias_free_params=alias_free,
+            categories=tuple(sorted(categories)),
+            alias_resolvers=resolvers,
             **authorization,
         )
         for name in names.split()
@@ -74,6 +95,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("metric_baselines",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -100,6 +122,7 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="routing",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -119,6 +142,7 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="sessions",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -136,6 +160,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         namespace="messenger_preferences",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -153,6 +178,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("delivery_preferences",),
         recipient_params=RecipientParameters(),
         namespace="messenger_preferences",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -170,6 +196,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("deferred_notifications",),
         recipient_params=RecipientParameters(),
         namespace="messenger_preferences",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -187,6 +214,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         namespace="messenger_preferences",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -204,6 +232,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         namespace="messenger_preferences",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -221,6 +250,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("public.owner_scheduling_preferences",),
         recipient_params=RecipientParameters(),
         namespace="messenger_preferences",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -237,6 +267,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("public.task_continuity",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -246,6 +277,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("claim_id", "counterparty_entity_id", "evidence_ref"),
+        alias_resolvers={"counterparty_entity_id": "entity"},
         selection_bound={"claim_id": False, "counterparty_entity_id": False, "evidence_ref": False},
         safety_args=("amount",),
         idempotency="none",
@@ -253,6 +285,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.cost_claims",),
         write_stores=("public.cost_claims",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -262,6 +295,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("counterparty_entity_id", "evidence_ref"),
+        alias_resolvers={"counterparty_entity_id": "entity"},
         selection_bound={"counterparty_entity_id": False, "evidence_ref": False},
         safety_args=("amount",),
         idempotency="none",
@@ -269,6 +303,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.cost_claims",),
         write_stores=("public.cost_claims",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -285,6 +320,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.cost_claim_resolutions", "public.cost_claims"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -301,6 +337,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("public.cost_claim_resolutions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -317,6 +354,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("public.cost_claims",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -343,6 +381,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -374,6 +413,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -392,6 +432,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         namespace="delegation_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -414,6 +455,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         namespace="delegation_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -430,6 +472,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.butler_subscriptions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -459,6 +502,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -475,6 +519,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("public.butler_subscriptions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -491,6 +536,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("public.butler_subscriptions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -509,6 +555,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         namespace="domain_event_delivery",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -527,6 +574,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         namespace="domain_event_delivery",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -554,6 +602,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -587,6 +636,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -603,6 +653,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.fleet_cases",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -630,6 +681,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -662,6 +714,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -678,6 +731,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.fleet_case_evidence", "public.fleet_case_links", "public.fleet_cases"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -705,6 +759,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -714,6 +769,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("from_entity_id", "to_entity_id"),
+        alias_resolvers={"from_entity_id": "entity", "to_entity_id": "entity"},
         selection_bound={"from_entity_id": False, "to_entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -721,6 +777,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entity_graph_edges",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -730,6 +787,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -737,6 +795,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entity_graph_edges",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -756,6 +815,7 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="daemon_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -775,6 +835,7 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="daemon_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -794,6 +855,7 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="daemon_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -834,6 +896,7 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="daemon_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -853,13 +916,15 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         posture="eager",
         namespace="daemon_control",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
         "infra",
         "conversation_recall",
         effect_class="read",
-        output_trust="untrusted",
+        output_trust="stamped",
+        unknown_output_source=False,
         output_sensitivity="sensitive",
         resource_params=("butler",),
         selection_bound={"butler": False},
@@ -870,23 +935,26 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         namespace="conversation",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
         "infra",
         "conversation_thread_read",
         effect_class="read",
-        output_trust="untrusted",
+        output_trust="stamped",
+        unknown_output_source=False,
         output_sensitivity="sensitive",
         resource_params=("conversation_id", "around_message_id"),
         selection_bound={"conversation_id": False, "around_message_id": False},
         safety_args=(),
         idempotency="none",
         owner_authority=False,
-        read_stores=("public.dashboard_messages",),
+        read_stores=("public.dashboard_conversations", "public.dashboard_messages"),
         write_stores=(),
         recipient_params=RecipientParameters(),
         namespace="conversation",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -918,6 +986,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True, undeterminable_condition="always for inherited/implicit party set"
         ),
         namespace="conversation",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -935,6 +1004,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         namespace="conversation",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -962,6 +1032,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         recipient_params=RecipientParameters(),
         namespace="conversation",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -984,6 +1055,43 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         presentable=False,
         namespace="conversation_delivery",
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "core",
+        "switchboard_routing",
+        "attachment_materialize",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("message_id", "attachment_id"),
+        # Not D7 owner selections: the tool itself admits only the lazy refs of
+        # the calling session's routed request (bu-jv1moa.59).
+        selection_bound={"message_id": False, "attachment_id": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("attachment_refs",),
+        write_stores=("attachment_refs",),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "core",
+        "media",
+        "attachment_page_view",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("storage_ref",),
+        selection_bound={"storage_ref": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1000,6 +1108,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1016,6 +1125,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1032,6 +1142,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1048,6 +1159,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "core",
@@ -1065,6 +1177,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1074,6 +1187,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("recipient", "entity_id", "request_context", "attachments"),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={
             "recipient": False,
             "entity_id": False,
@@ -1116,6 +1230,7 @@ TOOL_PRESENTATION_INVENTORY = (
                 "fallback is a distinct declared branch"
             ),
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1143,6 +1258,7 @@ TOOL_PRESENTATION_INVENTORY = (
                 "intent=send uses the real notify owner fallback"
             ),
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1159,6 +1275,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks", "sessions"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1175,6 +1292,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1191,6 +1309,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1207,6 +1326,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1223,6 +1343,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1239,6 +1360,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1255,6 +1377,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1271,6 +1394,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sessions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1287,6 +1411,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sessions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1303,6 +1428,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sessions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1319,6 +1445,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sessions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1335,6 +1462,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sessions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1351,6 +1479,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1367,6 +1496,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("state",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1383,6 +1513,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("state",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1399,6 +1530,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1417,6 +1549,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1435,6 +1568,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1470,6 +1604,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1496,6 +1631,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1514,6 +1650,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1546,6 +1683,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1584,6 +1722,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1614,6 +1753,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1630,6 +1770,25 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "core",
+        "temporal",
+        "paperwork_deadline_set",
+        namespace="paperwork",
+        effect_class="record",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("document_id",),
+        selection_bound={"document_id": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("scheduled_tasks",),
+        write_stores=("scheduled_tasks",),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1646,6 +1805,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1662,6 +1822,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1678,6 +1839,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("scheduled_tasks",),
         write_stores=("scheduled_tasks",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1694,6 +1856,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("event_chains",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1710,6 +1873,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("event_chains",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1726,6 +1890,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("event_chains",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1742,6 +1907,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("event_chains",),
         write_stores=("event_chains",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1758,6 +1924,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("seasonal_periods",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1774,6 +1941,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("seasonal_periods",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1790,6 +1958,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("seasonal_periods",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1806,6 +1975,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("seasonal_periods",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -1822,6 +1992,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("seasonal_periods",),
         write_stores=("seasonal_periods",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -1864,6 +2035,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "state",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -1887,6 +2059,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.attention_ledger",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -1919,6 +2092,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_approval_context",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -1935,6 +2109,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("pending_actions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -1951,6 +2126,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("approval_push_emissions", "pending_actions"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -1967,6 +2143,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("pending_actions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "approvals",
@@ -2000,6 +2177,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_approval_context",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2016,6 +2194,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("approval_push_emissions", "pending_actions"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2044,6 +2223,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_approval_rule_context",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2073,6 +2253,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_approval_rule_context",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2089,6 +2270,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("approval_rules",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2106,6 +2288,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("approval_rules",),
         write_stores=("approval_events", "approval_rules"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2122,6 +2305,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("approval_rules",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2138,6 +2322,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("pending_actions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2155,6 +2340,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("approval_rules", "autonomy_suggestions"),
         write_stores=("approval_events", "approval_rules", "autonomy_suggestions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2172,6 +2358,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("autonomy_suggestions",),
         write_stores=("approval_events", "autonomy_suggestions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "approvals",
@@ -2188,6 +2375,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("autonomy_suggestions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2197,6 +2385,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id", "entity_ids"),
+        alias_resolvers={"calendar_id": "calendar", "entity_ids": "entity"},
         selection_bound={"calendar_id": False, "entity_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2225,6 +2414,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "state",
         ),
         recipient_params=RecipientParameters(argument_names=("attendees",)),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2234,6 +2424,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id"),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"event_id": False, "calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2266,6 +2457,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2275,6 +2467,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id"),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"event_id": False, "calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2306,6 +2499,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2315,6 +2509,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_ids",),
+        alias_resolvers={"calendar_ids": "calendar"},
         selection_bound={"calendar_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2322,6 +2517,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.owner_scheduling_preferences",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2331,6 +2527,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2357,6 +2554,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "state",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2366,6 +2564,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id"),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"event_id": False, "calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2373,6 +2572,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2389,6 +2589,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2398,6 +2599,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2405,6 +2607,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2414,6 +2617,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("source_event_id", "entity_ids"),
+        alias_resolvers={"entity_ids": "entity"},
         selection_bound={"source_event_id": False, "entity_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2421,6 +2625,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("calendar_event_proposals",),
         write_stores=("calendar_event_proposals",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2430,6 +2635,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2437,6 +2643,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2446,6 +2653,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("calendar_id",),
+        alias_resolvers={"calendar_id": "calendar"},
         selection_bound={"calendar_id": False},
         safety_args=(),
         idempotency="none",
@@ -2459,6 +2667,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2468,6 +2677,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id", "entity_ids"),
+        alias_resolvers={"calendar_id": "calendar", "entity_ids": "entity"},
         selection_bound={"event_id": False, "calendar_id": False, "entity_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2501,6 +2711,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2510,6 +2721,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "calendar_id", "entity_ids"),
+        alias_resolvers={"calendar_id": "calendar", "entity_ids": "entity"},
         selection_bound={"event_id": False, "calendar_id": False, "entity_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2541,6 +2753,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2550,6 +2763,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_ids",),
+        alias_resolvers={"entity_ids": "entity"},
         selection_bound={"entity_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2562,6 +2776,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "calendar_sources",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2578,6 +2793,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("calendar_event_instances", "calendar_events", "calendar_sources"),
         write_stores=("calendar_event_instances", "calendar_events"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2587,6 +2803,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -2599,6 +2816,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2632,6 +2850,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "scheduled_tasks",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2664,6 +2883,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "scheduled_tasks",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2696,6 +2916,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "scheduled_tasks",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "calendar",
@@ -2705,6 +2926,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("event_id", "entity_ids"),
+        alias_resolvers={"entity_ids": "entity"},
         selection_bound={"event_id": False, "entity_ids": False},
         safety_args=(),
         idempotency="none",
@@ -2729,6 +2951,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "scheduled_tasks",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "contacts",
@@ -2745,6 +2968,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "contacts",
@@ -2761,6 +2985,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "contacts",
@@ -2777,6 +3002,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "contacts",
@@ -2793,6 +3019,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2809,6 +3036,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2825,6 +3053,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2841,6 +3070,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2857,6 +3087,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2873,6 +3104,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2889,6 +3121,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2905,6 +3138,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2921,6 +3155,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2937,6 +3172,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2953,6 +3189,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2969,6 +3206,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -2985,6 +3223,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -3001,6 +3240,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -3017,6 +3257,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -3033,6 +3274,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "dashboard_read",
@@ -3049,6 +3291,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "email",
@@ -3065,6 +3308,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "email",
@@ -3081,6 +3325,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "email",
@@ -3101,6 +3346,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "email",
@@ -3117,6 +3363,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.permissions",),
         write_stores=("public.audit_log",),
         recipient_params=RecipientParameters(argument_names=("to",)),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3127,7 +3374,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_sensitivity="sensitive",
         resource_params=("parent_id",),
         selection_bound={"parent_id": False},
-        safety_args=(),
+        safety_args=("name", "parent_id", "destination_audience_digest"),
         idempotency="none",
         owner_authority=False,
         read_stores=("google_drive_butler_folders",),
@@ -3137,6 +3384,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3153,6 +3401,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3169,6 +3418,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3179,7 +3429,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_sensitivity="sensitive",
         resource_params=("file_id", "new_parent_id"),
         selection_bound={"file_id": False, "new_parent_id": False},
-        safety_args=("file_id", "new_parent_id"),
+        safety_args=("file_id", "new_parent_id", "destination_audience_digest"),
         idempotency="none",
         owner_authority=False,
         read_stores=(),
@@ -3189,6 +3439,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3205,6 +3456,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3221,6 +3473,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_drive",
@@ -3231,7 +3484,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_sensitivity="sensitive",
         resource_params=("folder_id",),
         selection_bound={"folder_id": False},
-        safety_args=("content",),
+        safety_args=("name", "content", "folder_id", "mime_type", "destination_audience_digest"),
         idempotency="none",
         owner_authority=False,
         read_stores=("google_drive_butler_folders",),
@@ -3241,6 +3494,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_health",
@@ -3257,6 +3511,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3273,6 +3531,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3289,6 +3551,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3305,6 +3571,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3321,6 +3591,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_health",
@@ -3337,6 +3608,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "google_health",
@@ -3353,6 +3625,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "google_health",
@@ -3369,6 +3645,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "memory",
@@ -3385,6 +3665,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("runtime_config",),
         write_stores=("episodes", "facts", "rules", "{DYNAMIC}"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3409,22 +3690,25 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("episodes", "facts", "rules", "{DYNAMIC}"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
         "core",
         "memory_get",
         effect_class="read",
-        output_trust="untrusted",
+        output_trust="stamped",
+        unknown_output_source=False,
         output_sensitivity="sensitive",
         resource_params=("memory_type", "memory_id"),
         selection_bound={"memory_type": False, "memory_id": False},
         safety_args=(),
         idempotency="none",
         owner_authority=False,
-        read_stores=("runtime_config",),
+        read_stores=("episodes", "facts", "rules", "runtime_config", "{DYNAMIC}"),
         write_stores=("episodes", "facts", "rules", "{DYNAMIC}"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3446,13 +3730,15 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
         "core",
         "memory_recall",
         effect_class="read",
-        output_trust="untrusted",
+        output_trust="stamped",
+        unknown_output_source=False,
         output_sensitivity="sensitive",
         resource_params=("scope",),
         selection_bound={"scope": False},
@@ -3462,13 +3748,15 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("episodes", "facts", "rules", "runtime_config", "{DYNAMIC}"),
         write_stores=("episodes", "facts", "rules", "{DYNAMIC}"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
         "core",
         "memory_search",
         effect_class="read",
-        output_trust="untrusted",
+        output_trust="stamped",
+        unknown_output_source=False,
         output_sensitivity="sensitive",
         resource_params=("scope",),
         selection_bound={"scope": False},
@@ -3478,6 +3766,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("episodes", "facts", "rules", "runtime_config", "{DYNAMIC}"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3494,6 +3783,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("episodes", "memory_policies", "public.entities"),
         write_stores=("episodes",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3503,6 +3793,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("subject", "predicate", "entity_id", "object_entity_id", "scope"),
+        alias_resolvers={"entity_id": "entity", "object_entity_id": "entity"},
         selection_bound={
             "subject": False,
             "predicate": False,
@@ -3531,6 +3822,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3547,6 +3839,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.memory_catalog", "rules"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3571,6 +3864,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3587,6 +3881,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("runtime_config",),
         write_stores=("rules",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3603,6 +3898,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("runtime_config",),
         write_stores=("rules",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3619,6 +3915,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("predicate_registry",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3635,6 +3932,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("predicate_registry",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3651,6 +3949,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("facts",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3667,6 +3966,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("{DYNAMIC}",),
         write_stores=("{DYNAMIC}",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3683,6 +3983,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("{DYNAMIC}",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3707,6 +4008,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3723,6 +4025,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("episodes",),
         write_stores=("episodes",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3739,6 +4042,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("episodes", "facts", "rules"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3755,6 +4059,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.memory_catalog",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3771,6 +4076,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entities",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3780,6 +4086,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -3787,6 +4094,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3796,6 +4104,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("source_entity_id", "target_entity_id"),
+        alias_resolvers={"source_entity_id": "entity", "target_entity_id": "entity"},
         selection_bound={"source_entity_id": False, "target_entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -3816,6 +4125,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.merge_reviews",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3825,6 +4135,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -3832,6 +4143,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3848,6 +4160,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "public.entities", "sql_function:LATERAL", "sql_function:UNNEST"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3857,6 +4170,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -3864,6 +4178,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entities",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3880,6 +4195,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "memory",
@@ -3910,6 +4226,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "pipeline",
@@ -3928,6 +4245,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         presentable=False,
         posture="eager",
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "qa",
@@ -3968,6 +4286,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "qa",
@@ -3985,6 +4304,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "qa",
@@ -4002,6 +4322,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -4019,6 +4340,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "core",
@@ -4036,6 +4358,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4052,6 +4375,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4068,6 +4392,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4084,6 +4409,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4100,6 +4426,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4116,6 +4443,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4132,6 +4460,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4148,6 +4477,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4164,6 +4494,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4180,6 +4511,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4196,6 +4528,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4212,6 +4545,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4228,6 +4562,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4244,6 +4579,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4260,6 +4596,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4276,6 +4613,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4292,6 +4630,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "spotify",
@@ -4310,6 +4649,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(
             undeterminable=True, undeterminable_condition="always for inherited/implicit party set"
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4328,6 +4668,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(
             undeterminable=True, undeterminable_condition="always for inherited/implicit party set"
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4344,6 +4685,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4360,6 +4702,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4378,6 +4721,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(
             undeterminable=True, undeterminable_condition="always for inherited/implicit party set"
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "spotify",
@@ -4394,6 +4738,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entity_info",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4410,6 +4755,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4426,6 +4772,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "steam",
@@ -4442,6 +4789,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4458,6 +4806,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4474,6 +4823,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4490,6 +4840,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "steam",
@@ -4506,6 +4857,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4522,6 +4874,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "steam",
@@ -4538,6 +4891,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "telegram",
@@ -4558,6 +4912,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "telegram",
@@ -4578,6 +4933,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "telegram",
@@ -4598,6 +4954,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "telegram",
@@ -4614,6 +4971,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.permissions",),
         write_stores=("public.audit_log",),
         recipient_params=RecipientParameters(argument_names=("chat_id",)),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "whatsapp",
@@ -4634,6 +4992,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "whatsapp",
@@ -4650,6 +5009,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(argument_names=("recipient",)),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4666,6 +5026,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("v_episodes_corrected", "v_point_events_corrected"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4682,6 +5043,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities", "public.entity_info", "v_episodes_corrected"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4698,6 +5060,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("v_episodes_corrected",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4714,6 +5077,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("overrides",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4723,6 +5087,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("source_name", "participant_entity_id"),
+        alias_resolvers={"participant_entity_id": "entity"},
         selection_bound={"source_name": False, "participant_entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -4730,6 +5095,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("v_episodes_corrected",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4746,6 +5112,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("v_point_events_corrected",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4762,6 +5129,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("state",),
         write_stores=("overrides", "routines", "state"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "chronicler",
@@ -4778,6 +5146,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("overrides",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4794,6 +5163,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("education.mind_maps",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -4810,6 +5180,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         write_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4826,6 +5197,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         write_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -4842,6 +5214,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4858,6 +5231,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes", "education.mind_maps"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4874,6 +5248,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_maps",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4890,6 +5265,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_maps", "public.entities"),
         write_stores=("education.mind_map_nodes", "public.entities"),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -4906,6 +5282,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4922,6 +5299,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4938,6 +5316,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps"),
         write_stores=("education.mind_map_nodes", "education.mind_maps"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4954,6 +5333,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4970,6 +5350,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps"),
         write_stores=("education.mind_maps",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -4986,6 +5367,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "state"),
         write_stores=("education.mind_map_nodes",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5002,6 +5384,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps", "scheduled_tasks", "state"),
         write_stores=("education.mind_maps", "state"),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5024,6 +5407,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("education.mind_maps", "state"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5040,6 +5424,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("state",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5061,6 +5446,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5083,6 +5469,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("education.mind_maps", "state"),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5099,6 +5486,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "state"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5115,6 +5503,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.quiz_responses"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5131,6 +5520,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.quiz_responses"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5147,6 +5537,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.quiz_responses",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5167,6 +5558,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "education.quiz_responses",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5183,6 +5575,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5199,6 +5592,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "scheduled_tasks"),
         write_stores=("education.mind_map_nodes",),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5215,6 +5609,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps", "scheduled_tasks"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5231,6 +5626,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "state"),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5247,6 +5643,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "state"),
         write_stores=("education.mind_map_nodes", "education.quiz_responses", "state"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5263,6 +5660,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_nodes", "education.mind_maps", "state"),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5284,6 +5682,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("education.mind_map_nodes", "education.mind_maps"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5300,6 +5699,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes", "education.mind_maps"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5316,6 +5716,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.mind_map_edges", "education.mind_map_nodes", "education.mind_maps"),
         write_stores=("education.mind_map_nodes",),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "education",
@@ -5332,6 +5733,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.analytics_snapshots", "education.mind_maps"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5348,6 +5750,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.analytics_snapshots",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5364,6 +5767,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("education.analytics_snapshots",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "education",
@@ -5380,6 +5784,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("state",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5396,6 +5801,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "education",
@@ -5412,6 +5818,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("state",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5428,6 +5835,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("accounts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5444,6 +5852,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("information_schema.columns",),
         write_stores=("transactions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5460,6 +5869,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5476,6 +5886,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("accounts", "information_schema.columns", "transactions"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5492,6 +5903,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("accounts", "transactions"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5531,6 +5943,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "transactions",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5553,6 +5966,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("merchant_mappings", "transaction_corrections", "transactions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5569,6 +5983,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5585,6 +6000,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5601,6 +6017,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5618,6 +6035,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("subscriptions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5634,6 +6052,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities", "subscriptions"),
         write_stores=("subscriptions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5650,6 +6069,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5666,6 +6086,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5699,6 +6120,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5731,6 +6153,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5747,6 +6170,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("bills",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5763,6 +6187,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5779,6 +6204,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5795,6 +6221,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5811,6 +6238,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5827,6 +6255,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5843,6 +6272,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5859,6 +6289,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5875,6 +6306,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("information_schema.columns", "transactions"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5891,6 +6323,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5907,6 +6340,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5923,6 +6357,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5953,6 +6388,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -5983,6 +6419,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6005,6 +6442,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("merchant_mappings", "transaction_corrections", "transactions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6044,6 +6482,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "transactions",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6060,6 +6499,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=("facts",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6076,22 +6516,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
-    ),
-    *_declare(
-        "finance",
-        "bulk",
-        "import_transactions_from_file",
-        effect_class="record",
-        output_trust="untrusted",
-        output_sensitivity="sensitive",
-        resource_params=("account_id",),
-        selection_bound={"account_id": False},
-        safety_args=(),
-        idempotency="none",
-        owner_authority=False,
-        read_stores=(),
-        write_stores=(),
-        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6108,6 +6533,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("information_schema.columns", "information_schema.tables", "transactions"),
         write_stores=("transaction_corrections", "transactions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6129,6 +6555,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("transaction_corrections", "transactions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6145,6 +6572,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6161,6 +6589,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6177,6 +6606,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6193,6 +6623,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=("finance",),
     ),
     *_declare(
         "finance",
@@ -6209,6 +6640,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6225,6 +6657,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6241,6 +6674,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6257,6 +6691,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6273,6 +6708,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "finance",
@@ -6289,6 +6725,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6305,6 +6742,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.user_context",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6321,6 +6759,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sql_function:public.context_dnd_mutate",),
         write_stores=("public.user_context",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6337,6 +6776,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("sql_function:public.context_dnd_mutate",),
         write_stores=("public.user_context",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6353,6 +6793,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections", "pg_catalog.pg_attribute", "pg_catalog.pg_index"),
         write_stores=("collections",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6375,6 +6816,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("collection_vocabulary", "collection_vocabulary_keys", "collections"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6391,6 +6833,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections", "source_versions"),
         write_stores=("collections", "source_versions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6407,6 +6850,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections", "pg_catalog.pg_attribute", "pg_catalog.pg_index"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6423,6 +6867,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6444,6 +6889,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6466,6 +6912,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("collections", "source_versions"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6482,6 +6929,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections", "source_versions"),
         write_stores=("source_versions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6498,6 +6946,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6514,6 +6963,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections", "pg_catalog.pg_attribute", "pg_catalog.pg_index"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "general",
@@ -6530,6 +6980,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("collections", "source_versions"),
         write_stores=("source_versions",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6554,6 +7005,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -6570,6 +7025,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6586,6 +7042,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6616,6 +7073,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6632,6 +7090,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=("facts",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6648,6 +7107,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6678,6 +7138,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6694,6 +7155,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6710,6 +7172,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6740,6 +7203,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6756,6 +7220,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6786,6 +7251,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6802,6 +7268,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6832,6 +7299,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6856,6 +7324,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -6872,6 +7344,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6902,6 +7375,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6918,6 +7392,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6934,6 +7409,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=("facts", "public.memory_catalog"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -6958,6 +7434,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -6974,6 +7454,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7005,6 +7486,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7021,6 +7503,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=("facts",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7037,6 +7520,10 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7053,6 +7540,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7069,6 +7557,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7093,6 +7582,10 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=(
+            "health",
+            "routine",
+        ),
     ),
     *_declare(
         "health",
@@ -7123,6 +7616,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7139,6 +7633,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7155,6 +7650,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7185,6 +7681,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "health",
@@ -7219,6 +7716,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7251,6 +7749,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7287,6 +7786,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7303,6 +7803,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7319,6 +7820,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7335,6 +7837,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7351,6 +7854,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7367,6 +7871,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7383,6 +7888,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("connectors.home_assistant_history", "ha_source_health"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7399,6 +7905,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7415,6 +7922,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7446,6 +7954,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7462,6 +7971,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("maintenance_items",),
         write_stores=("maintenance_items",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7478,6 +7988,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("maintenance_items",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "home_assistant",
@@ -7494,6 +8005,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("maintenance_items",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "lifestyle",
@@ -7510,6 +8022,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("verdicts",),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "lifestyle",
@@ -7532,6 +8045,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("taste_signals", "verdicts", "works"),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "lifestyle",
@@ -7548,6 +8062,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("taste_signals", "verdicts", "works"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=("routine",),
     ),
     *_declare(
         "lifestyle",
@@ -7564,6 +8079,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("taste_signals", "verdicts", "works"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "lifestyle",
@@ -7580,6 +8096,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("works",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7616,6 +8133,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_evidence",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7632,6 +8150,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "public.entities", "relationship.entity_facts"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7648,6 +8167,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "public.entities", "sql_function:LATERAL", "sql_function:UNNEST"),
         write_stores=("contact_entity_map", "public.entities"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7664,6 +8184,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7691,6 +8212,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7707,6 +8229,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7723,6 +8246,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "public.entities"),
         write_stores=("contact_entity_map", "public.entities"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7758,6 +8282,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7779,6 +8304,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7795,6 +8321,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("addresses",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7811,6 +8338,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("addresses",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7827,6 +8355,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("addresses",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7843,6 +8372,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("addresses",),
         write_stores=("addresses",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7864,6 +8394,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7880,6 +8411,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "public.entities"),
         write_stores=("public.entities",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7904,6 +8436,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7955,6 +8488,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_evidence",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -7985,6 +8519,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.merge_reviews",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8001,6 +8536,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("important_dates",),
         write_stores=("important_dates",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8017,6 +8553,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("important_dates",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8049,6 +8586,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8065,6 +8603,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8097,6 +8636,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8113,6 +8653,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("pg_attribute",),
         write_stores=("group_members",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8129,6 +8670,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("pg_attribute",),
         write_stores=("groups",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8145,6 +8687,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("groups",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8161,6 +8704,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "group_members", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8183,6 +8727,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("public.expected_signals",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8199,6 +8744,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map",),
         write_stores=("facts", "public.entity_graph_edges", "public.memory_catalog"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8215,6 +8761,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map",),
         write_stores=("public.entities",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8231,6 +8778,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "important_dates", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8247,6 +8795,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "contacts_source_links", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8263,6 +8812,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "contacts_source_links", "public.entities"),
         write_stores=("facts",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8279,6 +8829,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "contacts_source_links", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8295,6 +8846,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "contacts_source_links", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8327,6 +8879,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8360,6 +8913,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8376,6 +8930,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "contact_labels", "labels", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8392,6 +8947,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("contact_labels",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8408,6 +8964,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("labels",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8440,13 +8997,15 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
         "notes",
         "note_list",
         effect_class="read",
-        output_trust="untrusted",
+        output_trust="stamped",
+        unknown_output_source=False,
         output_sensitivity="sensitive",
         resource_params=("contact_id",),
         selection_bound={"contact_id": False},
@@ -8456,6 +9015,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8472,6 +9032,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8488,6 +9049,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8521,6 +9083,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8537,6 +9100,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "life_event_categories", "life_event_types"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8553,6 +9117,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("relationship_types",),
         write_stores=("relationships",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8569,6 +9134,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "public.entities", "relationships"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8585,6 +9151,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("relationships",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8601,6 +9168,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("relationship_types",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8617,6 +9185,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("relationship_types",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8645,6 +9214,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8675,6 +9245,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=("{DYNAMIC}",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8713,6 +9284,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8729,6 +9301,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8761,6 +9334,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8777,6 +9351,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("meeting_debriefs",),
         write_stores=("meeting_debriefs",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8793,6 +9368,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("meeting_debriefs", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8823,6 +9399,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8853,6 +9430,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "public.memory_catalog",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8877,6 +9455,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8893,6 +9472,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("contact_entity_map", "facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8902,6 +9482,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -8909,6 +9490,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8918,6 +9500,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -8925,6 +9508,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "public.entities"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8941,6 +9525,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("facts", "public.entities", "sql_function:LATERAL", "sql_function:UNNEST"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8957,6 +9542,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.audit_log", "public.entities"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -8966,6 +9552,7 @@ TOOL_PRESENTATION_INVENTORY = (
         output_trust="untrusted",
         output_sensitivity="sensitive",
         resource_params=("entity_id",),
+        alias_resolvers={"entity_id": "entity"},
         selection_bound={"entity_id": False},
         safety_args=(),
         idempotency="none",
@@ -8973,6 +9560,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities",),
         write_stores=("public.entities",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9019,6 +9607,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "relationship.fact_evidence",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9035,6 +9624,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("relationship.entity_facts", "relationship.fact_evidence"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9056,6 +9646,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9072,6 +9663,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.entities", "relationship.entity_facts", "relationship.fact_coverage"),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9088,6 +9680,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("relationship.fact_coverage",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9105,6 +9698,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "relationship",
@@ -9140,6 +9734,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9175,6 +9770,7 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(
             undeterminable=True, undeterminable_condition="always for inherited/implicit party set"
         ),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9191,6 +9787,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("switchboard.butler_registry",),
         write_stores=("switchboard.butler_registry", "switchboard.butler_registry_eligibility_log"),
         recipient_params=RecipientParameters(),
+        categories=(),
     ),
     *_declare(
         "switchboard",
@@ -9219,6 +9816,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True, undeterminable_condition="always for inherited/implicit party set"
         ),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9251,6 +9849,7 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable_condition="always for inherited/implicit party set",
         ),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9268,6 +9867,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("connector_registry",),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9284,6 +9884,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("extraction_log",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9310,6 +9911,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "switchboard.routing_log",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9326,6 +9928,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=(),
         write_stores=("extraction_log",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9342,6 +9945,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("backfill_jobs",),
         write_stores=("backfill_jobs",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9358,6 +9962,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("backfill_jobs",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9374,6 +9979,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("backfill_jobs",),
         write_stores=("backfill_jobs",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9390,6 +9996,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("backfill_jobs",),
         write_stores=("backfill_jobs",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9406,6 +10013,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("switchboard.connector_registry",),
         write_stores=("backfill_jobs",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9423,6 +10031,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("switchboard.message_inbox", "switchboard.operator_audit_log"),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9440,6 +10049,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("switchboard.message_inbox", "switchboard.operator_audit_log"),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9457,6 +10067,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("switchboard.message_inbox", "switchboard.operator_audit_log"),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9474,6 +10085,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9491,6 +10103,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9508,6 +10121,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("switchboard.message_inbox", "switchboard.operator_audit_log"),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "switchboard",
@@ -9529,6 +10143,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "insight_broker",
@@ -9545,6 +10160,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("insight_candidates",),
         write_stores=("insight_cooldowns", "insight_engagement", "insight_feedback"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "insight_broker",
@@ -9561,6 +10177,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("insight_candidates",),
         write_stores=("insight_cooldowns", "insight_engagement", "insight_feedback"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "insight_broker",
@@ -9577,6 +10194,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("insight_candidates",),
         write_stores=("insight_cooldowns", "insight_engagement", "insight_feedback"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "insight_broker",
@@ -9593,6 +10211,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("insight_settings",),
         write_stores=("insight_candidates", "insight_settings"),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "owner_conditions_broker",
@@ -9610,6 +10229,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=(),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "owner_conditions_broker",
@@ -9627,6 +10247,7 @@ TOOL_PRESENTATION_INVENTORY = (
         write_stores=("{DYNAMIC}",),
         recipient_params=RecipientParameters(),
         presentable=False,
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9643,6 +10264,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("travel.connections",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9659,6 +10281,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("travel.trips",),
         write_stores=("travel.documents",),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9675,6 +10298,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("public.permissions",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9691,6 +10315,7 @@ TOOL_PRESENTATION_INVENTORY = (
         read_stores=("travel.trips",),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9759,6 +10384,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "travel.trips",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9783,6 +10409,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9805,6 +10432,7 @@ TOOL_PRESENTATION_INVENTORY = (
         ),
         write_stores=(),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
     *_declare(
         "travel",
@@ -9852,6 +10480,7 @@ TOOL_PRESENTATION_INVENTORY = (
             "{DYNAMIC}",
         ),
         recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
     ),
 )
 
@@ -9861,6 +10490,123 @@ TOOL_PRESENTATION_BY_NAME = MappingProxyType(
 
 if len(TOOL_PRESENTATION_BY_NAME) != len(TOOL_PRESENTATION_INVENTORY):
     raise RuntimeError("duplicate canonical name in tool presentation inventory")
+
+
+def _spec(*names: str) -> tuple[str, ...]:
+    return tuple(f"openspec/specs/{name}/spec.md" for name in names)
+
+
+#: The domain spec each declaration's ``categories`` were read from, keyed by
+#: ``module`` or, where a module spans specs, ``module/group``. A contract test
+#: requires a citation for every declaration and that each cited file exists.
+CATEGORY_SPECS = MappingProxyType(
+    {
+        "approvals": _spec("module-approvals"),
+        "calendar": _spec("module-calendar"),
+        "chronicler": _spec("butler-chronicler"),
+        "contacts": _spec("module-contacts"),
+        "core/continuity": _spec("core-scheduler"),
+        "core/cost_claims": _spec("finance-cost-claims"),
+        "core/delegation": _spec("cross-butler-delegation"),
+        "core/direct": _spec("core-daemon", "time-aware-delivery"),
+        "core/domain_events": _spec("domain-event-bus"),
+        "core/fleet_cases": _spec("fleet-case-file"),
+        "core/graph": _spec("entity-graph"),
+        "core/infra": _spec("core-daemon", "module-memory", "dashboard-conversations"),
+        "core/media": _spec("core-daemon"),
+        "core/module_mgmt": _spec("core-modules"),
+        "core/notifications": _spec("core-notify"),
+        "core/scheduling": _spec("core-scheduler"),
+        "core/sessions": _spec("core-sessions"),
+        "core/state": _spec("core-state"),
+        "core/switchboard_backfill": _spec("butler-switchboard"),
+        "core/switchboard_routing": _spec("butler-switchboard"),
+        "core/temporal": _spec("deadline-tracking", "event-chains", "seasonal-awareness"),
+        "dashboard_read": _spec("module-dashboard-read"),
+        "education": _spec("butler-education"),
+        "email": _spec("module-email"),
+        "finance": _spec("butler-finance"),
+        "general": _spec("butler-general"),
+        "google_drive": _spec("module-google-drive"),
+        "google_health": _spec("module-google-health"),
+        "health": _spec("butler-health"),
+        "home_assistant": _spec("module-home-assistant"),
+        "insight_broker": _spec("proactive-insight-engine"),
+        "lifestyle": _spec("butler-lifestyle"),
+        "memory": _spec("module-memory"),
+        "owner_conditions_broker": _spec("owner-condition-ledger"),
+        "pipeline": _spec("module-pipeline"),
+        "qa": _spec("staffer-qa"),
+        "relationship": _spec("butler-relationship"),
+        "spotify": _spec("module-spotify"),
+        "steam": _spec("module-steam"),
+        "switchboard": _spec("butler-switchboard"),
+        "telegram": _spec("module-telegram"),
+        "travel": _spec("butler-travel"),
+        "whatsapp": _spec("butler-messenger"),
+    }
+)
+
+
+#: Why each declaration narrower than ALL_CATEGORIES is safe: the output fields it
+#: returns, all structured with no owner, LLM or third-party free text (notes,
+#: memos, descriptions, typed titles, identity fields such as display and real
+#: names, message bodies, or a raw provider payload
+#: that can carry owner-named or third-party text, such as Spotify playlists).
+#: Any such field keeps all six, as do finance category labels (owner free text)
+#: and merchant, payee or service names (a pharmacy or clinic reveals health),
+#: and third-party catalog titles (works, games, achievements). Dated owner
+#: activity is routine. A contract test pins this set.
+NARROWED_CATEGORIES = MappingProxyType(
+    {
+        "learn_merchant_categories": "upserted count, as_of",
+        "measurement_delete": "deleted boolean",
+        "meal_delete": "deleted boolean",
+        "research_delete": "deleted boolean",
+        "symptom_delete": "deleted boolean",
+        "nutrition_summary": "calorie and macro totals and daily averages, meal count",
+        "health_hr_history": "daily heart-rate mean/min/max/count, summary, trend slope",
+        "health_hrv_history": "daily HRV mean/min/max/count, average RMSSD, coverage, trend",
+        "health_spo2_history": "daily SpO2 average/min/max, summary",
+        "health_breathing_rate_history": "daily breathing-rate mean/min/max/count, summary",
+        "health_activity_summary": "daily steps, distance, floors, activity minutes, averages",
+        "health_vo2_max_latest": "VO2 max value, range, midpoint, measured_at",
+        "taste_add_verdict": "verdict id, created_at",
+        "taste_backfill_ledger": "works and signals created counts",
+        "taste_get_summary": "work, signal and verdict counts by code-written kind",
+        "analytics_get_snapshot": "fixed mastery/retention/velocity metrics, time-of-day spread",
+        "analytics_get_trend": "snapshot rows of the same fixed metrics",
+        "curriculum_replan": "map id, node and edge counts, status",
+        "diagnostic_complete": "per-node quality and inferred mastery, counts, frontier rank",
+        "mastery_get_map_summary": "node and status counts, average mastery, struggling node ids",
+        "mind_map_create": "map id",
+        "mind_map_edge_delete": "no value",
+        "mind_map_node_create": "node id, entity id",
+        "spaced_repetition_record_response": "interval, ease, repetitions, next_review_at",
+        "spaced_repetition_schedule_cleanup": "removed count",
+        "teaching_flow_abandon": "no value",
+        "teaching_flow_start": "status, map id, session count, started_at, last_session_at",
+        "spotify_play": "status",
+        "spotify_pause": "status",
+        "spotify_skip_next": "status",
+        "spotify_skip_previous": "status",
+        "spotify_seek": "status, position_ms",
+        "spotify_set_volume": "status, volume_percent",
+        "spotify_save_tracks": "status, count",
+        "spotify_remove_saved_tracks": "status, count",
+        "steam_get_player_level": "player level",
+        "steam_get_current_players": "public player count",
+        "steam_resolve_vanity_url": "steam id, vanity url",
+        "module.states": "module names and enable/health states",
+        "list_butlers": "registry rows: name, endpoint, modules, liveness and eligibility",
+        "pending_action_count": "pending-action totals by status",
+    }
+)
+
+
+def category_spec(module: str, group: str) -> tuple[str, ...]:
+    """The spec citation for one declaration's categories; empty if uncited."""
+    return CATEGORY_SPECS.get(f"{module}/{group}") or CATEGORY_SPECS.get(module, ())
 
 
 # Native source writer declarations. These cannot establish trusted output by absence.
@@ -9944,9 +10690,9 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.connectors.spotify.persist_session_summary",
                 "butlers.connectors.spotify.persist_spoken_session",
                 "butlers.connectors.spotify.upsert_open_track_play",
-                "butlers.connectors.spotify_client.SpotifyClient.add_tracks_to_playlist",
-                "butlers.connectors.spotify_client.SpotifyClient.create_playlist",
-                "butlers.connectors.spotify_client.SpotifyClient.remove_tracks_from_playlist",
+                "butlers.spotify_client.SpotifyClient.add_tracks_to_playlist",
+                "butlers.spotify_client.SpotifyClient.create_playlist",
+                "butlers.spotify_client.SpotifyClient.remove_tracks_from_playlist",
             ),
             external_writers=True,
             unknown_writers=True,
@@ -10040,10 +10786,7 @@ STORE_WRITERS = MappingProxyType(
         ),
         "approval_push_emissions": StoreWriters(
             record_capabilities=(),
-            native_writers=(
-                "butlers.modules.approvals.notifications._record_push_outcome",
-                "butlers.modules.approvals.notifications.reserve_approval_push",
-            ),
+            native_writers=(),
             unknown_writers=True,
         ),
         "approval_rules": StoreWriters(
@@ -10276,7 +11019,7 @@ STORE_WRITERS = MappingProxyType(
         "deferred_notifications": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.core.scheduler._tick_deferred_notification_pass",
+                "butlers.core.scheduler.deferred_pass._tick_deferred_notification_pass",
                 "butlers.core.temporal.delivery_db.cancel_deferred_notification",
                 "butlers.core.temporal.delivery_db.cancel_pending_notifications_matching_line",
                 "butlers.core.temporal.delivery_db.insert_deferred_notification",
@@ -10418,7 +11161,7 @@ STORE_WRITERS = MappingProxyType(
         "event_chains": StoreWriters(
             record_capabilities=(),
             native_writers=(
-                "butlers.core.scheduler._fire_chain",
+                "butlers.core.scheduler.chain_pass._fire_chain",
                 "butlers.core.temporal.event_chains_db.event_chain_create",
                 "butlers.core.temporal.event_chains_db.event_chain_delete",
                 "butlers.core.temporal.event_chains_db.event_chain_update",
@@ -10831,10 +11574,7 @@ STORE_WRITERS = MappingProxyType(
         ),
         "public.approvals_policy": StoreWriters(
             record_capabilities=(),
-            native_writers=(
-                "butlers.api.routers.approvals.update_approvals_policy",
-                "butlers.testing.approval_delivery_schema.install_approval_delivery_schema",
-            ),
+            native_writers=("butlers.api.routers.approvals.update_approvals_policy",),
             unknown_writers=True,
         ),
         "public.attention_ledger": StoreWriters(
@@ -11382,7 +12122,6 @@ STORE_WRITERS = MappingProxyType(
             ),
             native_writers=(
                 "butlers.owner_bootstrap._seed_owner_telegram_handle",
-                "butlers.tools.relationship.contacts._repoint_entity_facts",
                 "butlers.tools.relationship.entity_merge._move_candidate_reports",
                 "butlers.tools.relationship.entity_merge.merge_entity_pair",
                 "butlers.tools.relationship.fact_identity_decisions.decide_identity_fact",
@@ -11520,21 +12259,23 @@ STORE_WRITERS = MappingProxyType(
             unknown_writers=True,
         ),
         "scheduled_tasks": StoreWriters(
-            record_capabilities=("receive_domain_event",),
+            record_capabilities=("paperwork_deadline_set", "receive_domain_event"),
             native_writers=(
-                "butlers.core.scheduler._defer_cron_for_allowance",
-                "butlers.core.scheduler._fire_chain",
-                "butlers.core.scheduler._tick_deadline_pass",
-                "butlers.core.scheduler.ensure_module_default_schedule",
-                "butlers.core.scheduler.schedule_create",
-                "butlers.core.scheduler.schedule_delete",
-                "butlers.core.scheduler.schedule_toggle",
-                "butlers.core.scheduler.schedule_update",
-                "butlers.core.scheduler.sync_schedules",
-                "butlers.core.scheduler.tick",
+                "butlers.core.scheduler.claim._defer_cron_for_allowance",
+                "butlers.core.scheduler.chain_pass._fire_chain",
+                "butlers.core.scheduler.deadline_pass._record_deadline_threshold",
+                "butlers.core.scheduler.deadline_pass._tick_deadline_pass",
+                "butlers.core.scheduler.crud.ensure_module_default_schedule",
+                "butlers.core.scheduler.crud.schedule_create",
+                "butlers.core.scheduler.crud.schedule_delete",
+                "butlers.core.scheduler.update.schedule_toggle",
+                "butlers.core.scheduler.update.schedule_update",
+                "butlers.core.scheduler.sync.sync_schedules",
+                "butlers.core.scheduler.dispatch.tick",
                 "butlers.core.temporal.deadlines_db.deadline_create",
                 "butlers.core.temporal.deadlines_db.deadline_delete",
                 "butlers.core.temporal.deadlines_db.deadline_update",
+                "butlers.core.temporal.document_deadlines.document_deadline_set",
                 "butlers.core_tools._scheduling.register_scheduling_tools.schedule_trigger",
                 "butlers.modules.calendar.internal_projection.InternalProjectionMixin._push_internal_events_to_provider",
                 "butlers.tools.education.mind_maps.mind_map_abandon_stale.delete_schedule",
@@ -11672,7 +12413,7 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.connectors.cursor_store.save_connector_settings",
                 "butlers.connectors.cursor_store.save_cursor",
                 "butlers.connectors.google_drive.GDriveAccountLoop._save_metadata_cache_to_store",
-                "butlers.connectors.google_drive.GDriveConnectorManager._account_heartbeat_loop",
+                "butlers.connectors.google_drive.DriveAccountSource._account_heartbeat_loop",
                 "butlers.tools.switchboard.connector.heartbeat._persist_registry",
             ),
             unknown_writers=True,

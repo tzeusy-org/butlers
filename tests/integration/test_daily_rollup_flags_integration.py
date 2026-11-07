@@ -35,8 +35,6 @@ from butlers.chronicler.storage import (
     upsert_checkpoint,
     upsert_daily_rollup,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -45,32 +43,19 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
+
+@pytest.fixture
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
+
 _TZ = ZoneInfo("Asia/Singapore")
 _LOCAL_DATE = date(2026, 7, 1)
 _NOW = datetime(2026, 7, 2, 8, 0, 0, tzinfo=UTC)
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE daily_rollup_flags, daily_rollups CASCADE")
-    await p.execute("TRUNCATE TABLE episodes, point_events CASCADE")
-    await p.execute("TRUNCATE TABLE source_adapter_state, projection_checkpoints CASCADE")
-    await p.execute("TRUNCATE TABLE routines CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
 
 
 async def _mark_all_healthy(pool, *, now: datetime) -> None:
@@ -114,34 +99,34 @@ async def _seed_zero_sleep_rollup(pool, local_date: date) -> None:
         )
 
 
-async def test_healthy_day_writes_sleep_missing_only(pool) -> None:
-    await _mark_all_healthy(pool, now=_NOW)
-    await _seed_zero_sleep_rollup(pool, _LOCAL_DATE)
+async def test_healthy_day_writes_sleep_missing_only(chronicler_pool) -> None:
+    await _mark_all_healthy(chronicler_pool, now=_NOW)
+    await _seed_zero_sleep_rollup(chronicler_pool, _LOCAL_DATE)
 
     await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
 
-    flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     flag_types = {f.flag_type for f in flags}
     assert flag_types == {FLAG_SLEEP_MISSING}
 
 
-async def test_feeder_dark_suppresses_sleep_missing_end_to_end(pool) -> None:
+async def test_feeder_dark_suppresses_sleep_missing_end_to_end(chronicler_pool) -> None:
     """The required feeder_dark-suppresses-derived-flags case, exercised
     against real source_adapter_state/projection_checkpoints/daily_rollups
     rows: a dark google_health.measurements feeder must write feeder_dark
     and must NOT write sleep_missing despite the day's sleep lane being 0."""
-    await _mark_all_healthy(pool, now=_NOW)
-    await mark_source_active(pool, "google_health.measurements", active=False)
-    await _seed_zero_sleep_rollup(pool, _LOCAL_DATE)
+    await _mark_all_healthy(chronicler_pool, now=_NOW)
+    await mark_source_active(chronicler_pool, "google_health.measurements", active=False)
+    await _seed_zero_sleep_rollup(chronicler_pool, _LOCAL_DATE)
 
     result = await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
     assert result["dark_sources"] == ["google_health.measurements"]
 
-    flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     flags_by_type = {f.flag_type: f for f in flags}
     assert set(flags_by_type) == {FLAG_FEEDER_DARK}
     assert flags_by_type[FLAG_FEEDER_DARK].detail == {
@@ -150,33 +135,33 @@ async def test_feeder_dark_suppresses_sleep_missing_end_to_end(pool) -> None:
     assert flags_by_type[FLAG_FEEDER_DARK].severity == "warning"
 
 
-async def test_stale_checkpoint_also_produces_feeder_dark(pool) -> None:
+async def test_stale_checkpoint_also_produces_feeder_dark(chronicler_pool) -> None:
     """active=True but a checkpoint far older than 2x its cron interval must
     still count as dark — the silent-failure case, not just an explicit
     active=False toggle."""
-    await _mark_all_healthy(pool, now=_NOW)
-    await mark_source_active(pool, "chronicler.occupation_inferred", active=True)
+    await _mark_all_healthy(chronicler_pool, now=_NOW)
+    await mark_source_active(chronicler_pool, "chronicler.occupation_inferred", active=True)
     await upsert_checkpoint(
-        pool,
+        chronicler_pool,
         "chronicler.occupation_inferred",
         watermark=_NOW - timedelta(hours=5),
         success=True,
     )
     # cron interval for chronicler.occupation_inferred is 60 min (hourly);
     # backdate its last_success_at well beyond the 2x threshold.
-    await pool.execute(
+    await chronicler_pool.execute(
         "UPDATE projection_checkpoints SET last_success_at = $2 WHERE source_name = $1",
         "chronicler.occupation_inferred",
         _NOW - timedelta(hours=5),
     )
-    await _seed_zero_sleep_rollup(pool, _LOCAL_DATE)
+    await _seed_zero_sleep_rollup(chronicler_pool, _LOCAL_DATE)
 
     result = await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
     assert "chronicler.occupation_inferred" in result["dark_sources"]
 
-    flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     feeder_dark = next(f for f in flags if f.flag_type == FLAG_FEEDER_DARK)
     assert "chronicler.occupation_inferred" in feeder_dark.detail["dark_sources"]
     # routine_break also depends on this source; with no routines seeded it
@@ -184,58 +169,58 @@ async def test_stale_checkpoint_also_produces_feeder_dark(pool) -> None:
     assert FLAG_ROUTINE_BREAK not in {f.flag_type for f in flags}
 
 
-async def test_idempotent_rerun_reconciles_flags_not_duplicates(pool) -> None:
+async def test_idempotent_rerun_reconciles_flags_not_duplicates(chronicler_pool) -> None:
     """Re-running for an already-evaluated day must not create duplicate
     rows (the (local_date, flag_type) unique constraint), and must delete a
     previously-written flag once its underlying condition clears — the
     "idempotent re-runs" requirement covers removal, not just
     non-duplication."""
-    await _mark_all_healthy(pool, now=_NOW)
-    await mark_source_active(pool, "google_health.measurements", active=False)
-    await _seed_zero_sleep_rollup(pool, _LOCAL_DATE)
+    await _mark_all_healthy(chronicler_pool, now=_NOW)
+    await mark_source_active(chronicler_pool, "google_health.measurements", active=False)
+    await _seed_zero_sleep_rollup(chronicler_pool, _LOCAL_DATE)
 
     await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
-    first_flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    first_flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     assert {f.flag_type for f in first_flags} == {FLAG_FEEDER_DARK}
 
     # Re-run unchanged: must not duplicate.
     await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
-    second_flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    second_flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     assert len(second_flags) == 1
     assert second_flags[0].flag_type == FLAG_FEEDER_DARK
 
     # The feeder recovers and the day's sleep lane gets corrected upward —
     # re-running must clear feeder_dark (and never have written
     # sleep_missing, since sleep is no longer zero).
-    await mark_source_active(pool, "google_health.measurements", active=True)
+    await mark_source_active(chronicler_pool, "google_health.measurements", active=True)
     await upsert_checkpoint(
-        pool,
+        chronicler_pool,
         "google_health.measurements",
         watermark=_NOW - timedelta(minutes=1),
         success=True,
     )
-    await pool.execute(
+    await chronicler_pool.execute(
         "UPDATE projection_checkpoints SET last_success_at = $2, last_run_at = $2 "
         "WHERE source_name = $1",
         "google_health.measurements",
         _NOW - timedelta(minutes=1),
     )
     await upsert_daily_rollup(
-        pool, local_date=_LOCAL_DATE, lane="sleep", seconds=21600, episode_count=1
+        chronicler_pool, local_date=_LOCAL_DATE, lane="sleep", seconds=21600, episode_count=1
     )
 
     await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
-    third_flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    third_flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     assert third_flags == []
 
 
-async def test_routine_break_writes_and_clears_end_to_end(pool) -> None:
+async def test_routine_break_writes_and_clears_end_to_end(chronicler_pool) -> None:
     """An enabled Monday routine with no occupation_block on a healthy day
     must fire routine_break; once an occupation_block covers the window, a
     re-run must clear it."""
@@ -251,11 +236,13 @@ async def test_routine_break_writes_and_clears_end_to_end(pool) -> None:
     # Checkpoints must be fresh relative to `later_now` (the clock this test
     # evaluates against), not `_NOW` — `_mark_all_healthy` pins freshness to
     # whatever `now` it is given.
-    await _mark_all_healthy(pool, now=later_now)
-    await upsert_daily_rollup(pool, local_date=monday, lane="work", seconds=0, episode_count=0)
+    await _mark_all_healthy(chronicler_pool, now=later_now)
+    await upsert_daily_rollup(
+        chronicler_pool, local_date=monday, lane="work", seconds=0, episode_count=0
+    )
 
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=1 << 0,
         window_start_local=dtime(9, 0),
         window_end_local=dtime(17, 0),
@@ -267,11 +254,11 @@ async def test_routine_break_writes_and_clears_end_to_end(pool) -> None:
     )
 
     result = await evaluate_and_write_daily_flags(
-        pool, local_date=monday, timezone="Asia/Singapore", now=later_now
+        chronicler_pool, local_date=monday, timezone="Asia/Singapore", now=later_now
     )
     assert result["flags"][FLAG_ROUTINE_BREAK] is True
 
-    flags = await list_daily_rollup_flags(pool, local_date=monday)
+    flags = await list_daily_rollup_flags(chronicler_pool, local_date=monday)
     routine_break = next(f for f in flags if f.flag_type == FLAG_ROUTINE_BREAK)
     assert routine_break.detail["routines"][0]["label"] == "weekday desk block"
     assert routine_break.detail["routines"][0]["routine_id"] == str(routine.id)
@@ -279,7 +266,7 @@ async def test_routine_break_writes_and_clears_end_to_end(pool) -> None:
     window_start = datetime(2026, 7, 6, 9, 0, tzinfo=_TZ).astimezone(UTC)
     window_end = datetime(2026, 7, 6, 17, 0, tzinfo=_TZ).astimezone(UTC)
     await upsert_episode(
-        pool,
+        chronicler_pool,
         Episode(
             source_name="chronicler.occupation_inferred",
             source_ref=f"chronicler.routines:{routine.id}:{monday.isoformat()}",
@@ -293,14 +280,14 @@ async def test_routine_break_writes_and_clears_end_to_end(pool) -> None:
     )
 
     await evaluate_and_write_daily_flags(
-        pool, local_date=monday, timezone="Asia/Singapore", now=later_now
+        chronicler_pool, local_date=monday, timezone="Asia/Singapore", now=later_now
     )
-    flags_after = await list_daily_rollup_flags(pool, local_date=monday)
+    flags_after = await list_daily_rollup_flags(chronicler_pool, local_date=monday)
     assert FLAG_ROUTINE_BREAK not in {f.flag_type for f in flags_after}
 
 
-async def test_lane_share_outlier_fires_with_sufficient_history_and_spike(pool) -> None:
-    await _mark_all_healthy(pool, now=_NOW)
+async def test_lane_share_outlier_fires_with_sufficient_history_and_spike(chronicler_pool) -> None:
+    await _mark_all_healthy(chronicler_pool, now=_NOW)
 
     from butlers.chronicler.aggregations import LANES
 
@@ -308,7 +295,7 @@ async def test_lane_share_outlier_fires_with_sufficient_history_and_spike(pool) 
     for d in history_dates:
         for lane in LANES:
             await upsert_daily_rollup(
-                pool,
+                chronicler_pool,
                 local_date=d,
                 lane=lane,
                 seconds=1000 if lane == "work" else 200,
@@ -318,7 +305,7 @@ async def test_lane_share_outlier_fires_with_sufficient_history_and_spike(pool) 
     # Today: 'work' share spikes far beyond 2x its historical median share.
     for lane in LANES:
         await upsert_daily_rollup(
-            pool,
+            chronicler_pool,
             local_date=_LOCAL_DATE,
             lane=lane,
             seconds=8000 if lane == "work" else 200,
@@ -326,10 +313,10 @@ async def test_lane_share_outlier_fires_with_sufficient_history_and_spike(pool) 
         )
 
     result = await evaluate_and_write_daily_flags(
-        pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
+        chronicler_pool, local_date=_LOCAL_DATE, timezone="Asia/Singapore", now=_NOW
     )
     assert result["flags"][FLAG_LANE_SHARE_OUTLIER] is True
 
-    flags = await list_daily_rollup_flags(pool, local_date=_LOCAL_DATE)
+    flags = await list_daily_rollup_flags(chronicler_pool, local_date=_LOCAL_DATE)
     outlier_flag = next(f for f in flags if f.flag_type == FLAG_LANE_SHARE_OUTLIER)
     assert "work" in outlier_flag.detail["lanes"]

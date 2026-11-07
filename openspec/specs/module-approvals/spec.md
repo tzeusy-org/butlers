@@ -149,6 +149,8 @@ Scope: v1-mandatory
 #### Scenario: Dashboard defer schedules a guarded re-presentation
 - **WHEN** an authenticated dashboard actor defers a still-pending action for `1 ≤ hours ≤ 168`
 - **THEN** the same action/intent transaction extends expiry, supersedes an unstarted current presentation, and appends the next presentation generation for `now + hours`
+- **AND** the new expiry is that time plus the action's original decision window, so the re-sent card can still decide; an action with no expiry keeps none
+- **AND** the same transaction stales every owner-delivery token minted so far, so the old card is retracted and the re-sent card carries fresh tokens and its own provider reference
 - **AND** it keeps the logical action key, cannot route through generic notifications, and does not grant the worker ability to defer or schedule future presentations
 
 #### Scenario: Already-executed action is replayed
@@ -521,8 +523,19 @@ Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 
 #### Scenario: Missing or disabled config
 
-- **WHEN** `[modules.approvals]` is absent or `enabled = false`
+- **WHEN** `[modules.approvals]` is absent or `enabled = false`, with `domain_producers` omitted or empty
 - **THEN** the module does not wrap any tools and no approval gates are active
+- **AND** a missing configuration declares no domain producers
+
+#### Scenario: Explicit domain producer capability
+
+- **WHEN** configuration declares `domain_producers`
+- **THEN** it MUST be a unique typed list containing only `calendar` and/or `google_drive`, defaulting to empty
+- **AND** only those owning domain enqueuers MAY be wired when generic `enabled` is false
+- **AND** wiring MUST require the actual active owning approvals module, callable executor and owning pool
+- **AND** this declaration MUST NOT grant approval authority, create a standing rule or bypass any domain gate
+- **AND** generic `enabled = true` MUST retain its full existing gated-tool completeness validation
+- **AND** unrelated tools MUST retain their existing gating behavior
 
 #### Scenario: Gated tools completeness for outbound butlers
 

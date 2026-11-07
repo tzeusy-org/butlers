@@ -508,11 +508,6 @@ async def create_commitment(
             counterparty_entity_id=counterparty_entity_id,
         )
 
-    connection_kwargs = (
-        {"transaction_connection": transaction_connection}
-        if transaction_connection is not None
-        else {}
-    )
     transitions = await owner_conditions.reconcile_snapshot(
         pool,
         source=source,
@@ -520,7 +515,7 @@ async def create_commitment(
         snapshot_complete=False,
         initial_grace_seconds=initial_grace_seconds,
         post_write=_post_write,
-        **connection_kwargs,
+        transaction_connection=transaction_connection,
     )
     return transitions[0] if transitions else None
 

@@ -32,10 +32,11 @@ url = "http://localhost:41100/mcp"
 # `chronicler_mem` (a schema the chronicler owns), never a foreign write, so the
 # "writes only to its own schemas" invariant still holds.
 #
-# Enabling the module here runs the module's OWN migration chain (`memory`
-# branch) into `chronicler_mem` at daemon startup (lifecycle step 8); the target
-# schema is auto-created by the Alembic env. No core Alembic revision is
-# involved.
+# Before ordinary migrations or a manually started Chronicler daemon, run
+# `butlers db prepare-chronicler-memory --dir roster`. That explicit prerequisite
+# applies the core and memory chains to `chronicler_mem`; ordinary startup then
+# keeps its core → domain → modules order. Daemon startup does not create or
+# repair this private schema implicitly.
 #
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
 # memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
@@ -92,6 +93,12 @@ name = "chronicler_project_steam"
 cron = "*/30 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_project_steam"
+
+[[butler.schedule]]
+name = "chronicler_project_steam_status"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_steam_status"
 
 [[butler.schedule]]
 name = "chronicler_project_meals"
@@ -158,6 +165,14 @@ name = "chronicler_project_occupation_inferred"
 cron = "20 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_project_occupation_inferred"
+
+# Situational blocks (bu-r3fmja): offset from the */30 place-cluster and
+# activity projections so each run sees their fresh rows.
+[[butler.schedule]]
+name = "chronicler_project_situation_inferred"
+cron = "10,40 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_project_situation_inferred"
 
 [[butler.schedule]]
 name = "chronicler_project_spotify"
@@ -279,3 +294,10 @@ dispatch_mode = "job"
 job_name = "chronicler_gap_interview"
 
 # RFC 0015: core always registers the error relay; no module opt-in is required.
+
+# Finite old-date repair driver; waits for durable :10/:40 situation replay.
+[[butler.schedule]]
+name = "chronicler_rebuild_daily_rollups"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_rebuild_daily_rollups"

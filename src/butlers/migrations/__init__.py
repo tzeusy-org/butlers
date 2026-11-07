@@ -1,0 +1,479 @@
+"""Programmatic Alembic migration runner for butlers.
+
+Allows the daemon to run migrations at startup without shelling out to the
+Alembic CLI. Supports targeting a specific version chain (core or butler-specific).
+"""
+
+from __future__ import annotations
+
+import inspect
+import logging
+import os
+import re
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from alembic.config import Config
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
+
+from alembic import command
+from butlers.bootstrap_prerequisite import check_bootstrap_database
+
+if TYPE_CHECKING:
+    from butlers.modules.base import Module
+
+logger = logging.getLogger(__name__)
+
+# Root of the alembic directory (sibling to src/)
+ALEMBIC_DIR = Path(__file__).resolve().parents[3] / "alembic"
+
+# Root of the butler config directories (sibling to src/)
+ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
+
+# Root of the modules directory (src/butlers/modules/)
+MODULES_DIR = Path(__file__).resolve().parents[1] / "modules"
+
+# Shared chains: always included regardless of butler identity
+_SHARED_CHAINS = ["core"]
+_TARGET_SCHEMA_OPTION = "butlers.target_schema"
+_VERSION_TABLE_SCHEMA_OPTION = "version_table_schema"
+_VALID_SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _discover_module_chains() -> list[str]:
+    """Discover module-local migration chains from module directories.
+
+    Scans ``src/butlers/modules/*/migrations/`` for directories that contain
+    at least one ``.py`` migration file (excluding ``__init__.py``).
+
+    Returns:
+        Sorted list of module names that have a migrations/ folder with files.
+    """
+    if not MODULES_DIR.is_dir():
+        return []
+    chains = []
+    for entry in sorted(MODULES_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        mig_dir = entry / "migrations"
+        if not mig_dir.is_dir():
+            continue
+        migration_files = [
+            f for f in mig_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
+        ]
+        if migration_files:
+            chains.append(entry.name)
+    return chains
+
+
+def _discover_butler_chains() -> list[str]:
+    """Discover butler-specific migration chains from butler config dirs.
+
+    Scans ``roster/*/migrations/`` for directories that contain at least one
+    ``.py`` migration file (excluding ``__init__.py``).
+
+    Returns:
+        Sorted list of butler names that have a migrations/ folder with files.
+    """
+    if not ROSTER_DIR.is_dir():
+        return []
+    chains = []
+    for entry in sorted(ROSTER_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        mig_dir = entry / "migrations"
+        if not mig_dir.is_dir():
+            continue
+        migration_files = [
+            f for f in mig_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
+        ]
+        if migration_files:
+            chains.append(entry.name)
+    return chains
+
+
+@dataclass(frozen=True)
+class _ChainRootFamily:
+    """One discoverable shape of migration-chain root directory.
+
+    Pairs the filesystem resolution rule with the chains it applies to; the
+    tuple order below is ``_resolve_chain_dir``'s resolution order.
+    """
+
+    dir_for_chain: Callable[[str], Path]
+    applies_to_chain: Callable[[str], bool] = lambda chain: True  # noqa: E731
+
+
+_CHAIN_ROOT_FAMILIES: tuple[_ChainRootFamily, ...] = (
+    _ChainRootFamily(
+        applies_to_chain=lambda chain: chain in _SHARED_CHAINS,
+        dir_for_chain=lambda chain: ALEMBIC_DIR / "versions" / chain,
+    ),
+    _ChainRootFamily(
+        dir_for_chain=lambda chain: MODULES_DIR / chain / "migrations",
+    ),
+    _ChainRootFamily(
+        dir_for_chain=lambda chain: ROSTER_DIR / chain / "migrations",
+    ),
+)
+
+
+def _resolve_chain_dir(chain: str) -> Path | None:
+    """Resolve the filesystem path for a given chain name.
+
+    Tries each recognized root family in ``_CHAIN_ROOT_FAMILIES`` (shared
+    chains under ``alembic/versions/<chain>/``, module chains under
+    ``src/butlers/modules/<chain>/migrations/``, then butler-specific chains
+    under ``roster/<chain>/migrations/``) and returns the first directory
+    that exists.
+
+    Returns:
+        The chain directory Path if it exists, otherwise None.
+    """
+    for family in _CHAIN_ROOT_FAMILIES:
+        if not family.applies_to_chain(chain):
+            continue
+        chain_dir = family.dir_for_chain(chain)
+        if chain_dir.is_dir():
+            return chain_dir
+    return None
+
+
+def get_all_chains() -> list[str]:
+    """Return all recognized version chains (shared + module + butler-specific).
+
+    Shared chains are listed first, followed by module chains, then dynamically
+    discovered butler-specific chains.  Shared chain names are excluded from the
+    module/butler discovery results to avoid duplicates.
+    """
+    shared = [c for c in _SHARED_CHAINS if _resolve_chain_dir(c) is not None]
+    shared_set = set(shared)
+    modules = [c for c in _discover_module_chains() if c not in shared_set]
+    module_set = set(modules)
+    butlers = [c for c in _discover_butler_chains() if c not in shared_set and c not in module_set]
+    return shared + modules + butlers
+
+
+def get_module_migration_chains(modules: Iterable[Module], butler_name: str) -> dict[str, str]:
+    """Map admitted module names to their existing, non-empty migration directories.
+
+    Roster modules can have a different public name from their owning directory
+    (``home_assistant`` lives in ``roster/home/modules``). Resolve that layout
+    without a constructor or a module-provided migration hook. The butler's own
+    chain already ran in the preceding phase and must not run twice.
+    """
+    available = set(get_all_chains()) - set(_SHARED_CHAINS)
+    chains: dict[str, str] = {}
+    for module in modules:
+        chain = module.name
+        if chain not in available:
+            source = Path(inspect.getfile(type(module))).resolve()
+            try:
+                relative = source.relative_to(ROSTER_DIR.resolve())
+            except ValueError:
+                continue
+            # Only the roster's root module owns its roster chain. A broker
+            # submodule must not acquire the entire roster chain by proximity.
+            if len(relative.parts) != 3 or relative.parts[1:] != ("modules", "__init__.py"):
+                continue
+            chain = relative.parts[0]
+        if chain == butler_name and has_butler_chain(butler_name):
+            continue
+        if chain in available and _resolve_chain_dir(chain) is not None:
+            chains[module.name] = chain
+    return chains
+
+
+def _normalize_schema(schema: str | None) -> str | None:
+    """Normalize and validate a schema name for migration execution."""
+    if schema is None:
+        return None
+    normalized = schema.strip()
+    if not normalized:
+        return None
+    if _VALID_SCHEMA_RE.fullmatch(normalized) is None:
+        raise ValueError(f"Invalid migration schema name: {schema!r}")
+    return normalized
+
+
+def _build_alembic_config(
+    db_url: str, chains: list[str] | None = None, target_schema: str | None = None
+) -> Config:
+    """Build an Alembic Config pointing at the correct version directories.
+
+    Args:
+        db_url: SQLAlchemy-compatible database URL.
+        chains: List of version chain names to include. Defaults to all chains.
+        target_schema: Optional target schema for schema-scoped migration runs.
+
+    Returns:
+        A configured alembic.config.Config instance.
+    """
+    ini_path = ALEMBIC_DIR / "alembic.ini"
+    config = Config(str(ini_path))
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    # Alembic Config uses configparser interpolation; percent-encoded DB URLs
+    # (for example libpq options with %3D/%2C) must escape '%' as '%%'.
+    config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
+    normalized_schema = _normalize_schema(target_schema)
+    if normalized_schema is not None:
+        config.set_main_option(_TARGET_SCHEMA_OPTION, normalized_schema)
+        config.set_main_option(_VERSION_TABLE_SCHEMA_OPTION, normalized_schema)
+
+    # Always include ALL version locations so Alembic can resolve every
+    # revision in alembic_version, even when upgrading a single branch.
+    all_chains = get_all_chains()
+    locations = []
+    for chain in all_chains:
+        chain_dir = _resolve_chain_dir(chain)
+        if chain_dir is not None:
+            locations.append(str(chain_dir))
+    config.set_main_option("version_locations", os.pathsep.join(locations))
+
+    return config
+
+
+def has_butler_chain(butler_name: str) -> bool:
+    """Check for a butler-specific migration chain not owned by a module.
+
+    Butler-specific chains are discovered in ``roster/<butler_name>/migrations/``.
+    If a module migration chain exists at ``src/butlers/modules/<butler_name>/migrations/``
+    and contains revisions, this function returns ``False`` so module chains
+    take precedence.
+
+    Args:
+        butler_name: The butler identity name (e.g. ``"relationship"``).
+
+    Returns:
+        ``True`` if a non-empty, non-module migration chain exists for the butler.
+    """
+    module_chain_dir = MODULES_DIR / butler_name / "migrations"
+    if module_chain_dir.is_dir():
+        module_migration_files = [
+            f for f in module_chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
+        ]
+        if module_migration_files:
+            return False
+
+    chain_dir = ROSTER_DIR / butler_name / "migrations"
+    if not chain_dir.is_dir():
+        return False
+    migration_files = [
+        f for f in chain_dir.iterdir() if f.suffix == ".py" and f.name != "__init__.py"
+    ]
+    return len(migration_files) > 0
+
+
+def _resolve_target_chains(chain: str) -> list[str]:
+    """Resolve the deterministic chain execution order."""
+    if chain == "all":
+        return get_all_chains()
+    return [chain]
+
+
+def _chain_script_directory(chain: str) -> ScriptDirectory:
+    """Build a ScriptDirectory scoped to exactly one migration chain.
+
+    Unlike ``_build_alembic_config`` (which always includes every chain's
+    ``version_locations`` so a shared per-schema ``alembic_version`` table can
+    resolve any revision during an upgrade), this scopes ``version_locations``
+    to *chain* alone so ``get_heads()``/``walk_revisions()`` only ever see
+    that one chain's self-contained revision graph. No database connection is
+    made — this is a pure filesystem scan of the chain's version directory.
+    """
+    chain_dir = _resolve_chain_dir(chain)
+    if chain_dir is None:
+        raise ValueError(f"Unknown migration chain: {chain!r}")
+    config = Config(str(ALEMBIC_DIR / "alembic.ini"))
+    config.set_main_option("script_location", str(ALEMBIC_DIR))
+    config.set_main_option("version_locations", str(chain_dir))
+    return ScriptDirectory.from_config(config)
+
+
+def get_chain_head(chain: str) -> str:
+    """Return the current codebase head revision for one migration chain.
+
+    Used by the migration-drift sentinel (bu-9r3hd.1) to compare "what the
+    codebase says should be applied" against what a schema's
+    ``alembic_version`` table actually holds. A chain is expected to have
+    exactly one head; more than one (an unmerged fork left in the codebase)
+    or zero (an empty chain) raises rather than silently picking one, since
+    either is itself a codebase defect worth surfacing loudly.
+    """
+    heads = _chain_script_directory(chain).get_heads()
+    if len(heads) != 1:
+        raise RuntimeError(
+            f"Migration chain {chain!r} has {len(heads)} head(s) (expected exactly 1): "
+            f"{sorted(heads)}"
+        )
+    return heads[0]
+
+
+def get_chain_revision_ids(chain: str) -> frozenset[str]:
+    """Return every revision id that belongs to one migration chain.
+
+    Revision ids are chain-specific by naming convention (e.g. ``core_NNN``,
+    ``home_NNN``), so intersecting a schema's applied ``alembic_version`` rows
+    with this set unambiguously identifies that chain's applied state even
+    though independent chains share one ``alembic_version`` table per schema.
+    """
+    return frozenset(rev.revision for rev in _chain_script_directory(chain).walk_revisions())
+
+
+def _chain_files_signature(chain_dir: Path) -> tuple[tuple[str, int, int], ...]:
+    """Name, size and mtime of each revision file: a cache key for the chain's heads."""
+    return tuple(
+        sorted(
+            (entry.name, entry.stat().st_size, entry.stat().st_mtime_ns)
+            for entry in os.scandir(chain_dir)
+            if entry.name.endswith(".py")
+        )
+    )
+
+
+def _chain_heads_uncached(chain: str) -> tuple[tuple[str, ...], frozenset[str]]:
+    """The chain's script heads and every revision id, from its files alone."""
+    script = _chain_script_directory(chain)
+    revisions = frozenset(rev.revision for rev in script.walk_revisions())
+    return tuple(sorted(script.get_heads())), revisions
+
+
+_CHAIN_HEADS: dict[tuple[str, tuple[tuple[str, int, int], ...]], tuple] = {}
+
+
+def _chain_heads(chain: str, chain_dir: Path) -> tuple[tuple[str, ...], frozenset[str]]:
+    """Cached :func:`_chain_heads_uncached`; loading a chain's scripts is the slow part.
+
+    The key includes the chain's file signature, so adding or editing a revision
+    file in a running process is seen on the next call.
+    """
+    key = (chain, _chain_files_signature(chain_dir))
+    cached = _CHAIN_HEADS.get(key)
+    if cached is None:
+        cached = _CHAIN_HEADS[key] = _chain_heads_uncached(chain)
+    return cached
+
+
+def _applied_revisions(db_url: str, schema: str | None) -> set[str] | None:
+    """Every row of the version table Alembic would use, read by Alembic itself.
+
+    Empty when the table is absent. ``None`` when the read fails, so the full
+    Alembic path raises its own error.
+    """
+    engine = create_engine(db_url, poolclass=NullPool)
+    opts = {} if schema is None else {"version_table_schema": schema}
+    try:
+        with engine.connect() as conn:
+            return set(MigrationContext.configure(conn, opts=opts).get_current_heads())
+    except SQLAlchemyError:
+        return None
+    finally:
+        engine.dispose()
+
+
+def _chain_at_head(db_url: str, chain: str, schema: str | None) -> bool:
+    """Whether ``upgrade <chain>@head`` would apply nothing.
+
+    True only for a chain with exactly one head whose applied revisions in the
+    version table are exactly that head. Every other case (absent table, behind,
+    several heads) takes the full Alembic path, which keeps its exact behaviour
+    and errors. Rows other chains keep in the same table are left to their own
+    runs: resolving them would mean loading every chain, the cost this avoids.
+    """
+    chain_dir = _resolve_chain_dir(chain)
+    if chain_dir is None:
+        return False
+    heads, revisions = _chain_heads(chain, chain_dir)
+    if len(heads) != 1:
+        return False
+    applied = _applied_revisions(db_url, schema)
+    if applied is None:
+        return False
+    return applied & revisions == set(heads)
+
+
+def _upgrade_chain(config: Config, chain: str, schema: str | None) -> None:
+    """Upgrade a single chain to head and emit contextual logs."""
+    logger.info(
+        "Running migration chain to head (chain=%s, schema=%s)",
+        chain,
+        schema or "<default>",
+    )
+    command.upgrade(config, f"{chain}@head")
+
+
+def _bootstrap_extensions(db_url: str) -> None:
+    """Install required PostgreSQL extensions before running migrations.
+
+    Uses ``CREATE EXTENSION IF NOT EXISTS`` so the call is idempotent and safe
+    to run on every migration invocation.  Must be called **after** the target
+    database exists and **before** any Alembic ``upgrade`` that references
+    extension-provided types (e.g. ``vector``, ``tsvector``).
+    """
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            for ext in ("vector", "pgcrypto", "uuid-ossp", "pg_trgm"):
+                conn.execute(text(f'CREATE EXTENSION IF NOT EXISTS "{ext}"'))
+    finally:
+        engine.dispose()
+
+
+async def run_migrations(db_url: str, chain: str = "core", schema: str | None = None) -> None:
+    """Run Alembic migrations programmatically for a specific chain.
+
+    This is the primary entry point for running migrations from the butler
+    daemon. It configures Alembic to use the correct version directory and
+    upgrades to the latest revision.
+
+    Args:
+        db_url: SQLAlchemy-compatible database URL
+            (e.g. ``postgresql://user:pass@host:port/dbname``).
+        chain: Version chain to migrate. Must be one of the recognized chains
+            (core, approvals, or any butler name with a migrations/
+            directory). Pass ``"all"`` to migrate all chains.
+        schema: Optional target schema for one-db/multi-schema topology.
+    """
+    chains = _resolve_target_chains(chain)
+    normalized_schema = _normalize_schema(schema)
+    for resolved_chain in chains:
+        if _resolve_chain_dir(resolved_chain) is None:
+            raise ValueError(f"Unknown migration chain: {resolved_chain!r}")
+    check_bootstrap_database(db_url)
+
+    # Extensions must exist before any migration that uses extension-provided
+    # types (e.g. pgvector's ``vector``).  The call is idempotent.
+    if "core" in chains or chain == "core":
+        _bootstrap_extensions(db_url)
+
+    # A chain already at head needs no Alembic environment: loading every chain's
+    # scripts to discover that dominated each daemon boot (bu-rvgzmf.2).
+    config: Config | None = None
+    for resolved_chain in chains:
+        if _chain_at_head(db_url, resolved_chain, normalized_schema):
+            logger.debug(
+                "Migration chain already at head (chain=%s, schema=%s)",
+                resolved_chain,
+                normalized_schema or "<default>",
+            )
+            continue
+        if config is None:
+            config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
+        _upgrade_chain(config, resolved_chain, normalized_schema)
+
+    # The core boundary is installed before the private memory module creates
+    # chronicler_mem.facts. Re-run its idempotent finalizer after that explicit
+    # module chain so the definer receives only the canonical columns it needs.
+    if chain == "memory" and normalized_schema == "chronicler_mem":
+        engine = create_engine(db_url)
+        try:
+            with engine.begin() as connection:
+                connection.execute(text("SELECT chronicler_memory_admin.finalize_interface()"))
+        finally:
+            engine.dispose()

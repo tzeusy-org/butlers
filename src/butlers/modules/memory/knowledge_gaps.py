@@ -29,6 +29,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
+from butlers.core.metrics import record_knowledge_gap_closure_failure
 from butlers.modules.memory.content_authority import OWNER_CLASS, SYSTEM, ContentAuthority
 
 logger = logging.getLogger(__name__)
@@ -43,9 +45,6 @@ _DELIVERY_BATCH = 25
 
 #: The only channel whose sender is the owner surface; other channels are a later slice.
 CAPTURE_CHANNEL = "dashboard"
-
-#: Closure failures swallowed since process start (the fact write always wins).
-closure_failures = 0
 
 STATUSES = ("open", "answerable", "delivered", "dismissed", "expired")
 
@@ -94,7 +93,6 @@ async def reserve_gap_pairs(conn: Any, pairs: list[tuple[uuid.UUID, str]]) -> bo
     both closures, rather than falling back to their unsafe individual lock order.
     Cancellation still propagates and rolls back the enclosing write.
     """
-    global closure_failures
     try:
         async with conn.transaction():
             if not await conn.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
@@ -108,12 +106,11 @@ async def reserve_gap_pairs(conn: Any, pairs: list[tuple[uuid.UUID, str]]) -> bo
                 await conn.execute("SELECT pg_advisory_xact_lock($1::bigint)", row["lock_id"])
         return True
     except Exception:
-        closure_failures += 1
-        logger.warning(
-            "Knowledge-gap pair reservation failed (closure_failures=%s)",
-            closure_failures,
-            exc_info=True,
-        )
+        logger.warning("Knowledge-gap pair reservation failed", exc_info=True)
+        try:
+            record_knowledge_gap_closure_failure(stage="reservation")
+        except Exception:
+            logger.warning("knowledge gap closure metric emission failed", exc_info=True)
         return False
 
 
@@ -142,8 +139,9 @@ async def close_matching_gaps(
 
     Runs on the fact write's connection so the transition commits or rolls back with
     the fact.  A schema without the gap table (a butler that never ran ``mem_014``) is
-    skipped.  A closure failure never fails the fact write (logged and counted in
-    ``closure_failures``).  Only ``open`` gaps move, so a replayed write cannot re-notify.
+    skipped.  A closure failure never fails the fact write (logged and counted in the
+    ``butlers.memory.knowledge_gap_closure_failures_total`` counter).  Only ``open`` gaps
+    move, so a replayed write cannot re-notify.
 
     *value* and *authority* may be coroutine functions; they run only when a gap is open.
     *authority* is the closing fact's server-stamped authority, or a coroutine function
@@ -189,16 +187,17 @@ async def close_matching_gaps(
                 authority.entity_id if authority else None,
             )
     except Exception:
-        global closure_failures
-        closure_failures += 1
         logger.warning(
-            "knowledge gap closure failed for entity %s predicate %s (count=%d); "
+            "knowledge gap closure failed for entity %s predicate %s; "
             "the fact write is unaffected and the gap stays open",
             entity_id,
             predicate,
-            closure_failures,
             exc_info=True,
         )
+        try:
+            record_knowledge_gap_closure_failure(stage="closure")
+        except Exception:
+            logger.warning("knowledge gap closure metric emission failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -233,14 +232,17 @@ async def _existing_answer(
     conn: Any, schema: str, entity_id: uuid.UUID, predicate: str
 ) -> dict[str, Any] | None:
     """The active fact that already answers ``(entity_id, predicate)``, if any."""
+    visibility = await local_fact_visibility_condition(conn, memory_schema=schema, alias="facts")
+    visibility_filter = f" AND {visibility}" if visibility is not None else ""
     row = await conn.fetchrow(
         """
-        SELECT id, content, content_authority, authority_entity_id
-        FROM facts
-        WHERE entity_id = $1 AND predicate = $2 AND validity = 'active'
-        ORDER BY created_at DESC
-        LIMIT 1
-        """,
+        SELECT facts.id, facts.content, facts.content_authority, facts.authority_entity_id
+        FROM facts AS facts
+        WHERE facts.entity_id = $1 AND facts.predicate = $2 AND facts.validity = 'active'
+        """
+        f"{visibility_filter} "
+        "ORDER BY facts.created_at DESC\n"
+        "LIMIT 1",
         entity_id,
         predicate,
     )
@@ -488,6 +490,34 @@ async def list_gaps(
             )
             gaps.append(gap)
     return gaps
+
+
+async def demand_by_predicate(
+    pool: Any, *, memory_schema: str | None = None
+) -> list[dict[str, Any]]:
+    """Open gaps and asks per predicate, most asked first.
+
+    ``asks`` counts ``knowledge_gap_origins`` rows (one per asking thread) of *open*
+    gaps only: an answerable, delivered, dismissed or expired gap is no longer unknown.
+    Aggregated in SQL so the count is right however many pages a listing would take.
+    """
+    async with _scoped(pool, memory_schema) as conn:
+        rows = await conn.fetch(
+            """
+            SELECT g.predicate,
+                   count(DISTINCT g.id) AS open_gaps,
+                   count(o.gap_id) AS asks
+            FROM knowledge_gaps g
+            LEFT JOIN knowledge_gap_origins o ON o.gap_id = g.id
+            WHERE g.status = 'open'
+            GROUP BY g.predicate
+            ORDER BY asks DESC, open_gaps DESC, g.predicate
+            """
+        )
+    return [
+        {"predicate": r["predicate"], "open_gaps": int(r["open_gaps"]), "asks": int(r["asks"])}
+        for r in rows
+    ]
 
 
 def public_view(gap: dict[str, Any]) -> dict[str, Any]:

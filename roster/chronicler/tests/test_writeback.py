@@ -4,9 +4,7 @@ Covers the tasks.md §8.6 acceptance contract with pure, DB-free assertions:
 
 1. Insights land in the chronicler's OWN schema only — every store carries
    ``source=chronicler`` and the orchestrator has no other write sink.
-2. Enrichment leaves ONLY as an MCP proposal (routed through the injected
-   proposer), never as a stored chronicler fact or a relationship write.
-3. The write-back path adds NO owner-facing message — there is no ``notify``
+2. The write-back path adds NO owner-facing message — there is no ``notify``
    collaborator to call.
 
 Plus focused tests for each pure synthesis function and the production
@@ -17,32 +15,44 @@ co-presence SQL) is exercised separately in
 
 from __future__ import annotations
 
+import statistics
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from butlers.chronicler.balance import LaneBalance
+from butlers.chronicler.history_repair import RepairAdmissionError
 from butlers.chronicler.writeback import (
     INSIGHT_CONFIDENCE_CEILING,
     INSIGHT_CONFIDENCE_FLOOR,
     PREDICATE_LANE_SKEW,
-    PREDICATE_RECURRING_COMPANION,
     PREDICATE_SELF_REMINDER,
     PREDICATE_SLEEP_DEBT,
     SOURCE_BUTLER,
-    CompanionCopresence,
-    EnrichmentProposal,
     InsightFact,
     build_chronicler_fact_writer,
     evidence_confidence,
     execute_writeback,
-    synthesize_enrichment_proposals,
     synthesize_lane_skew_insights,
     synthesize_self_reminders,
     synthesize_sleep_debt_insight,
 )
 
 _DAY = date(2026, 7, 9)
+
+
+@pytest.fixture(autouse=True)
+def _allow_unit_writeback_repair_token(monkeypatch):
+    async def capture(_pool, **_kwargs):
+        return object()
+
+    async def guard(_conn):
+        return None
+
+    monkeypatch.setattr("butlers.chronicler.writeback.capture_fact_write_token", capture)
+    monkeypatch.setattr("butlers.chronicler.writeback.make_fact_write_guard", lambda _token: guard)
 
 
 # ── recording collaborators ────────────────────────────────────────────────
@@ -61,14 +71,6 @@ class _StoreSpy:
         return [c["predicate"] for c in self.calls]
 
 
-class _ProposeSpy:
-    def __init__(self) -> None:
-        self.proposals: list[EnrichmentProposal] = []
-
-    async def __call__(self, proposal: EnrichmentProposal) -> None:
-        self.proposals.append(proposal)
-
-
 def _anomalous_work_balance() -> LaneBalance:
     # 0s work today vs an 8h usual, with a long baseline history → anomaly.
     return LaneBalance(
@@ -77,6 +79,7 @@ def _anomalous_work_balance() -> LaneBalance:
         baseline_seconds=8 * 3600,
         delta_seconds=-8 * 3600,
         baseline_sample_days=14,
+        state="below",
     )
 
 
@@ -99,7 +102,7 @@ def test_lane_skew_insight_fires_on_anomaly():
 
 def test_lane_skew_confidence_tracks_baseline_coverage():
     def skew(sample_days: int) -> float:
-        balance = LaneBalance("work", 0, 8 * 3600, -8 * 3600, sample_days)
+        balance = LaneBalance("work", 0, 8 * 3600, -8 * 3600, sample_days, state="below")
         return synthesize_lane_skew_insights(_DAY, [balance], window_days=28)[0].confidence
 
     thin, full = skew(7), skew(28)
@@ -162,25 +165,11 @@ def test_self_reminders_only_for_pending_backfill_flags():
     assert all(r.confidence == INSIGHT_CONFIDENCE_FLOOR for r in reminders)
 
 
-def test_enrichment_proposals_respect_distinct_day_threshold():
-    companions = [
-        CompanionCopresence(entity_id="e-recurring", distinct_days=4, episode_count=9),
-        CompanionCopresence(entity_id="e-once", distinct_days=1, episode_count=1),
-    ]
-    proposals = synthesize_enrichment_proposals(
-        companions, window_start=date(2026, 6, 12), window_end=_DAY
-    )
-    assert [p.entity_id for p in proposals] == ["e-recurring"]
-    assert proposals[0].predicate == PREDICATE_RECURRING_COMPANION
-    assert proposals[0].dedup_key.startswith(f"{PREDICATE_RECURRING_COMPANION}:e-recurring:")
-
-
 # ── orchestrator: the §8.6 acceptance contract ─────────────────────────────
 
 
 async def test_insights_land_in_own_schema_only():
     store = _StoreSpy()
-    propose = _ProposeSpy()
     insights = synthesize_lane_skew_insights(_DAY, [_anomalous_work_balance()])
     reminders = synthesize_self_reminders(
         _DAY, [SimpleNamespace(flag_type="feeder_dark", severity="warning", detail={})]
@@ -189,9 +178,7 @@ async def test_insights_land_in_own_schema_only():
     result = await execute_writeback(
         insights=insights,
         self_reminders=reminders,
-        proposals=[],
         store_fact_fn=store,
-        propose_enrichment_fn=propose,
     )
 
     assert result.insights_written == 1
@@ -201,72 +188,21 @@ async def test_insights_land_in_own_schema_only():
     # other write sink and cannot reach a foreign schema.
     assert store.calls, "expected at least one own-schema write"
     assert all(c["metadata"]["source"] == SOURCE_BUTLER for c in store.calls)
-    assert propose.proposals == []  # no enrichment for facts
-
-
-async def test_enrichment_is_mcp_proposal_not_a_stored_or_direct_write():
-    store = _StoreSpy()
-    propose = _ProposeSpy()
-    proposals = synthesize_enrichment_proposals(
-        [CompanionCopresence(entity_id="e-1", distinct_days=5, episode_count=12)],
-        window_start=date(2026, 6, 12),
-        window_end=_DAY,
-    )
-
-    result = await execute_writeback(
-        insights=[],
-        self_reminders=[],
-        proposals=proposals,
-        store_fact_fn=store,
-        propose_enrichment_fn=propose,
-    )
-
-    # Enrichment left ONLY via the MCP proposer …
-    assert result.proposals_sent == 1
-    assert [p.entity_id for p in propose.proposals] == ["e-1"]
-    # … and was never written as a chronicler fact (nor anywhere else — the
-    # orchestrator has no relationship pool to write).
-    assert PREDICATE_RECURRING_COMPANION not in store.predicates
-    assert store.calls == []
 
 
 async def test_writeback_sends_no_owner_facing_message():
     store = _StoreSpy()
-    propose = _ProposeSpy()
     notify_spy = AsyncMock()  # deliberately wired NOWHERE
 
     insights = synthesize_lane_skew_insights(_DAY, [_anomalous_work_balance()])
     await execute_writeback(
         insights=insights,
         self_reminders=[],
-        proposals=synthesize_enrichment_proposals(
-            [CompanionCopresence(entity_id="e-1", distinct_days=5, episode_count=12)],
-            window_start=date(2026, 6, 12),
-            window_end=_DAY,
-        ),
         store_fact_fn=store,
-        propose_enrichment_fn=propose,
     )
     # The write-back has no notify collaborator: the once-daily day-close
     # summary (sent by the prompt) is the only sanctioned owner-facing message.
     notify_spy.assert_not_awaited()
-
-
-async def test_missing_proposer_skips_enrichment_without_error():
-    store = _StoreSpy()
-    result = await execute_writeback(
-        insights=[],
-        self_reminders=[],
-        proposals=synthesize_enrichment_proposals(
-            [CompanionCopresence(entity_id="e-1", distinct_days=5, episode_count=12)],
-            window_start=date(2026, 6, 12),
-            window_end=_DAY,
-        ),
-        store_fact_fn=store,
-        propose_enrichment_fn=None,
-    )
-    assert result.proposals_sent == 0
-    assert result.errors == 0
 
 
 async def test_store_failure_is_counted_not_raised():
@@ -285,9 +221,7 @@ async def test_store_failure_is_counted_not_raised():
             )
         ],
         self_reminders=[],
-        proposals=[],
         store_fact_fn=_boom,
-        propose_enrichment_fn=None,
     )
     assert result.insights_written == 0
     assert result.errors == 1
@@ -305,7 +239,8 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
 
     monkeypatch.setattr("butlers.modules.memory.storage.store_fact", _fake_store_fact)
     sentinel_pool = object()
-    writer = build_chronicler_fact_writer(sentinel_pool, object())
+    guard = AsyncMock()
+    writer = build_chronicler_fact_writer(sentinel_pool, object(), memory_schema="chronicler_mem")
     await writer(
         subject="sleep",
         predicate=PREDICATE_SLEEP_DEBT,
@@ -315,11 +250,43 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
         confidence=0.65,
         tags=["chronicler-insight"],
         metadata={"confidence": 0.65},
+        transaction_guard=guard,
     )
     assert captured["pool"] is sentinel_pool
     assert captured["confidence"] == 0.65
     assert captured["source_butler"] == SOURCE_BUTLER
-    assert captured["source_schema"] == SOURCE_BUTLER
+    assert captured["source_schema"] == "chronicler_mem"
+    assert captured["enable_shared_catalog"] is False
+    assert captured["transaction_guard"] is guard
+
+
+def test_fact_writer_rejects_schema_that_disagrees_with_chronicler_030():
+    with pytest.raises(ValueError, match="must use chronicler_mem"):
+        build_chronicler_fact_writer(object(), object(), memory_schema="chronicler")
+
+
+async def test_writeback_stops_after_generation_guard_rejects(monkeypatch):
+    facts = [
+        InsightFact("sleep", PREDICATE_SLEEP_DEBT, "first", "volatile", 6, 0.7),
+        InsightFact("work", PREDICATE_LANE_SKEW, "second", "volatile", 5, 0.7),
+    ]
+    attempts: list[dict] = []
+
+    async def store_fact(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise RepairAdmissionError("daily repair state changed")
+
+    result = await execute_writeback(
+        insights=facts,
+        self_reminders=[],
+        store_fact_fn=store_fact,
+    )
+
+    assert len(attempts) == 1, "a stale generation must stop the remaining fact writes"
+    assert result.errors == 1
+    assert result.status == "waiting_repair"
+    assert result.failure_reason == "daily repair state changed"
 
 
 async def test_actual_writeback_does_not_turn_absent_or_unavailable_lanes_into_debt(monkeypatch):
@@ -447,8 +414,8 @@ async def test_actual_writeback_binds_historical_availability_to_each_baseline_d
     assert PREDICATE_LANE_SKEW in store.predicates
     assert PREDICATE_SLEEP_DEBT not in store.predicates
     skew = next(c for c in store.calls if c["predicate"] == PREDICATE_LANE_SKEW)
-    assert skew["metadata"]["baseline_seconds"] == sum(row.seconds for row in baseline[1:]) / len(
-        baseline[1:]
+    assert skew["metadata"]["baseline_seconds"] == statistics.median(
+        row.seconds for row in baseline[1:]
     )
     # The unavailable date is not a sample, so it lowers the stored confidence.
     assert skew["confidence"] == evidence_confidence(

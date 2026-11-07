@@ -65,8 +65,8 @@ def test_returns_zero_filled_row_for_every_lane_with_no_episodes() -> None:
 def test_single_episode_within_window_counts_toward_its_lane() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=_DAY_START + timedelta(hours=1),
             end_at=_DAY_START + timedelta(hours=2),
         )
@@ -84,8 +84,8 @@ def test_episode_is_clipped_to_the_window_boundary() -> None:
     """An episode spanning midnight only counts the in-window slice."""
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=_DAY_START - timedelta(hours=1),
             end_at=_DAY_START + timedelta(hours=1),
         )
@@ -97,8 +97,8 @@ def test_episode_is_clipped_to_the_window_boundary() -> None:
 def test_open_ended_episode_clips_to_day_end() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=_DAY_START + timedelta(hours=23),
             end_at=None,
         )
@@ -110,14 +110,22 @@ def test_open_ended_episode_clips_to_day_end() -> None:
 def test_episode_entirely_outside_window_is_dropped() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=_DAY_END + timedelta(hours=1),
             end_at=_DAY_END + timedelta(hours=2),
         )
     ]
     result = compute_daily_lane_rollup(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result["play"]["episode_count"] == 0
+    assert result["play"]["seconds"] == 0.0
+    matching = compute_daily_lane_rollup(
+        episodes,
+        day_start_utc=_DAY_START + timedelta(days=1),
+        day_end_utc=_DAY_END + timedelta(days=1),
+    )
+    assert matching["play"]["episode_count"] == 1
+    assert matching["play"]["seconds"] == pytest.approx(3600.0)
 
 
 def test_intent_layer_episode_never_counts() -> None:
@@ -173,14 +181,14 @@ def test_overlapping_same_lane_episodes_union_not_sum() -> None:
     endpoint relies on."""
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=_DAY_START + timedelta(hours=1),
             end_at=_DAY_START + timedelta(hours=3),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             start_at=_DAY_START + timedelta(hours=2),
             end_at=_DAY_START + timedelta(hours=4),
         ),

@@ -1116,13 +1116,14 @@ class TestForgetEntity:
 
         mock_conn = AsyncMock()
         mock_conn.execute = AsyncMock(return_value="UPDATE 0")
+        mock_conn.fetchrow = AsyncMock(return_value=entity_row)
         mock_txn = AsyncMock()
         mock_txn.__aenter__ = AsyncMock(return_value=None)
         mock_txn.__aexit__ = AsyncMock(return_value=False)
         mock_conn.transaction = MagicMock(return_value=mock_txn)
 
         mock_pool = AsyncMock()
-        mock_pool.fetchrow = AsyncMock(side_effect=[owner_row, entity_row])
+        mock_pool.fetchrow = AsyncMock(side_effect=[owner_row])
         mock_pool.acquire = MagicMock(return_value=AsyncCtx(mock_conn))
         return _wire_app(mock_pool), mock_pool
 
@@ -1786,6 +1787,42 @@ class TestEntityActivity:
         assert body["degraded"] is True
         assert body["degraded_reason"] == "chronicler_activity_unavailable"
         assert "offline" not in body["degraded_reason"]
+
+    @pytest.mark.parametrize(
+        ("episode_count", "truncated"),
+        [(499, False), (500, True)],
+    )
+    @pytest.mark.parametrize("bins_only", [False, True])
+    async def test_chronicler_truncation_flag_at_the_500_episode_cap(
+        self, episode_count: int, truncated: bool, bins_only: bool
+    ):
+        """A full 500-row Chronicler page declares itself capped; 499 does not."""
+        episodes = [
+            self._episode(uuid4(), _NOW - timedelta(minutes=i)) for i in range(episode_count)
+        ]
+        app, _ = self._make_app(chronicler_episodes=episodes)
+        params = {"bins": "daily", "window": "7d", "bins_only": True} if bins_only else {}
+        resp = await _get(app, _ACTIVITY_PATH, **params)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["chronicler_truncated"] is truncated
+        assert body["degraded"] is False
+
+    async def test_truncation_flag_is_false_when_chronicler_is_degraded(self):
+        """Unknown is carried by degraded, never by the truncation flag."""
+        app, _ = self._make_app(chronicler_unreachable=True)
+        body = (await _get(app, _ACTIVITY_PATH)).json()
+        assert body["degraded"] is True
+        assert body["chronicler_truncated"] is False
+
+    async def test_truncation_flag_is_false_when_a_full_page_is_partially_malformed(self):
+        """A full 500-row page with one malformed row is degraded, not truncated."""
+        episodes = [self._episode(uuid4(), _NOW - timedelta(minutes=i)) for i in range(499)]
+        episodes.append({"id": "not-a-uuid"})
+        app, _ = self._make_app(chronicler_episodes=episodes)
+        body = (await _get(app, _ACTIVITY_PATH)).json()
+        assert body["degraded"] is True
+        assert body["chronicler_truncated"] is False
 
     async def test_genuine_empty_activity_is_healthy(self):
         """A successful zero-row Chronicler read remains distinct from failure."""

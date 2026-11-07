@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.connectors.discretion_dispatcher import (
+from butlers.core.discretion_dispatcher import (
     DiscretionDispatcher,
     discretion_auth_failures_total,
 )
@@ -36,7 +36,7 @@ from butlers.core.model_routing import QuotaStatus
 
 pytestmark = pytest.mark.unit
 
-_MODULE = "butlers.connectors.discretion_dispatcher"
+_MODULE = "butlers.core.discretion_dispatcher"
 _KERNEL = "butlers.core.model_call"
 
 

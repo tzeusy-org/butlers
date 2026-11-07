@@ -24,12 +24,16 @@ from butlers.api.briefing.lint import first_violation, voice_lint_passes
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core import baselines as baselines_core
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.general_settings import load_general_settings, resolve_general_timezone
 from butlers.core.health_baseline_metrics import METRICS as BASELINE_METRICS
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
+from butlers.modules.memory.storage import (
+    OwnerAuthoredSupersessionError,
+    StaleSupersessionTargetError,
+)
 from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
@@ -79,6 +83,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/health", tags=["health"])
 
 BUTLER_DB = "health"
+
+
+def _stale_edit_conflict() -> HTTPException:
+    """409 for an edit whose record changed after the caller read it."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="The record changed since it was read. Reload it and edit its current version.",
+    )
+
+
+def _owner_authored_conflict() -> HTTPException:
+    """409 for an edit that would replace an owner-authored record with a non-owner one."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="This record was authored by the owner and cannot be replaced by this edit.",
+    )
 
 
 def _pool(db: DatabaseManager):
@@ -585,16 +605,21 @@ async def list_medication_doses(
 
     Reads from the ``facts`` table (predicate = ``took_dose``,
     scope = ``health``), the same surface written by the ``medication_log_dose``
-    MCP tool.  Doses are scoped to the medication via
-    ``metadata->>'medication_id'``.
+    MCP tool.  Doses are scoped to the medication by ``metadata->>'medication_id'``
+    matched against every fact of the medication's subject, so doses logged before
+    an edit (which supersedes the fact with a new id) stay listed.
     """
+    from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+        dose_of_medication_sql,
+    )
+
     pool = _pool(db)
 
     conditions: list[str] = [
         "predicate = 'took_dose'",
         "validity = 'active'",
         "scope = 'health'",
-        "metadata->>'medication_id' = $1",
+        dose_of_medication_sql("$1"),
     ]
     args: list[object] = [medication_id]
     idx = 2
@@ -772,7 +797,7 @@ async def get_medication_adherence(
     from butlers.tools.health import medication_history
     from butlers.tools.health._medication_utils import (
         expected_dose_count,
-        frequency_to_doses_per_day,
+        scheduled_doses_per_day,
     )
 
     pool = _pool(db)
@@ -818,12 +843,12 @@ async def get_medication_adherence(
     # doses expected before it existed.
     medication = result.get("medication") or {}
     frequency = medication.get("frequency") or "daily"
-    doses_per_day = frequency_to_doses_per_day(frequency)
+    doses_per_day = scheduled_doses_per_day(frequency)
     expected = expected_dose_count(
         doses_per_day=doses_per_day,
         window_start=effective_start,
         window_end=effective_end,
-        medication_created_at=medication.get("created_at"),
+        medication_created_at=medication.get("first_seen_at") or medication.get("created_at"),
     )
 
     adherence_rate: float | None = None
@@ -916,8 +941,8 @@ async def update_medication(
 
     Only the supplied (non-null) fields are merged into the existing medication
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the medication does not exist and 422 if
-    no updatable fields were provided.
+    fact is superseded.  Returns 404 if the medication does not exist, 409 if it changed
+    since it was read or is owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import medication_update
 
@@ -930,6 +955,10 @@ async def update_medication(
         )
     try:
         result = await medication_update(pool, medication_id, **updates)
+    except StaleSupersessionTargetError as exc:
+        raise _stale_edit_conflict() from exc
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _medication_response(result)
@@ -1082,8 +1111,8 @@ async def update_condition(
 
     Only the supplied (non-null) fields are merged into the existing condition
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the condition does not exist and 422 if
-    no updatable fields were provided.
+    fact is superseded.  Returns 404 if the condition does not exist, 409 if it changed
+    since it was read or is owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import condition_update
 
@@ -1096,6 +1125,10 @@ async def update_condition(
         )
     try:
         result = await condition_update(pool, condition_id, **updates)
+    except StaleSupersessionTargetError as exc:
+        raise _stale_edit_conflict() from exc
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _condition_response(result)
@@ -1720,8 +1753,8 @@ async def update_research(
 
     Only the supplied (non-null) fields are merged into the existing research
     fact; a new property fact is written under the same subject key so the prior
-    fact is superseded.  Returns 404 if the note does not exist and 422 if no
-    updatable fields were provided.
+    fact is superseded.  Returns 404 if the note does not exist, 409 if it is
+    owner-authored, and 422 if no updatable fields were provided.
     """
     from butlers.tools.health import research_update
 
@@ -1734,6 +1767,8 @@ async def update_research(
         )
     try:
         result = await research_update(pool, research_id, **updates)
+    except OwnerAuthoredSupersessionError as exc:
+        raise _owner_authored_conflict() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _research_response(result)

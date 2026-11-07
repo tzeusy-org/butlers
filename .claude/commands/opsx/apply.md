@@ -42,22 +42,28 @@ Implement tasks from an OpenSpec change.
 
    **Handle states:**
    - If `state: "blocked"` (missing artifacts): show message, suggest using `/opsx:continue`
-   - If `state: "all_done"`: congratulate, suggest archive
+   - If `state: "all_done"`: report task completion and proceed to implementation/delivery verification
    - Otherwise: proceed to implementation
 
 4. **Read context files**
 
-   Recheck the design requirement in `about/heart-and-soul/development.md`
-   against actual scope. A change to a cross-butler contract, schema shared
-   across butlers, or security boundary requires `design.md`, even if CLI
-   readiness or a custom schema omits it. Stop and resolve a missing required
-   design before implementation. An eligible single-butler change may omit
-   it using `single-butler`; spec approval and review/verification still apply.
+   Recheck the design requirement in `about/heart-and-soul/development.md` against actual scope.
+   A cross-butler contract, shared schema, or security boundary requires `design.md`, even if CLI
+   readiness omits it. Honor the schema already resolved for this change. For `single-butler` or
+   `living-specs`, read affected canonical specs and update them in the same source change when
+   required behavior changes; these schemas have no local delta specs. Retained `spec-driven`
+   programs keep their local deltas. For a new no-delta change, verify `.openspec.yaml` retains
+   its generated `schema` and `created` values and has `skip_specs: true`; if not, stop before applying.
+   Never backfill that marker onto a legacy or retained delta change. The marker does not waive review
+   or verification.
+
+
 
    Read the files listed in `contextFiles` from the apply instructions output.
    The files depend on the schema being used:
    - **spec-driven**: proposal, specs, design, tasks
-   - **single-butler**: proposal, specs, tasks, plus any existing or voluntarily added design
+   - **single-butler**: proposal, tasks, plus any existing or voluntarily added design
+   - **living-specs**: proposal, design, tasks
    - Other schemas: follow the contextFiles from CLI output
 
    Read an existing `design.md` even if it is not listed in `contextFiles`;
@@ -91,7 +97,7 @@ Implement tasks from an OpenSpec change.
    Display:
    - Tasks completed this session
    - Overall progress: "N/M tasks complete"
-   - If all done: suggest archive
+   - If all tasks are done: suggest `/opsx:verify`; completion cleanup requires the whole program to be implemented and shipped
    - If paused: explain why and wait for guidance
 
 **Output During Implementation**
@@ -122,7 +128,8 @@ Working on task 4/7: <task description>
 - [x] Task 2
 ...
 
-All tasks complete! You can archive this change with `/opsx:archive`.
+All tasks complete! Run `/opsx:verify` and confirm the whole program is implemented and shipped.
+Then `/opsx:archive` deletes its completed directory after reviewed canonical updates; Git retains history.
 ```
 
 **Output On Pause (Issue Encountered)**

@@ -6,9 +6,11 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -107,12 +109,22 @@ def test_group_command_selects_its_lane_group_over_the_committed_durations() -> 
     assert command[command.index("--splitting-algorithm") + 1] == "duration_based_chunks"
     assert command[command.index("--durations-path") + 1] == ".test_durations"
     assert command[command.index("-p") + 1] == "ci_group_count"
+    assert "ci_hang_evidence" in command
     # Skip reasons reach the log, so a real-PG node that silently skips is visible.
     assert "-rs" in command
     assert "--ignore=tests/e2e" not in command
     assert not any(part.startswith("--cov") for part in command)
     with pytest.raises(ValueError, match="between 1 and 6"):
         ci_lanes.pytest_command("integration", 7, output=Path("/out"), coverage=False)
+
+
+def test_only_the_integration_lane_requires_docker(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The root conftest fails a "Docker not available" skip under this flag.
+    monkeypatch.delenv(ci_lanes.REQUIRE_DOCKER_ENV, raising=False)
+    paths = {"output": Path("/out"), "count_path": Path("/out/collected.json")}
+
+    assert ci_lanes.lane_environment("integration", **paths)[ci_lanes.REQUIRE_DOCKER_ENV] == "1"
+    assert ci_lanes.REQUIRE_DOCKER_ENV not in ci_lanes.lane_environment("unit", **paths)
 
 
 def test_the_count_plugin_records_each_real_pytest_split_group(tmp_path: Path) -> None:
@@ -203,41 +215,14 @@ def test_merged_durations_cover_every_group_and_refuse_a_missing_one(tmp_path: P
     assert not (tmp_path / "refused").exists()
 
 
-def _budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **budgets: int) -> None:
-    import check_test_budget
-
-    path = tmp_path / "budget.json"
-    path.write_text(
-        json.dumps(
-            {lane: {"budget": value, "collected_at_update": 0} for lane, value in budgets.items()}
-        )
-    )
-    monkeypatch.setattr(check_test_budget, "BASELINE_PATH", path)
-
-
-def test_early_count_writes_lane_counts_and_passes_within_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_early_count_writes_lane_counts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         ci_lanes, "fresh_lane_counts", lambda repo_root: {"unit": 50, "integration": 60}
     )
-    _budget(tmp_path, monkeypatch, unit=50, integration=60)
     output = tmp_path / "counts" / "lane-counts.json"
 
     assert ci_lanes.count(output) == 0
     assert json.loads(output.read_text()) == {"integration": 60, "unit": 50}
-
-
-def test_early_count_fails_fast_when_a_lane_is_over_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        ci_lanes, "fresh_lane_counts", lambda repo_root: {"unit": 51, "integration": 60}
-    )
-    _budget(tmp_path, monkeypatch, unit=50, integration=60)
-
-    assert ci_lanes.count(tmp_path / "lane-counts.json") == 1
-    assert "unit" in capsys.readouterr().err
 
 
 def _write_groups(directory: Path, counts: dict[str, dict[int, int]]) -> None:
@@ -304,3 +289,132 @@ def test_totals_against_the_early_count_runs_on_the_standard_library_alone(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+_WEDGED_IN_THE_TEST = """
+import threading
+
+def test_wedged():
+    threading.Event().wait()
+"""
+_WEDGED_IN_SESSION_TEARDOWN = """
+import threading
+import pytest
+
+@pytest.fixture(scope="session")
+def wedge():
+    yield
+    threading.Event().wait()
+
+def test_passes(wedge):
+    pass
+"""
+
+
+def _assert_ends(pid: int) -> None:
+    """A killed orphan stays in /proc as a zombie until init reaps it, so allow for that."""
+    stat = Path(f"/proc/{pid}/stat")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            if stat.read_text().rpartition(")")[2].split()[0] == "Z":
+                return
+        except OSError:
+            return
+        time.sleep(0.1)
+    raise AssertionError(f"process {pid} is still running")
+
+
+def _nested_pytest(tmp_path: Path, source: str) -> tuple[list[str], dict[str, str], Path]:
+    (tmp_path / "test_nested.py").write_text(source, encoding="utf-8")
+    output = tmp_path / "output"
+    output.mkdir()
+    env = {
+        **os.environ,
+        "CI_HANG_STATE_DIR": str(output / ci_lanes.HANG_STATE_DIR),
+        "PYTHONPATH": str(REPO_ROOT / "scripts"),
+    }
+    env.pop("PYTEST_XDIST_WORKER", None)
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-c",
+        os.devnull,
+        "--rootdir",
+        str(tmp_path),
+        "-p",
+        "ci_hang_evidence",
+        "-n",
+        "2",
+        str(tmp_path / "test_nested.py"),
+    ]
+    return command, env, output
+
+
+@pytest.mark.parametrize(
+    ("source", "frame"),
+    [
+        pytest.param(_WEDGED_IN_THE_TEST, "test_wedged", id="test_call"),
+        pytest.param(_WEDGED_IN_SESSION_TEARDOWN, "wedge", id="session_teardown"),
+    ],
+)
+def test_a_hang_leaves_stacks_from_every_process_and_fails(tmp_path, source, frame):
+    command, env, output = _nested_pytest(tmp_path, source)
+    result = ci_lanes.run_with_deadline(
+        command, cwd=tmp_path, env=env, output=output, deadline_seconds=8, poll_seconds=1
+    )
+    assert result == ci_lanes.HANG_EXIT
+    evidence = output / ci_lanes.HANG_EVIDENCE_DIR
+    stacks = list(evidence.glob("stacks-*.txt"))
+    assert {path.name.split("-")[1] for path in stacks} == {"controller", "gw0", "gw1"}
+    workers = "".join(p.read_text() for p in stacks if "controller" not in p.name)
+    assert "test_nested.py" in workers and frame in workers
+    assert "deadline" in (evidence / "reason.txt").read_text()
+    assert (evidence / "processes.txt").read_text().splitlines()[0].split()[0] == "PID"
+    assert "test_nested.py" in "".join(p.read_text() for p in evidence.glob("last-started-*"))
+    for path in stacks:  # Nothing is left running to hold the step open.
+        _assert_ends(int(path.stem.rpartition("-")[2]))
+
+
+def test_a_run_that_ends_keeps_its_exit_code_and_no_evidence(tmp_path):
+    command, env, output = _nested_pytest(tmp_path, "def test_fails():\n    assert False\n")
+    result = ci_lanes.run_with_deadline(
+        command, cwd=tmp_path, env=env, output=output, deadline_seconds=120, poll_seconds=1
+    )
+    assert result == 1
+    assert not (output / ci_lanes.HANG_EVIDENCE_DIR).exists()
+
+
+@pytest.mark.parametrize(
+    ("samples", "reason"),
+    [
+        pytest.param([1, 1], "low memory", id="sustained"),
+        pytest.param([1, 10**9], "deadline", id="one_dip"),
+    ],
+)
+def test_low_memory_ends_the_run_only_when_it_lasts(tmp_path, monkeypatch, samples, reason):
+    readings = iter(samples * 100)
+    monkeypatch.setattr(ci_lanes, "_available_memory_kb", lambda: next(readings))
+    command, env, output = _nested_pytest(tmp_path, _WEDGED_IN_THE_TEST)
+    result = ci_lanes.run_with_deadline(
+        command, cwd=tmp_path, env=env, output=output, deadline_seconds=6, poll_seconds=1
+    )
+    assert result == ci_lanes.HANG_EXIT
+    assert reason in (output / ci_lanes.HANG_EVIDENCE_DIR / "reason.txt").read_text()
+
+
+def test_each_deadline_leaves_the_job_time_to_upload_the_evidence():
+    workflows = REPO_ROOT / ".github" / "workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))["jobs"]
+    nightly = yaml.safe_load((workflows / "nightly.yml").read_text(encoding="utf-8"))["jobs"]
+    rows = nightly["coverage-shards"]["strategy"]["matrix"]["include"]
+    budgets = [
+        ("unit", ci["check-unit"]["timeout-minutes"]),
+        ("integration", ci["check-integration"]["timeout-minutes"]),
+        *((row["lane"], row["timeout"]) for row in rows),
+    ]
+    assert {lane for lane, _ in budgets} == {"unit", "integration"}
+    for lane, minutes in budgets:
+        assert ci_lanes.lane_config(lane).deadline_minutes + 4 <= minutes, lane

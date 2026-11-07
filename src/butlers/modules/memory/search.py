@@ -11,6 +11,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from butlers.core.chronicler_visibility import (
+    catalog_projection_visible,
+    local_fact_visibility_condition,
+)
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
 
 if TYPE_CHECKING:
@@ -90,6 +94,7 @@ async def semantic_search(
     allowed_sensitivities: list[str] | None = None,
     entity_id: str | None = None,
     predicate: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Search by cosine similarity using pgvector.
 
@@ -157,6 +162,11 @@ async def semantic_search(
     # weight, not a hard retrieval cutoff, so they must remain searchable).
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+        if visibility is not None:
+            conditions.append(visibility)
 
     # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE) and retired
     # (retired_at IS NULL) rules — neither is a live standing order, and this
@@ -228,6 +238,7 @@ async def keyword_search(
     allowed_sensitivities: list[str] | None = None,
     entity_id: str | None = None,
     predicate: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Search by keyword using PostgreSQL full-text search.
 
@@ -290,6 +301,11 @@ async def keyword_search(
     # See semantic_search above: fading facts remain searchable.
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+        if visibility is not None:
+            conditions.append(visibility)
 
     # See semantic_search above for why both exclusions apply.
     if table == "rules":
@@ -340,6 +356,7 @@ async def hybrid_search(
     allowed_sensitivities: list[str] | None = None,
     entity_id: str | None = None,
     predicate: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Hybrid search combining semantic and keyword search via RRF.
 
@@ -387,6 +404,7 @@ async def hybrid_search(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_id,
         predicate=predicate,
+        memory_schema=memory_schema,
     )
     keyword_results = await keyword_search(
         pool,
@@ -398,6 +416,7 @@ async def hybrid_search(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_id,
         predicate=predicate,
+        memory_schema=memory_schema,
     )
 
     # Build rank maps keyed by id
@@ -580,6 +599,7 @@ async def recall(
     tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
     read_policy: CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -604,9 +624,9 @@ async def recall(
         tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
-            Unrecognized keys are silently ignored. An explicit ``sensitivity``
-            value above ``read_policy``'s ceiling raises
-            ``SensitivityAuthorizationError`` rather than returning an empty list.
+            An unrecognized key raises ``UnknownMemoryFilterError`` before any query
+            runs. An explicit ``sensitivity`` value above ``read_policy``'s ceiling
+            raises ``SensitivityAuthorizationError`` rather than returning an empty list.
         read_policy: Server-held read ceiling. When omitted, loaded from this
             pool's ``runtime_config`` (fail-closed to ``normal`` if unset) —
             the same ceiling ``search_catalog`` uses, generalized to local
@@ -621,7 +641,10 @@ async def recall(
     Raises:
         SensitivityAuthorizationError: If ``filters['sensitivity']`` names a
             level above ``read_policy``'s ceiling.
+        UnknownMemoryFilterError: If ``filters`` has a key outside the allowlist.
     """
+    _validate_filter_keys(filters)
+
     if read_policy is None:
         read_policy = await load_catalog_read_policy(pool)
 
@@ -655,6 +678,7 @@ async def recall(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_filter,
         predicate=predicate_filter,
+        memory_schema=memory_schema,
     )
     rules_results = await hybrid_search(
         pool,
@@ -667,6 +691,7 @@ async def recall(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_filter,
         predicate=predicate_filter,
+        memory_schema=memory_schema,
     )
 
     # Tag each result with its memory type
@@ -728,8 +753,8 @@ async def recall(
 # Structured filters (post-fetch AND conditions)
 # ---------------------------------------------------------------------------
 
-# Keys that are recognized and applied as AND filters.
-# Unrecognized keys are silently ignored per spec.
+# Keys that are recognized and applied as AND filters. Any other key is refused by
+# ``_validate_filter_keys`` so a misspelled key cannot pass for a scoped query.
 _KNOWN_FILTER_KEYS = frozenset(
     {
         "scope",
@@ -757,7 +782,8 @@ def _apply_filters(results: list[dict], filters: dict[str, Any] | None) -> list[
         retention_class — match row['retention_class'] == value
         sensitivity     — match row['sensitivity'] == value
 
-    Unrecognized filter keys are silently ignored.
+    Keys outside ``_KNOWN_FILTER_KEYS`` are refused upstream by ``_validate_filter_keys``;
+    this function skips any it is handed.
     """
     if not filters:
         return results
@@ -844,6 +870,7 @@ async def search(
     tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
     read_policy: CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """General-purpose search across memory types.
 
@@ -864,9 +891,9 @@ async def search(
         tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
-            Unrecognized keys are silently ignored. An explicit ``sensitivity``
-            value above ``read_policy``'s ceiling raises
-            ``SensitivityAuthorizationError``.
+            An unrecognized key raises ``UnknownMemoryFilterError`` before any query
+            runs. An explicit ``sensitivity`` value above ``read_policy``'s ceiling
+            raises ``SensitivityAuthorizationError``.
         read_policy: Server-held read ceiling. When omitted, loaded from this
             pool's ``runtime_config`` (fail-closed to ``normal`` if unset).
 
@@ -877,6 +904,7 @@ async def search(
         ValueError: If mode or types are invalid.
         SensitivityAuthorizationError: If ``filters['sensitivity']`` names a
             level above ``read_policy``'s ceiling.
+        UnknownMemoryFilterError: If ``filters`` has a key outside the allowlist.
     """
     if mode not in _VALID_SEARCH_MODES:
         raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
@@ -889,6 +917,8 @@ async def search(
                 raise ValueError(
                     f"Invalid type: {t!r}. Must be one of {sorted(_VALID_SEARCH_TYPES)}"
                 )
+
+    _validate_filter_keys(filters)
 
     if read_policy is None:
         read_policy = await load_catalog_read_policy(pool)
@@ -923,6 +953,7 @@ async def search(
                 scope=scope,
                 tenant_id=tenant_id,
                 allowed_sensitivities=allowed_sensitivities,
+                memory_schema=memory_schema,
             )
         elif mode == "keyword":
             results = await keyword_search(
@@ -933,6 +964,7 @@ async def search(
                 scope=scope,
                 tenant_id=tenant_id,
                 allowed_sensitivities=allowed_sensitivities,
+                memory_schema=memory_schema,
             )
         else:  # hybrid
             results = await hybrid_search(
@@ -944,6 +976,7 @@ async def search(
                 scope=scope,
                 tenant_id=tenant_id,
                 allowed_sensitivities=allowed_sensitivities,
+                memory_schema=memory_schema,
             )
 
         # Tag with memory type
@@ -1026,6 +1059,25 @@ class CatalogReadPolicy(NamedTuple):
     policy_defaulted: bool = False
 
 
+class UnknownMemoryFilterError(ValueError):
+    """Raised when a structured filter dict names a key the search layer does not apply.
+
+    A misspelled key that is dropped returns an unfiltered result set that looks scoped,
+    so the caller (often an LLM) gets a wrong answer presented as a narrowed one.
+    """
+
+
+def _validate_filter_keys(filters: dict[str, Any] | None) -> None:
+    """Refuse a filter dict with a key outside ``_KNOWN_FILTER_KEYS`` before any query runs."""
+    if not filters:
+        return
+    unknown = sorted(str(key) for key in filters if key not in _KNOWN_FILTER_KEYS)
+    if unknown:
+        raise UnknownMemoryFilterError(
+            f"Unknown filter key(s) {unknown!r}. Allowed keys: {sorted(_KNOWN_FILTER_KEYS)!r}"
+        )
+
+
 class SensitivityAuthorizationError(PermissionError):
     """Raised when an explicit sensitivity filter exceeds the caller's read ceiling.
 
@@ -1098,7 +1150,11 @@ async def _catalog_semantic_search(
     embedding_str = str(query_embedding)
     params: list = [embedding_str, tenant_id]
     # Exclude stale entries (superseded / invalidated facts have invalid_at set).
-    conditions = ["tenant_id = $2", "invalid_at IS NULL"]
+    conditions = [
+        "tenant_id = $2",
+        "invalid_at IS NULL",
+        catalog_projection_visible("memory_catalog"),
+    ]
     if memory_type is not None:
         params.append(memory_type)
         conditions.append(f"memory_type = ${len(params)}")
@@ -1112,7 +1168,7 @@ async def _catalog_semantic_search(
     where = "WHERE " + " AND ".join(conditions)
     sql = f"""
         SELECT *, 1 - (embedding <=> $1) AS similarity
-        FROM public.memory_catalog
+        FROM public.memory_catalog AS memory_catalog
         {where}
         ORDER BY embedding <=> $1
         LIMIT ${limit_idx}
@@ -1140,6 +1196,7 @@ async def _catalog_keyword_search(
         "tenant_id = $2",
         # Exclude stale entries (superseded / invalidated facts have invalid_at set).
         "invalid_at IS NULL",
+        catalog_projection_visible("memory_catalog"),
     ]
     if memory_type is not None:
         params.append(memory_type)
@@ -1156,7 +1213,7 @@ async def _catalog_keyword_search(
         SELECT *,
                ts_rank(search_vector,
                        plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)) AS rank
-        FROM public.memory_catalog
+        FROM public.memory_catalog AS memory_catalog
         {where}
         ORDER BY rank DESC
         LIMIT ${limit_idx}
@@ -1175,6 +1232,7 @@ async def search_catalog(
     limit: int = 10,
     mode: str = "hybrid",
     read_policy: CatalogReadPolicy,
+    _query_embedding: list[float] | None = None,
 ) -> list[dict]:
     """Search ``public.memory_catalog`` for cross-butler memory discovery.
 
@@ -1194,6 +1252,7 @@ async def search_catalog(
         mode: Search mode — 'semantic', 'keyword', or 'hybrid' (default).
         read_policy: Server-held policy loaded from the calling butler's
             runtime config. Callers cannot supply or raise this authority.
+        _query_embedding: Internal precomputed vector; omitted by normal callers.
 
     Returns:
         List of dicts with catalog row fields plus ``similarity`` (semantic),
@@ -1212,7 +1271,9 @@ async def search_catalog(
     keyword_results: list[dict] = []
 
     if mode in ("semantic", "hybrid"):
-        query_embedding = embedding_engine.embed(query)
+        query_embedding = _query_embedding
+        if query_embedding is None:
+            query_embedding = embedding_engine.embed(query)
         semantic_results = await _catalog_semantic_search(
             pool,
             query_embedding,

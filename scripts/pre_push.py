@@ -334,13 +334,6 @@ def validate_updates(raw: bytes, head: str) -> bytes:
     return raw
 
 
-def collection_required(paths: list[str]) -> bool:
-    # Imports/parametrization may read docs, specs or frontend assets. Until a
-    # complete executing dependency proof earns a skip, every push recollects.
-    # This conservative envelope does not claim the hard under-30s metric.
-    return True
-
-
 def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str, list[str]]]:
     python = sys.executable
     plan = [("lock", ["uv", "lock", "--check", "--offline"])]
@@ -354,21 +347,31 @@ def guard_plan(paths: list[str], *, root: Path | None = None) -> list[tuple[str,
         ]
     for name, script in (
         ("em-dashes", "check-no-em-dashes.py"),
-        ("spec-overwrites", "check_spec_overwrites.py"),
-        ("countable-tasks", "check_countable_tasks.py"),
         ("duplicate-names", "check_duplicate_toplevel_names.py"),
-        ("archived-landed", "check_archived_requirements_landed.py"),
         ("owner-emails", "check_owner_emails.py"),
-        ("cited-requirements", "check_cited_requirements_resolve.py"),
         ("for-update-joins", "check_for_update_joins.py"),
     ):
         plan.append((name, [python, f"scripts/{script}"]))
+    plan.append(
+        (
+            "requirement-citations",
+            [
+                "uv",
+                "run",
+                "--no-sync",
+                "pytest",
+                "tests/contracts/test_requirement_citations.py",
+                "-q",
+                "--tb=short",
+                "-n",
+                "0",
+            ],
+        )
+    )
     if any(name.startswith("frontend/") for name in paths):
         # Hosted guards runs these when frontend/ changed (bu-5n9pfa); one shared step list.
         plan.append(("frontend-guards", [python, "scripts/frontend_guards.py", "--assume-changed"]))
     plan.append(("openspec-strict", ["openspec", "validate", "--all", "--strict"]))
-    if collection_required(paths):
-        plan.append(("test-budget", [python, "scripts/check_test_budget.py"]))
     return plan
 
 

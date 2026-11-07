@@ -19,6 +19,13 @@ Setup failure, missing CALL, skip, another exception, healthy BEFORE, timeout or
 cleanup remains refused/UNKNOWN. A registered endpoint does not prove the blocked old code
 reached a network lookup. The observer records only actual known reachability.
 
+The call observer retains only the exact immutable test frame's issuer and three distinct
+synthetic UUID inbox references in RAM, on success as well as failure. It reads report data
+only with a bound query for those three IDs; it never enumerates other inboxes or reads their
+reports. Its narrow temporary tracer is restored on every outcome and leaves any preexisting
+tracer intact. Missing references, incomplete rows or an unavailable observation remain UNKNOWN;
+identifiers and frame locals never enter receipts.
+
 Before fixture teardown the observer checks cancelled capture settlement, pool reacquisition,
 transaction release and `SELECT 1`, zero partial durable and in-memory reports. Complete actual
 fixture/process teardown and an unrelated sentinel must survive. Observation never replaces
@@ -35,11 +42,11 @@ The producer invokes the existing owned `install_ci_uv.py` within its own confin
 with a private path-output sink. Ordinary workflow installer consumers remain unchanged by this control; installation is part
 of the control rather than a new workflow installer step.
 The executor-local `scripts/fact_source_capture_before_supervisor.py` owns every execution
-domain. Its base is the applied diagnostic-only supervisor from PR5082
-(`2e970c17a1708014f78394f14f184a483e9d9c3c`), including the terminal module-level
-`raise SystemExit(2) from None` spelling required by current lint. The local diagnostic
-extension observes only the already-selected task around a refused children-file operation;
-scanner/cleanup acceptance predicates remain unchanged; the retired shared action is not restored. The aggregate 2480-second
+domain. It derives from the supervisor in PR5082
+(`2e970c17a1708014f78394f14f184a483e9d9c3c`), with local task observations and the
+bounded stable-rescan acceptance described below. That existing rescan changes which scans
+can be accepted; the complete local supervisor requires review with this control. It is not
+previously approved public substrate. The retired shared action is not restored. The aggregate 2480-second
 budget starts before checkout and includes the preserved 640-second UV installer and
 640-second environment reserve, two 480-second node envelopes including cleanup, and 120
 seconds each for setup and evidence. The 45-minute job is provisional, not measured p95.

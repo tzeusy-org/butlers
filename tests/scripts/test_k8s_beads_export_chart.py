@@ -40,44 +40,55 @@ def _pod_spec(doc: dict) -> dict:
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_retired_bridge_cannot_render_or_mount_even_with_legacy_values(env: str) -> None:
-    docs = _render(env, "--set", "beadsExport.enabled=true", *_SITE)
-    names = _by_kind_name(docs)
-    assert ("CronJob", "butlers-beads-export") not in names
-    assert ("PersistentVolumeClaim", "butlers-beads-export") not in names
-    for deploy in ("dashboard-api", "butlers-up", *(["butlers-control"] if env == "dev" else [])):
-        spec = _pod_spec(names[("Deployment", deploy)])
-        assert all(v["name"] != "beads-export" for v in spec["volumes"])
-        assert all(
-            m["mountPath"] != "/app/.beads"
-            for c in spec["containers"]
-            for m in c.get("volumeMounts", [])
-        )
-    assert ("ExternalSecret", "butlers-beads-dolt") not in names
-    for doc in docs:
-        if doc["kind"] in {"Deployment", "CronJob"}:
-            spec = _pod_spec(doc)
-            text = yaml.safe_dump(spec)
-            assert "DOLT" not in text
-            assert "beads-dolt" not in text
-            assert ".beads-credential-key" not in text
-            assert all("hostPath" not in v for v in spec.get("volumes", []))
-    # Existing environment policy remains: dev denied, production setting unchanged.
-    assert (("NetworkPolicy", "butlers-tracker-egress") in names) == (env == "dev")
-    if env == "prod":
-        # Prod's default is off: the explicit flag renders the same as omitting it.
-        assert _render(env, *_SITE) == docs
+    modes = [(), ("--set", "butlersControl.enabled=true")] if env == "dev" else [()]
+    for extra in modes:
+        docs = _render(env, "--set", "beadsExport.enabled=true", *_SITE, *extra)
+        names = _by_kind_name(docs)
+        split = bool(extra)
+        assert (("Deployment", "butlers-control") in names) == split
+        assert ("CronJob", "butlers-beads-export") not in names
+        assert ("PersistentVolumeClaim", "butlers-beads-export") not in names
+        for deploy in ("dashboard-api", "butlers-up", *(["butlers-control"] if split else [])):
+            spec = _pod_spec(names[("Deployment", deploy)])
+            assert all(v["name"] != "beads-export" for v in spec["volumes"])
+            assert all(
+                m["mountPath"] != "/app/.beads"
+                for c in spec["containers"]
+                for m in c.get("volumeMounts", [])
+            )
+        assert ("ExternalSecret", "butlers-beads-dolt") not in names
+        for doc in docs:
+            if doc["kind"] in {"Deployment", "CronJob"}:
+                spec = _pod_spec(doc)
+                text = yaml.safe_dump(spec)
+                assert "DOLT" not in text
+                assert "beads-dolt" not in text
+                assert ".beads-credential-key" not in text
+                assert all("hostPath" not in v for v in spec.get("volumes", []))
+        # Existing environment policy remains: dev denied, production unchanged.
+        assert (("NetworkPolicy", "butlers-tracker-egress") in names) == (env == "dev")
+        if env == "prod":
+            # Prod's default is off: the explicit flag equals omitting it.
+            assert _render(env, *_SITE) == docs
 
 
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
 def test_butlers_up_runs_the_owner_set_fleet_session_cap(env: str) -> None:
-    # The owner total stays five: staged dev partitions it across exactly one
-    # control and one domain process; unsplit production retains its old cap.
+    # Both defaults cohost with five slots. Explicit split dev still partitions
+    # that total across exactly one control and one domain process.
     names = _by_kind_name(_render(env, *_SITE))
     domains = names[("Deployment", "butlers-up")]
     container_env = {e["name"]: e.get("value") for e in _pod_spec(domains)["containers"][0]["env"]}
+    assert ("Deployment", "butlers-control") not in names
+    assert container_env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
     if env == "dev":
-        control = names[("Deployment", "butlers-control")]
+        split = _by_kind_name(_render(env, *_SITE, "--set", "butlersControl.enabled=true"))
+        domains = split[("Deployment", "butlers-up")]
+        control = split[("Deployment", "butlers-control")]
+        container_env = {
+            e["name"]: e.get("value") for e in _pod_spec(domains)["containers"][0]["env"]
+        }
         control_env = {
             e["name"]: e.get("value") for e in _pod_spec(control)["containers"][0]["env"]
         }
@@ -91,9 +102,6 @@ def test_butlers_up_runs_the_owner_set_fleet_session_cap(env: str) -> None:
         for deployment in (domains, control):
             assert deployment["spec"]["replicas"] == 1
             assert deployment["spec"]["strategy"]["type"] == "Recreate"
-    else:
-        assert ("Deployment", "butlers-control") not in names
-        assert container_env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
 
 
 @needs_helm

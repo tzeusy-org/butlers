@@ -8,16 +8,17 @@ Covers:
 5. Metadata fields (scope, status, is_temporal, expected_subject_type) match spec.
 
 Integration tests (marked pytest.mark.integration) require Docker + Postgres
-provisioned via the shared ``provisioned_postgres_pool`` fixture.
+provisioned via the shared ``db`` factory at the subject's predecessor revision.
 """
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -36,15 +37,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("mem_003", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required
 # ---------------------------------------------------------------------------
@@ -55,12 +47,12 @@ class TestMigrationFileAndChain:
 
     def test_nine_predicate_names_defined(self) -> None:
         """WELLNESS_PREDICATE_NAMES exports exactly nine names."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
         assert len(mod.WELLNESS_PREDICATE_NAMES) == 9
 
     def test_all_expected_names_present(self) -> None:
         """All nine canonical predicate names are in WELLNESS_PREDICATE_NAMES."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
         expected = {
             "sleep_session",
             "sleep_stage_summary",
@@ -76,7 +68,7 @@ class TestMigrationFileAndChain:
 
     def test_no_measurement_heart_rate_collision(self) -> None:
         """measurement_resting_hr must not collide with the pre-existing measurement_heart_rate."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
         assert "measurement_heart_rate" not in mod.WELLNESS_PREDICATE_NAMES
         assert "measurement_resting_hr" in mod.WELLNESS_PREDICATE_NAMES
 
@@ -96,39 +88,23 @@ class TestWellnessPredicatesMigrationIntegration:
     """Integration tests requiring a real PostgreSQL instance.
 
     These tests exercise the full upgrade / downgrade round-trip against
-    a real database with the predicate_registry table created inline
-    (mirrors the shape from 001_memory_schema.py).
+    a real database migrated to mem_002, the revision before the subject.
     """
 
     @pytest.fixture
-    async def predicate_registry_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with predicate_registry and return a pool."""
-        async with provisioned_postgres_pool() as pool:
-            # Create the predicate_registry table mirroring 001_memory_schema.py
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS predicate_registry (
-                    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    name           TEXT NOT NULL UNIQUE,
-                    description    TEXT,
-                    expected_subject_type TEXT,
-                    expected_object_type  TEXT,
-                    is_edge        BOOLEAN NOT NULL DEFAULT false,
-                    is_temporal    BOOLEAN NOT NULL DEFAULT false,
-                    scope          TEXT NOT NULL DEFAULT 'global',
-                    status         TEXT NOT NULL DEFAULT 'active',
-                    superseded_by  TEXT,
-                    deprecated_at  TIMESTAMPTZ,
-                    inverse_of     TEXT,
-                    is_symmetric   BOOLEAN NOT NULL DEFAULT false,
-                    example_json   JSONB,
-                    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            yield pool
+    async def predicate_registry_pool(self, db):
+        """The real memory predicate_registry as mem_003's predecessor left it."""
+        return await db(
+            "core",
+            "memory",
+            schemas={"core": "health", "memory": "health"},
+            schema="health",
+            revisions={"memory": "mem_002"},
+        )
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
 
         class _OpShim:
             def execute(self, sql: str) -> None:
@@ -151,7 +127,7 @@ class TestWellnessPredicatesMigrationIntegration:
 
     async def _run_downgrade(self, pool) -> None:
         """Execute downgrade() SQL against the pool."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
 
         sqls: list[str] = []
         mock_op = MagicMock()
@@ -167,7 +143,7 @@ class TestWellnessPredicatesMigrationIntegration:
     async def test_upgrade_inserts_nine_predicates(self, predicate_registry_pool) -> None:
         """After upgrade, all nine wellness predicates exist in predicate_registry."""
         pool = predicate_registry_pool
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
 
         await self._run_upgrade(pool)
 
@@ -184,7 +160,7 @@ class TestWellnessPredicatesMigrationIntegration:
     async def test_upgrade_is_idempotent(self, predicate_registry_pool) -> None:
         """Running upgrade() twice yields the same row count and no error."""
         pool = predicate_registry_pool
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
 
         await self._run_upgrade(pool)
         count_after_first = await pool.fetchval(
@@ -207,7 +183,7 @@ class TestWellnessPredicatesMigrationIntegration:
     async def test_downgrade_removes_exactly_nine_predicates(self, predicate_registry_pool) -> None:
         """downgrade() removes exactly the nine wellness predicates and nothing else."""
         pool = predicate_registry_pool
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
 
         # Insert a sentinel row that must survive the downgrade
         await pool.execute("""
@@ -235,7 +211,7 @@ class TestWellnessPredicatesMigrationIntegration:
     async def test_predicate_metadata_matches_spec(self, predicate_registry_pool) -> None:
         """Verify scope, status, is_temporal, and expected_subject_type for each predicate."""
         pool = predicate_registry_pool
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "mem_003")
 
         await self._run_upgrade(pool)
 
@@ -276,6 +252,8 @@ class TestWellnessPredicatesMigrationIntegration:
     async def test_no_measurement_heart_rate_in_upgrade(self, predicate_registry_pool) -> None:
         """upgrade() must not insert measurement_heart_rate (collision guard)."""
         pool = predicate_registry_pool
+        # mem_002 seeds measurement_heart_rate; remove it so only upgrade() could re-add it.
+        await pool.execute("DELETE FROM predicate_registry WHERE name = 'measurement_heart_rate'")
 
         await self._run_upgrade(pool)
 

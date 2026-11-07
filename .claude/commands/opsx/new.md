@@ -20,31 +20,34 @@ Start a new change using the experimental artifact-driven approach.
 
    **IMPORTANT**: Do NOT proceed without understanding what the user wants to build.
 
-2. **Determine the workflow schema**
+2. **Choose an explicit schema for a new change**
 
-   Read `about/heart-and-soul/development.md` and classify the actual scope.
-   A single-butler change that alters no cross-butler contract, schema shared
-   across butlers, or security boundary can use `--schema single-butler`:
-   proposal, delta specs and tasks suffice without a design. Use the default
-   `spec-driven` workflow when design is required or voluntarily chosen.
-   Directory placement alone is not eligibility evidence; if the exclusions
-   are not established, keep the default and resolve scope before proceeding.
+   Read `about/heart-and-soul/development.md` and classify the actual scope and whether this is part
+   of a new multi-PR program or continues an existing legacy program.
 
-   **For other explicitly requested workflows:**
-   - A specific schema name → use `--schema <name>`
-   - "show workflows" or "what workflows" → run `openspec schemas --json` and let them choose
+   - A new eligible single-butler change with no cross-butler contract, shared schema, or security
+     boundary uses `single-butler` (proposal → tasks; design may be added).
+   - A new standalone change that requires a design uses
+     `living-specs` (proposal → design → tasks).
+   - New multi-PR programs may use `spec-driven` with local deltas. New standalone work uses
+     a no-delta schema; selecting local deltas is not an additional standalone option.
+   - Preserve every existing legacy program with its resolved schema, metadata, content and
+     deltas unchanged until verified completion. Do not retag it or add `skip_specs`.
 
-   An explicitly requested workflow still must satisfy the repository's
-   design requirement. Preserve existing design documents and all spec,
-   owner-approval, implementation review and verification gates.
+   The project default stays `spec-driven` for existing changes and other legacy CLI use. New
+   `/opsx:new` changes choose a schema explicitly rather than relying on that default.
 
 3. **Create the change directory**
    ```bash
-   openspec new change "<name>"
+   openspec new change "<name>" --schema <selected-schema>
    ```
-   For an eligible single-butler change omitting design, add `--schema single-butler`.
-   Otherwise omit it for the default or use an explicitly requested compatible schema.
-   This creates a scaffolded change at `openspec/changes/<name>/` with the selected schema.
+   For a new `single-butler` or `living-specs` change, preserve the CLI-generated `schema` and
+   `created` fields in `.openspec.yaml` and add `skip_specs: true`. Do not create an empty `specs/`
+   directory. These schemas use canonical specs as the maintained requirements; update an affected
+   canonical requirement in the same source change whenever required behavior changes. Keep all
+   existing artifact files and designs. A retained `spec-driven` change keeps its delta specs and
+   metadata unchanged. Verify the new no-delta change has its generated schema/created fields and
+   `skip_specs: true` before continuing; if they are missing or malformed, correct this new change first.
 
 4. **Show the artifact status**
    ```bash
@@ -75,4 +78,4 @@ After completing the steps, summarize:
 - Do NOT advance beyond showing the first artifact template
 - If the name is invalid (not kebab-case), ask for a valid name
 - If a change with that name already exists, suggest using `/opsx:continue` instead
-- Pass --schema if using a non-default workflow
+- Pass the selected `--schema` explicitly for every new change

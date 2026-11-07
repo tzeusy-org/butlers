@@ -38,7 +38,6 @@ import pytest
 
 from butlers.core.attention_urgency import AttentionOrigin
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.integration.test_dashboard_stepup import authority as authority
 
 _docker_available = shutil.which("docker") is not None
@@ -84,19 +83,19 @@ def _future(days: int = 7) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Migrate the real context schema before entering the async fixture loop."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+@pytest.fixture
+def authority_db_url(fresh_db) -> str:
+    """The real core schema, shared by ``insight_pool`` and the imported ``authority``."""
+    return fresh_db("core")
 
 
 @pytest.fixture
-async def insight_pool(migrated_db_url: str):
+async def insight_pool(authority_db_url: str):
     """Own a fresh pool and reset only this test's ordinary Insight state."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
     pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        authority_db_url, min_size=1, max_size=3, init=register_jsonb_codec
     )
     try:
         await create_insight_tables(pool)
@@ -128,14 +127,6 @@ async def _set_owner_attention_policy(
     quiet_end_hour: int | None,
     timezone: str = "UTC",
 ):
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.approvals_policy (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            quiet_start_hour INTEGER,
-            quiet_end_hour INTEGER,
-            timezone TEXT NOT NULL DEFAULT 'UTC'
-        )
-    """)
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)

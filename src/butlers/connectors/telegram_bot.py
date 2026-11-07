@@ -26,11 +26,14 @@ Environment Variables (from docs/connectors/telegram_bot.md):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import math
 import os
 import random
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from threading import Thread
@@ -44,7 +47,16 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.audio_authorship import (
+    AUDIO_AUTHORSHIP_KEY_NAME,
+    TELEGRAM_VOICE,
+    AudioAuthorship,
+    sha256_hex,
+    transform_for_protocol,
+    usable_key,
+)
+from butlers.connector_catalog import connector_descriptor
+from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -76,6 +88,7 @@ from butlers.core.approval_callbacks import (
     verify_approval_callback_token,
 )
 from butlers.core.logging import configure_logging
+from butlers.core.owner_delivery import TOKEN_PREFIX as OWNER_DELIVERY_TOKEN_PREFIX
 from butlers.credential_store import (
     CredentialStore,
     shared_db_name_from_env,
@@ -83,12 +96,30 @@ from butlers.credential_store import (
 from butlers.db import db_params_from_env
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
-from butlers.storage import BlobStorageStartupError, BlobStore, S3BlobStore
-from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
+from butlers.storage import BlobStore
+from butlers.telegram_api import (
+    edit_telegram_message_text,
+    remove_telegram_inline_keyboard,
+    telegram_message_not_modified,
+    telegram_outage_status,
+)
 
 _DESCRIPTOR = connector_descriptor("telegram_bot")
 
 logger = logging.getLogger(__name__)
+
+#: Retraction outcomes that say nothing about the card, so they are not receipted.
+_RETRACTION_PROVIDER_UNAVAILABLE = "provider_unavailable"
+_RETRACTION_PROVIDER_5XX = "provider_5xx"
+_RETRACTION_TOKEN_REJECTED = "token_rejected"
+_RETRACTION_NO_VERDICT = frozenset(
+    {_RETRACTION_PROVIDER_UNAVAILABLE, _RETRACTION_PROVIDER_5XX, _RETRACTION_TOKEN_REJECTED}
+)
+#: One such answer may concern that message alone; two in a row need an explanation.
+_RETRACTION_OUTAGES_TO_STOP_DRAIN = 2
+#: Drains spent on a refused token, with no answer from Telegram between them, before the sweep
+#: stops attempting cards. It then only asks ``getMe`` each drain, and resumes when that passes.
+_RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP = 15
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
@@ -127,10 +158,17 @@ _GAP_INTERVIEW_ANSWER_TOASTS: dict[str, str] = {
     "confirm": "Logged as a work day ✅",
     "correct": "Removed — not a work day ✏️",
     "dismiss": "Dismissed 🚫",
+    # Block-interview lane answers (bu-r3fmja).
+    "work": "Logged as work 💼",
+    "social": "Logged as social 🧑‍🤝‍🧑",
+    "play": "Logged as play 🎮",
+    "eat": "Logged as eating 🍽️",
+    "rest": "Logged as rest 🛋️",
 }
 
 _APPROVAL_CALLBACK_DECISION_ACTOR = "owner@telegram"
 _APPROVAL_CALLBACK_DECISION_HEADER = "X-Butlers-Decision-Actor"
+_OWNER_DELIVERY_RETRACTED_TEXT = "Handled elsewhere. Open the dashboard for the outcome."
 _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "approved": "✅ Approved",
     "executed": "✅ Approved",
@@ -142,16 +180,20 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
 }
 
 
-def _gap_interview_toast(data: dict[str, Any], answer: str) -> str:
-    """Map a resolve-endpoint response to a short owner-facing toast."""
+def _gap_interview_outcome(data: dict[str, Any], answer: str) -> tuple[str, bool]:
+    """Map a resolve-endpoint response to ``(toast, settled)``.
+
+    ``settled`` means the question can no longer take an answer (applied,
+    already answered, or expired), so its buttons should be retired.
+    """
     status = data.get("status") if isinstance(data, dict) else None
     if status == "applied":
-        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓")
+        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓"), True
     if status == "already_answered":
-        return "Already recorded — thanks!"
+        return "Already recorded — thanks!", True
     if status == "error" and data.get("error") == "unknown_or_expired_interview":
-        return "This confirmation has expired."
-    return "Recorded ✓"
+        return "This confirmation has expired.", True
+    return "Recorded ✓", False
 
 
 _MEDIA_TYPE_LABELS: dict[str, str] = {
@@ -283,12 +325,23 @@ class TelegramBotConnectorConfig:
     # It is intentionally never read from the environment.
     approval_callback_connector_token: str | None = None
 
+    # Seconds between sweeps that retract owner cards staled by any decision path.
+    owner_delivery_sweep_interval_s: float = 60.0
+    # The ledger does not record which bot sent a card, so listing cannot be scoped to one.
+    # A second bot's connector must turn this off, or it burns the sending bot's attempts.
+    owner_delivery_sweep_enabled: bool = True
+
     # Owner voice-note transcription (bu-r0dsz; telegram-voice-transcription spec). Disabled by
     # default: enabling sends owner audio to the configured STT service.
     voice_transcription_enabled: bool = False
     voice_transcription_url: str | None = None
     voice_transcription_protocol: str = "wyoming"
     voice_max_duration_s: int = DEFAULT_MAX_DURATION_S
+
+    # Tier-1 ``AUDIO_AUTHORSHIP_KEY`` resolved at startup through CredentialStore, never the
+    # environment. Absent means transcripts carry no authorship binding, so goal admission
+    # treats them as third-party (REQ-audio-authorship-002).
+    audio_authorship_key: str | None = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
@@ -322,6 +375,12 @@ class TelegramBotConnectorConfig:
                 "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED is true"
             )
 
+        sweep_interval_s = float(os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S", "60"))
+        if not (math.isfinite(sweep_interval_s) and sweep_interval_s > 0):
+            raise ValueError(
+                "CONNECTOR_OWNER_DELIVERY_SWEEP_INTERVAL_S must be a positive number of seconds"
+            )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -343,6 +402,11 @@ class TelegramBotConnectorConfig:
                     "CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S", str(DEFAULT_MAX_DURATION_S)
                 )
             ),
+            owner_delivery_sweep_interval_s=sweep_interval_s,
+            owner_delivery_sweep_enabled=(
+                os.environ.get("CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED", "true").strip().lower()
+                in ("1", "true", "yes", "on")
+            ),
         )
 
 
@@ -354,6 +418,15 @@ def _replay_message_metadata(update: dict[str, Any]) -> dict[str, Any]:
             spans = bot_message_spans(msg, _extract_normalized_text(msg) or "")
             return {"untrusted_spans": spans or None, "in_reply_to_ref": bot_in_reply_to_ref(msg)}
     return {}
+
+
+async def _tolerate_not_modified(edit: Awaitable[Any]) -> None:
+    """Await one end-state edit; Telegram's "message is not modified" means it already holds."""
+    try:
+        await edit
+    except httpx.HTTPStatusError as exc:
+        if not telegram_message_not_modified(exc.response):
+            raise
 
 
 class TelegramBotConnector:
@@ -386,6 +459,9 @@ class TelegramBotConnector:
         self._last_update_id: int | None = None
         self._running = False
         self._semaphore = asyncio.Semaphore(config.max_inflight)
+        self._owner_delivery_sweep_task: asyncio.Task[None] | None = None
+        self._owner_delivery_drain_lock = asyncio.Lock()
+        self._owner_delivery_token_rejected_drains = 0
 
         # DB pool for cursor read/write to switchboard.connector_registry.
         self._cursor_pool = cursor_pool
@@ -619,6 +695,7 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        self._start_owner_delivery_sweep()
 
         # Load checkpoint
         await self._load_checkpoint()
@@ -712,6 +789,7 @@ class TelegramBotConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        self._start_owner_delivery_sweep()
 
         # Load ingestion policy rules before registering the webhook.
         await self._ingestion_policy.ensure_loaded()
@@ -737,6 +815,13 @@ class TelegramBotConnector:
     async def stop(self) -> None:
         """Stop the connector gracefully."""
         self._running = False
+
+        # Before the HTTP client closes: an in-flight drain still uses it.
+        if self._owner_delivery_sweep_task is not None:
+            self._owner_delivery_sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._owner_delivery_sweep_task
+            self._owner_delivery_sweep_task = None
 
         # Stop heartbeat
         if self._heartbeat is not None:
@@ -968,6 +1053,8 @@ class TelegramBotConnector:
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
                 # path additive, then benignly acknowledge all other buttons.
                 if await self._maybe_handle_confirm_callback(update):
+                    return
+                if await self._maybe_handle_owner_delivery_callback(update):
                     return
                 if await self._maybe_handle_approval_callback(update):
                     return
@@ -1280,6 +1367,288 @@ class TelegramBotConnector:
         await self._edit_approval_callback_message(callback_query, resolved_status)
         return True
 
+    async def _maybe_handle_owner_delivery_callback(self, update: dict[str, Any]) -> bool:
+        """Redeem one canonical ``od1`` card token (bu-dhloi1.13) without entering ingestion.
+
+        Order: primary-owner channel, prompt acknowledgement, the single owner-delivery
+        action route (which binds owner, surface, generation, digest and expiry and
+        consumes the token), then the tapped card's edit and a drain of every other
+        card that is now stale. The token is opaque here and is never logged.
+        """
+        callback_query = update.get("callback_query")
+        if not isinstance(callback_query, dict):
+            return False
+        token = callback_query.get("data")
+        if not isinstance(token, str) or not token.startswith(f"{OWNER_DELIVERY_TOKEN_PREFIX}:"):
+            return False
+        callback_query_id = str(callback_query.get("id", ""))
+        if not await self._is_primary_owner_callback(callback_query):
+            logger.warning("Ignored owner-delivery callback from a non-primary-owner channel")
+            if callback_query_id:
+                await self._answer_callback_query(callback_query_id, "")
+            return True
+        if callback_query_id:
+            await self._answer_callback_query(callback_query_id, "Processing decision…")
+        status = await self._submit_owner_delivery_action(token)
+        if status is not None:
+            await self._edit_approval_callback_message(callback_query, status)
+        else:
+            await self._clear_stale_keyboard(callback_query)
+        await self._drain_owner_delivery_retractions()
+        return True
+
+    async def _submit_owner_delivery_action(self, token: str) -> str | None:
+        """POST the token; returns the terminal card status, or ``None`` when refused."""
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
+            logger.warning("Owner-delivery callback without an internal API credential")
+            return None
+        try:
+            response = await self._http_client.post(
+                f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/actions",
+                json={"token": token},
+                headers={
+                    _APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR,
+                    APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
+                },
+            )
+            if response.status_code == 409:
+                payload = response.json()
+                detail = payload.get("detail") if isinstance(payload, dict) else None
+                reason = detail.get("reason") if isinstance(detail, dict) else None
+                return "changed_since_shown" if reason == "action_changed" else None
+            if response.status_code >= 400:
+                return None
+            payload = response.json()
+        except Exception:  # noqa: BLE001 -- a callback must never crash polling
+            logger.warning("Owner-delivery action route failed")
+            return None
+        data = payload.get("data") if isinstance(payload, dict) else None
+        status = data.get("status") if isinstance(data, dict) else None
+        return status if isinstance(status, str) else None
+
+    async def _clear_stale_keyboard(self, callback_query: dict[str, Any]) -> None:
+        """A refused tap's card is stale: drop its buttons; nothing was decided."""
+        message = callback_query.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        message_id = message.get("message_id") if isinstance(message, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if chat_id is None or not isinstance(message_id, int):
+            return
+        try:
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- stale UI is harmless
+            logger.warning("Failed to remove a stale owner-delivery keyboard")
+
+    def _start_owner_delivery_sweep(self) -> None:
+        """Run the stale-card sweep: a card can go stale with no Telegram tap at all.
+
+        A dashboard decision, an expiry or a cancellation stales a card too. The listing is
+        not gated on the rollout flag, which governs minting only; without a ledger row it
+        is empty, and stale cards minted while the flag was on still get retracted.
+        """
+        if self._owner_delivery_sweep_task is not None:
+            return
+        config = self._config
+        if not config.owner_delivery_sweep_enabled:
+            logger.info("Owner-delivery retraction sweep disabled for this connector")
+            return
+        if not config.internal_api_url or not config.approval_callback_connector_token:
+            return
+        self._owner_delivery_sweep_task = asyncio.create_task(self._owner_delivery_sweep_loop())
+
+    async def _owner_delivery_sweep_loop(self) -> None:
+        while True:
+            try:
+                await self._drain_owner_delivery_retractions()
+            except Exception as exc:  # noqa: BLE001 -- the next sweep retries
+                # The type only: an HTTP error's text can carry the bot-token URL.
+                logger.warning("Owner-delivery retraction sweep failed (%s)", type(exc).__name__)
+            await asyncio.sleep(self._config.owner_delivery_sweep_interval_s)
+
+    async def _drain_owner_delivery_retractions(self) -> int:
+        """Retract every stale owner card and receipt each attempt honestly.
+
+        A card whose provider message id is unknown, or whose edit Telegram refuses, is
+        reported as ``retracted=false``; the ledger lists it again after a cooldown, up to a
+        bound, and its buttons stay harmless because their tokens are already stale. An outage
+        says nothing about the card, so it gets no receipt and consumes none of the bound. One
+        such answer may be about that message alone, so the drain moves on. Two in a row stop
+        it until the next sweep, unless both were 5xx and Telegram still answers ``getMe``:
+        then those messages are the problem, and the cards behind them still get their turn.
+        One drain at a time: a tap and the sweep must not attempt the same card at once.
+        """
+        async with self._owner_delivery_drain_lock:
+            return await self._drain_owner_delivery_retractions_locked()
+
+    async def _drain_owner_delivery_retractions_locked(self) -> int:
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.owner_delivery_sweep_enabled:
+            return 0
+        if not self._config.internal_api_url or not connector_token:
+            return 0
+        if self._owner_delivery_token_rejected_drains >= _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP:
+            if not await self._telegram_answers():
+                return 0
+            self._owner_delivery_token_rejected_drains = 0
+            logger.warning("Owner-delivery retraction sweep resumed: Telegram accepts the token")
+        base = f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/retractions"
+        headers = {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token}
+        try:
+            response = await self._http_client.get(base, headers=headers)
+            if response.status_code != 200:
+                logger.warning(
+                    "Owner-delivery retraction listing refused (%s)", response.status_code
+                )
+                return 0
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            logger.warning("Owner-delivery retraction listing failed")
+            return 0
+        items = payload.get("data") if isinstance(payload, dict) else None
+        retracted = 0
+        outages: list[str] = []
+        token_rejected = False
+        telegram_answered = False
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict) or not isinstance(item.get("presentation_id"), str):
+                continue
+            ok, reason = await self._retract_owner_card(item)
+            if reason in _RETRACTION_NO_VERDICT:
+                token_rejected = token_rejected or reason == _RETRACTION_TOKEN_REJECTED
+                outages.append(reason)
+                if len(outages) < _RETRACTION_OUTAGES_TO_STOP_DRAIN:
+                    continue
+                # Only a 5xx can concern one message. A rate limit is for the whole bot, and
+                # ``getMe`` would pass under one, so it must not keep this drain going.
+                if set(outages) != {_RETRACTION_PROVIDER_5XX}:
+                    break
+                if not await self._telegram_answers():
+                    break
+                telegram_answered = True
+                outages.clear()
+                continue
+            # A card with no usable message id never reached Telegram, so it is no answer.
+            if ok or reason == "provider_error":
+                outages.clear()
+                telegram_answered = True
+            retracted += int(ok)
+            if not ok:
+                logger.warning(
+                    "Owner-delivery retraction failed for %s (%s)", item["presentation_id"], reason
+                )
+            try:
+                receipt = await self._http_client.post(
+                    f"{base}/{item['presentation_id']}",
+                    json={"retracted": ok, "reason": reason},
+                    headers=headers,
+                )
+                if receipt.status_code != 200:
+                    logger.warning(
+                        "Owner-delivery retraction receipt refused for %s (%s)",
+                        item["presentation_id"],
+                        receipt.status_code,
+                    )
+            except Exception:  # noqa: BLE001 -- the card stays listed for the next drain
+                logger.warning("Owner-delivery retraction receipt failed")
+        # Pausing stops every retraction, so the token itself must be what Telegram refused.
+        if token_rejected and not telegram_answered:
+            telegram_answered = await self._telegram_answers()
+        self._note_owner_delivery_token_answer(rejected=token_rejected, answered=telegram_answered)
+        return retracted
+
+    def _note_owner_delivery_token_answer(self, *, rejected: bool, answered: bool) -> None:
+        """Count drains Telegram spent refusing the token, and pause once it looks settled."""
+        if answered:
+            self._owner_delivery_token_rejected_drains = 0
+        elif rejected:
+            self._owner_delivery_token_rejected_drains += 1
+            if (
+                self._owner_delivery_token_rejected_drains
+                == _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP
+            ):
+                logger.error(
+                    "Owner-delivery retraction sweep paused: Telegram rejected the bot token "
+                    "on %d drains with no answer between them. Stale cards stay listed, and the "
+                    "sweep resumes once Telegram accepts the token; a wrong one needs fixing "
+                    "and a restart of this connector.",
+                    _RETRACTION_TOKEN_REJECTED_DRAINS_TO_STOP,
+                )
+
+    async def _telegram_answers(self) -> bool:
+        """Whether Telegram serves this bot at all, whatever it said about one message."""
+        try:
+            response = await self._http_client.get(f"{self._telegram_api_base}/getMe")
+        except Exception:  # noqa: BLE001 -- treated as down; the error's text carries the token
+            return False
+        return response.status_code == 200
+
+    async def _retract_owner_card(self, item: dict[str, Any]) -> tuple[bool, str | None]:
+        chat_id = item.get("route_ref")
+        provider_ref = item.get("provider_ref")
+        if not isinstance(chat_id, str) or not isinstance(provider_ref, str):
+            return False, "provider_ref_missing"
+        try:
+            message_id = int(provider_ref)
+        except ValueError:
+            return False, "provider_ref_unusable"
+        try:
+            # Each edit sets an end state, so "message is not modified" means it holds: the
+            # text edit may already drop the keyboard, and a relisted card is already edited.
+            await _tolerate_not_modified(
+                edit_telegram_message_text(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=_OWNER_DELIVERY_RETRACTED_TEXT,
+                )
+            )
+            await _tolerate_not_modified(
+                remove_telegram_inline_keyboard(
+                    self._http_client,
+                    self._telegram_api_base,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+            )
+        except httpx.HTTPStatusError as exc:
+            # The status only: the exception's text carries the bot-token URL.
+            status = exc.response.status_code
+            logger.warning(
+                "Owner-delivery retraction refused by Telegram for %s (HTTP %s)",
+                item.get("presentation_id"),
+                status,
+            )
+            if status in (401, 404):
+                return False, _RETRACTION_TOKEN_REJECTED
+            if status >= 500:
+                return False, _RETRACTION_PROVIDER_5XX
+            if telegram_outage_status(status):
+                return False, _RETRACTION_PROVIDER_UNAVAILABLE
+            return False, "provider_error"
+        except httpx.TransportError as exc:
+            logger.warning(
+                "Owner-delivery retraction could not reach Telegram for %s (%s)",
+                item.get("presentation_id"),
+                type(exc).__name__,
+            )
+            return False, _RETRACTION_PROVIDER_UNAVAILABLE
+        except Exception as exc:  # noqa: BLE001 -- receipted as a failed retraction
+            # The type only: an HTTP error's text can carry the bot-token URL.
+            logger.warning(
+                "Owner-delivery retraction failed unexpectedly for %s (%s)",
+                item.get("presentation_id"),
+                type(exc).__name__,
+            )
+            return False, "provider_error"
+        return True, None
+
     async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
         sender = callback_query.get("from")
         sender_id = sender.get("id") if isinstance(sender, dict) else None
@@ -1436,18 +1805,62 @@ class TelegramBotConnector:
 
         interview_id, answer = parsed
         callback_query_id = str(callback_query.get("id", ""))
+        settled = False
         if await self._is_primary_owner_callback(callback_query):
-            toast = await self._apply_gap_interview_answer(interview_id, answer)
+            toast, settled = await self._apply_gap_interview_answer(interview_id, answer)
         else:
             # The unsigned cgi: payload only carries authority from the owner chat.
             logger.warning("gap-interview callback from a non-owner sender ignored")
             toast = ""
         if callback_query_id:
             await self._answer_callback_query(callback_query_id, toast)
+        if settled:
+            await self._settle_gap_interview_message(callback_query, toast)
         return True
 
-    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> str:
-        """POST the answer to the chronicler API; return an owner-facing toast."""
+    async def _settle_gap_interview_message(
+        self, callback_query: dict[str, Any], outcome: str
+    ) -> None:
+        """Stamp the outcome onto the question and retire its buttons.
+
+        Failures keep the buttons so the owner can retry; only a settled answer
+        reaches here. Best-effort: the answer is already persisted, so if the
+        text edit fails we still try to strip the keyboard alone.
+        """
+        message = callback_query.get("message")
+        if not isinstance(message, dict):
+            return
+        chat = message.get("chat")
+        message_id = message.get("message_id")
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if chat_id is None or not isinstance(message_id, int):
+            return
+        question = message.get("text")
+        text = f"{question}\n\n{outcome}" if isinstance(question, str) and question else outcome
+        try:
+            # editMessageText without reply_markup also drops the inline keyboard.
+            await edit_telegram_message_text(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+                text=text,
+            )
+            return
+        except Exception:  # noqa: BLE001 -- answer already persisted
+            logger.warning("Failed to edit settled gap-interview prompt", exc_info=True)
+        try:
+            await remove_telegram_inline_keyboard(
+                self._http_client,
+                self._telegram_api_base,
+                chat_id=str(chat_id),
+                message_id=message_id,
+            )
+        except Exception:  # noqa: BLE001 -- answer already persisted
+            logger.warning("Failed to remove gap-interview keyboard", exc_info=True)
+
+    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> tuple[str, bool]:
+        """POST the answer to the chronicler API; return ``(toast, settled)``."""
         connector_token = self._config.approval_callback_connector_token
         if not self._config.internal_api_url or not connector_token:
             logger.warning(
@@ -1455,7 +1868,7 @@ class TelegramBotConnector:
                 "connector callback credential; cannot apply (interview_id=%s)",
                 interview_id,
             )
-            return "Couldn't record that — please use the dashboard."
+            return "Couldn't record that — please use the dashboard.", False
 
         url = f"{self._config.internal_api_url.rstrip('/')}/api/chronicler/gap-interview/resolve"
         try:
@@ -1466,15 +1879,15 @@ class TelegramBotConnector:
             )
         except Exception as exc:  # noqa: BLE001 — network hiccup ⇒ graceful toast
             logger.warning("gap-interview resolve POST failed: %s", exc)
-            return "Couldn't record that right now — please try from the dashboard."
+            return "Couldn't record that right now — please try from the dashboard.", False
         if resp.status_code >= 400:
             logger.warning("gap-interview resolve HTTP %d for %s", resp.status_code, interview_id)
-            return "Couldn't record that right now — please try from the dashboard."
+            return "Couldn't record that right now — please try from the dashboard.", False
         try:
             data = resp.json()
         except Exception:  # noqa: BLE001
             data = {}
-        return _gap_interview_toast(data, answer)
+        return _gap_interview_outcome(data, answer)
 
     async def _answer_callback_query(self, callback_query_id: str, text: str) -> None:
         """Acknowledge a callback query (clears the button's loading spinner)."""
@@ -1670,13 +2083,14 @@ class TelegramBotConnector:
 
     async def _transcribe_voice(
         self, msg: dict[str, Any], sender_id: str
-    ) -> tuple[str | None, dict[str, Any]]:
+    ) -> tuple[str | None, dict[str, Any], str | None]:
         """Run the owner voice-note pipeline: gate, bounds, download, transcode, transcribe.
 
-        Returns ``(transcript, payload.transcription)``; ``transcript`` is ``None`` on every
-        fallback row, leaving the ``[Voice message]`` descriptor in place. Audio buffers live only
-        in this frame and are dropped on every exit path; nothing here logs audio or transcript
-        content (telegram-voice-transcription: Unconditional In-Memory-Only Audio Disposal).
+        Returns ``(transcript, payload.transcription, media_sha256)``; ``transcript`` and the
+        audio digest are ``None`` on every fallback row, leaving the ``[Voice message]``
+        descriptor in place. Audio buffers live only in this frame and are dropped on every exit
+        path; nothing here logs audio or transcript content (telegram-voice-transcription:
+        Unconditional In-Memory-Only Audio Disposal).
         """
         status, transcript, result = await self._run_voice_pipeline(msg, sender_id)
         record_outcome(status)
@@ -1691,7 +2105,52 @@ class TelegramBotConnector:
             confidence=result.get("confidence"),
             language=result.get("language"),
         )
-        return transcript, outcome
+        return transcript, outcome, result.get("media_sha256")
+
+    def _audio_authorship(
+        self,
+        msg: dict[str, Any],
+        *,
+        idempotency_key: str,
+        external_event_id: str,
+        sender_id: str,
+        transcript: str,
+        media_sha256: str | None,
+    ) -> dict[str, Any] | None:
+        """Keyed binding of the owner's transcript to its voice note (REQ-audio-authorship-002).
+
+        Only after the pipeline proved owner sender, no forward and a successful transform.
+        ``None`` (no owner authorship at admission) without the credential, the provider media
+        identity, the audio digest, or a declared transform for the configured protocol. The
+        binding is marked even for an unqualified transform: admission, not the producer, decides
+        qualification from the declaration.
+        """
+        key = usable_key(self._config.audio_authorship_key)
+        transform = transform_for_protocol(self._config.voice_transcription_protocol)
+        voice = msg.get("voice")
+        media_ref = voice.get("file_unique_id") if isinstance(voice, dict) else None
+        if (
+            key is None
+            # An inline-bot message is bot content under the owner's name, not owner speech.
+            or msg.get("via_bot")
+            or transform is None
+            or not media_sha256
+            or not isinstance(media_ref, str)
+            or not media_ref
+        ):
+            return None
+        return AudioAuthorship(
+            channel=self._config.channel,
+            endpoint_identity=self._config.endpoint_identity,
+            idempotency_key=idempotency_key,
+            external_event_id=external_event_id,
+            sender_identity=sender_id,
+            source_media=TELEGRAM_VOICE,
+            media_ref=media_ref,
+            media_sha256=media_sha256,
+            transform=transform.id,
+            transcript_sha256=sha256_hex(transcript),
+        ).attest(key)
 
     async def _run_voice_pipeline(
         self, msg: dict[str, Any], sender_id: str
@@ -1743,6 +2202,9 @@ class TelegramBotConnector:
             if len(audio) > MAX_VOICE_BYTES:
                 return status.OVERSIZE, None, {}
 
+            # The digest, never the bytes, outlives this frame: it binds a transcript to the
+            # exact audio it came from (REQ-audio-authorship-002).
+            media_sha256 = sha256_hex(audio)
             fallback = status.TRANSCODE_FAILED
             pcm = await transcode_to_pcm(
                 audio, timeout_s=float(max_duration_s), max_duration_s=max_duration_s
@@ -1770,7 +2232,11 @@ class TelegramBotConnector:
             return (
                 status.TRANSCRIBED,
                 text,
-                {"confidence": result.confidence, "language": result.language},
+                {
+                    "confidence": result.confidence,
+                    "language": result.language,
+                    "media_sha256": media_sha256,
+                },
             )
         except Exception as exc:
             logger.warning(
@@ -1947,6 +2413,8 @@ class TelegramBotConnector:
         - payload.attachments: materialized photo/document blobs, if any
         - payload.transcription: voice-note transcription outcome, for caption-less voice notes
           (the owner's transcript replaces "[Voice message]" when transcription succeeds)
+        - payload.audio_authorship: keyed binding of that transcript to its voice note, only when
+          AUDIO_AUTHORSHIP_KEY is configured (goal admission verifies it; metadata never does)
         - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
         """
         update_id = str(update.get("update_id", "unknown"))
@@ -2021,10 +2489,19 @@ class TelegramBotConnector:
         # A caption-less voice note: the owner's transcript, when there is one, supersedes the
         # [Voice message] descriptor (connector-telegram-bot Tiered Text Extraction).
         transcription: dict[str, Any] | None = None
+        audio_authorship: dict[str, Any] | None = None
         if isinstance(msg.get("voice"), dict) and not msg.get("text") and not msg.get("caption"):
-            transcript, transcription = await self._transcribe_voice(msg, sender_id)
+            transcript, transcription, media_sha256 = await self._transcribe_voice(msg, sender_id)
             if transcript:
                 normalized_text = transcript
+                audio_authorship = self._audio_authorship(
+                    msg,
+                    idempotency_key=idem_key,
+                    external_event_id=update_id,
+                    sender_id=sender_id,
+                    transcript=transcript,
+                    media_sha256=media_sha256,
+                )
 
         payload: dict[str, Any] = {
             "raw": update,
@@ -2034,6 +2511,8 @@ class TelegramBotConnector:
             payload["attachments"] = attachments
         if transcription is not None:
             payload["transcription"] = transcription
+        if audio_authorship is not None:
+            payload["audio_authorship"] = audio_authorship
         # Forwarded and quoted third-party text (RFC 0038 D5). The forwarding owner stays the
         # sender; the span is what starts the goal exposed at admission.
         untrusted_spans = bot_message_spans(msg, normalized_text)
@@ -2360,55 +2839,14 @@ async def _resolve_telegram_blob_store() -> BlobStore | None:
         )
         return None
 
-    primary_db_name, primary_pool = connected_pools[0]
+    _, primary_pool = connected_pools[0]
     fallback_pools = [pool for _, pool in connected_pools[1:]]
     store = CredentialStore(primary_pool, fallback_pools=fallback_pools)
-
     try:
-        s3_endpoint = await store.resolve("BLOB_S3_ENDPOINT_URL", env_fallback=False)
-        s3_bucket = await store.resolve("BLOB_S3_BUCKET", env_fallback=False)
-        s3_region = await store.resolve("BLOB_S3_REGION", env_fallback=False)
-        s3_access_key = await store.resolve("BLOB_S3_ACCESS_KEY_ID", env_fallback=False)
-        s3_secret_key = await store.resolve("BLOB_S3_SECRET_ACCESS_KEY", env_fallback=False)
-    except Exception as exc:
-        logger.warning(
-            "Telegram bot connector: BLOB_S3_* credential resolution failed (non-fatal): %s",
-            exc,
-        )
-        return None
+        return await connector_blob_store(store, label="Telegram bot connector")
     finally:
         for _, pool in connected_pools:
             await pool.close()
-
-    if not s3_endpoint or not s3_bucket:
-        logger.warning(
-            "Telegram bot connector: S3 blob storage not configured (missing "
-            "BLOB_S3_ENDPOINT_URL / BLOB_S3_BUCKET); photo/document attachments will be "
-            "recorded as unavailable. Configure via the dashboard secrets UI (/secrets)."
-        )
-        return None
-
-    blob_store = S3BlobStore(
-        bucket=s3_bucket,
-        # Connector-owned blobs belong to no single butler's schema — they are
-        # routing-layer input materialized before any butler is chosen — so
-        # the S3 key prefix names the connector, not a butler.
-        butler_name="connectors",
-        endpoint_url=s3_endpoint,
-        access_key_id=s3_access_key,
-        secret_access_key=s3_secret_key,
-        region=s3_region or "us-east-1",
-    )
-    try:
-        await blob_store.startup_check()
-    except BlobStorageStartupError as exc:
-        logger.warning(
-            "Telegram bot connector: S3 blob storage unavailable; photo/document "
-            "attachments will be recorded as unavailable: %s",
-            exc,
-        )
-        return None
-    return blob_store
 
 
 async def resolve_telegram_endpoint_identity(token: str) -> str:
@@ -2473,6 +2911,17 @@ async def run_telegram_bot_connector() -> None:
                 "Telegram approval callbacks disabled: %s is not configured in the "
                 "credential store",
                 APPROVAL_CALLBACK_SECRET_KEY,
+            )
+        audio_authorship_key = await _resolve_telegram_bot_system_credential_from_db(
+            AUDIO_AUTHORSHIP_KEY_NAME
+        )
+        if audio_authorship_key:
+            config = replace(config, audio_authorship_key=audio_authorship_key)
+        elif config.voice_transcription_enabled:
+            logger.warning(
+                "Voice transcripts carry no owner authorship: %s is not configured in the "
+                "credential store",
+                AUDIO_AUTHORSHIP_KEY_NAME,
             )
         approval_callback_connector_token = await _resolve_telegram_bot_system_credential_from_db(
             APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY

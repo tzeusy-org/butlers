@@ -16,6 +16,7 @@ from butlers.api.router_discovery import discover_butler_routers
 
 _CORE_EXPORTS = (
     ("butlers.api.routers.approvals", "router"),
+    ("butlers.api.routers.owner_delivery", "router"),
     ("butlers.api.routers.confirms", "router"),
     ("butlers.api.routers.attention_ledger", "router"),
     ("butlers.api.routers.events", "router"),
@@ -61,6 +62,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.qa", "router"),
     ("butlers.api.routers.provider_settings", "router"),
     ("butlers.api.routers.general_settings", "router"),
+    ("butlers.api.routers.captures", "router"),
     ("butlers.api.routers.blob_storage", "router"),
     ("butlers.api.routers.owntracks", "router"),
     ("butlers.api.routers.home_assistant", "router"),
@@ -78,6 +80,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.dashboard_briefing", "router"),
     ("butlers.api.routers.projections", "router"),
     ("butlers.api.routers.permissions", "router"),
+    ("butlers.api.routers.owner_policy", "router"),
     ("butlers.api.routers.settings_console", "router"),
     ("butlers.api.routers.data_ops", "router"),
     ("butlers.api.routers.delegation", "router"),

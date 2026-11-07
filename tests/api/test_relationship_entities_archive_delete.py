@@ -103,7 +103,7 @@ def _make_archive_app(
       3. pool.execute  — UPDATE public.entities SET metadata archive flag
 
     ``owner_exists=False`` makes the first fetchrow return None → 403.
-    ``entity_exists=False`` makes the second fetchrow return None → 404.
+    ``entity_exists=False`` makes the transaction's fetchrow return None → 404.
     """
     owner_row = _make_owner_row() if owner_exists else None
     entity_row = _make_entity_row() if entity_exists else None
@@ -135,8 +135,8 @@ def _make_delete_app(
 
     Call sequence inside the endpoint:
       1. pool.fetchrow  — owner roles check (returns owner row or None)
-      2. pool.fetchrow  — entity existence check
-      3. pool.acquire() — transaction context
+      2. pool.acquire() — transaction context
+         conn.fetchrow  — entity lock and existence check
          conn.execute   — retract relationship.entity_facts (subject + object)
          conn.execute   — retract memory facts where entity_id = $1   (bu-j820n.2)
          conn.execute   — retract memory facts where object_entity_id = $1 (bu-j820n.2)
@@ -144,7 +144,7 @@ def _make_delete_app(
          conn.execute   — tombstone entity
 
     ``owner_exists=False`` makes the first fetchrow return None → 403.
-    ``entity_exists=False`` makes the second fetchrow return None → 404.
+    ``entity_exists=False`` makes the transaction's fetchrow return None → 404.
 
     Returns ``(app, mock_pool, mock_conn)`` so tests can inspect the
     transactional ``conn.execute`` calls (the full-repoint retraction surface).
@@ -152,10 +152,11 @@ def _make_delete_app(
     owner_row = _make_owner_row() if owner_exists else None
     entity_row = _make_entity_row() if entity_exists else None
 
-    fetchrow_side_effects: list = [owner_row, entity_row]
+    fetchrow_side_effects: list = [owner_row]
 
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value="UPDATE 0")
+    mock_conn.fetchrow = AsyncMock(return_value=entity_row)
 
     mock_txn = AsyncMock()
     mock_txn.__aenter__ = AsyncMock(return_value=None)

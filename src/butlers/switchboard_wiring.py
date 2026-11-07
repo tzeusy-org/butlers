@@ -40,6 +40,7 @@ from butlers.core.route_observability import (
     safe_runtime_failure_class,
 )
 from butlers.core.routing_context import _routing_ctx_var
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
 from butlers.core.telemetry import tag_butler_span
 from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
@@ -784,14 +785,18 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
-                    except Exception:
+                    except (Exception, asyncio.CancelledError) as exc:
+                        # fastmcp re-raises a cancelled session's CancelledError into
+                        # a caller nobody cancelled; that is a dead connection too.
+                        raise_if_task_cancelled(exc)
                         logger.warning(
                             "Switchboard heartbeat: connection dead, reconnecting",
                             exc_info=True,
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.warning("Switchboard heartbeat: unexpected error", exc_info=True)
     except asyncio.CancelledError:
         return

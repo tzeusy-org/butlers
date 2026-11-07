@@ -6,234 +6,26 @@ Verifies that:
 - Non-route triggers (tick, schedule) are unaffected
 - Both dict and string input.context values are preserved
 
-Note: route.execute now uses accept-then-process async dispatch (butlers-963.6).
-Tests mock route_inbox_insert/claim_processing/lease_heartbeat/mark_processed and
-await asyncio.sleep(0.05) before checking trigger call_args to allow the
-background task to complete.
+Each test boots a real daemon (``booted_daemon``) and calls route.execute over MCP.
+route.execute accepts, then a background task processes through the real route
+inbox and spawner; the fake runtime records the prompt an LLM would receive, and
+the context is everything before the routed-message fence.
 """
 
 from __future__ import annotations
 
-import asyncio
-import uuid
-from contextlib import asynccontextmanager
+import itertools
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
-
-class _NoopLeaseHeartbeat:
-    async def __aenter__(self) -> asyncio.Event:
-        return asyncio.Event()
-
-    async def __aexit__(self, *_args: object) -> bool:
-        return False
-
-
-@pytest.fixture(autouse=True)
-def _mock_route_inbox(monkeypatch):
-    """Patch route_inbox functions for all tests in this module.
-
-    Prevents tests from hitting the mock DB pool via route_inbox_insert and
-    allows the background trigger task to complete cleanly.
-    """
-    mock_insert = AsyncMock(return_value=uuid.uuid4())
-    mock_claim_processing = AsyncMock(return_value=uuid.uuid4())
-    mock_mark_processed = AsyncMock()
-    mock_mark_errored = AsyncMock()
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_insert", mock_insert)
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_claim_processing", mock_claim_processing
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_processing_lease_heartbeat",
-        MagicMock(side_effect=lambda *_args, **_kwargs: _NoopLeaseHeartbeat()),
-    )
-    monkeypatch.setattr(
-        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        "butlers.core_tools._routing.route_inbox_mark_processed", mock_mark_processed
-    )
-    monkeypatch.setattr("butlers.core_tools._routing.route_inbox_mark_errored", mock_mark_errored)
-    return mock_insert
-
-
-def _toml_value(v: Any) -> str:
-    if isinstance(v, str):
-        return f'"{v}"'
-    if isinstance(v, list):
-        items = ", ".join(f'"{i}"' if isinstance(i, str) else str(i) for i in v)
-        return f"[{items}]"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    return str(v)
-
-
-def _make_butler_toml(
-    tmp_path: Path,
-    *,
-    butler_name: str = "test-butler",
-    port: int = 9100,
-    modules: dict[str, dict] | None = None,
-) -> Path:
-    modules = modules or {}
-    toml_lines = [
-        "[butler]",
-        f'name = "{butler_name}"',
-        f"port = {port}",
-        'description = "A test butler"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        f'schema = "{butler_name}"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    for mod_name, mod_cfg in modules.items():
-        toml_lines.append(f"\n[modules.{mod_name}]")
-        for k, v in mod_cfg.items():
-            toml_lines.append(f"{k} = {_toml_value(v)}")
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
-
-
-def _patch_infra():
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-    mock_pool.fetchval.return_value = None
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    """Boot a daemon and capture the route.execute handler function."""
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
+# The route inbox is idempotent per request_id, so every call needs its own.
+_REQUEST_IDS = (f"018f6f4e-5b3b-7b2d-9c2f-{n:012x}" for n in itertools.count(1))
 
 
 def _route_request_context(
@@ -242,10 +34,10 @@ def _route_request_context(
     source_sender_identity: str = "health",
     source_channel: str = "telegram_bot",
     source_thread_identity: str | None = "12345",
-    request_id: str = "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
-        "request_id": request_id,
+        "request_id": request_id or next(_REQUEST_IDS),
         "received_at": "2026-02-14T00:00:00Z",
         "source_channel": source_channel,
         "source_endpoint_identity": source_endpoint_identity,
@@ -256,45 +48,31 @@ def _route_request_context(
     return ctx
 
 
-def _mock_trigger_result() -> MagicMock:
-    """Return a mock trigger result indicating success."""
-    r = MagicMock()
-    r.output = "ok"
-    r.success = True
-    r.error = None
-    r.duration_ms = 10
-    return r
-
-
-async def _call_route_execute(daemon, route_execute_fn, *, request_context, input_data) -> str:
-    """Call route_execute_fn, wait for background task, return context_arg."""
-    daemon.spawner.trigger = AsyncMock(return_value=_mock_trigger_result())
-    result = await route_execute_fn(
-        schema_version="route.v1",
-        request_context=request_context,
-        input=input_data,
+async def _routed_context(booted, *, request_context, input_data) -> str:
+    """Route one request; return the session context the runtime received."""
+    seen = len(booted.runtime.invocations)
+    result = await booted.call_tool(
+        "route.execute",
+        {"schema_version": "route.v1", "request_context": request_context, "input": input_data},
     )
-    await asyncio.sleep(0.05)
     assert result["status"] == "accepted"
-    return daemon.spawner.trigger.call_args.kwargs.get("context")
+    invocations = await booted.runtime.wait_for_invocations(seen + 1)
+    context, fence, _ = invocations[seen]["prompt"].rpartition("<routed_message>")
+    assert fence, "routed prompt lost its payload fence"
+    return context
 
 
 class TestRouteExecuteRequestContextInjection:
     """Verify that request_context is injected into runtime session context."""
 
-    async def test_request_context_and_input_context(self, tmp_path: Path) -> None:
+    async def test_request_context_and_input_context(self, booted_daemon, tmp_path: Path) -> None:
         """REQUEST CONTEXT injected with all fields; INPUT CONTEXT section for both dict and string;
         telegram channel injects INTERACTIVE DATA SOURCE; MCP does not."""
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="health"), patches
-        )
-        assert route_execute_fn is not None
+        booted = await booted_daemon(write_butler_config(tmp_path))
 
         # Basic injection: REQUEST CONTEXT present with key fields
-        ctx_arg = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_arg = await _routed_context(
+            booted,
             request_context=_route_request_context(
                 source_channel="telegram_bot",
                 source_thread_identity="98765",
@@ -310,9 +88,8 @@ class TestRouteExecuteRequestContextInjection:
         assert "INPUT CONTEXT" not in ctx_arg
 
         # Dict input.context → INPUT CONTEXT section
-        ctx_arg2 = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_arg2 = await _routed_context(
+            booted,
             request_context=_route_request_context(),
             input_data={"prompt": "Check.", "context": {"patient_id": "patient-456"}},
         )
@@ -320,9 +97,8 @@ class TestRouteExecuteRequestContextInjection:
         assert "patient-456" in ctx_arg2
 
         # String input.context → INPUT CONTEXT section
-        ctx_arg3 = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_arg3 = await _routed_context(
+            booted,
             request_context=_route_request_context(),
             input_data={"prompt": "Check.", "context": "Previous reading: BP 120/80"},
         )
@@ -330,9 +106,8 @@ class TestRouteExecuteRequestContextInjection:
         assert "Previous reading: BP 120/80" in ctx_arg3
 
         # Telegram: INTERACTIVE DATA SOURCE injected
-        ctx_tg = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_tg = await _routed_context(
+            booted,
             request_context=_route_request_context(source_channel="telegram_bot"),
             input_data={"prompt": "Track medication."},
         )
@@ -340,28 +115,22 @@ class TestRouteExecuteRequestContextInjection:
         assert "notify()" in ctx_tg
 
         # MCP: no INTERACTIVE DATA SOURCE
-        ctx_mcp = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_mcp = await _routed_context(
+            booted,
             request_context=_route_request_context(source_channel="mcp"),
             input_data={"prompt": "Internal check."},
         )
         assert "INTERACTIVE DATA SOURCE" not in ctx_mcp
 
-    async def test_conversation_history(self, tmp_path: Path) -> None:
+    async def test_conversation_history(self, booted_daemon, tmp_path: Path) -> None:
         """Conversation history injected under CONVERSATION HISTORY before INPUT CONTEXT;
         absent/empty/None → no CONVERSATION HISTORY section."""
-        patches = _patch_infra()
-        daemon, route_execute_fn = await _start_daemon_with_route_execute(
-            _make_butler_toml(tmp_path, butler_name="health"), patches
-        )
-        assert route_execute_fn is not None
+        booted = await booted_daemon(write_butler_config(tmp_path))
 
         history_text = "**user123** (2026-02-16T10:00:00Z):\nTrack my metformin 500mg twice daily"
 
-        ctx_arg = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_arg = await _routed_context(
+            booted,
             request_context=_route_request_context(source_channel="telegram_bot"),
             input_data={
                 "prompt": "When?",
@@ -376,9 +145,8 @@ class TestRouteExecuteRequestContextInjection:
         assert history_pos < input_ctx_pos
 
         # None → no CONVERSATION HISTORY
-        ctx_no = await _call_route_execute(
-            daemon,
-            route_execute_fn,
+        ctx_no = await _routed_context(
+            booted,
             request_context=_route_request_context(source_channel="telegram_bot"),
             input_data={"prompt": "Do something.", "conversation_history": None},
         )

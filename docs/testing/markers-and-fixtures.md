@@ -43,14 +43,20 @@ A shared Postgres testcontainer for all DB-backed tests in the pytest session. U
 
 `_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
 
+Teardown requests container removal and anonymous PGDATA volume deletion everywhere except GitHub-hosted runners (`RUNNER_ENVIRONMENT=github-hosted`), decided by `_delete_session_data_volume`. CI has observed 25-60+ s volume-removal calls alongside restore-client timeouts. Retaining the volume until the disposable hosted VM is discarded mitigates possible teardown contention; these different-run observations do not establish causality, guarantee test/teardown ordering, or prove successful cleanup. Developer and self-hosted runners retain volume deletion and the existing removal retry/warning behavior.
+
+The ordinary backup/privileged restore client retains its 120 s budget and requests named-container cleanup with a separate 10 s budget after a timeout. Its timeout note exposes only capture presence, counts, and a fixed backup-marker observation; captured content is never copied into the note. Empty capture leaves execution stage unknown, and cleanup is not credited merely because it was requested. Native restore receipt, owner, and ACL assertions remain the acceptance checks.
+
 ```python
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
     container = _configure_postgres_container(
         PostgresContainer("pgvector/pgvector:pg17"), os.environ
     )
-    with container as pg:
-        yield pg
+    try:
+        yield container.start()
+    finally:
+        container.stop(delete_volume=_delete_session_data_volume(os.environ))
 ```
 
 ### `provisioned_postgres_pool` (function scope)
@@ -68,6 +74,86 @@ async with provisioned_postgres_pool() as pool:
 Parameters:
 - `min_pool_size` (default: 1)
 - `max_pool_size` (default: 3)
+
+### `booted_daemon` (function scope)
+
+An async factory that boots a real butler daemon with no LLM
+(`src/butlers/testing/daemon.py`, bu-rvgzmf.2). It builds on the shared DB factory
+(`db`/`fresh_db`, bu-rvgzmf.1): each boot gets its own template clone.
+
+```python
+booted = await booted_daemon(config_dir)          # more chains: (config_dir, "core", "x")
+status = await booted.call_tool("status")         # over the daemon's real HTTP MCP endpoint
+await booted.shutdown()                           # optional; teardown shuts down the rest
+```
+
+- `ButlerDaemon.start()` runs every production startup phase with the real
+  `ModuleRegistry`, real FastMCP and the real `Spawner`. Only the runtime is
+  fake: for the whole test, every registered runtime type resolves to one
+  `FakeRuntime`, because the spawner builds a per-model adapter for whichever
+  type the catalog resolves. Each stand-in declares its production adapter's
+  capabilities, so model resolution picks the models production would. The fake
+  records invocations (`booted.runtime.invocations`, with `prompt` and
+  `system_prompt`) instead of starting a CLI.
+- Script replies with `booted.runtime.script(*replies)`: each invocation takes the
+  next entry (output text, an exception to raise, or a callable given the recorded
+  invocation), then `"ok"`. Work that runs in the background, such as a routed
+  session after `route.execute` accepts, is awaited with
+  `await booted.runtime.wait_for_invocations(n)`, which fails loudly on timeout.
+- Set `booted.runtime.supports_resume = True` to exercise provider-session resume:
+  each turn then reports a fresh `provider_session_id` (`fake-session-<n>`), and
+  each invocation records the `resume_session_id` the spawner passed.
+- `booted.admin_url` is the clone's owner connection (open it with
+  `butlers.testing.db.open_pool`), for seeding rows the butler's role may not
+  write, such as dashboard turns.
+- `booted_daemon(config_dir, credentials={...})` stores synthetic module
+  credentials in the butler's secret store before start; module credential checks
+  read only that store, never the environment.
+- `booted_daemon(config_dir, chain_schemas={"relationship": "relationship"})`
+  migrates other butlers' chains into their own schemas, for cross-butler reads
+  under production grants (for example `relationship.entity_facts`).
+- `tool_host` is for tests whose subject is a tool's SQL rather than the boot
+  (about 0.5 s per host, against about 2.3 s per boot).
+  - `host = await tool_host(config_dir)` clones the template, connects the
+    butler's pool under its production role, and registers the core tools on a
+    fresh FastMCP. No lifecycle phase runs or is patched.
+  - `await host.call("remind", ...)` runs a handler in process.
+  - `tool_host(config_dir, pool=fake_pool())` is the DB-free form, for handler tests
+    whose subject is not SQL: no clone, same registration.
+  - Tests that need the spawner, the Switchboard or module startup boot instead.
+- `shared_booted_daemon` shares one boot per module and configuration among tests
+  that only read daemon state (rejections, tool listings, status):
+  `booted = await shared_booted_daemon("general", registered=True)` takes the same
+  name, chains, `schema=`, `extra_toml=`, `credentials=` and `chain_schemas=` as a
+  boot. The fake
+  runtime is reset before each test. After each test the kit compares row counts in
+  `route_inbox`, `sessions`, `public.attention_ledger` and `scheduled_tasks`, and
+  the loaded config, with what the test was handed; any change fails the test with
+  `SharedDaemonMutated` and replaces that boot. Tests that route, run a session,
+  deliver a notification, schedule a task or change config use `booted_daemon`; patch a
+  shared daemon only through `monkeypatch`.
+- No lifecycle internal is patched. The kit injects a connected `Database`,
+  pre-sets the loaded config (a free port, the clone's name, no Switchboard) and
+  sets environment seams: file logs under a temp root, MCP warmup off (it is an
+  untracked task that would outlive shutdown).
+- `butler.toml` must use the one-db topology with a schema that has a runtime
+  role, for example `[butler.db] name = "butlers"` and `schema = "general"`. Each
+  chain migrates into that schema.
+- Boot registration needs the Switchboard chain's `public.register_butler_boot`
+  and a registry row. By default neither exists, so the daemon serves tools but
+  does not accept routes (`accepting_routes` is `False`) and a retry task runs
+  until shutdown cancels it. `booted_daemon(config_dir, registered=True)` also
+  migrates the Switchboard chain into its own schema and seeds the butler's row
+  with the Switchboard's own `seed_missing_roster_butlers`, so the boot commits an
+  epoch and accepts routes. The butler's name must then match its schema's runtime
+  role (`butler_<name>_rw`, e.g. name and schema both `general`).
+- Startup's `configure_logging` replaces root-logger handlers process-wide,
+  dropping pytest's capture handlers. The kit re-attaches them as soon as startup
+  returns, so `caplog` records what the running daemon logs, and restores the
+  original handlers after shutdown.
+- Async tests that use it carry `pytest.mark.asyncio(loop_scope="session")`.
+  `tests/testing/test_kit_booted_daemon.py` reports the cost of one boot as
+  `DAEMON-BOOT-SECONDS`.
 
 ## Shared Fixtures Module
 
@@ -127,6 +213,14 @@ Use a real migrated database when the behavior depends on those boundaries.
   and connection `transaction()` create fresh `AsyncCtx` objects. Context
   exits release once, including body exceptions and cancellation. Callable
   SQL dispatch is refused.
+- `db_manager.db_manager({"general": pool}, schemas=..., memory_schemas=...,
+  modules={"home": ["approvals"]}, credential_pool=...)` returns the production
+  dashboard `DatabaseManager` serving the given pools (`db` clones, `fake_pool`
+  fakes or sentinels). Lookups, `KeyError("No pool for butler: …")` refusals,
+  the module census and `fan_out_with_status` behave as in the dashboard; it
+  connects nothing. Never hand-write a fake manager with its own `pool` method
+  (`scripts/check_test_db_fixtures.py` refuses it); to count or refuse lookups,
+  wrap the method with `Mock(wraps=manager.pool)` or `side_effect`.
 - `migration.load_migration(path, name=None)` imports a fresh module from an
   explicit file without calling `upgrade` or `downgrade`. The default name is
   `_migration_<file stem>`; use the existing caller's explicit name when its

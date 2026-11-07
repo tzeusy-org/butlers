@@ -36,6 +36,13 @@ graph TB
         Vite["Vite Frontend"]
     end
 
+    subgraph Public["Public MCP read surface (Draft, RFC 0039)"]
+        Clients["Owner's AI clients (ChatGPT, claude.ai)"]
+        GW["Owner's gateway (Cloudflare Worker, filter-proxy)"]
+        PubMCP["butlers-public-mcp"]
+        Proj["Projection DB (one-way replica)"]
+    end
+
     Ext --> Conn
     Conn -- "ingest.v1 / MCP" --> SW
     SW -- "route.v1 / MCP" --> Staff
@@ -46,6 +53,11 @@ graph TB
     Core --> OTel
     API --> PG
     Vite --> API
+
+    Clients --> GW
+    GW -- "MCP + signed assertion" --> PubMCP
+    PubMCP -- "read views + inbox INSERT" --> Proj
+    PG -- "logical replication" --> Proj
 ```
 
 The roster is `ls roster/` (each directory with a `butler.toml`); staffers are the entries with
@@ -61,7 +73,7 @@ butler in the roster runs one daemon instance.
 | Sub-component | Source | Responsibility | Stability |
 |---|---|---|---|
 | **Spawner** | `core/spawner.py` | Generates ephemeral MCP configs, invokes LLM CLI via runtime adapter, enforces per-butler and global concurrency caps, logs sessions. | Stable |
-| **Scheduler** | `core/scheduler.py` | Cron-driven task dispatch. Syncs TOML schedule definitions to DB on startup. Internal asyncio tick loop fires due tasks. | Stable |
+| **Scheduler** | `core/scheduler/` | Cron-driven task dispatch. Syncs TOML schedule definitions to DB on startup. Internal asyncio tick loop fires due tasks. | Stable |
 | **State Store** | `core/state.py` | Key-value JSONB store. Arbitrary per-butler state accessible via MCP tools. | Stable |
 | **Session Log** | `core/sessions.py` | Append-only record of every LLM CLI invocation: trigger source, duration, token counts, cost, tool calls. | Stable |
 | **Runtime Config** | `core/runtime_config.py` | Per-butler `runtime_config` DB table and `RuntimeConfigAccessor`. Seeded from `[butler.runtime_seed]` in `butler.toml` on first boot; managed thereafter via dashboard. Holds cold fields (`core_groups`, `max_concurrent`, `max_queued`, TTL-cached, restart required) alongside hot fields (`catalog_read_sensitivity`, `tool_exposure_policy`) that apply to the next call or planned session without a restart; `tool_exposure_policy` is read per attempt via `get_tool_exposure_policy()`, which bypasses the TTL cache so a committed PATCH is visible even when the API and daemon are separate processes. Model selection fields (`model`, `runtime_type`, `args`, `session_timeout_s`) moved to `public.model_catalog` in migration `core_073`, resolved per complexity tier by `core/model_routing.py`. | Stable |
@@ -71,7 +83,7 @@ butler in the roster runs one daemon instance.
 | **Healing substrate** | `core/healing/` | Error fingerprinting, severity scoring, `public.healing_attempts` CRUD and gates, worktree lifecycle, anonymizer, and the 10-gate dispatch engine used by QA (§4b). | Evolving |
 | **Buffer** | `core/buffer.py` | In-memory queue with durable cold-path scanner for backpressure management. Switchboard ingestion hot path. | Stable |
 | **Telemetry** | `core/telemetry.py` | OpenTelemetry tracing initialization. Single TracerProvider shared across all butlers in-process. TRACEPARENT propagation to spawned LLM sessions. | Stable |
-| **Metrics** | `core/metrics.py` | OTel metric instruments for spawner concurrency, buffer health, route accept/process latency, scheduler dispatch, ingest outcomes, and durable domain-event delivery failures. | Maturing |
+| **Metrics** | `core/metrics.py` | OTel metric instruments for spawner concurrency, buffer health, route accept/process latency, scheduler dispatch, ingest outcomes, durable domain-event delivery failures, and swallowed memory knowledge-gap closure failures. | Maturing |
 | **Skills** | `core/skills.py` | Discovers skill directories under `roster/{butler}/.agents/skills/`, reads system prompts, and injects them into spawned sessions. | Stable |
 | **Audit** | `core/audit.py` | Append-only audit trail for security-relevant operations (tool gating, credential access). | Evolving |
 
@@ -133,7 +145,7 @@ source) and the connector services in `docker-compose.yml`. Health ports are in
 | **ConnectorMetrics** | `connectors/metrics.py` | Prometheus counters/histograms for connector-level observability. |
 | **CursorStore** | `connectors/cursor_store.py` | Durable checkpoint persistence for restart-safe resume. |
 | **Discretion** | `connectors/discretion.py` | LLM-based filter evaluating messages in sliding context window. Fail-open. Owner messages bypass. |
-| **DiscretionDispatcher** | `connectors/discretion_dispatcher.py` | Dispatches discretion calls to the configured LLM backend. |
+| **DiscretionDispatcher** | `core/discretion_dispatcher.py` | Dispatches discretion calls to the configured LLM backend. |
 | **FilteredEventBuffer** | `connectors/filtered_event_buffer.py` | Buffering layer between connector poll loop and MCP submission. |
 | **GmailPolicy** | `connectors/gmail_policy.py` | Gmail-specific ingestion policy (label filtering, sender rules). |
 | **HealthSocket** | `connectors/health_socket.py` | HTTP health/readiness endpoint shared by all connectors. |
@@ -249,6 +261,9 @@ array). Channel identifiers (email, handles, chat ids) are triples in
 `relationship.entity_facts`. `src/butlers/identity.py` provides the reverse lookup
 (`resolve_contact_by_channel()`) used by Switchboard ingestion, `notify()`, and approval gates.
 Authoritative description: [`docs/concepts/identity-model.md`](../../docs/concepts/identity-model.md).
+The public MCP projection (§9) never receives `public.entity_info`, `butler_secrets` or
+contact-kind predicates such as `has-email` and `has-phone`
+([RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) D4).
 
 Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) are described in
 [`docs/runtime/model-routing.md`](../../docs/runtime/model-routing.md).
@@ -278,6 +293,32 @@ Model routing tables (`public.model_catalog`, `public.butler_model_overrides`) a
 Trace context propagation: the Spawner injects `TRACEPARENT` into the environment
 of spawned LLM CLI processes, creating a connected trace from ingestion through
 classification, routing, and session execution.
+
+---
+
+## 9. Public MCP Read Surface (Draft)
+
+Accepted design, not implemented:
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md). It is one deterministic
+MCP server that gives the owner's own AI clients (ChatGPT, including Dots, and claude.ai)
+read access to Butlers data through the owner's Cloudflare gateway. It is not a butler and not a
+module: it has no roster entry, scheduler, spawner, state store or Switchboard client, and it never
+starts an LLM session. Its only data source is a projection database that the primary fills by
+one-way logical replication. Its only write is a `propose_fact` row in an inbox that the owner
+must approve before anything takes effect.
+
+| Sub-component | Source (planned) | Responsibility | Stability |
+|---|---|---|---|
+| **Read functions** | `butlers.knowledge_read` | Side-effect-free reads over the projection. Owns the allowlist manifest `projection.toml` and `proposable.toml`. | Draft |
+| **Capability host** | `butlers.capability_host` | Hop-bearer digest check, Worker-signed Ed25519 per-call assertion, tool allowlist, argument validation, per-tool budgets, per-domain kill switches, response DLP and canaries, audit log lines. | Draft |
+| **Entrypoint** | `butlers.mcp_public` | Thin FastMCP stateless-HTTP server (image entrypoint `butlers-public-mcp`) that registers the 19 tools in RFC 0039 D10 and nothing else. | Draft |
+| **Projection database** | `butlers_public`, a second database on CNPG `postgres-<env>` | Mirrored published tables, `mcp_read` views, the `mcp_inbox.proposals` inbox, and the applied manifest digest the owner step records. Holds no credential. `pg_hba` admits its roles to it alone. | Draft |
+| **Owner step** | `butlers public-mcp owner-sql`; on dev `scripts/k8s/public-mcp-owner-step.sh` | Prints one idempotent SQL file per manifest, run as the CNPG superuser through `kubectl exec`: the replication slot, the subscriber DDL, the subscription, the narrowing purge and the applied digest (RFC 0039 D3, OD14). Every `make deploy-dev` runs it after the migrations, generated in the deployed `dashboard-api` image (OD20); elsewhere the owner runs it. | Draft |
+| **Proposal importer** | Relationship job `public_mcp_proposal_import` | Pulls the inbox, re-validates each proposal and parks it as `relationship_assert_fact` on the dashboard approvals page. No LLM. | Draft |
+| **Controls** | `mcp_surface` schema on the primary | Per-domain kill-switch rows and the replicated manifest digest. Written only by the dashboard owner route and `butlers public-mcp reconcile`. | Draft |
+
+Placement and network boundaries: [`deployment.md` §Public MCP read surface](deployment.md#public-mcp-read-surface-draft).
+Flows: [`data-flow.md` §10-12](data-flow.md#10-public-mcp-read-flow-draft).
 
 ## QA publication authority target
 

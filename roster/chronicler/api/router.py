@@ -62,6 +62,7 @@ from butlers.chronicler.day_close_cache import (
     resolve_day_close_timezone,
 )
 from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START, day_window_utc
+from butlers.chronicler.history_repair import pending_numeric_repair_dates, try_shared_lock
 from butlers.chronicler.models import RoutineOrigin
 from butlers.chronicler.prose_admission import classify_day_close_candidate
 from butlers.chronicler.rollups import DEFAULT_TIMEZONE as ROLLUPS_DEFAULT_TIMEZONE
@@ -165,6 +166,39 @@ def _pool(db: DatabaseManager):
             status_code=503,
             detail="Chronicler butler database is not available",
         ) from exc
+
+
+async def _numeric_snapshot(
+    pool: Any,
+    *,
+    start_date: date,
+    end_date: date,
+    flag_start_date: date,
+    flag_end_date: date,
+) -> tuple[list[Any], list[Any], set[date], bool]:
+    """Read rollups, flags and repair status under one shared repair fence.
+
+    If an invalidator owns the exclusive fence, fail closed by marking the
+    whole requested interval pending rather than returning stale materialized
+    values.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if not await try_shared_lock(conn):
+                pending = set()
+                current = start_date
+                while current <= end_date:
+                    pending.add(current)
+                    current += timedelta(days=1)
+                return [], [], pending, True
+            pending = await pending_numeric_repair_dates(
+                conn, start_date=start_date, end_date=end_date
+            )
+            rollups = await list_daily_rollups_range(conn, start_date=start_date, end_date=end_date)
+            flags = await list_daily_rollup_flags_range(
+                conn, start_date=flag_start_date, end_date=flag_end_date
+            )
+            return rollups, flags, pending, False
 
 
 def _coerce_payload(value: Any) -> dict[str, Any]:
@@ -1905,11 +1939,12 @@ async def get_rollups(
 
         rollups_source_error = False
         try:
-            rollup_rows = await list_daily_rollups_range(
-                pool, start_date=range_start, end_date=range_end
-            )
-            flag_rows = await list_daily_rollup_flags_range(
-                pool, start_date=range_start, end_date=range_end
+            rollup_rows, flag_rows, pending_dates, _read_busy = await _numeric_snapshot(
+                pool,
+                start_date=range_start,
+                end_date=range_end,
+                flag_start_date=range_start,
+                flag_end_date=range_end,
             )
         except Exception:
             logger.exception(
@@ -1936,6 +1971,8 @@ async def get_rollups(
 
             if rollups_source_error:
                 status = "unknown"
+            elif current in pending_dates:
+                status = "pending_repair"
             elif day_rollups:
                 status = "materialized"
             else:
@@ -1988,7 +2025,9 @@ async def get_rollups(
             # first rollup row. None when not materialized (no rows carry it) or
             # when the labeling pass has not run — a legitimate absence, not an
             # error, so ``rollups_source_error`` is unaffected.
-            day_narrative = day_rollups[0].narrative if day_rollups else None
+            day_narrative = (
+                day_rollups[0].narrative if status == "materialized" and day_rollups else None
+            )
 
             days.append(
                 RollupDay(
@@ -2019,8 +2058,8 @@ async def get_rollups(
 #
 # bu-jc6htw.2 (Chronicler IEA p9b, split from old p9 per eng-bar review).
 # Both endpoints read chronicler.daily_rollups (the same materialized
-# per-day/per-lane totals GET /rollups reads) and derive a trailing rolling
-# "usual" baseline via balance.compute_daily_balance — see balance.py's
+# per-day/per-lane totals GET /rollups reads) and derive the personal-baseline
+# "usual" band via balance.compute_daily_balance — see balance.py's
 # module docstring for why this does NOT depend on the separate memory
 # write-back loop (tasks.md S8, bu-93y4rt).
 
@@ -2060,17 +2099,17 @@ async def get_daily_balance(
     rolling baseline ("vs usual").
 
     ``date`` uses the same local-day semantics as ``GET /rollups``
-    (``rollups.DEFAULT_TIMEZONE``). The baseline is the trailing mean over
-    ``lookback_days`` materialized prior days for each lane — a lane with no
-    baseline history yet reports ``baseline_seconds=null`` rather than a
-    fabricated 0 (see ``BalanceLaneRow`` docstring).
+    (``rollups.DEFAULT_TIMEZONE``). The baseline is the owner's personal band
+    (median and MAD, ``butlers.core.baselines``) over the ``lookback_days``
+    prior days for each lane — a lane with too little history yet reports
+    ``state="insufficient_history"`` and ``baseline_seconds=null`` rather than
+    a fabricated 0 (see ``BalanceLaneRow`` docstring).
 
     Mirrors ``GET /rollups``'s three-state day status
     (``materialized``/``not_yet_materialized``/``unknown``) and the
     ``feeder_dark``-marks-lane-unavailable cross-reference.
     """
     baseline_start = balance_date - timedelta(days=lookback_days)
-    baseline_end = balance_date - timedelta(days=1)
 
     _tracer = trace.get_tracer("butlers.chronicler")
     with _tracer.start_as_current_span("chronicler.balance") as span:
@@ -2078,15 +2117,20 @@ async def get_daily_balance(
 
         balance_source_error = False
         try:
-            target_rows = await list_daily_rollups_range(
-                pool, start_date=balance_date, end_date=balance_date
+            (
+                snapshot_rows,
+                target_flags,
+                pending_dates,
+                _read_busy,
+            ) = await _numeric_snapshot(
+                pool,
+                start_date=baseline_start,
+                end_date=balance_date,
+                flag_start_date=balance_date,
+                flag_end_date=balance_date,
             )
-            baseline_rows = await list_daily_rollups_range(
-                pool, start_date=baseline_start, end_date=baseline_end
-            )
-            target_flags = await list_daily_rollup_flags_range(
-                pool, start_date=balance_date, end_date=balance_date
-            )
+            target_rows = [row for row in snapshot_rows if row.local_date == balance_date]
+            baseline_rows = [row for row in snapshot_rows if row.local_date < balance_date]
         except Exception:
             logger.exception("chronicler.balance: query failed for date=%s", balance_date)
             balance_source_error = True
@@ -2096,6 +2140,8 @@ async def get_daily_balance(
 
         if balance_source_error:
             status = "unknown"
+        elif pending_dates:
+            status = "pending_repair"
         elif target_rows:
             status = "materialized"
         else:
@@ -2104,12 +2150,17 @@ async def get_daily_balance(
         lanes: list[BalanceLaneRow] = []
         if status == "materialized":
             day_seconds_by_lane = {r.lane: r.seconds for r in target_rows}
-            baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+            baseline_samples_by_lane: dict[str, dict[date, int]] = defaultdict(dict)
             for r in baseline_rows:
-                baseline_seconds_by_lane[r.lane].append(r.seconds)
+                baseline_samples_by_lane[r.lane][r.local_date] = r.seconds
             dark_sources = _dark_sources_from_flags(target_flags)
 
-            for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+            for lb in compute_daily_balance(
+                day_seconds_by_lane,
+                baseline_samples_by_lane,
+                local_date=balance_date,
+                lookback_days=lookback_days,
+            ):
                 lanes.append(
                     BalanceLaneRow(
                         lane=lb.lane,
@@ -2117,6 +2168,9 @@ async def get_daily_balance(
                         baseline_seconds=lb.baseline_seconds,
                         delta_seconds=lb.delta_seconds,
                         baseline_sample_days=lb.baseline_sample_days,
+                        state=lb.state,
+                        band_low=lb.band_low,
+                        band_high=lb.band_high,
                         unavailable=bool(sources_for_lane(lb.lane) & dark_sources),
                     )
                 )
@@ -2159,11 +2213,11 @@ async def get_trends(
     """Return week/month-grained per-lane balance trends, streaks, and anomalies.
 
     Each day in the window gets the same vs-baseline treatment as
-    ``GET /balance`` (trailing ``lookback_days`` mean, ``feeder_dark``
-    cross-reference). ``streak_days`` is the trailing run of consecutive
+    ``GET /balance`` (personal band over the trailing ``lookback_days``,
+    ``feeder_dark`` cross-reference). ``streak_days`` is the trailing run of consecutive
     non-zero-activity days ending at ``end_date``. ``anomalies`` flags days
-    whose delta clears ``balance.is_lane_anomalous``'s thresholds — a day
-    needs a full-size baseline sample before it can be flagged, so the start
+    that fall outside the lane's personal band (``balance.is_lane_anomalous``)
+    — a lane needs enough baseline days before it can be scored, so the start
     of a rollup history never produces spurious anomalies.
     """
     if window not in _TRENDS_WINDOW_DAYS:
@@ -2190,12 +2244,14 @@ async def get_trends(
         pool = _pool(db)
 
         trends_source_error = False
+        pending_dates: set[date] = set()
         try:
-            all_rows = await list_daily_rollups_range(
-                pool, start_date=fetch_start, end_date=resolved_end
-            )
-            all_flags = await list_daily_rollup_flags_range(
-                pool, start_date=start_date, end_date=resolved_end
+            all_rows, all_flags, pending_dates, _read_busy = await _numeric_snapshot(
+                pool,
+                start_date=fetch_start,
+                end_date=resolved_end,
+                flag_start_date=start_date,
+                flag_end_date=resolved_end,
             )
         except Exception:
             logger.exception(
@@ -2222,6 +2278,11 @@ async def get_trends(
             day_rows = rows_by_date.get(current, [])
             if trends_source_error:
                 day_status = "unknown"
+            elif any(
+                current - timedelta(days=lookback_days) <= pending_day <= current
+                for pending_day in pending_dates
+            ):
+                day_status = "pending_repair"
             elif day_rows:
                 day_status = "materialized"
             else:
@@ -2231,16 +2292,21 @@ async def get_trends(
                 day_seconds_by_lane = {r.lane: r.seconds for r in day_rows}
                 baseline_start = current - timedelta(days=lookback_days)
                 baseline_end = current - timedelta(days=1)
-                baseline_seconds_by_lane: dict[str, list[int]] = defaultdict(list)
+                baseline_samples_by_lane: dict[str, dict[date, int]] = defaultdict(dict)
                 for d in range(lookback_days):
                     day_in_baseline = baseline_end - timedelta(days=d)
                     if day_in_baseline < baseline_start:
                         break
                     for r in rows_by_date.get(day_in_baseline, []):
-                        baseline_seconds_by_lane[r.lane].append(r.seconds)
+                        baseline_samples_by_lane[r.lane][day_in_baseline] = r.seconds
                 dark_sources = _dark_sources_from_flags(flags_by_date.get(current, []))
 
-                for lb in compute_daily_balance(day_seconds_by_lane, baseline_seconds_by_lane):
+                for lb in compute_daily_balance(
+                    day_seconds_by_lane,
+                    baseline_samples_by_lane,
+                    local_date=current,
+                    lookback_days=lookback_days,
+                ):
                     unavailable = bool(sources_for_lane(lb.lane) & dark_sources)
                     lane_series[lb.lane].append(
                         TrendLaneDay(
@@ -2249,6 +2315,10 @@ async def get_trends(
                             seconds=lb.seconds,
                             baseline_seconds=lb.baseline_seconds,
                             delta_seconds=lb.delta_seconds,
+                            state=lb.state,
+                            band_low=lb.band_low,
+                            band_high=lb.band_high,
+                            baseline_sample_days=lb.baseline_sample_days,
                             unavailable=unavailable,
                         )
                     )
@@ -2261,7 +2331,7 @@ async def get_trends(
                                 seconds=lb.seconds,
                                 baseline_seconds=lb.baseline_seconds,
                                 delta_seconds=lb.delta_seconds,
-                                direction="spike" if lb.delta_seconds > 0 else "drop",
+                                direction="spike" if lb.state == "above" else "drop",
                             )
                         )
             else:
@@ -2277,7 +2347,12 @@ async def get_trends(
             TrendLaneSeries(
                 lane=lane,
                 days=lane_series[lane],
-                streak_days=compute_lane_streak(lane_daily_seconds[lane]),
+                streak_days=(
+                    None
+                    if trends_source_error
+                    or any(day.status == "pending_repair" for day in lane_series[lane])
+                    else compute_lane_streak(lane_daily_seconds[lane])
+                ),
             )
             for lane in sorted(LANES)
         ]

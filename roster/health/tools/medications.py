@@ -9,11 +9,16 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.health._helpers import (
     HEALTH_SENSITIVITY_CONFIDENTIAL,
     _get_owner_entity_id,
     _normalize_end_date,
     _row_to_dict,
+)
+from butlers.tools.health._medication_utils import (  # pyright: ignore[reportMissingImports]
+    dose_of_medication_sql,
+    medication_first_seen,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,7 +168,11 @@ async def medication_update(
     ``quantity_updated_at`` to now, which the insight-scan job (bu-dtmbn) uses
     as the anchor for counting doses consumed against the new supply.
     """
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import (
+        stale_fact_error,
+        store_fact,
+        subject_keyed_guard,
+    )
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
     allowed = {"name", "dosage", "frequency", "schedule", "active", "notes", "quantity"}
@@ -174,12 +183,16 @@ async def medication_update(
 
     # Fetch the existing medication fact by ID.
     row = await pool.fetchrow(
-        "SELECT id, subject, metadata FROM facts"
-        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
+        "SELECT id, subject, metadata, entity_id, valid_at, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
+        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'"
+        " AND validity IN ('active', 'fading')",
         med_uuid,
     )
     if row is None:
-        raise ValueError(f"Medication {medication_id} not found")
+        raise await stale_fact_error(
+            pool, "Medication", med_uuid, predicate="medication", scope="health"
+        )
 
     row = _row_to_dict(row)
     existing_meta = row.get("metadata", {})
@@ -203,20 +216,22 @@ async def medication_update(
     # fact. Do NOT pass entity_id: supersession must key on (subject, predicate)
     # so the edit only supersedes THIS medication's prior fact, not every other
     # medication anchored to the owner entity (see medication_add for details).
-    new_fact_id = (
-        await store_fact(
-            pool,
-            subject=existing_subject,
-            predicate="medication",
-            content=content,
-            embedding_engine=embedding_engine,
-            permanence="permanent",
-            scope="health",
-            valid_at=None,  # property fact — supersedes the previous
-            metadata=new_meta,
-            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
-        )
-    )["id"]
+    with carrying_forward(row):
+        new_fact_id = (
+            await store_fact(
+                pool,
+                subject=existing_subject,
+                predicate="medication",
+                content=content,
+                embedding_engine=embedding_engine,
+                permanence="permanent",
+                scope="health",
+                valid_at=None,  # property fact — supersedes the previous
+                **subject_keyed_guard(row),
+                metadata=new_meta,
+                sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
+            )
+        )["id"]
 
     return {
         "id": new_fact_id,
@@ -343,18 +358,22 @@ async def medication_log_dose(
     notes: str | None = None,
 ) -> dict[str, Any]:
     """Log a medication dose. Use skipped=True to record a missed dose."""
-    from butlers.modules.memory.storage import store_fact
+    from butlers.modules.memory.storage import stale_fact_error, store_fact
 
     med_uuid = uuid.UUID(medication_id) if isinstance(medication_id, str) else medication_id
 
     # Validate medication fact exists
     med_row = await pool.fetchrow(
-        "SELECT id, metadata FROM facts"
-        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'",
+        "SELECT id, metadata, content_authority,"
+        " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
+        " WHERE id = $1 AND predicate = 'medication' AND scope = 'health'"
+        " AND validity IN ('active', 'fading')",
         med_uuid,
     )
     if med_row is None:
-        raise ValueError(f"Medication {medication_id} not found")
+        raise await stale_fact_error(
+            pool, "Medication", med_uuid, predicate="medication", scope="health"
+        )
 
     med_row = _row_to_dict(med_row)
     med_meta = med_row.get("metadata", {})
@@ -372,21 +391,22 @@ async def medication_log_dose(
     if notes is not None:
         metadata["notes"] = notes
 
-    fact_id = (
-        await store_fact(
-            pool,
-            subject="owner",
-            predicate="took_dose",
-            content=med_name,
-            embedding_engine=embedding_engine,
-            permanence="permanent",
-            scope="health",
-            entity_id=owner_entity_id,
-            valid_at=valid_at,
-            metadata=metadata,
-            sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
-        )
-    )["id"]
+    with carrying_forward(med_row):
+        fact_id = (
+            await store_fact(
+                pool,
+                subject="owner",
+                predicate="took_dose",
+                content=med_name,
+                embedding_engine=embedding_engine,
+                permanence="permanent",
+                scope="health",
+                entity_id=owner_entity_id,
+                valid_at=valid_at,
+                metadata=metadata,
+                sensitivity=HEALTH_SENSITIVITY_CONFIDENTIAL,
+            )
+        )["id"]
 
     return {
         "id": fact_id,
@@ -421,16 +441,19 @@ async def medication_history(
         raise ValueError(f"Medication {medication_id} not found")
 
     medication = _fact_to_medication(dict(med_row))
+    # Edits refresh created_at; adherence caps expected doses by first-seen time.
+    medication["first_seen_at"] = await medication_first_seen(pool, str(med_uuid))
 
-    # Build dose query — filter on medication_id in metadata
+    # Doses logged under any fact of this medication's subject, so an edit (which
+    # supersedes the fact with a new id) never drops earlier history.
     conditions = [
         "predicate = 'took_dose'",
         "validity = 'active'",
         "scope = 'health'",
-        f"metadata->>'medication_id' = '{med_uuid}'",
+        dose_of_medication_sql("$1"),
     ]
-    params: list[Any] = []
-    idx = 1
+    params: list[Any] = [str(med_uuid)]
+    idx = 2
 
     if start_date is not None:
         conditions.append(f"valid_at >= ${idx}")

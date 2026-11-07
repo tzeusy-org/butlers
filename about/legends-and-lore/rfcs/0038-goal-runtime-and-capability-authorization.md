@@ -470,6 +470,13 @@ Rules:
   third-party ceiling. Admission refuses and records a goal that
   would exceed it. A child cannot reach admission directly; this rule bounds
   the indirect path through declared domain reactions.
+- **The public read surface admits no goal.** RFC 0039's server for the
+  owner's outside AI clients is outside the goal runtime. Its requests and its
+  inbox proposals are not ingest envelopes, obligations or admission input.
+  `external_mcp` is a fact-provenance origin on records that surface proposed
+  (D6), not a goal origin, so the table above is unchanged. A later goal that
+  reasons over outside proposals, such as an automatic-approval batch, would
+  be admitted with origin `third_party` and needs its own owner decision first.
 
 Admission writes the goal row, origin, cause, exposure, ceiling digest and
 budget, then hands it to the runner. Duplicate submissions of the same ingest
@@ -510,6 +517,17 @@ outcomes, insight candidates and decision memory; `context.search` returns each
 item with its stamp. Owner-authored, untainted records stay trusted, so ordinary
 memory reads do not expose a goal; text that an exposed goal stored from an
 email exposes whichever later goal reads it back.
+
+**Externally proposed facts.** A fact applied from a public read surface
+proposal (RFC 0039 D13) is stored with `content_authority = third_party` and
+origin `external_mcp` in its fact provenance. Both are set server-side when the
+proposal is parked, never from arguments. The owner's approval confirms the
+fact but does not change its authority stamp, so reads return it as stamped
+non-owner-authority content: a goal that reads it becomes exposed, and it never
+becomes steering memory. The approvals module's producer `origin` is not
+widened for it. Once the taint stamp lands (`bu-pkuny2`), the apply also marks
+the fact tainted; once the S1 labels land (`bu-dhloi1.6`), it carries
+principal kind `external` with an opaque registered identity.
 
 While exposed, the broker applies the "under exposure" column of D4 regardless
 of origin. This implements the rule that a session holding untrusted input,
@@ -644,6 +662,22 @@ messages someone other than the owner is parked for owner approval unless a
 standing rule matches. Any other model-reachable call without a valid
 assertion is refused. Inventorying the existing direct call sites is a
 dark-build task.
+
+**Outside the broker: the public read surface and non-goal domain jobs.**
+RFC 0039's public read surface is not a session, a service-plane caller or a
+broker client. It reads only its replicated projection and calls no domain
+capability. It never holds or receives a broker assertion. Its Worker-signed
+request assertion has its own type and keyring, and no domain accepts it in
+place of a broker assertion. It calls no domain capability; any future read
+through domain capabilities requires a new owner decision and an amendment to
+RFC 0039 and vision.md Rule 3. A deterministic domain
+job that is not a goal, such as the proposal importer RFC 0039 runs in
+Relationship, may still park pending actions for its own domain's tools after
+the switch, with no goal, invocation, broker grant or assertion. Parking is not
+a model-reachable call: the job runs no model and executes nothing. The
+importer's actions wait for the owner's per-event approval, never a standing
+rule, and never feed standing-rule promotion (D13); the owner's approve call
+reaches the domain through the dashboard service-plane path above.
 
 **Service-plane relays.** Service-to-service traffic that today rides the
 generic `route` tool moves to named endpoints on the control plane's service
@@ -891,6 +925,13 @@ A Stop-cancelled parked effect takes a new approvals status,
 executable by the approvals executor and are recorded with goal origin
 `legacy`, a field separate from the approvals module's existing producer
 `origin`.
+
+A pending action parked by a non-goal domain job (D7) carries no goal lineage
+(its goal origin is NULL, distinct from the `legacy` marker above) and is
+never cancelled by a goal's Stop. When the RFC 0039 proposal importer parked
+it, no standing rule matches or approves it, and approving it neither counts
+toward nor creates a standing-rule suggestion, so it executes only on the
+owner's per-event approval.
 
 ### D14. Stop and recovery
 
@@ -1168,7 +1209,7 @@ invocation lineage.
 | 0020 Calendar overlay read exception | Remains. |
 | 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable, and no standing rule targets or approves an `always_per_event` capability (D4, D6, D13). |
 | 0022 Cross-process event transport | Remains; events from effects carry goal lineage for caused admissions. |
-| 0023 Approval delivery intent recovery | Remains. |
+| 0023 Approval delivery intent recovery | Remains as the transport queue (claims, leases, attempts); its delivery identity and callback tokens map to S6 subjects, presentations and `od1` tokens through `public.owner_delivery_source_map` (bu-dhloi1.13; `docs/api_and_protocols/owner-delivery.md`). |
 | 0024 Messenger correspondence ledger (proposed) | Independent. |
 | 0025 Beads projection exporter (draft) | Independent. |
 | 0026 Commitment lifecycle (draft) | Commitments that need reasoning become obligations (D5). |
@@ -1330,6 +1371,7 @@ hard-cutover gates or alter the private-custody boundary.
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |
+| 2026-11-04, owner (RFC 0039 OD2 to OD4, OD8) | Accepts the doctrine change for a public read surface: one deterministic MCP server for the owner's outside AI clients over a replicated projection, with `propose_fact` applied only after the owner's approval and no LLM on the request path. | D5 states the surface admits no goal; D6 stamps applied proposals `third_party` with `external_mcp` fact provenance; D7 places the surface outside the broker and lets non-goal domain jobs park; D13 keeps standing rules off the importer's actions. No new decision number and no new goal origin. Adds `REQ-capability-authorization-022` and `-023`, adopted through the same conformance review. |
 
 ## Proposed shared switch and M7 interfaces (2026-10-24)
 
@@ -2048,3 +2090,5 @@ release approval or operational authorization.
 | `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |
 | `capability-authorization` 017 always-per-event approval mode; `module-approvals` 003 and 005; `autonomy-tracker` 001 | D4, D5, D13, later owner decision `bu-p5umi2.4` |
 | `capability-authorization` 018 owner selection records bind selection-bound resource scopes | D4, D5, D7, D9, later owner decision `bu-p5umi2.4` (OQ1) |
+| `capability-authorization` 022 public read surface outside the goal runtime | D5, D7, later owner decision 2026-11-04 (RFC 0039) |
+| `capability-authorization` 023 outside proposals park per event and keep third-party authority | D6, D7, D13, later owner decision 2026-11-04 (RFC 0039) |

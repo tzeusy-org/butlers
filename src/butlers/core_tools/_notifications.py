@@ -19,7 +19,7 @@ from butlers.config import ButlerType
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
 from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
-from butlers.core.scheduler import schedule_create as _schedule_create
+from butlers.core.scheduler.crud import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import (
@@ -41,6 +41,66 @@ _REQUEST_CONTEXT_KEYS_HINT = (
     "source_sender_identity (plus source_thread_identity for telegram "
     "reply/react)."
 )
+
+
+async def _wake_hold_provenance(
+    pool: Any,
+    *,
+    routine_owner_default: bool,
+    channel: str,
+    policy: dict[str, Any] | None,
+    policy_deliver_at: datetime | None,
+    deferred_at: datetime,
+    deliver_at: datetime,
+    notify_request: dict[str, Any],
+) -> Any:
+    """Wake-recovery provenance for a newly parked owner-attention quiet-hours hold, or None.
+
+    Eligible only for a routine owner-default send (no explicit recipient or entity, no
+    requested high priority), when the Owner Attention Policy quiet-hours decision is part of
+    the hold (not a context-only hold) and the envelope's recipient is the owner's own Telegram
+    chat, resolved now rather than inferred later. Anything not provable fails closed to None: the
+    hold is still parked and releases at its stored ``deliver_at`` as before, it is simply not
+    wake-recovery eligible (strict-owner-telegram-wake-recovery, core-notify spec).
+    """
+    if (
+        not routine_owner_default
+        or channel != "telegram"
+        or policy is None
+        or policy_deliver_at is None
+    ):
+        return None
+    try:
+        from butlers.core.approvals_policy import policy_quiet_hours_window_start
+        from butlers.core.temporal.delivery_db import WakeHoldProvenance, envelope_digest
+        from butlers.credential_store import resolve_owner_entity_info
+
+        window_start = policy_quiet_hours_window_start(policy, now=deferred_at)
+        recipient = notify_request.get("delivery", {}).get("recipient")
+        owner_chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
+        if window_start is None or not recipient or owner_chat_id != recipient:
+            return None
+        return WakeHoldProvenance(
+            policy_window_key=(
+                f"{window_start.astimezone(UTC).isoformat()}/"
+                f"{policy_deliver_at.astimezone(UTC).isoformat()}"
+            ),
+            timezone=str(policy.get("timezone") or "UTC"),
+            target={
+                "provider": "telegram",
+                "chat_id": recipient,
+                "thread_id": None,
+                "recipient_endpoint": f"telegram:{recipient}",
+            },
+            envelope_digest=envelope_digest(notify_request),
+            original_deliver_at=deliver_at,
+        )
+    except Exception:
+        logger.warning(
+            "notify() could not derive wake-recovery provenance; parking without it",
+            exc_info=True,
+        )
+        return None
 
 
 def _coerce_request_context(value: Any) -> tuple[dict[str, Any] | None, str | None]:
@@ -950,6 +1010,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # cannot avoid owner attention policy by spelling out the recipient.
             # Independent non-owner approval decisions remain unchanged.
             _attention_owner_target = entity_id is None and recipient is None
+            # Wake-recovery provenance is for routine owner-default holds only: an explicit
+            # owner address/entity or a requested (even if downgraded) high priority parks
+            # without it (strict-owner-telegram-wake-recovery, core-notify).
+            _routine_owner_default = _attention_owner_target and not _untrusted_high
 
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
@@ -1319,6 +1383,16 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         _reason_parts.append(f"context_bus:{_context_suppression.signal_type}")
                     _defer_reason = "+".join(_reason_parts)
 
+                    _wake_provenance = await _wake_hold_provenance(
+                        _notify_pool,
+                        routine_owner_default=_routine_owner_default,
+                        channel=channel,
+                        policy=_policy,
+                        policy_deliver_at=_policy_deliver_at,
+                        deferred_at=_deferred_at,
+                        deliver_at=_deliver_at,
+                        notify_request=notify_request,
+                    )
                     try:
                         _notif_id = await _insert_deferred_notification(
                             _notify_pool,
@@ -1329,6 +1403,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             envelope=notify_request,
                             deliver_at=_deliver_at,
                             deferred_at=_deferred_at,
+                            **({"wake_provenance": _wake_provenance} if _wake_provenance else {}),
                         )
                     except Exception as _defer_exc:
                         # Once a routine owner-default notification has been

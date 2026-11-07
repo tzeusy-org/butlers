@@ -15,10 +15,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import asyncpg
 import pytest
-
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -33,28 +30,10 @@ _MIGRATION = (
 _OLD = "now() - interval '400 days'"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    from butlers.db import register_jsonb_codec
-
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.memory_links, public.facts CASCADE")
-    yield p
-    await p.close()
+async def memory_pool(db):
+    """A private clone migrated with the core and memory chains."""
+    return await db("core", "memory")
 
 
 async def _age(pool, predicate_like: str, *, validity: str | None = None) -> None:
@@ -81,18 +60,18 @@ async def _write_every_clinical_record(pool) -> None:
     )
 
     med = await medication_add(pool, "RetentionMed", "10mg", "daily")
-    await medication_update(pool, str(med["id"]), dosage="20mg")
-    await medication_log_dose(pool, str(med["id"]))
+    edited = await medication_update(pool, str(med["id"]), dosage="20mg")
+    await medication_log_dose(pool, str(edited["id"]))
     cond = await condition_add(pool, "RetentionCondition")
     await condition_update(pool, str(cond["id"]), status="managed")
     await symptom_log(pool, "RetentionSymptom", 4)
     await measurement_log(pool, "weight", {"kg": 70.0})
 
 
-async def test_every_clinical_write_site_is_permanent(pool) -> None:
-    await _write_every_clinical_record(pool)
+async def test_every_clinical_write_site_is_permanent(memory_pool) -> None:
+    await _write_every_clinical_record(memory_pool)
 
-    rows = await pool.fetch(
+    rows = await memory_pool.fetch(
         "SELECT predicate, permanence, decay_rate FROM facts WHERE scope = 'health'"
     )
 
@@ -106,34 +85,34 @@ async def test_every_clinical_write_site_is_permanent(pool) -> None:
     assert {(r["permanence"], r["decay_rate"]) for r in rows} == {("permanent", 0.0)}
 
 
-async def test_decay_sweep_never_fades_clinical_records_but_still_fades_others(pool) -> None:
+async def test_decay_sweep_never_fades_clinical_records_but_still_fades_others(memory_pool) -> None:
     from butlers.modules.memory.storage import run_decay_sweep
     from butlers.tools.health import medication_add, medication_log_dose, trend_report
 
-    med = await medication_add(pool, "SweepMed", "10mg", "daily")
-    await medication_log_dose(pool, str(med["id"]))
+    med = await medication_add(memory_pool, "SweepMed", "10mg", "daily")
+    await medication_log_dose(memory_pool, str(med["id"]))
     # A control that must still decay proves the sweep ran over aged data.
-    await pool.execute(
+    await memory_pool.execute(
         "INSERT INTO facts (subject, predicate, content, scope, permanence, decay_rate, "
         "validity, confidence, importance, source_butler) "
         "VALUES ('control', 'control_note', 'x', 'health', 'standard', 0.008, 'active', "
         "1.0, 5.0, 'health')"
     )
-    await _age(pool, "%")
+    await _age(memory_pool, "%")
 
-    stats = await run_decay_sweep(pool)
+    stats = await run_decay_sweep(memory_pool)
 
     assert stats["facts_checked"] == 1  # only the control still decays
     assert stats["facts_fading"] + stats["facts_expired"] == 1
     validity = {
         r["predicate"]: r["validity"]
-        for r in await pool.fetch("SELECT predicate, validity FROM facts")
+        for r in await memory_pool.fetch("SELECT predicate, validity FROM facts")
     }
     assert validity["control_note"] != "active"
     assert validity["took_dose"] == "active"
     assert validity["medication"] == "active"
     # Readers filter validity='active'; the dose and medication must still be there.
-    report = await trend_report(pool, "week")
+    report = await trend_report(memory_pool, "week")
     assert [m["taken_doses"] for m in report["medication_adherence"]] == [1]
 
 
@@ -151,28 +130,30 @@ def _run_migration_sql() -> list[str]:
     return sqls
 
 
-async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_else(pool) -> None:
-    await _write_every_clinical_record(pool)
+async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_else(
+    memory_pool,
+) -> None:
+    await _write_every_clinical_record(memory_pool)
     # Re-create the pre-fix state: decaying classes, faded and expired rows.
     # Historical write classes: doses and symptoms 'standard'; the rest 'stable'.
-    await pool.execute(
+    await memory_pool.execute(
         "UPDATE facts SET permanence = 'standard', decay_rate = 0.008 "
         "WHERE predicate IN ('took_dose', 'symptom')"
     )
-    await pool.execute(
+    await memory_pool.execute(
         "UPDATE facts SET permanence = 'stable', decay_rate = 0.002 "
         "WHERE predicate IN ('medication', 'condition') OR predicate = 'measurement_weight'"
     )
-    await _age(pool, "took_dose", validity="fading")
-    await _age(pool, "symptom", validity="expired")
-    await pool.execute(
+    await _age(memory_pool, "took_dose", validity="fading")
+    await _age(memory_pool, "symptom", validity="expired")
+    await memory_pool.execute(
         "UPDATE facts SET metadata = metadata || "
         '\'{"archived_at": "2026-01-01", "archived_content": true}\'::jsonb '
         "WHERE predicate = 'symptom'"
     )
-    await _age(pool, "measurement\\_%", validity="fading")
+    await _age(memory_pool, "measurement\\_%", validity="fading")
     # Rows that must stay as they are.
-    await pool.execute(
+    await memory_pool.execute(
         "INSERT INTO facts (subject, predicate, content, scope, permanence, decay_rate, "
         "validity, confidence, importance, source_butler) VALUES "
         "('c1', 'control_note', 'x', 'health', 'standard', 0.008, 'fading', 1.0, 5.0, 'health'), "
@@ -184,9 +165,9 @@ async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_els
     )
 
     for sql in _run_migration_sql():
-        await pool.execute(sql)
+        await memory_pool.execute(sql)
 
-    clinical = await pool.fetch(
+    clinical = await memory_pool.fetch(
         "SELECT predicate, permanence, decay_rate, validity, metadata FROM facts "
         "WHERE subject NOT IN ('c1', 'c2', 'c3', 'w1')"
     )
@@ -210,7 +191,7 @@ async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_els
     assert "archived_at" not in symptom["metadata"]
     untouched = {
         r["subject"]: (r["permanence"], r["validity"])
-        for r in await pool.fetch(
+        for r in await memory_pool.fetch(
             "SELECT subject, permanence, validity FROM facts "
             "WHERE subject IN ('c1', 'c2', 'c3', 'w1')"
         )
@@ -223,8 +204,10 @@ async def test_health_003_restores_decayed_clinical_rows_and_touches_nothing_els
     }
 
 
-async def test_health_003_does_not_revive_an_expired_record_with_a_newer_successor(pool) -> None:
-    await pool.execute(
+async def test_health_003_does_not_revive_an_expired_record_with_a_newer_successor(
+    memory_pool,
+) -> None:
+    await memory_pool.execute(
         "INSERT INTO facts (subject, predicate, content, scope, permanence, decay_rate, "
         "validity, confidence, importance, source_butler, created_at) VALUES "
         # Deleted by the owner after it expired: v2 is a newer retracted row for the same key.
@@ -238,11 +221,11 @@ async def test_health_003_does_not_revive_an_expired_record_with_a_newer_success
     )
 
     for sql in _run_migration_sql():
-        await pool.execute(sql)
+        await memory_pool.execute(sql)
 
     state = {
         (r["subject"], r["content"]): r["validity"]
-        for r in await pool.fetch("SELECT subject, content, validity FROM facts")
+        for r in await memory_pool.fetch("SELECT subject, content, validity FROM facts")
     }
     assert state == {
         ("gone", "v1"): "expired",

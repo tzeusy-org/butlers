@@ -8,16 +8,17 @@ Covers:
 5. Integration: downgrade cleanly removes the table.
 
 Integration tests (marked pytest.mark.integration) require Docker + Postgres
-provisioned via the shared ``provisioned_postgres_pool`` fixture.
+migrated to core_008 by the shared ``db`` factory.
 """
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -34,15 +35,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("core_009", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # Unit tests — no DB required
 # ---------------------------------------------------------------------------
@@ -57,7 +49,7 @@ class TestUpgradeSQLShape:
     """
 
     def _collect_execute_calls(self) -> list[str]:
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_009")
         calls_collected: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: calls_collected.append(sql)
@@ -96,29 +88,13 @@ class TestMemoryCatalogMigrationIntegration:
     """
 
     @pytest.fixture
-    async def catalog_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with public.entities and return a pool."""
-        async with provisioned_postgres_pool() as pool:
-            # Install pgvector extension (available in pgvector/pgvector image).
-            await pool.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            # Create public.entities as required by the FK constraint.
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS public.entities (
-                    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    canonical_name  VARCHAR NOT NULL,
-                    entity_type     VARCHAR NOT NULL DEFAULT 'other',
-                    aliases         TEXT[] NOT NULL DEFAULT '{}',
-                    metadata        JSONB DEFAULT '{}'::jsonb,
-                    roles           TEXT[] NOT NULL DEFAULT '{}',
-                    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            yield pool
+    async def catalog_pool(self, db):
+        """The real core_008 schema (public.entities, pgvector), before core_009."""
+        return await db("core", revisions={"core": "core_008"})
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_009")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -129,7 +105,7 @@ class TestMemoryCatalogMigrationIntegration:
 
     async def _run_downgrade(self, pool) -> None:
         """Execute downgrade() SQL against the pool."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_009")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)

@@ -616,6 +616,7 @@ _FLAG_DEPENDENT_JOB_TO_SOURCE: dict[str, str] = {
     "chronicler_project_sessions": "core.sessions",
     "chronicler_project_spotify": "spotify.session_summary",
     "chronicler_project_steam": "steam.play_history",
+    "chronicler_project_steam_status": "steam.status_history",
     "chronicler_project_owntracks": "owntracks.points",
     "chronicler_project_owntracks_place_cluster": "owntracks.place_cluster",
     "chronicler_project_owntracks_ssid": "owntracks.ssid_presence",
@@ -629,6 +630,7 @@ _FLAG_DEPENDENT_JOB_TO_SOURCE: dict[str, str] = {
     "chronicler_project_comms": "comms.message_bursts",
     "chronicler_project_activitywatch": "activitywatch.window",
     "chronicler_project_occupation_inferred": "chronicler.occupation_inferred",
+    "chronicler_project_situation_inferred": "chronicler.situation_inferred",
 }
 
 

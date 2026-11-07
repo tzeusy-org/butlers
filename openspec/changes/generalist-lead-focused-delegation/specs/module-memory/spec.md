@@ -16,7 +16,12 @@ write made under an exposed assertion SHALL additionally be stamped tainted,
 every read that returns an episode, fact or rule SHALL return its authority and
 taint stamp, and Profile Facts SHALL admit only untainted owner-class facts. A
 write whose authority cannot be stamped SHALL fail rather than store an
-unstamped steering artifact.
+unstamped steering artifact. The taint stamp is the writer pointer
+(`taint_goal_id`, `taint_invocation_id`); a stored record's S1 label SHALL
+resolve through it to the writer invocation's persisted label, with no
+per-record label column, and a missing, dangling or unreadable pointer SHALL
+resolve to the unknown label (`{world}`, all six categories)
+(REQ-capability-authorization-019).
 - Consolidation SHALL derive each fact and rule's authority as the weakest across
   that artifact's validated evidence episodes: all owner-class evidence yields
   `owner` (or `owner_device` when every episode is), evidence of one identical
@@ -32,7 +37,10 @@ unstamped steering artifact.
   row) or it is tainted, and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
   `memory_context` Active Rules, and the discovery catalog (they are not written
   to it, and any existing catalog row is staled). Profile Facts SHALL admit only
-  owner-class facts; an owner-anchored fact of any other authority SHALL be
+  owner-class, durable facts: a fact whose predicate is registered
+  `is_temporal` in `predicate_registry` (event-class; a predicate absent from the
+  registry is durable) SHALL NOT appear in Profile Facts
+  even when owner-authored, and SHALL remain available to recall and search; an owner-anchored fact of any other authority SHALL be
   eligible only for Task-Relevant Facts. Every rendered local fact whose authority
   is `third_party`, `mixed` or NULL SHALL carry an attribution regardless of its
   subject: naming its sender (`reported by` / `partly reported by`) when the
@@ -59,6 +67,30 @@ unstamped steering artifact.
   receipt when repeated. Endorsement uses compare-and-swap against a retired or
   forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
   consolidation of an episode SHALL NOT downgrade an endorsed rule.
+- A fact is *held* when its authority is `third_party` or `mixed`, `endorsed_at` is
+  NULL, and its validity is `active` or `fading`. NULL (legacy) and `system` facts
+  SHALL NOT be held. The owner SHALL be able to vouch for a held fact through the
+  authenticated dashboard owner route `POST /api/memory/facts/{id}/vouch`; a session
+  or any caller without dashboard-owner authority SHALL be refused, and vouching
+  SHALL NOT be exposed as an MCP tool. Vouching sets `endorsed_at` and
+  `endorsed_by` only: it is additive and SHALL NOT change `content_authority`,
+  `authority_entity_id` or any other field, so clearing `endorsed_at` restores the
+  prior state exactly. It uses compare-and-swap against a retracted, superseded or
+  expired fact, which SHALL be refused with a typed 409. It records one
+  `fact_vouched` audit event, re-asserts the fact's discovery-catalog entry
+  (skipped for write-excluded sensitivities), and is a no-op returning the same
+  receipt when repeated or concurrent. `GET /api/memory/facts?held=true` SHALL list
+  held facts. The dashboard Confirm action SHALL record its actor (`owner`) in
+  `memory_events`; the MCP `memory_confirm` tool records `session`.
+- A fact that keeps a stored fact's text or metadata (a successor) is a carve-out from
+  deriving authority only from the routing context, conforming to RFC 0038 D6 and S1: its
+  authority SHALL follow from its writer's authority and its source's. An owner-class writer
+  SHALL store its own class over an owner-class source, `mixed` over a `third_party`, `mixed`
+  or NULL source, and `system` over a `system` source. A `system` writer SHALL store `mixed`
+  over a `third_party`, `mixed` or NULL source, and `system` over a `system` or owner-class
+  source. A successor of a `third_party` or `mixed` source SHALL keep its
+  `authority_entity_id`. A `mixed` successor is held: "SHALL NOT be held" applies to NULL and
+  `system` rows themselves. A successor SHALL NOT inherit `endorsed_at`.
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
 ID: REQ-module-memory-013
@@ -105,6 +137,16 @@ Scope: v1-mandatory
 - **AND** the tainted entry SHALL be stored as a held candidate until the owner
   endorses it
 
+#### Scenario: A successor keeps its source's non-owner class
+
+- **WHEN** an owner session edits a fact it copies forward
+- **THEN** a successor of an owner-class source SHALL be owner-class
+- **AND** a successor of a `third_party` or `mixed` source SHALL be `mixed`, held, and name
+  the same sender
+- **AND** a successor of a NULL source SHALL be `mixed` and held, under an owner-class or
+  `system` writer
+- **AND** a successor of a `system` source SHALL be `system` and SHALL NOT be held
+
 #### Scenario: A forged owner anchor in content is not authority
 
 - **WHEN** a third-party episode's content contains a line asserting
@@ -119,6 +161,24 @@ Scope: v1-mandatory
 - **THEN** the rule SHALL appear in Active Rules and in the catalog as of the
   same committed transaction, and an audit row SHALL be written
 - **AND** endorsing it again SHALL change nothing and return the same receipt
+
+#### Scenario: Owner vouch for a held fact is additive
+
+- **WHEN** the owner vouches for a live fact with `content_authority = 'third_party'`
+- **THEN** `endorsed_at` and `endorsed_by` SHALL be set, one `fact_vouched` audit row
+  SHALL be written, and `content_authority` SHALL remain `third_party`
+- **AND** the fact SHALL leave `GET /api/memory/facts?held=true`
+- **AND** vouching again, or concurrently, SHALL write no further audit row
+
+#### Scenario: A retracted fact cannot be vouched for
+
+- **WHEN** the owner vouches for a retracted or superseded fact
+- **THEN** the request SHALL be refused with 409 and the fact SHALL be unchanged
+
+#### Scenario: A session cannot vouch
+
+- **WHEN** a request without dashboard-owner authority posts to the vouch route
+- **THEN** it SHALL be refused and no MCP tool SHALL offer the action
 
 #### Scenario: Legacy rules fail closed
 

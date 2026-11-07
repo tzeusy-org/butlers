@@ -534,6 +534,7 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
         if record.message == "pipeline.decomposition_identity_resolution_failed"
     )
     assert warning_record.failure_class == "RuntimeError"
+    assert warning_record.cause_class is None
 
     with pytest.raises(RuntimeError, match="bulk outage scenario failed"):
         with unregistered_identity_source():
@@ -603,6 +604,7 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
     )
     assert warning.levelno == logging.WARNING
     assert warning.failure_class == "IdentityResolutionQueryError"
+    assert warning.cause_class == "UniqueViolationError"
     assert warning.args == ()
     assert warning.exc_info is None
     assert warning.exc_text is None
