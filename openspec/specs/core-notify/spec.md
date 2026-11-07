@@ -913,19 +913,27 @@ required on both normal and recovery delivery paths.
 
 Live URLs SHALL be at most 300 characters, use HTTPS without user information,
 IP literals, internationalized or punycode hosts, or a non-default port. The
-configured origin SHALL NOT contain a path, query or fragment. This requirement
-does not authorize general model-supplied URLs, research links or login actions.
+configured origin MAY carry one fixed path prefix (for example `/butlers-dev`)
+under which the registry routes are joined. A prefix SHALL be at most 64
+characters of plain ASCII segments, each starting with a letter or digit and
+using only letters, digits, `.`, `_` and `-`; a trailing slash is normalised
+away. Empty, `.`/`..`, percent-encoded or otherwise special segments, and any
+query or fragment, SHALL make the origin unsafe. This requirement does not
+authorize general model-supplied URLs, research links or login actions.
 
 #### Scenario: Approval detail becomes a fixed dashboard button
 - **WHEN** an admitted owner approval notification carries `approval_detail`
   with its canonical UUID `action_id` and a valid configured HTTPS origin
-- **THEN** delivery constructs `/approvals/<action_id>` at that origin
+- **THEN** delivery constructs `/approvals/<action_id>` at that origin, under
+  its fixed path prefix when one is configured (`https://host/butlers-dev`
+  yields `https://host/butlers-dev/approvals/<action_id>`)
 - **AND** Messenger independently reconstructs that URL before rendering the
   host-labelled dashboard button, retaining signed Approve and Reject controls
 
 #### Scenario: An unverifiable self reference preserves the notification
 - **WHEN** the route key is unknown, parameters are invalid, the configured
-  origin is absent or unsafe, or the resulting URL exceeds 300 characters
+  origin is absent or unsafe (including a path with `..`, empty or
+  percent-encoded segments, or a query or fragment), or the resulting URL exceeds 300 characters
 - **THEN** the message is still delivered through the existing admission path
 - **AND** it contains `[link not verified]` and no URL button for that reference
 - **AND** unresolved links do not disable otherwise valid signed callbacks

@@ -120,3 +120,27 @@ async def test_dashboard_writer_background_failure_is_logged_not_raised(
                 break
             await asyncio.sleep(0.01)
     assert any("background" in r.getMessage() for r in caplog.records)
+
+
+async def test_detached_writebacks_run_in_creation_order_and_drain(monkeypatch) -> None:
+    """Create-then-revoke must land in order even when the first write is slow."""
+    import asyncio
+
+    settings = approvals._DecisionMemorySettings(
+        memory_schema=None, embedding_model="m", tool_metadata={}
+    )
+    monkeypatch.setattr(approvals, "_decision_memory_settings_for", lambda _name: settings)
+    db_mgr = SimpleNamespace(butlers_with_module=lambda module_name: ["home"])
+    writer = approvals._decision_memory_writer_for(db_mgr, "home", object())
+    order: list[bool] = []
+
+    async def _rule(self, rule, *, active):
+        if active:
+            await asyncio.sleep(0.05)  # cold model load on the first write only
+        order.append(active)
+
+    monkeypatch.setattr(approvals.DecisionMemoryWriter, "record_standing_rule", _rule)
+    await writer.record_standing_rule("r", active=True)
+    await writer.record_standing_rule("r", active=False)
+    await approvals.drain_decision_writebacks()
+    assert order == [True, False]
