@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import shutil
 import uuid
+from typing import Any
 
 import asyncpg
 import pytest
@@ -20,6 +21,7 @@ from butlers.roster_imports import roster_module
 
 contacts_mod = roster_module("relationship", "tools/contacts")
 entity_merge_mod = roster_module("relationship", "tools/entity_merge")
+identity_slots_mod = roster_module("relationship", "tools/identity_slots")
 SourceEntityTombstonedError = entity_merge_mod.SourceEntityTombstonedError
 TargetEntityTombstonedError = entity_merge_mod.TargetEntityTombstonedError
 
@@ -332,26 +334,128 @@ async def test_a_failed_local_rebind_is_named_in_the_contact_merge_log(
     assert any(str(target_entity) in m for m in warnings), warnings
 
 
+async def _held_before_authority(conn) -> dict[str, Any]:
+    """What this transaction holds when the authority starts."""
+    return {
+        "xid": await conn.fetchval("SELECT pg_current_xact_id_if_assigned()::text"),
+        # pg_advisory_xact_lock assigns no transaction id, so the id alone cannot see a slot
+        # lock; pg_locks is the only place one shows.
+        "advisory": await conn.fetchval(
+            "SELECT count(*) FROM pg_catalog.pg_locks "
+            "WHERE locktype = 'advisory' AND pid = pg_backend_pid() AND granted"
+        ),
+    }
+
+
+async def test_the_probe_sees_an_advisory_lock_taken_before_the_authority(rel_pool):
+    """Positive control: the probe is not blind to the lock it guards against."""
+    async with rel_pool.acquire() as conn, conn.transaction():
+        assert (await _held_before_authority(conn))["advisory"] == 0
+        await identity_slots_mod.lock_identity_slot(conn, "has-email", "probe@control.test")
+        held = await _held_before_authority(conn)
+    assert held["xid"] is None  # an advisory lock alone assigns no id: why the id is not enough
+    assert held["advisory"] >= 1
+
+
 async def test_a_contact_merge_takes_no_lock_before_the_authority(rel_pool, monkeypatch):
-    """Its transaction holds no row lock or write when the authority starts (bu-dhloi1.51).
+    """Its transaction holds no row lock, write or advisory lock when the authority starts.
 
     Any of those would be a lock outside the authority's one order, which is how the
-    deadlock bu-dhloi1.50 fixed could return. A row lock or write assigns the transaction
-    an id, so an unassigned id proves there was neither.
+    deadlock bu-dhloi1.50 fixed could return (bu-dhloi1.51). A row lock or write assigns the
+    transaction an id; an identity-slot lock assigns none, so it is read from ``pg_locks``.
     """
     _source_entity, _target_entity, _fact_id, source, target = await _pair(rel_pool)
     real_authority = entity_merge_mod.merge_entity_pair_in_transaction
-    xids = []
+    held = []
 
     async def authority(conn, **kwargs):
-        xids.append(await conn.fetchval("SELECT pg_current_xact_id_if_assigned()::text"))
+        held.append(await _held_before_authority(conn))
         return await real_authority(conn, **kwargs)
 
     monkeypatch.setattr(entity_merge_mod, "merge_entity_pair_in_transaction", authority)
 
     await contacts_mod.contact_merge(rel_pool, source, target)
 
-    assert xids == [None]
+    assert held == [{"xid": None, "advisory": 0}]
+
+
+@pytest.mark.parametrize("reordered", [False, True], ids=["authority_order", "reorder_mutant"])
+async def test_the_authority_locks_slots_before_facts_against_a_slot_first_writer(
+    rel_pool, monkeypatch, reordered
+):
+    """A writer that takes an identity slot, then a fact row, queues behind the merge.
+
+    The central writer's order is slot, then row. The merge takes the slots of its
+    candidate reports before it locks any fact, so a writer holding a slot and wanting a
+    fact never waits on a merge that holds that fact. The mutant locks the facts first;
+    there the writer and the merge each hold what the other wants, and PostgreSQL aborts
+    one of them as a deadlock. Both runs are real: the mutant is the proof this guard fails
+    on a reorder.
+    """
+    source_entity, target_entity, fact, _source, _target = await _pair(rel_pool)
+    address = f"{uuid.uuid4().hex}@slot-first.test"
+    await rel_pool.execute(
+        "INSERT INTO relationship.entity_facts "
+        "(subject, predicate, object, object_kind, src, validity) "
+        "VALUES ($1, 'has-email', $2, 'literal', 'test', 'candidate')",
+        source_entity,
+        address,
+    )
+    if reordered:
+        real_plan_facts = entity_merge_mod._lock_and_plan_facts
+        real_candidates = entity_merge_mod._lock_candidate_reports
+
+        async def no_candidates_yet(conn, source, target):
+            return None
+
+        async def facts_then_candidates(conn, source, target):
+            await real_plan_facts(conn, source, target)
+            await real_candidates(conn, source, target)
+
+        monkeypatch.setattr(entity_merge_mod, "_lock_candidate_reports", no_candidates_yet)
+        monkeypatch.setattr(entity_merge_mod, "_lock_and_plan_facts", facts_then_candidates)
+
+    slot_held = asyncio.Event()
+
+    async def writer() -> None:
+        async with rel_pool.acquire() as conn, conn.transaction():
+            await identity_slots_mod.lock_identity_slot(conn, "has-email", address, source_entity)
+            writer_pid = await conn.fetchval("SELECT pg_backend_pid()")
+            slot_held.set()
+            # Go for the fact only once the merge is queued on something this writer holds.
+            for _ in range(500):
+                if await rel_pool.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> $1 "
+                    "AND wait_event_type = 'Lock')",
+                    writer_pid,
+                ):
+                    break
+                await asyncio.sleep(0.02)
+            else:
+                raise AssertionError("the merge never queued behind the writer's slot")
+            await conn.fetchval(
+                "SELECT id FROM relationship.entity_facts WHERE id = $1 FOR UPDATE", fact
+            )
+
+    async def merge() -> object:
+        await slot_held.wait()
+        return await entity_merge_mod.merge_entity_pair(
+            rel_pool, source_entity_id=source_entity, target_entity_id=target_entity
+        )
+
+    results = await asyncio.wait_for(asyncio.gather(writer(), merge(), return_exceptions=True), 30)
+
+    failures = [r for r in results if isinstance(r, BaseException)]
+    if reordered:
+        assert any(isinstance(r, asyncpg.exceptions.DeadlockDetectedError) for r in failures), (
+            results
+        )
+    else:
+        assert failures == []
+        assert await rel_pool.fetchval(
+            "SELECT metadata ->> 'merged_into' FROM public.entities WHERE id = $1", source_entity
+        ) == str(target_entity)
 
 
 async def test_two_contacts_of_one_entity_merge_without_touching_its_facts(rel_pool):
