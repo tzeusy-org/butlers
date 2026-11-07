@@ -110,6 +110,7 @@ REFUSAL_REASONS = {
     "controller-dirty",
     "aggregate-start",
     "aggregate-deadline",
+    "control-cancelled",
     "workload-clone",
     "workload-head",
     "workload-tree",
@@ -1006,17 +1007,16 @@ def execute(root, output, progress=None):
                 raise
         progress["stage"] = "summary"
         verdict = require_witness(receipts["before"], receipts["after"], binding)
-        atomic(
-            output / "summary.json",
-            {
-                "schema": "fact-capture-pg-control.v1",
-                "complete": False,
-                "control_verdict": verdict,
-                "binding": binding,
-                "workload_only": True,
-                "phases": {k: digest(v) for k, v in receipts.items()},
-            },
-        )
+        # Return only tentative evidence. The private domain must finish cleanup
+        # before main can begin the interruptible terminal publication.
+        return {
+            "schema": "fact-capture-pg-control.v1",
+            "complete": False,
+            "control_verdict": verdict,
+            "binding": binding,
+            "workload_only": True,
+            "phases": {k: digest(v) for k, v in receipts.items()},
+        }
 
 
 def main():
@@ -1031,6 +1031,33 @@ def main():
     progress = {"stage": "controller-identity"}
     binding = None
     output_created = False
+    terminal = False
+
+    def discard_summary():
+        # Only this invocation's newly created output directory is ever adopted.
+        for name in ("summary.pending", "summary.json"):
+            (output / name).unlink(missing_ok=True)
+
+    def cancel(signum, frame):
+        nonlocal terminal
+        if not CANCELLED:
+            CANCELLED.append(signum)
+        if terminal:
+            # No owned child/private cleanup remains to interrupt. Stay armed
+            # through CLI exit, including atomic write and success announcement.
+            # Disarm before removal so another signal cannot interrupt refusal.
+            terminal = False
+            try:
+                discard_summary()
+            finally:
+                raise ValueError("control-cancelled")
+
+    def require_terminal():
+        if CANCELLED:
+            raise ValueError("control-cancelled")
+        if AGGREGATE_DEADLINE is not None and time.monotonic() >= AGGREGATE_DEADLINE:
+            raise ValueError("aggregate-deadline")
+
     try:
         # Refuse before creating output or starting children on an unbound host.
         binding = provider_binding(root)
@@ -1038,16 +1065,20 @@ def main():
         output.mkdir(exist_ok=False)
         output_created = True
         for sig in (signal.SIGTERM, signal.SIGINT):
-            signal.signal(
-                sig, lambda signum, frame: CANCELLED.append(signum) if not CANCELLED else None
-            )
-        execute(root, output, progress)
+            signal.signal(sig, cancel)
+        summary = execute(root, output, progress)
+        terminal = True
+        require_terminal()
+        atomic(output / "summary.json", summary)
+        require_terminal()
         print("fact-capture control WITNESS_COMPLETE; BEFORE test remains FAILED")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError, KeyError) as error:
+        terminal = False
         data = refusal(error, progress, progress.get("binding", binding))
         if output_created:
             try:
+                discard_summary()
                 atomic(output / "control-refusal.json", data)
             except (OSError, ValueError):
                 # Do not replace the original refusal or print storage/exception values.

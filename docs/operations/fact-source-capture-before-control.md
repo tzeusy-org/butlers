@@ -53,6 +53,13 @@ seconds each for setup and evidence. The 45-minute job is provisional, not measu
 Every phase receives remaining time and retains cleanup reserve; expiration/cancellation
 cannot produce a witness. No local Docker/PG privilege retry is supported.
 
+Phase success remains tentative until sentinel and private-workload cleanup finish.
+Terminal publication then refuses any latched cancellation or expired aggregate budget.
+The signal handler remains armed through summary writing, success announcement and CLI exit:
+a terminal cancellation revokes this invocation's summary and interrupts success. A refusal
+also removes any pending summary. Missing evidence or a non-successful provider run still
+cannot qualify a witness, including interruption after the main function returns.
+
 Only bounded closed JSON identity/phase/cleanup receipts are uploaded. Raw failure output stays
 in protected runner-temporary files and is removed with the disposable checkout; it is never
 an artifact. DSNs, credentials, payloads, traceback locals and arbitrary logs are excluded.

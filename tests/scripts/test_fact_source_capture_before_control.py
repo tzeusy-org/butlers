@@ -975,6 +975,140 @@ def test_real_pytest_observer_records_setup_refusal_without_claiming_pg(tmp_path
     assert "PRIVATE" not in json.dumps(data)
 
 
+def test_terminal_cancellation_revokes_witness_after_owned_cleanup(tmp_path, monkeypatch, capsys):
+    """Actual signals isolate terminal admission; no child, PG, install or network."""
+    import builtins
+    import signal
+
+    real_atomic = control.atomic
+    real_witness = control.require_witness
+    real_temporary = control.tempfile.TemporaryDirectory
+    real_print = builtins.print
+    binding = {"nonce": "a" * 64}
+    previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    for seam in (
+        "positive",
+        "sentinel-wait",
+        "summary-validation",
+        "private-cleanup",
+        "summary-write-before",
+        "summary-write-after",
+        "success-announcement",
+        "after-main-return",
+    ):
+        parent = tmp_path / seam
+        root = parent / "controller"
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts/fact_source_capture_before_observer.py").write_text("# stand-in\n")
+
+        def cancel_at(location, seam=seam):
+            if seam == location:
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        class Sentinel:
+            def poll(self):
+                return None
+
+            def kill(self):
+                pass
+
+            def wait(self, timeout):
+                cancel_at("sentinel-wait")
+                return 0
+
+        class Temporary(real_temporary):
+            def __exit__(self, *args):
+                result = super().__exit__(*args)
+                cancel_at("private-cleanup")
+                return result
+
+        def own(command, environment, seconds, **kwargs):
+            code = 0
+            if command[-1] == "--phase-child":
+                config = json.loads(Path(environment["FACT_CAPTURE_CONTROL_CONFIG"]).read_text())
+                data = phase(config["phase"])
+                data["binding"] = config["binding"]
+                Path(config["output"]).write_text(json.dumps(data))
+                code = data["pytest_exit"]
+            return {
+                "exit": code,
+                "cleanup_complete": True,
+                "timed_out": False,
+                "cancelled": False,
+                "observation": {},
+            }
+
+        def witness(*args):
+            cancel_at("summary-validation")
+            return real_witness(*args)
+
+        def atomic(path, value):
+            if path.name == "summary.json":
+                cancel_at("summary-write-before")
+            real_atomic(path, value)
+            if path.name == "summary.json":
+                cancel_at("summary-write-after")
+
+        def announce(*args, **kwargs):
+            if args and str(args[0]).startswith("fact-capture control WITNESS_COMPLETE"):
+                cancel_at("success-announcement")
+            return real_print(*args, **kwargs)
+
+        try:
+            with monkeypatch.context() as context:
+                context.setattr(control, "CANCELLED", [])
+                context.setattr(control, "AGGREGATE_DEADLINE", None)
+                context.setattr(control, "__file__", str(root / "scripts/control.py"))
+                context.setattr(control, "provider_binding", lambda root: dict(binding))
+                context.setattr(control, "git", lambda *args, **kwargs: "")
+                context.setattr(
+                    control, "workload_state", lambda *args: {"runtime_sha256": "b" * 64}
+                )
+                context.setattr(control, "overlay", lambda *args: None)
+                context.setattr(control, "prepare_uv", lambda *args, **kwargs: {})
+                context.setattr(control, "run_owned", own)
+                context.setattr(control, "require_witness", witness)
+                context.setattr(control, "atomic", atomic)
+                context.setattr(control.tempfile, "TemporaryDirectory", Temporary)
+                context.setattr(
+                    control.subprocess,
+                    "run",
+                    lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
+                )
+                context.setattr(control.subprocess, "Popen", lambda *args, **kwargs: Sentinel())
+                context.setattr(builtins, "print", announce)
+                context.setattr(sys, "argv", ["control"])
+                context.setenv("RUNNER_TEMP", str(parent))
+                context.setenv("FACT_CAPTURE_CONTROL_STARTED", str(control.time.monotonic()))
+                result = control.main()
+                evidence = parent / "fact-capture-before-evidence"
+                summary = evidence / "summary.json"
+                refusal = evidence / "control-refusal.json"
+                output = capsys.readouterr().out
+                if seam in ("positive", "after-main-return"):
+                    assert result == 0 and not control.CANCELLED
+                    assert json.loads(summary.read_text())["control_verdict"] == "WITNESS_COMPLETE"
+                    assert not refusal.exists()
+                    if seam == "after-main-return":
+                        # The handler stays armed until process exit: a late signal
+                        # revokes the committed file and interrupts the CLI caller.
+                        with pytest.raises(ValueError, match="control-cancelled"):
+                            cancel_at("after-main-return")
+                        assert control.CANCELLED and not summary.exists()
+                else:
+                    assert result == 2, seam
+                    assert control.CANCELLED
+                    assert not summary.exists() and not summary.with_suffix(".pending").exists()
+                    data = json.loads(refusal.read_text())
+                    assert data["control_verdict"] == "UNKNOWN" and data["complete"] is False
+                    assert data["reason"] == "control-cancelled"
+                    assert "WITNESS_COMPLETE" not in output
+                assert not list(parent.glob("fact-pg-witness-*"))
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+
 def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypatch, capsys):
     env = {
         "PATH": os.environ["PATH"],
