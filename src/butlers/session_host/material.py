@@ -11,6 +11,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .codex import CodexSettings
 from .contracts import LaunchRequest, Refused
 from .opencode import CONFIG_NAME, OpenCodeSettings
 
@@ -50,20 +51,38 @@ class InvocationMaterial:
         content = settings.render(self._request.broker, self._request.model_credential)
         if len(content) > 65536 or CONFIG_NAME in self.content_hashes:
             raise Refused("invalid_opencode_material")
+        self.write_native(CONFIG_NAME, content)
+
+    def prepare_codex(self, settings: CodexSettings) -> None:
+        """Create the closed Codex files; same ownership rules as OpenCode's."""
+        if (
+            type(settings) is not CodexSettings
+            or type(self._request) is not LaunchRequest
+            or self._request.runtime != "codex"
+            or self._request.model != settings.model
+        ):
+            raise Refused("invalid_codex_material")
+        rendered = settings.render(self._request.broker, self._request.model_credential)
+        if any(len(content) > 65536 for content in rendered.values()):
+            raise Refused("invalid_codex_material")
+        for name, content in rendered.items():
+            self.write_native(name, content)
+
+    def write_native(self, name: str, content: bytes) -> None:
         directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             metadata = os.fstat(directory)
             if (metadata.st_dev, metadata.st_ino) != (self._device, self._inode):
                 raise Refused("stage_identity_changed")
             descriptor = os.open(
-                CONFIG_NAME,
+                name,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 0o600,
                 dir_fd=directory,
             )
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(content)
-            self.content_hashes[CONFIG_NAME] = hashlib.sha256(content).hexdigest()
+            self.content_hashes[name] = hashlib.sha256(content).hexdigest()
         finally:
             os.close(directory)
 
