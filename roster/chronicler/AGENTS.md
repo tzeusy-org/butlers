@@ -887,6 +887,14 @@ the override's transaction, and `chronicler_public_projection_sweep` adds new ep
 drift every 15 minutes. So a new episode is absent for up to 15 minutes, while a restriction is
 immediate. Sweep and trigger share an advisory lock; a writer of these tables must take it first,
 or a stale read can republish a row the owner just restricted.
+The override's BEFORE INSERT trigger waits for that lock before the existing daily-repair
+AFTER trigger can acquire its repair lock. The public sync remains after daily repair, so it
+also sees a retention/tombstone redaction first written by this override. Keep both phases:
+waiting while holding the repair lock fails unrelated writers, while syncing before repair
+can leave a just-redacted episode public until the next sweep.
+Legacy calendar payloads without `title_source` infer a summary only from a nonblank string
+using the adapter's Python-whitespace semantics. Explicit summary provenance and owner-corrected
+titles retain precedence; location/description fallbacks stay private.
 
 ## Situational blocks and anchors (bu-r3fmja)
 

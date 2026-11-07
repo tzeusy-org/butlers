@@ -56,7 +56,16 @@ _EPISODES = "chronicler.episodes_public"
 _ROLLUPS = "chronicler.rollups_public"
 _REFRESH = "chronicler.refresh_rollups_public(timestamptz,timestamptz)"
 _SYNC = "chronicler.sync_episode_public_from_override()"
+_SERIALIZE = "chronicler.serialize_episode_public_override()"
 _PRIVACY = "chronicler.episode_effective_privacy(uuid,text)"
+# Python str.strip() whitespace, including control separators and Unicode spaces.
+# PostgreSQL btrim() without this set removes only ASCII spaces. Legacy calendar
+# payloads retain the uncleaned event title even when the adapter used a fallback.
+_TITLE_WHITESPACE = (
+    r"\0009\000A\000B\000C\000D\001C\001D\001E\001F\0020\0085\00A0\1680"
+    r"\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029"
+    r"\202F\205F\3000"
+)
 
 
 def upgrade() -> None:
@@ -120,7 +129,9 @@ def upgrade() -> None:
                 WHEN e.source_name = '{_CALENDAR_SOURCE}'
                      AND COALESCE(
                          e.payload ->> 'title_source',
-                         CASE WHEN NULLIF(btrim(e.payload ->> 'title'), '') IS NOT NULL
+                         CASE WHEN jsonb_typeof(e.payload -> 'title') = 'string'
+                                   AND NULLIF(btrim(e.payload ->> 'title',
+                                                   U&'{_TITLE_WHITESPACE}'), '') IS NOT NULL
                               THEN 'summary' END,
                          'unknown'
                      ) <> 'summary'
@@ -240,6 +251,23 @@ def upgrade() -> None:
         $body$
     """)
     op.execute(f"""
+        CREATE FUNCTION {_SERIALIZE}
+        RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
+        AS $body$
+        BEGIN
+            -- Wait before any AFTER trigger can retain the daily-repair lock.
+            PERFORM pg_advisory_xact_lock({_LOCK});
+            RETURN NEW;
+        END
+        $body$
+    """)
+    op.execute(f"""
+        CREATE TRIGGER overrides_public_projection_lock
+        BEFORE INSERT ON chronicler.overrides
+        FOR EACH ROW WHEN (NEW.target_kind = 'episode')
+        EXECUTE FUNCTION {_SERIALIZE}
+    """)
+    op.execute(f"""
         CREATE FUNCTION {_SYNC}
         RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp
         AS $body$
@@ -247,7 +275,8 @@ def upgrade() -> None:
             before_row {_EPISODES}%ROWTYPE;
             after_row {_EPISODES}%ROWTYPE;
         BEGIN
-            PERFORM pg_advisory_xact_lock({_LOCK});
+            -- The BEFORE trigger already holds the projection lock. Run after
+            -- overrides_daily_repair so its new redactions are visible here.
             SELECT * INTO before_row FROM {_EPISODES} WHERE id = NEW.target_id;
             IF NOT FOUND THEN
                 -- Not swept yet, so nothing is published; the sweep will read this override.
@@ -284,14 +313,16 @@ def upgrade() -> None:
         op.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {_ROLE}")
     op.execute("REVOKE ALL ON chronicler.v_episodes_public_source FROM PUBLIC")
     op.execute(f"GRANT SELECT ON chronicler.v_episodes_public_source TO {_ROLE}")
-    for function in (_PRIVACY, _REFRESH, _SYNC):
+    for function in (_PRIVACY, _REFRESH, _SERIALIZE, _SYNC):
         op.execute(f"REVOKE ALL ON FUNCTION {function} FROM PUBLIC")
         op.execute(f"GRANT EXECUTE ON FUNCTION {function} TO {_ROLE}")
 
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS overrides_public_projection_lock ON chronicler.overrides")
     op.execute("DROP TRIGGER IF EXISTS trg_overrides_sync_episode_public ON chronicler.overrides")
     op.execute(f"DROP FUNCTION IF EXISTS {_SYNC}")
+    op.execute(f"DROP FUNCTION IF EXISTS {_SERIALIZE}")
     op.execute(f"DROP FUNCTION IF EXISTS {_REFRESH}")
     op.execute("DROP VIEW IF EXISTS chronicler.v_episodes_public_source")
     op.execute(f"DROP FUNCTION IF EXISTS {_PRIVACY}")
