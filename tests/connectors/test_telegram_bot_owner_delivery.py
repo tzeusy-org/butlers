@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from butlers.connectors import telegram_bot as telegram_bot_module
@@ -122,7 +123,8 @@ async def test_owner_tap_redeems_once_then_retracts_every_other_stale_card(
     edited = {body["message_id"]: body["text"] for body in http.telegram("editMessageText")}
     assert edited[44] == "✅ Approved"
     assert edited[55] == telegram_bot_module._OWNER_DELIVERY_RETRACTED_TEXT
-    assert {body["message_id"] for body in http.telegram("editMessageReplyMarkup")} == {44, 55}
+    # The retraction's own text edit drops the keyboard; no second markup call is made for it.
+    assert [body["message_id"] for body in http.telegram("editMessageReplyMarkup")] == [44]
     # Each retraction attempt is receipted honestly; an unaddressable card is not success.
     reports = {
         url.rsplit("/", 1)[-1]: body
@@ -220,3 +222,91 @@ async def test_other_callbacks_are_not_owner_delivery(owner_resolver: AsyncMock)
     assert await connector._maybe_handle_owner_delivery_callback(_update("apr1:x:a:y")) is False
     assert await connector._maybe_handle_owner_delivery_callback({"message": {}}) is False
     owner_resolver.assert_not_awaited()
+
+
+class _TelegramRefusal(_Http):
+    """Telegram double that answers one message id with a real-shaped HTTP 400."""
+
+    def __init__(self, *args: Any, description: str, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.description = description
+        self.refuse_text_edit_for: int | None = None
+
+    async def post(self, url: str, **kwargs: Any) -> MagicMock:
+        body = kwargs.get("json", {})
+        if (
+            url.startswith("http")
+            and not url.startswith(_API)
+            and body.get("message_id") == self.refuse_text_edit_for
+        ):
+            self.posts.append((url, body))
+            response = httpx.Response(
+                400,
+                json={"ok": False, "error_code": 400, "description": self.description},
+                request=httpx.Request("POST", url),
+            )
+            return response  # type: ignore[return-value]
+        return await super().post(url, **kwargs)
+
+
+async def test_keyboardless_card_retraction_succeeds_without_a_markup_call(
+    owner_resolver: AsyncMock,
+) -> None:
+    """A card with no keyboard retracts cleanly: the text edit is the whole retraction."""
+    token, _ = mint_token()
+    http = _Http(
+        _response(body={"data": {"status": "executed"}}),
+        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
+    )
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+
+    assert [body["message_id"] for body in http.telegram("editMessageText")][-1] == 55
+    assert 55 not in [body["message_id"] for body in http.telegram("editMessageReplyMarkup")]
+    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
+    assert report == {"retracted": True, "reason": None}
+
+
+async def test_genuine_400_on_retraction_still_fails_and_logs_a_safe_description(
+    owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    token, _ = mint_token()
+    http = _TelegramRefusal(
+        _response(body={"data": {"status": "executed"}}),
+        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
+        description="Bad Request: message to edit not found",
+    )
+    http.refuse_text_edit_for = 55
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        assert await connector._maybe_handle_owner_delivery_callback(_update(token)) is True
+
+    [(_, report)] = http.dashboard("/api/owner-delivery/retractions/")
+    assert report == {"retracted": False, "reason": "provider_error"}
+    assert "HTTP 400" in caplog.text
+    assert "message to edit not found" in caplog.text
+    assert "test-token" not in caplog.text
+
+
+async def test_unsafe_400_description_is_not_logged_verbatim(
+    owner_resolver: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    token, _ = mint_token()
+    http = _TelegramRefusal(
+        _response(body={"data": {"status": "executed"}}),
+        [{"presentation_id": _STALE_ID, "route_ref": "9001", "provider_ref": "55"}],
+        description="Bad Request: see https://api.telegram.org/bottest-token/x",
+    )
+    http.refuse_text_edit_for = 55
+    connector = _connector()
+    connector._http_client = http  # type: ignore[assignment]
+
+    with caplog.at_level(logging.WARNING):
+        await connector._maybe_handle_owner_delivery_callback(_update(token))
+
+    assert "test-token" not in caplog.text
+    assert "api.telegram.org" not in caplog.text

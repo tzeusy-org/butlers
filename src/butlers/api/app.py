@@ -639,6 +639,11 @@ async def lifespan(app: FastAPI):
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await external_deadman_task
+    # Detached decision-memory writes need the pools that shutdown_db_manager closes.
+    with contextlib.suppress(Exception):
+        from butlers.api.routers.approvals import drain_decision_writebacks
+
+        await asyncio.wait_for(drain_decision_writebacks(), timeout=30)
     if app.state.owner_auth_service is not None:
         await close_owner_auth_service(app.state.owner_auth_service)
         app.state.owner_auth_service = None

@@ -33,6 +33,22 @@ SELF_ROUTES: Mapping[str, str] = MappingProxyType(
 )
 _UNVERIFIED = "[link not verified]"
 _HOST_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z", re.ASCII)
+# One path segment of a deployment prefix such as ``/butlers-dev``: plain ASCII,
+# never ``.``/``..`` (the pattern requires a leading alphanumeric).
+_PREFIX_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z", re.ASCII)
+_MAX_PREFIX_LEN = 64
+
+
+def _path_prefix(path: str) -> str | None:
+    """Return the normalised fixed path prefix ("" for none), or None if unsafe."""
+    stripped = path[:-1] if path.endswith("/") else path
+    if not stripped:
+        return ""
+    if len(stripped) > _MAX_PREFIX_LEN or not stripped.startswith("/"):
+        return None
+    if not all(_PREFIX_SEGMENT.fullmatch(seg) for seg in stripped[1:].split("/")):
+        return None
+    return stripped
 
 
 def _dashboard_origin() -> tuple[str, str] | None:
@@ -48,7 +64,6 @@ def _dashboard_origin() -> tuple[str, str] | None:
             or parsed.username is not None
             or parsed.password is not None
             or parsed.port not in (None, 443)
-            or parsed.path not in ("", "/")
             or parsed.query
             or parsed.fragment
             or not host.isascii()
@@ -66,7 +81,10 @@ def _dashboard_origin() -> tuple[str, str] | None:
             pass
         else:
             return None
-        return "https://" + host, host
+        prefix = _path_prefix(parsed.path)
+        if prefix is None:
+            return None
+        return "https://" + host + prefix, host
     except ValueError:
         return None
 

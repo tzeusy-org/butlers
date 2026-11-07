@@ -100,6 +100,7 @@ from butlers.storage import BlobStore
 from butlers.telegram_api import (
     edit_telegram_message_text,
     remove_telegram_inline_keyboard,
+    telegram_error_description,
     telegram_message_not_modified,
     telegram_outage_status,
 )
@@ -1609,8 +1610,11 @@ class TelegramBotConnector:
         except ValueError:
             return False, "provider_ref_unusable"
         try:
-            # Each edit sets an end state, so "message is not modified" means it holds: the
-            # text edit may already drop the keyboard, and a relisted card is already edited.
+            # editMessageText without reply_markup also drops the inline keyboard, so this one
+            # edit is the whole retraction. A separate editMessageReplyMarkup is not sent: on a
+            # card with no keyboard Telegram refuses it with a 400, which receipted a visibly
+            # retracted card as failed. "Message is not modified" means a relisted card already
+            # holds the end state.
             await _tolerate_not_modified(
                 edit_telegram_message_text(
                     self._http_client,
@@ -1620,21 +1624,14 @@ class TelegramBotConnector:
                     text=_OWNER_DELIVERY_RETRACTED_TEXT,
                 )
             )
-            await _tolerate_not_modified(
-                remove_telegram_inline_keyboard(
-                    self._http_client,
-                    self._telegram_api_base,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                )
-            )
         except httpx.HTTPStatusError as exc:
             # The status only: the exception's text carries the bot-token URL.
             status = exc.response.status_code
             logger.warning(
-                "Owner-delivery retraction refused by Telegram for %s (HTTP %s)",
+                "Owner-delivery retraction refused by Telegram for %s (HTTP %s: %s)",
                 item.get("presentation_id"),
                 status,
+                telegram_error_description(exc.response),
             )
             if status in (401, 404):
                 return False, _RETRACTION_TOKEN_REJECTED

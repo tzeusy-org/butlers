@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 import httpx
@@ -226,6 +227,29 @@ def telegram_message_not_modified(response: httpx.Response) -> bool:
     )
 
 
+_SAFE_DESCRIPTION = re.compile(r"[A-Za-z0-9 ,.:'_()-]{1,120}\Z", re.ASCII)
+
+
+def telegram_error_description(response: httpx.Response) -> str:
+    """A log-safe Bot API error description, or ``"unparsed"``.
+
+    Telegram's own refusals are short fixed phrases. Anything else (not JSON, a URL,
+    a long or oddly shaped string) could carry the bot-token URL, so it is dropped.
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        return "unparsed"
+    description = data.get("description") if isinstance(data, dict) else None
+    if (
+        isinstance(description, str)
+        and _SAFE_DESCRIPTION.fullmatch(description)
+        and "http" not in description.lower()
+    ):
+        return description
+    return "unparsed"
+
+
 async def edit_telegram_message_text(
     client: httpx.AsyncClient,
     api_base_url: str,
@@ -272,6 +296,7 @@ __all__ = [
     "TelegramReplyMarkupValidationError",
     "edit_telegram_message_text",
     "remove_telegram_inline_keyboard",
+    "telegram_error_description",
     "telegram_message_not_modified",
     "validate_telegram_reply_markup",
 ]

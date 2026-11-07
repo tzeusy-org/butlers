@@ -353,6 +353,70 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
         return None
 
 
+_BACKGROUND_WRITEBACKS: set[asyncio.Task[None]] = set()
+_WRITEBACK_TAIL: asyncio.Task[None] | None = None
+
+
+def _detach_writeback(label: str, coro: Any) -> None:
+    """Run a fail-open writeback after the HTTP response path, logging failures.
+
+    Writes run one at a time in creation order: each waits for the previous one,
+    so a rule's revoke can never land before its create after a cold model load.
+    """
+    global _WRITEBACK_TAIL
+    loop = asyncio.get_running_loop()
+    previous = _WRITEBACK_TAIL
+    if previous is not None and (previous.done() or previous.get_loop() is not loop):
+        previous = None
+
+    async def _run() -> None:
+        try:
+            if previous is not None:
+                await asyncio.wait([previous])
+            await coro
+        except asyncio.CancelledError:
+            coro.close()
+            raise
+        except Exception:  # noqa: BLE001 -- writeback must never affect a decision
+            logger.warning("Decision-memory background writeback failed: %s", label, exc_info=True)
+
+    task = loop.create_task(_run())
+    _WRITEBACK_TAIL = task
+    _BACKGROUND_WRITEBACKS.add(task)
+    task.add_done_callback(_BACKGROUND_WRITEBACKS.discard)
+
+
+async def drain_decision_writebacks() -> None:
+    """Wait for every detached writeback on this loop (shutdown and tests; no polling)."""
+    loop = asyncio.get_running_loop()
+    while True:
+        pending = [t for t in _BACKGROUND_WRITEBACKS if not t.done() and t.get_loop() is loop]
+        if not pending:
+            return
+        await asyncio.wait(pending)
+
+
+class _DetachedDecisionMemoryWriter(DecisionMemoryWriter):
+    """Dashboard writer whose writes run in the background.
+
+    Writeback cold-loads the embedding model, which can take longer than the
+    dashboard's request timeout. The decision is already committed when these
+    hooks are called and the writer is fail-open, so the response need not wait.
+    """
+
+    async def record_terminal_decision(self, action: Any, outcome: str) -> None:
+        _detach_writeback(
+            f"terminal decision {getattr(action, 'id', 'unknown')}",
+            super().record_terminal_decision(action, outcome),
+        )
+
+    async def record_standing_rule(self, rule: Any, *, active: bool) -> None:
+        _detach_writeback(
+            f"standing rule {getattr(rule, 'id', 'unknown')}",
+            super().record_standing_rule(rule, active=active),
+        )
+
+
 def _decision_memory_writer_for(
     db_mgr: DatabaseManager,
     butler_name: str,
@@ -381,7 +445,7 @@ def _decision_memory_writer_for(
 
         return get_embedding_engine(settings.embedding_model)
 
-    return DecisionMemoryWriter(
+    return _DetachedDecisionMemoryWriter(
         butler_name=butler_name,
         memory_pool_provider=lambda: memory_pool,
         resolution_pool_provider=lambda: pool,

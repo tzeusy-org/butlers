@@ -250,6 +250,7 @@ async def test_rule_memory_requires_real_owning_commit(database, monkeypatch, bo
             repeated = await client.post(path, json=payload)
             assert repeated.status_code == 409
 
+    await routes.drain_decision_writebacks()
     durable = await _committed_snapshot(observer, action_id)
     if boundary in {"audit_failure", "commit_failure"}:
         assert dict(durable["action"]) == {"status": "pending", "decided_by": None}
