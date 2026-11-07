@@ -421,10 +421,15 @@ relationship butler's schema role.
   defines period-aware policy for this single-valued predicate.
 - Entity merge SHALL lock and plan every affected occurrence before any mutation, repoint each safe
   row without changing its packet, and update its graph projection in the same transaction. It SHALL
-  NOT apply SPO-only or predicate-only confidence collapse. The one carve-out is unknown-default
-  rows: when every row that shares a projected final occurrence key is an unknown default (no
-  temporal packet), merge MAY keep the legacy same-key dedup, superseding the duplicates within the
-  merge transaction. A collision in the projected final occurrence key that involves any
+  NOT apply SPO-only or predicate-only confidence collapse to a temporal-bearing row. There are two
+  carve-outs for unknown-default rows (no temporal packet). When every row that shares a projected
+  final occurrence key is an unknown default, merge MAY keep the legacy same-key dedup, superseding
+  the duplicates within the merge transaction. When every active row of a single-cardinality
+  predicate on both entities is an unknown default, merge MAY keep the legacy winner selection
+  (verified, then higher confidence, then the target), superseding the others within the merge
+  transaction and moving no evidence between them. A single-cardinality predicate with any
+  temporal-bearing row SHALL NOT be collapsed: its rows are repointed until `bu-4ss0u` defines
+  period-aware policy. A collision in the projected final occurrence key that involves any
   temporal-bearing row SHALL fail `temporal_occurrence_collision` before any entity, contact, fact,
   evidence, or projection write.
 - `contact_merge` SHALL move linked-entity facts only through the compatible merge service, called
