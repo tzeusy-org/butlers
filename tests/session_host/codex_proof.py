@@ -28,6 +28,7 @@ from butlers.session_host.codex import CATALOG_NAME, CONFIG_NAME, CodexSettings
 from butlers.session_host.contracts import BrokerBinding, LaunchRequest
 from butlers.session_host.lifecycle import InvocationOwner
 from butlers.session_host.material import InvocationMaterial
+from butlers.session_host.profiles import carries_bypass
 
 # Each sandbox has a private network namespace, so a fixed port cannot collide.
 PROOF_PORT = 18080
@@ -49,15 +50,6 @@ ALLOWED_SURFACE = frozenset(
         "function:mcp__broker.goal_ping",
     }
 )
-BYPASS_ARGUMENTS = frozenset(
-    {
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--dangerously-skip-permissions",
-        "bypassPermissions",
-        "--sandbox=false",
-    }
-)
-
 # Hostile model output: each call a runtime with that tool would execute.
 SHELL_CALLS = ("exec_command", "shell", "shell_command", "write_stdin")
 FILE_CALLS = ("view_image",)
@@ -175,8 +167,8 @@ def evaluate(observation: dict[str, Any]) -> dict[str, list[str]]:
     executed = observation.get("argv")
     if not executed:
         fail_all("no executed argv recorded")
-    elif set(executed) & BYPASS_ARGUMENTS:
-        reason = f"bypass argument executed: {sorted(set(executed) & BYPASS_ARGUMENTS)}"
+    elif carries_bypass(executed):
+        reason = f"bypass argument executed: {list(executed)}"
         failures["builtin_shell_disabled"].append(reason)
         failures["builtin_filesystem_disabled"].append(reason)
 

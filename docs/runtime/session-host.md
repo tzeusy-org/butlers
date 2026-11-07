@@ -213,7 +213,15 @@ and tool-less-function acceptance criteria remain unfinished.
 
 `CodexSettings` is the closed preset for `codex` on `gpt-6-sol`: Codex 0.159.2, API
 key auth, no bypass flag, a generated config, and a private one-model catalog.
-`Profile` refuses a bypass argument in any runtime's command. The live adapters
+`Profile` refuses known bypass forms in any runtime's command, ignoring case and
+reading `--flag=value` and `--flag value` alike: any argument containing
+`dangerously`, `bypassPermissions` or `danger-full-access`, `--yolo`, and
+`--sandbox`, `--approval-mode` or `--permission-mode` with an unrestricted value.
+Restricting values such as `--sandbox read-only` are admitted. A runtime label must
+be lowercase, so `Codex` cannot skip the closed `codex` preset. This is a
+deny-list, not a parser of each CLI's grammar. It does not refuse short switches
+whose meaning differs by runtime, such as Gemini's `-y`, so a new runtime needs its
+own closed preset like `CodexSettings` before it can be admitted. The live adapters
 are unchanged and keep their flags until the switch release.
 
 The proof runs the real binary through the production `BubblewrapDomain`, with
@@ -251,6 +259,16 @@ What the pinned CLI taught us, each now a test:
 Each enforcing setting has a native row that removes it and requires failure.
 Settings in `codex.py` marked unmeasured changed nothing this proof could see, so
 they claim nothing.
+
+Of the nine measured checks, the four provider checks show only that a hosted tool
+is not offered: `provider_search_disabled`, `provider_fetch_disabled`,
+`provider_remote_mcp_disabled` and `provider_code_disabled`. Each passes when no
+hosted tool appears anywhere in the client request. That is absence, not
+enforcement. Hosted tools run at the provider, so no hostile call can test them
+here, and a provider that ran one anyway would not show up. The other five
+(`builtin_shell_disabled`, `builtin_filesystem_disabled`, `builtin_web_disabled`,
+`local_mcp_disabled`, `broker_only_mcp`) also send hostile calls and require each
+one to be refused, or the broker call to complete.
 
 The tuple stays ineligible. `ReviewedProfile` requires 13 checks. The proof measures
 nine and reports the other four as `unproven`, which admission refuses:
