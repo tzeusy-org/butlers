@@ -392,9 +392,17 @@ same kind uses the same pattern:
     with `submitted_by = 'owner'` sets the label, and any other override can
     only make it more restrictive (`normal` < `sensitive` < `restricted`). A
     model can withhold an episode from the surface but never republish one
-    the owner or a source restricted. This is the one place
-    `episodes_public` may differ from `v_episodes_corrected`, and the parity
-    test compares against the fold.
+    the owner or a source restricted. The parity test compares against the
+    fold.
+  - *Other narrowing differences.* `episodes_public` may also withhold more
+    than `v_episodes_corrected` in three ways. [Observed] The view reads only
+    the latest override (`v_latest_overrides`), so a later note-only override
+    would undo a tombstone; `tombstoned` therefore holds once any override set
+    it, or once a redaction names the episode for any reason but
+    `source_privacy`. Evidence-layer episodes, which are raw signal, have no
+    row. A calendar title built from the event's location or description
+    (`src/butlers/chronicler/adapters/calendar.py`) becomes a fixed label
+    unless an override corrected it, because inviters write that text.
 - **Entity flags.** [Observed] The merge pointer, the soft-delete stamp and
   the unidentified-sender marker are all `public.entities.metadata` keys
   (`merged_into`, `deleted_at` and `unidentified`;

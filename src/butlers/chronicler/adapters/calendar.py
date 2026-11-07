@@ -605,6 +605,11 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             or self._truncate(self._clean_text(event_description), 80)
             or f"{schema}: calendar block"
         )
+        # Location and description are the inviter's free text, so the public projection withholds
+        # a title built from them (chronicler_031).
+        payload["title_source"] = (
+            "summary" if title or self._clean_text(event_title) else "fallback"
+        )
 
         async with chronicler_pool.acquire() as conn:
             episode = await upsert_episode(

@@ -21,6 +21,7 @@ _CHRONICLER_JOBS = (
     "chronicler_project_exercise_inferred",
     "chronicler_project_comms",
     "chronicler_routines_mine",
+    "chronicler_public_projection_sweep",
 )
 
 
